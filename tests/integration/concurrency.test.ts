@@ -50,7 +50,7 @@ test('8 processes × 10 records complete without loss or lock errors', async () 
 test('concurrent use creates one binding and one managed block without losing user content', async () => {
   const root = await temp('concurrency-use');
   execFileSync('git', ['init', '-q', root]);
-  await import('node:fs/promises').then(({ writeFile }) => writeFile(path.join(root, 'AGENT.md'), 'human header\n'));
+  await import('node:fs/promises').then(({ writeFile }) => writeFile(path.join(root, 'AGENTS.md'), 'human header\n'));
   const data = await temp('concurrency-use-data');
   const databasePath = path.join(data, 'kiokuko.sqlite3');
   const workerPath = path.resolve('tests/fixtures/concurrent-use.ts');
@@ -58,7 +58,7 @@ test('concurrent use creates one binding and one managed block without losing us
     KIOKUKO_TEST_ROOT: root,
     KIOKUKO_TEST_DATABASE: databasePath,
   })));
-  const agent = await readFile(path.join(root, 'AGENT.md'), 'utf8');
+  const agent = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
   assert.equal((agent.match(/BEGIN KIOKUKO MANAGED BLOCK/g) ?? []).length, 1);
   assert.equal((agent.match(/END KIOKUKO MANAGED BLOCK/g) ?? []).length, 1);
   assert.match(agent, /^human header\n/);

@@ -70,6 +70,52 @@ export function getGlobalDatabasePath(options: PathEnvironment = {}): string {
   return join(getPlatformDataDirectory(options), 'kiokuko.sqlite3');
 }
 
+function requireHome(options: PathEnvironment): { home: string; join: typeof path.posix.join } {
+  const { platform, env } = selectedEnvironment(options);
+  const home = platform === 'win32' ? (env.USERPROFILE ?? env.HOME) : env.HOME;
+  if (!home) throw new KiokukoError('VALIDATION_ERROR', 'The user home directory is unavailable');
+  return { home, join: platform === 'win32' ? path.win32.join : path.posix.join };
+}
+
+/** Global Codex configuration directory. CODEX_HOME intentionally takes precedence. */
+export function getCodexHome(options: PathEnvironment = {}): string {
+  const { platform, env } = selectedEnvironment(options);
+  if (env.CODEX_HOME) return env.CODEX_HOME;
+  const { home, join } = requireHome(options);
+  return join(home, '.codex');
+}
+
+export function getCodexConfigPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getCodexHome(options), 'config.toml');
+}
+
+export function getCodexInstructionsPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getCodexHome(options), 'AGENTS.md');
+}
+
+/** OpenCode's documented global configuration directory. */
+export function getOpenCodeConfigDirectory(options: PathEnvironment = {}): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  if (platform === 'win32') {
+    const root = env.APPDATA ?? env.LOCALAPPDATA;
+    if (root) return join(root, 'opencode');
+  }
+  if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, 'opencode');
+  const { home } = requireHome(options);
+  return join(home, '.config', 'opencode');
+}
+
+export function getOpenCodeInstructionsPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getOpenCodeConfigDirectory(options), 'AGENTS.md');
+}
+
 export async function ensurePlatformDataDirectory(options: PathEnvironment = {}): Promise<string> {
   const directory = getPlatformDataDirectory(options);
   await mkdir(directory, { recursive: true, mode: 0o700 });

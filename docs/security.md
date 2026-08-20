@@ -7,10 +7,16 @@ Kiokuko v1 is a same-user, loopback-only service. Remote bind, TLS termination, 
 - Only `127.0.0.1`, `::1`, or `localhost` may be bound.
 - A random 256-bit capability token is stored only in a runtime descriptor with mode `0600`.
 - `/api/v1/*` and readiness require a constant-time bearer check.
-- The token never appears in stdout/JSON, argv, `AGENT.md`, events, logs, or error details.
+- The token never appears in stdout/JSON, argv, `AGENTS.md`, events, logs, or error details.
 - A per-database lock prevents two server instances; stale descriptors/locks are replaced only after owner/PID checks.
 - Permissive CORS is disabled. Browser mutations require authenticated, CSRF-safe requests and explicit confirmation where destructive.
 - The bounded write queue returns `429` rather than consuming unbounded memory. Shutdown drains accepted work before owner-checked descriptor/lock cleanup.
+
+The stdio MCP path is local to the spawning AI client and does not open a
+network listener. It exposes no raw SQL or arbitrary-workspace parameter.
+`memory_recall` resolves only the supplied/current working directory plus the
+reserved global workspace. `memory_checkpoint` accepts bounded typed entries,
+runs secret detection, and always writes `candidate` + `untrusted` memory.
 
 ## Pre-persistence sanitization
 

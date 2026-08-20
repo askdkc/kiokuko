@@ -75,7 +75,7 @@ export function registerRepositoryAndLocation(
         );
     } else {
       database
-        .prepare('UPDATE repositories SET last_used_at = ?, display_name = ?, agent_template_version = ? WHERE repository_id = ?')
+        .prepare('UPDATE repositories SET last_used_at = ?, display_name = ?, agent_template_version = MAX(agent_template_version, ?) WHERE repository_id = ?')
         .run(now, registration.displayName, registration.agentTemplateVersion, registration.repositoryId);
     }
 

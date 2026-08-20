@@ -1,8 +1,72 @@
 # Kiokuko
 
-Kiokuko is a model-agnostic external memory utility for AI coding agents.
-It stores structured project memory in a user-global SQLite database and
-exposes it through a JSON-capable CLI.
+Kiokuko is model-agnostic external memory for AI coding agents. One global npm
+installation stores structured memory in the current user's SQLite database and
+exposes high-level recall/checkpoint tools to Codex and OpenCode over stdio MCP.
+
+## Install and enable globally
+
+```bash
+npm install --global kiokuko
+kiokuko setup
+```
+
+Restart Codex and OpenCode after setup. From then on, their global `AGENTS.md`
+instructs the agent to call Kiokuko before non-trivial work and after durable
+work, and their global config starts `kiokuko mcp` when the tools are needed.
+
+`setup` is explicit and idempotent. npm `postinstall` never edits AI-client
+configuration. Existing TOML/JSONC settings, comments, instruction content,
+line endings, and file modes are preserved; Kiokuko owns only its managed
+sections.
+
+```bash
+# Preview exact target files without writing anything
+kiokuko setup --dry-run --json
+
+# Configure only one client
+kiokuko setup --clients codex
+kiokuko setup --clients opencode
+
+# Use an absolute executable path if the client process does not inherit npm's PATH
+kiokuko setup --command /absolute/path/to/kiokuko
+```
+
+The setup targets are:
+
+| Client | MCP config | Global instructions |
+|---|---|---|
+| Codex | `$CODEX_HOME/config.toml` or `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` or `~/.codex/AGENTS.md` |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` or `~/.config/opencode/opencode.json` | the adjacent `AGENTS.md` |
+
+If an OpenCode `opencode.jsonc` already exists, Kiokuko updates that file and
+preserves comments. If Codex already has an unmanaged
+`[mcp_servers.kiokuko]` table, setup refuses to guess which configuration to
+overwrite.
+
+## Memory scope
+
+The database is global to the OS user, but ordinary recall is not a global
+full-database search:
+
+- `project` memory is resolved automatically from `.kiokuko.json`, the known
+  canonical path, or the Git remote. Another project's memory is excluded.
+- `global` memory is reserved for genuinely cross-project preferences and
+  lessons.
+- default `auto` recall returns only the current project plus global memory.
+- a repository without a remote gets a stable path-derived identity. Kiokuko
+  does not write anything into the repository during automatic resolution.
+
+The MCP surface is deliberately small:
+
+- `memory_recall`: read bounded project/global context, always marked untrusted.
+- `memory_checkpoint`: store bounded durable entries as `candidate` and
+  `untrusted`; secret-like content is rejected.
+
+This is instruction-driven automatic use, not prompt interception. Codex and
+OpenCode can still choose not to call a tool on a particular turn. Kiokuko does
+not install hooks, capture full transcripts, or silently promote memory to
+verified status.
 
 ## Development
 
@@ -14,16 +78,16 @@ npm run build
 npm pack --dry-run
 ```
 
-## Local usage
+## Development usage
 
 ```bash
-npm exec -- tsx src/bin/kiokuko.ts use
-npm exec -- tsx src/bin/kiokuko.ts recall "repository conventions" --workspace <workspace> --json
+npm exec -- tsx src/bin/kiokuko.ts setup --dry-run --json
+npm exec -- tsx src/bin/kiokuko.ts mcp
 ```
 
-`kiokuko use` creates `.kiokuko.json` and a managed block in `AGENT.md`.
-Only the managed marker range is owned by Kiokuko; human content outside it is
-preserved. The SQLite database is stored in the platform user data directory.
+`kiokuko use` remains optional for a portable explicit binding. It creates
+`.kiokuko.json` and a managed block in `AGENTS.md`; normal MCP use no longer
+requires it.
 
 ## Akinator-style knowledge intake
 

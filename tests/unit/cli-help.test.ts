@@ -6,6 +6,8 @@ test('registers required commands', () => {
   const names = buildCli().commands.map((command) => command.name());
   for (const name of [
     'init',
+    'setup',
+    'mcp',
     'use',
     'recall',
     'search',

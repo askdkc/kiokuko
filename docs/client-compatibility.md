@@ -1,24 +1,48 @@
 # Client compatibility policy
 
-Status: core/generic integration contract; named client event bridges remain unverified until versioned clean-room evidence exists.
+Status: global MCP integration for Codex and OpenCode; lifecycle hooks remain disabled.
 
-Kiokuko's core is client-neutral HTTP/JSON. `AGENT.md` (singular) is the one canonical generated instruction body required by this project. Default `kiokuko use` does not create or modify `AGENTS.md`, `CLAUDE.md`, OpenCode rules, plugins, or hooks.
-
-| Client | Official instruction documentation previously located | Singular `AGENT.md` auto-load | Shell/generic CLI path | Lifecycle/tool/file/approval event coverage |
+| Client | Global MCP registration | Global instructions | Automatic-use level | Hooks/plugins |
 |---|---|---|---|---|
-| Codex | https://learn.chatgpt.com/docs/agent-configuration/agents-md | Not established; plural convention must not be silently mapped | Generic shell path only until clean-room smoke | `declared`/`unavailable`; no complete bridge claim |
-| Claude Code | https://code.claude.com/docs/en/memory | Not established | Generic shell path only until clean-room smoke | `declared`/`unavailable`; no complete bridge claim |
-| OpenCode | https://opencode.ai/docs/rules/ | Not established | Generic shell path only until clean-room smoke | `declared`/`unavailable`; no complete bridge claim |
-| dsh | No verified official product identity/specification | Unverified | Unverified | Unverified; unsupported |
+| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | instruction-driven, best effort | not installed |
+| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | instruction-driven, best effort | not installed |
+| Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | client-specific | none |
 
-Documentation reachability alone is not event compatibility evidence. Before a named bridge is described as supported, Task 8 must pin the exact product/version, verify official instruction/tool/hook APIs, capture sanitized real event shape and ordering in a clean room, and assign each category `complete`, `best_effort`, `declared`, or `unavailable`.
+Codex's current official documentation supports stdio MCP servers and global
+configuration. OpenCode's current official documentation supports local MCP
+commands and global rules. `kiokuko setup` uses those supported surfaces:
 
-## Integration layers
+- [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks)
+- [OpenCode MCP servers](https://opencode.ai/docs/mcp-servers/)
+- [OpenCode rules](https://opencode.ai/docs/rules/)
+- [OpenCode plugins](https://opencode.ai/docs/plugins/)
 
-1. **Generic CLI (core acceptance path):** any shell-capable agent can open/answer/events/checkpoint/close/feedback through the Kiokuko HTTP client. Generic runs claim only declared/unavailable event categories.
-2. **Common tool protocol:** may be added as a thin stdio/tool-to-HTTP translator only after current official support and clean-room operation are demonstrated across the intended clients.
-3. **Optional client hook/plugin:** isolated under `integrations/<client>/`, version-pinned, disabled by default, dry-run first, and explicit opt-in before editing a client file. It sends normalized events to HTTP and never imports database internals.
+## Guarantees and non-guarantees
 
-Adapters never duplicate the canonical `AGENT.md` body. They may only point an officially recognized instruction mechanism at that canonical file or expose thin HTTP tools. Unsupported categories are not inferred from neighboring events. If a hook cannot observe an approval or filesystem mutation, coverage records that limitation and the UI must display it.
+Setup guarantees safe, repeatable configuration merging and makes the two MCP
+tools available globally after the client reloads its configuration. Global
+instructions request recall before non-trivial work and checkpointing after
+substantial verified work.
 
-No provider reverse proxy is part of client compatibility v1.
+Neither client guarantees that a model will call an available tool for every
+prompt. Therefore “automatic” means no per-repository install and no manual CLI
+lifecycle after one-time setup; it does not mean Kiokuko intercepts every
+prompt or response.
+
+Kiokuko does not install Codex hooks or OpenCode plugins by default. Those
+surfaces can observe more lifecycle data, but they add trust prompts, versioned
+event-shape dependencies, and transcript/privacy risk. Adding them later must
+be a separate explicit opt-in with clean-room fixtures and bounded sanitized
+payloads.
+
+## Scope boundary
+
+The stdio MCP server calls Kiokuko's memory services directly. It never exposes
+the SQLite file as a tool. Recall is limited to the resolved current repository
+and/or the reserved global workspace; it never searches unrelated project
+workspaces. Writes are candidate-only, untrusted, bounded, content-hash
+idempotent, audited, and passed through secret detection.
+
+The older generic Agent Gateway remains available for explicit execution-ledger
+workflows. It is no longer required for ordinary recall/checkpoint use.

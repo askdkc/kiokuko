@@ -19,6 +19,8 @@ import { registerAgentCommand, type AgentCommandDependencies } from './commands/
 import { registerLedgerCommands } from './commands/ledger.js';
 import type { SqliteDatabase } from './db/adapter.js';
 import { answerAkinator, getAkinatorContext, startAkinator } from './akinator/orchestrator.js';
+import { parseSetupClients, setupGlobalClients } from './commands/setup.js';
+import { runMcpServer } from './mcp/server.js';
 
 async function readJsonInput(filePath: string): Promise<unknown> {
   const text = filePath === '-' ? await new Promise<string>((resolve, reject) => {
@@ -134,8 +136,30 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion})`);
   });
 
+  cli.command('setup').description('Configure global Kiokuko memory for Codex and OpenCode')
+    .option('--clients <clients>', 'Comma-separated clients: codex,opencode', 'codex,opencode')
+    .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
+    .option('--dry-run', 'Validate and show planned changes without writing')
+    .option('--json', 'Emit a JSON response')
+    .action(async (options: { clients: string; command: string; dryRun?: boolean; json?: boolean }) => {
+      const data = await setupGlobalClients({
+        clients: parseSetupClients(options.clients),
+        command: options.command,
+        dryRun: options.dryRun === true,
+      });
+      const changed = data.files.filter((file) => file.action !== 'unchanged').length;
+      const message = options.dryRun
+        ? `Kiokuko setup plan for ${data.clients.join(', ')}: ${changed} file${changed === 1 ? '' : 's'} would change.`
+        : `Kiokuko configured for ${data.clients.join(', ')} (${changed} file${changed === 1 ? '' : 's'} changed). ${data.nextStep}`;
+      humanOrJson(options.json, 'setup', data, message);
+    });
+
+  cli.command('mcp').description('Run the Kiokuko MCP server over stdio').action(async () => {
+    await runMcpServer();
+  });
+
   cli.command('use').description('Bind this repository to Kiokuko external memory')
-    .option('--root <path>').option('--workspace <name>').option('--agent-file <path>', 'Agent instruction file', 'AGENT.md')
+    .option('--root <path>').option('--workspace <name>').option('--agent-file <path>', 'Agent instruction file', 'AGENTS.md')
     .option('--dry-run').option('--no-agent-file').option('--force-rebind').option('--allow-directory').option('--json')
     .action(async (options: Record<string, unknown>) => {
       const useOptions: Parameters<typeof useRepository>[0] = {};

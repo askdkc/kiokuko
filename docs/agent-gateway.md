@@ -13,7 +13,7 @@ kiokuko serve [--host 127.0.0.1] [--port 0] [--json]
 kiokuko server status --json
 ```
 
-`kiokuko web` is the compatibility entry point for the same server composition. The service accepts loopback hosts only. On startup it creates a same-user runtime descriptor containing protocol version, PID, base URL, database fingerprint, instance ID, start time, and a random capability token. The descriptor is mode `0600`; the token must not appear in stdout, argv, `AGENT.md`, events, logs, or error responses.
+`kiokuko web` is the compatibility entry point for the same server composition. The service accepts loopback hosts only. On startup it creates a same-user runtime descriptor containing protocol version, PID, base URL, database fingerprint, instance ID, start time, and a random capability token. The descriptor is mode `0600`; the token must not appear in stdout, argv, `AGENTS.md`, events, logs, or error responses.
 
 All `/api/v1/*` endpoints require `Authorization: Bearer <capability-token>`. `GET /health/live` exposes only liveness; `GET /health/ready` is authenticated. CORS is not permissive.
 

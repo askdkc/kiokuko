@@ -1,7 +1,16 @@
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getDatabaseLockPath, getGlobalDatabasePath, getRuntimeDescriptorPath, getRuntimeDirectory } from '../../src/config/paths.js';
+import {
+  getCodexConfigPath,
+  getCodexInstructionsPath,
+  getDatabaseLockPath,
+  getGlobalDatabasePath,
+  getOpenCodeConfigDirectory,
+  getOpenCodeInstructionsPath,
+  getRuntimeDescriptorPath,
+  getRuntimeDirectory,
+} from '../../src/config/paths.js';
 
 test('derives a per-database lock path from the resolved database path', () => {
   const databasePath = '/tmp/kiokuko-relative/../kiokuko.sqlite3';
@@ -92,4 +101,16 @@ test('falls back to the platform home data directory', () => {
     }),
     String.raw`C:\Users\test\AppData\Local\kiokuko\kiokuko.sqlite3`,
   );
+});
+
+test('derives documented global Codex and OpenCode paths without touching the real home directory', () => {
+  const options = {
+    platform: 'linux' as const,
+    env: { HOME: '/tmp/fake-home', XDG_CONFIG_HOME: '/tmp/fake-config' },
+  };
+  assert.equal(getCodexConfigPath(options), '/tmp/fake-home/.codex/config.toml');
+  assert.equal(getCodexInstructionsPath(options), '/tmp/fake-home/.codex/AGENTS.md');
+  assert.equal(getOpenCodeConfigDirectory(options), '/tmp/fake-config/opencode');
+  assert.equal(getOpenCodeInstructionsPath(options), '/tmp/fake-config/opencode/AGENTS.md');
+  assert.equal(getCodexConfigPath({ ...options, env: { ...options.env, CODEX_HOME: '/tmp/custom-codex' } }), '/tmp/custom-codex/config.toml');
 });

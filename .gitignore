@@ -18,8 +18,8 @@ node_modules
 .cursorrules
 .windsurfrules
 
-# Client-specific instruction files; keep Kiokuko's canonical AGENT.md tracked
+# Client-specific instruction files; keep Kiokuko's packaged template tracked
 AGENTS.md
+!templates/AGENTS.md
 CLAUDE.md
 GEMINI.md
-

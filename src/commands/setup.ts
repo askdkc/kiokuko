@@ -1,0 +1,161 @@
+import { access, unlink } from 'node:fs/promises';
+import path from 'node:path';
+import { atomicWriteText, readRegularFile } from '../agent-file/atomic-write.js';
+import {
+  getCodexConfigPath,
+  getCodexInstructionsPath,
+  getGlobalDatabasePath,
+  getOpenCodeConfigDirectory,
+  getOpenCodeInstructionsPath,
+  type PathEnvironment,
+} from '../config/paths.js';
+import { initializeDatabase } from './init.js';
+import { openConnection } from '../db/connection.js';
+import { ensureGlobalWorkspace } from '../memory/workspaces.js';
+import { KiokukoError } from '../errors.js';
+import { renderOpenCodeConfig } from '../setup/opencode-config.js';
+import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
+
+export const SETUP_CLIENTS = ['codex', 'opencode'] as const;
+export type SetupClient = (typeof SETUP_CLIENTS)[number];
+type SetupAction = 'created' | 'updated' | 'unchanged';
+
+interface PlannedFile {
+  path: string;
+  content: string;
+  mode: number;
+  original: string | undefined;
+  action: SetupAction;
+  purpose: 'mcp-config' | 'instructions';
+  client: SetupClient;
+}
+
+export interface SetupOptions extends PathEnvironment {
+  clients?: SetupClient[];
+  command?: string;
+  dryRun?: boolean;
+  databasePath?: string;
+  migrationsDirectory?: string;
+}
+
+export interface SetupResult {
+  clients: SetupClient[];
+  databasePath: string;
+  databaseAction: 'initialized' | 'planned';
+  files: Array<Pick<PlannedFile, 'path' | 'action' | 'purpose' | 'client'>>;
+  dryRun: boolean;
+  nextStep: string;
+}
+
+export function parseSetupClients(value: string): SetupClient[] {
+  const clients = [...new Set(value.split(',').map((client) => client.trim()).filter(Boolean))];
+  if (clients.length === 0 || clients.some((client) => !SETUP_CLIENTS.includes(client as SetupClient))) {
+    throw new KiokukoError('VALIDATION_ERROR', `clients must be a comma-separated subset of: ${SETUP_CLIENTS.join(', ')}`);
+  }
+  return clients as SetupClient[];
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function planFile(
+  filePath: string,
+  client: SetupClient,
+  purpose: PlannedFile['purpose'],
+  render: (existing: string | undefined) => { content: string; action: SetupAction },
+): Promise<PlannedFile> {
+  const original = await readRegularFile(filePath);
+  const rendered = render(original?.content);
+  const action: SetupAction = original === undefined
+    ? 'created'
+    : rendered.content === original.content ? 'unchanged' : 'updated';
+  return {
+    path: filePath,
+    content: rendered.content,
+    mode: original?.mode ?? 0o600,
+    original: original?.content,
+    action,
+    purpose,
+    client,
+  };
+}
+
+async function openCodeConfigPath(options: PathEnvironment): Promise<string> {
+  const directory = getOpenCodeConfigDirectory(options);
+  const jsonc = path.join(directory, 'opencode.jsonc');
+  if (await exists(jsonc)) return jsonc;
+  return path.join(directory, 'opencode.json');
+}
+
+async function restoreFiles(files: PlannedFile[]): Promise<void> {
+  for (const file of [...files].reverse()) {
+    if (file.action === 'unchanged') continue;
+    if (file.original === undefined) await unlink(file.path).catch(() => undefined);
+    else await atomicWriteText(file.path, file.original, file.mode).catch(() => undefined);
+  }
+}
+
+export async function setupGlobalClients(options: SetupOptions = {}): Promise<SetupResult> {
+  const clients = options.clients ?? [...SETUP_CLIENTS];
+  if (clients.length === 0 || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
+    throw new KiokukoError('VALIDATION_ERROR', `clients must be a non-empty subset of: ${SETUP_CLIENTS.join(', ')}`);
+  }
+  const command = options.command ?? 'kiokuko';
+  if (command.trim().length === 0 || command.includes('\0')) throw new KiokukoError('VALIDATION_ERROR', 'command must be a non-empty executable path or name');
+  const pathEnvironment: PathEnvironment = {
+    ...(options.platform === undefined ? {} : { platform: options.platform }),
+    ...(options.env === undefined ? {} : { env: options.env }),
+  };
+  const databasePath = options.databasePath ?? getGlobalDatabasePath(pathEnvironment);
+  const files: PlannedFile[] = [];
+
+  if (clients.includes('codex')) {
+    files.push(await planFile(getCodexConfigPath(pathEnvironment), 'codex', 'mcp-config', (existing) => renderCodexMcpConfig(existing ?? '', command)));
+    files.push(await planFile(getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
+  }
+  if (clients.includes('opencode')) {
+    files.push(await planFile(await openCodeConfigPath(pathEnvironment), 'opencode', 'mcp-config', (existing) => renderOpenCodeConfig(existing, command)));
+    files.push(await planFile(getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
+  }
+
+  const result: SetupResult = {
+    clients,
+    databasePath,
+    databaseAction: options.dryRun ? 'planned' : 'initialized',
+    files: files.map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
+    dryRun: options.dryRun ?? false,
+    nextStep: `Restart ${clients.map((client) => client === 'codex' ? 'Codex' : 'OpenCode').join(' and ')} so ${clients.length === 1 ? 'it reloads' : 'they reload'} global MCP and AGENTS.md configuration.`,
+  };
+  if (options.dryRun) return result;
+
+  await initializeDatabase({
+    databasePath,
+    ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
+  });
+  const database = openConnection(databasePath);
+  try {
+    ensureGlobalWorkspace(database);
+  } finally {
+    database.close();
+  }
+
+  const written: PlannedFile[] = [];
+  try {
+    for (const file of files) {
+      if (file.action === 'unchanged') continue;
+      await atomicWriteText(file.path, file.content, file.mode);
+      written.push(file);
+    }
+  } catch (error) {
+    await restoreFiles(written);
+    throw error;
+  }
+  return result;
+}

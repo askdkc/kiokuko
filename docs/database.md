@@ -22,7 +22,11 @@ Migration 004 adds the Agent Gateway execution ledger described in `execution-le
 
 ## Server ownership
 
-The foreground server keeps one primary connection for its lifetime and serializes ledger writes through a bounded FIFO. Generic agent clients and client-specific bridges never open SQLite. Existing direct memory CLI operations remain a separate compatibility path.
+The foreground HTTP server keeps one primary connection for its lifetime and serializes ledger writes through a bounded FIFO. Generic execution-ledger clients never open SQLite. The stdio MCP process opens a short-lived connection per high-level memory tool call, as do existing direct memory CLI operations; WAL and the busy timeout support concurrent same-user processes.
+
+The `repositories` table includes a reserved `kiokuko_global`/`global` row.
+Project locations remain separate. Default scoped recall queries only the current
+project workspace and the reserved global workspace.
 
 All write requests carry an idempotency key. An acknowledged canonical request can be replayed; a different body under the same scope/key conflicts. Event batches are atomic and local sequence allocation occurs inside the transaction.
 

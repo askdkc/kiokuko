@@ -29,7 +29,7 @@ function validateMarkers(content: string): { start: number; end: number } | unde
   const start = starts[0];
   const end = ends[0];
   if (starts.length !== 1 || ends.length !== 1 || start === undefined || end === undefined || start >= end) {
-    throw new KiokukoError('VALIDATION_ERROR', 'AGENT.md contains malformed Kiokuko managed markers');
+    throw new KiokukoError('VALIDATION_ERROR', 'AGENTS.md contains malformed Kiokuko managed markers');
   }
   return { start, end: end + END_MARKER.length };
 }

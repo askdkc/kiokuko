@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicWriteText, readRegularFile } from '../agent-file/atomic-write.js';
@@ -11,6 +10,7 @@ import { registerRepositoryAndLocation } from '../repository/binding.js';
 import { detectRepositoryRoot } from '../repository/detect-root.js';
 import { createRepositoryIdentity } from '../repository/identity.js';
 import { KiokukoError } from '../errors.js';
+import { readGitOrigin } from '../repository/git-origin.js';
 
 export interface UseOptions {
   cwd?: string;
@@ -37,19 +37,6 @@ export interface UseResult {
   bindingAction: 'created' | 'updated' | 'unchanged' | 'planned';
   dryRun: boolean;
   templateVersion: number;
-}
-
-function originUrl(repositoryRoot: string): string | undefined {
-  try {
-    const value = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
-      cwd: repositoryRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return value || undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function ensureChildPath(root: string, filePath: string): string {
@@ -99,11 +86,11 @@ export async function useRepository(options: UseOptions = {}): Promise<UseResult
     throw new KiokukoError('CONFLICT', 'Existing binding uses another workspace; pass --force-rebind to change it');
   }
 
-  const requestedAgentFile = options.agentFile ?? existingBinding?.agentFile ?? 'AGENT.md';
+  const requestedAgentFile = options.agentFile ?? existingBinding?.agentFile ?? 'AGENTS.md';
   const agentFile = ensureChildPath(repositoryRoot, requestedAgentFile);
   const existingAgent = options.noAgentFile ? undefined : await readRegularFile(agentFile);
   const identityOptions: Parameters<typeof createRepositoryIdentity>[0] = { repositoryRoot };
-  const remote = originUrl(repositoryRoot);
+  const remote = readGitOrigin(repositoryRoot);
   if (remote !== undefined) identityOptions.remoteUrl = remote;
   if (options.repositoryId !== undefined) identityOptions.repositoryId = options.repositoryId;
   if (existingBinding) {

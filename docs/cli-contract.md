@@ -16,6 +16,29 @@ Failure:
 
 Exit codes remain: 0 success, 2 usage, 3 validation, 4 not found, 5 conflict, 6 database/service, 7 security rejection, 8 integrity/doctor, and 9 partial filesystem transaction.
 
+## Global client setup and MCP
+
+```bash
+kiokuko setup [--clients codex,opencode] [--command kiokuko] [--dry-run] [--json]
+kiokuko mcp
+```
+
+`setup` initializes the user-global database and safely merges the global Codex
+and/or OpenCode MCP and `AGENTS.md` configuration. It computes and validates all
+file edits before writing, uses per-file atomic replacement, rolls back already
+written client files if a later write fails, rejects symlinks, and is
+idempotent. `--dry-run` performs no writes.
+
+`mcp` is a foreground stdio MCP server. Protocol output is written only to
+stdout; ordinary CLI diagnostics must not contaminate that stream. It exposes:
+
+- `memory_recall(query, cwd?, scope?, limit?, maxChars?)`
+- `memory_checkpoint(cwd?, memories[])`
+
+Automatic repository resolution updates only the global path registry; it does
+not create `.kiokuko.json` or `AGENTS.md` in the repository. `kiokuko use`
+remains the explicit portable-binding path and now defaults to `AGENTS.md`.
+
 ## Server commands
 
 ```bash
