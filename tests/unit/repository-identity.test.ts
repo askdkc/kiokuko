@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,7 +8,7 @@ import { createRepositoryIdentity } from '../../src/repository/identity.js';
 import { fingerprintRemoteUrl, normalizeRemoteUrl } from '../../src/repository/remote-url.js';
 
 async function temp(prefix: string): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), `kiokuko-${prefix}-`));
+  return realpath(await mkdtemp(path.join(tmpdir(), `kiokuko-${prefix}-`)));
 }
 
 test('detects a realpath-normalized git root from a subdirectory', async () => {
