@@ -1,0 +1,36 @@
+{
+  "name": "kiokuko",
+  "version": "0.1.0",
+  "description": "Model-agnostic external memory for AI coding agents",
+  "type": "module",
+  "bin": {
+    "kiokuko": "dist/bin/kiokuko.js"
+  },
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "files": [
+    "dist/",
+    "migrations/",
+    "templates/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "test:unit": "node --import tsx --test tests/unit/**/*.test.ts",
+    "test:integration": "node --import tsx --test tests/integration/**/*.test.ts",
+    "pack:check": "npm pack --dry-run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run pack:check"
+  },
+  "dependencies": {
+    "commander": "^14.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

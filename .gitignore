@@ -1,0 +1,25 @@
+.DS_Store
+PLAN.md
+node_modules
+/dist/
+
+# AI assistant local state and configuration
+.codex/
+.claude/
+.opencode/
+.hermes/
+.aider*
+.agents/
+.continue/
+.cursor/
+.gemini/
+.roo/
+.windsurf/
+.cursorrules
+.windsurfrules
+
+# Client-specific instruction files; keep Kiokuko's canonical AGENT.md tracked
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+

@@ -1,0 +1,55 @@
+# CLI contract
+
+Existing memory commands and their JSON envelopes/exit codes remain stable. Machine-readable commands write exactly one JSON object to stdout; diagnostics go to stderr.
+
+Success:
+
+```json
+{"apiVersion":"1","ok":true,"operation":"recall","data":{},"meta":{}}
+```
+
+Failure:
+
+```json
+{"apiVersion":"1","ok":false,"operation":"record","error":{"code":"VALIDATION_ERROR","message":"...","details":{}}}
+```
+
+Exit codes remain: 0 success, 2 usage, 3 validation, 4 not found, 5 conflict, 6 database/service, 7 security rejection, 8 integrity/doctor, and 9 partial filesystem transaction.
+
+## Server commands
+
+```bash
+kiokuko serve [--host 127.0.0.1] [--port 0] [--json]
+kiokuko server status --json
+kiokuko web [--host 127.0.0.1] [--port 4173] [--json]
+```
+
+`serve` is foreground and defaults to an available random port. `server status` reads and validates the same-user runtime descriptor but never emits its capability token. `web` uses the same server composition while preserving the legacy UI/route behavior.
+
+## Generic agent HTTP bridge
+
+```bash
+kiokuko agent open --workspace <workspace> --client <kind> --task <task> --json
+kiokuko agent answer <run-id> --question-id <id> --value <answer> --json
+kiokuko agent events <run-id> --input-json FILE|- --json
+kiokuko agent checkpoint <run-id> --input-json FILE|- --json
+kiokuko agent close <run-id> --input-json FILE|- --json
+kiokuko agent feedback <run-id> --input-json FILE|- --json
+kiokuko agent promote <run-id> --input-json FILE|- --json
+```
+
+These commands discover the service from the runtime descriptor and call authenticated HTTP only. They do not fall back to direct SQLite. If unavailable, they return an explicit service/database error and do not invent an acknowledgement or context result. Token material is never rendered in help, argv, stdout, stderr, or envelopes.
+
+`open` preserves a `needs_answer` response. The caller must show only the returned current question and submit the actual answer. Context appears only after `ready` or bounded `exhausted`. Events/checkpoints/close/feedback consume bounded JSON from a file or stdin rather than long shell arguments.
+
+## HTTP mapping
+
+The bridge maps to `/api/v1/agent/runs`, intake answers, events, checkpoints, close, feedback, and promotions. Every write creates a fresh opaque `Idempotency-Key` unless a key is explicitly supplied in structured input for a retry. Same-key same-body replay is success; same-key different-body is conflict.
+
+## Existing guide and memory paths
+
+`kiokuko guide` remains the compatibility CLI for the shared Akinator service. Existing recall/search/read/record/lifecycle/call/export/import/backup/doctor behavior remains available. The Agent Gateway does not change memory export semantics.
+
+## Web API compatibility
+
+Legacy `/api/health`, `/api/workspaces`, `/api/tags`, and `/api/entries` remain mounted. Agent gateway endpoints use the v1 authenticated contract documented in `agent-gateway.md`. List operations use cursor pagination and hard limits; stored event/memory content is marked untrusted.
