@@ -2,9 +2,13 @@
 
 English | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
 
-Kiokuko is model-agnostic external memory for AI coding agents. One global npm
+Kiokuko(記憶庫) is model-agnostic external memory for AI coding agents. One global npm
 installation stores structured memory in the current user's SQLite database and
 exposes high-level recall/checkpoint tools to Codex and OpenCode over stdio MCP.
+
+The name **Kiokuko** comes from the Japanese **記憶庫**: **記憶** means
+"memory," and **庫** means "storehouse," so the name describes a place for
+storing memories.
 
 ## Install and enable globally
 
