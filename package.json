@@ -1,5 +1,5 @@
 {
-  "name": "kiokuko",
+  "name": "@askdkc/kiokuko",
   "version": "0.1.0",
   "description": "Model-agnostic external memory for AI coding agents",
   "type": "module",
@@ -9,11 +9,17 @@
   "engines": {
     "node": ">=22.16.0"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist/",
     "migrations/",
     "templates/",
     "README.md",
+    "README.ja.md",
+    "README.zh-CN.md",
+    "README.ko.md",
     "LICENSE"
   ],
   "scripts": {

@@ -1,5 +1,7 @@
 # Kiokuko
 
+English | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
+
 Kiokuko is model-agnostic external memory for AI coding agents. One global npm
 installation stores structured memory in the current user's SQLite database and
 exposes high-level recall/checkpoint tools to Codex and OpenCode over stdio MCP.
@@ -7,9 +9,12 @@ exposes high-level recall/checkpoint tools to Codex and OpenCode over stdio MCP.
 ## Install and enable globally
 
 ```bash
-npm install --global kiokuko
+npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
+
+The npm package name is `@askdkc/kiokuko`; the installed CLI command remains
+`kiokuko`.
 
 Restart Codex and OpenCode after setup. From then on, their global `AGENTS.md`
 instructs the agent to call Kiokuko before non-trivial work and after durable
