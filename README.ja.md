@@ -2,7 +2,7 @@
 
 [English](README.md) | 日本語 | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
 
-Kiokukoは、AIコーディングエージェント向けのモデル非依存な外部記憶です。npmでグローバルインストールすると、現在のOSユーザー用SQLiteデータベースに構造化された記憶を保存し、stdio MCP経由でCodex、OpenCode、Claude Codeにタスク準備とrecall/checkpointツールを提供します。
+Kiokukoは、AIコーディングエージェント向けのモデル非依存な外部記憶です。npmでグローバルインストールすると、現在のOSユーザー用SQLiteデータベースに構造化された記憶を保存し、native stdio MCP経由でCodex、OpenCode、Claude Code、Hermes Agentにタスク準備とrecall/checkpointツールを提供します。
 
 ## グローバルへのインストールと有効化
 
@@ -15,9 +15,9 @@ kiokuko setup
 
 npmパッケージ名は`@askdkc/kiokuko`ですが、インストールされるCLIコマンド名は引き続き`kiokuko`です。
 
-セットアップ後にCodex、OpenCode、Claude Codeを再起動してください。それ以降は、各クライアントのグローバル指示が重要な作業の前後にKiokukoを呼び出すようエージェントへ指示し、必要になるとグローバル設定から`kiokuko mcp`が起動されます。
+セットアップ後にCodex、OpenCode、Claude Code、Hermes Agentを再起動してください。Hermesは`/reload-mcp`でも再読み込みでき、`hermes mcp test kiokuko`でスモークテストできます。Hermesは有効なプロファイルのnative stdio MCPだけを使い、グローバル指示ファイル、Hermes plugin、hookは作成しません。
 
-`setup`は明示的に実行する冪等な処理です。npmの`postinstall`がAIクライアントの設定を変更することはありません。既存のTOML/JSON/JSONC設定、コメント、指示内容、改行コード、ファイルモードを維持し、Kiokukoは管理対象セクションだけを更新します。
+`setup`は明示的に実行する冪等な処理です。npmの`postinstall`がAIクライアントの設定を変更することはありません。既存のTOML/JSON/JSONC/YAML設定、コメント、指示内容、改行コード、ファイルモードを維持し、Kiokukoは管理対象セクションだけを更新します。
 
 既存データベースに未適用のマイグレーションがある場合、setupは先に現在のユーザー用データディレクトリ内の`backups/`へバックアップを作成し、整合性を検査します。現在のKiokukoより新しいバージョンで更新されたデータベースは変更せず拒否します。
 
@@ -29,6 +29,7 @@ kiokuko setup --dry-run --json
 kiokuko setup --clients codex
 kiokuko setup --clients opencode
 kiokuko setup --clients claude
+kiokuko setup --clients hermes
 
 # クライアントプロセスがnpmのPATHを継承しない場合は絶対パスを指定
 kiokuko setup --command /absolute/path/to/kiokuko
@@ -41,6 +42,9 @@ kiokuko setup --command /absolute/path/to/kiokuko
 | Codex | `$CODEX_HOME/config.toml`または`~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md`または`~/.codex/AGENTS.md` | — |
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`または`~/.config/opencode/opencode.json` | 同じディレクトリの`AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` | — |
+| Hermes Agent | 有効なプロファイルの`config.yaml`（`$HERMES_HOME`、`$HOME/.hermes`、またはWindowsの`%LOCALAPPDATA%/hermes`） | なし | なし |
+
+Hermesの設定はプロファイル単位です。`mcp_servers.kiokuko`に`command: kiokuko`と`args: [mcp]`を登録します。Hermesの組み込みmemoryとskillsはKiokukoとは別です。モデルがMCP tool descriptionを使うかどうかはbest effortです。
 
 OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。管理対象のOpenCodeガードは、可視エージェントを12 stepに制限し、1ユーザー要求につき`task_prepare`と`memory_checkpoint`を各1回までにし、チェックポイント後のツール利用を閉じ、同一呼び出しまたは読み取り専用の探索結果が3回続いた後の再実行を停止します。カウンターとフィンガープリントはプロセスメモリにだけ保持します。
 
@@ -60,7 +64,7 @@ MCPの公開インターフェースは意図的に小さくしています。
 - `memory_recall`: 上限付きのproject/globalコンテキストを読み取ります。結果には常にuntrustedマークが付きます。
 - `memory_checkpoint`: ユーザー要求の最後に1回だけ、上限付きの永続的な記憶を`candidate`かつ`untrusted`として保存します。シークレットに見える内容は拒否されます。
 
-これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Codeが特定のターンでツールを呼ばない可能性は残ります。OpenCodeセットアップは上記の限定的なローカルループガードだけをインストールします。Kiokukoは会話全文を取得せず、取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。
+これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Code、Hermes Agentが特定のターンでツールを呼ばない可能性は残ります。Hermesでの自動利用・モデル利用はMCP tool descriptionによるbest effortです。Hermesの組み込みmemoryとskillsは分離されたままです。KiokukoはHermes用のグローバル指示ファイル、plugin、hookを作成せず、会話全文を取得せず、取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。OpenCodeセットアップは上記の限定的なローカルループガードだけをインストールします。
 
 ## 開発
 

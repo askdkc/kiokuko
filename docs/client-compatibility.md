@@ -1,12 +1,13 @@
 # Client compatibility policy
 
-Status: global MCP integration for Codex, OpenCode, and Claude Code; lifecycle hooks remain disabled.
+Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-scoped Hermes Agent; lifecycle hooks remain disabled.
 
 | Client | Global MCP registration | Global instructions | Automatic-use level | Hooks/plugins |
 |---|---|---|---|---|
 | Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | instruction-driven, best effort | not installed |
 | OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | instructions plus bounded enforcement | managed `plugins/kiokuko-loop-guard.js` |
 | Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | instruction-driven, best effort | not installed |
+| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | native MCP discovery; automatic/model use is best effort from tool descriptions | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | client-specific | none |
 
 Codex's current official documentation supports stdio MCP servers and global
@@ -14,6 +15,21 @@ configuration. OpenCode's current official documentation supports local MCP
 commands and global rules. Claude Code supports user-scoped stdio MCP servers,
 global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
 instruction surfaces, but does not install client skills:
+
+Hermes Agent v0.20.4 uses a profile-scoped native stdio MCP client. Kiokuko writes
+only the effective profile's `config.yaml` entry:
+
+```yaml
+mcp_servers:
+  kiokuko:
+    command: kiokuko
+    args: [mcp]
+```
+
+It does not create a global instruction file, Hermes plugin, or Hermes hook.
+Hermes's built-in memory and skills remain separate. Use `kiokuko setup --clients
+hermes`, then restart Hermes Agent or run `/reload-mcp`; smoke-test with
+`hermes mcp test kiokuko`.
 
 - [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)
 - [Codex hooks](https://learn.chatgpt.com/docs/hooks)
@@ -28,7 +44,8 @@ instruction surfaces, but does not install client skills:
 ## Guarantees and non-guarantees
 
 Setup guarantees safe, repeatable configuration merging and makes the four MCP
-tools available globally after the client reloads its configuration. For
+tools available in each configured client scope after that client reloads its
+configuration. For
 OpenCode it also installs a dependency-free local guard through the documented
 global plugin directory. The guard caps visible agents at 12 steps, rejects a
 second `task_prepare` or `memory_checkpoint` in one user turn, rejects tool use
@@ -42,11 +59,12 @@ substantial verified work.
 
 No supported client guarantees that a model will call an available tool for every
 prompt. Therefore “automatic” means no per-repository install and no manual CLI
-lifecycle after one-time setup; it does not mean Kiokuko intercepts every
-prompt or response.
+lifecycle after one-time setup; it does not mean Kiokuko intercepts every prompt
+or response. For Hermes specifically, automatic/model use is best effort from
+MCP tool descriptions.
 
-Kiokuko does not install Codex or Claude hooks. The OpenCode loop guard is the
-only installed plugin; it observes tool names, arguments, and results only long
+Kiokuko does not install Codex or Claude hooks, or any Hermes plugin/hook. The
+OpenCode loop guard is the only installed plugin; it observes tool names, arguments, and results only long
 enough to fingerprint them in memory and never logs or persists those values.
 Broader lifecycle capture remains out of scope because it would add versioned
 event-shape dependencies and transcript/privacy risk.

@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md) | 简体中文 | [한국어](README.ko.md)
 
-Kiokuko 是面向 AI 编程智能体、与模型无关的外部记忆工具。通过一次 npm 全局安装，它会将结构化记忆保存在当前操作系统用户的 SQLite 数据库中，并通过 stdio MCP 向 Codex、OpenCode 和 Claude Code 提供任务准备及 recall/checkpoint 工具。
+Kiokuko 是面向 AI 编程智能体、与模型无关的外部记忆工具。通过一次 npm 全局安装，它会将结构化记忆保存在当前操作系统用户的 SQLite 数据库中，并通过 native stdio MCP 向 Codex、OpenCode、Claude Code 和 Hermes Agent 提供任务准备及 recall/checkpoint 工具。
 
 ## 全局安装与启用
 
@@ -15,9 +15,9 @@ kiokuko setup
 
 npm 包名是 `@askdkc/kiokuko`，安装后的 CLI 命令名仍然是 `kiokuko`。
 
-设置完成后，请重启 Codex、OpenCode 和 Claude Code。此后，各客户端的全局指令会要求智能体在处理重要工作之前调用 Kiokuko，并在产生持久性成果后写入检查点；需要工具时，全局配置会启动 `kiokuko mcp`。
+设置完成后，请重启 Codex、OpenCode、Claude Code 和 Hermes Agent。Hermes 也可以使用 `/reload-mcp` 重新加载，并用 `hermes mcp test kiokuko` 做 smoke test。Hermes 只使用有效 profile 中的原生 stdio MCP；Kiokuko 不会创建全局指令文件、Hermes plugin 或 hook。
 
-`setup` 是显式且幂等的操作。npm 的 `postinstall` 永远不会修改 AI 客户端配置。现有 TOML/JSONC 设置、注释、指令内容、换行符和文件权限都会保留；Kiokuko 只管理自己的区块。
+`setup` 是显式且幂等的操作。npm 的 `postinstall` 永远不会修改 AI 客户端配置。现有 TOML/JSON/JSONC/YAML 设置、注释、指令内容、换行符和文件权限都会保留；Kiokuko 只管理自己的区块。
 
 如果现有数据库存在尚未应用的迁移，setup 会先在当前用户数据目录下的 `backups/` 中创建备份并执行完整性检查。由更新版本 Kiokuko 写入的数据库会被拒绝，且不会受到修改。
 
@@ -29,6 +29,7 @@ kiokuko setup --dry-run --json
 kiokuko setup --clients codex
 kiokuko setup --clients opencode
 kiokuko setup --clients claude
+kiokuko setup --clients hermes
 
 # 如果客户端进程未继承 npm 的 PATH，请使用可执行文件绝对路径
 kiokuko setup --command /absolute/path/to/kiokuko
@@ -41,6 +42,9 @@ kiokuko setup --command /absolute/path/to/kiokuko
 | Codex | `$CODEX_HOME/config.toml` 或 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 或 `~/.codex/AGENTS.md` | — |
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 或 `~/.config/opencode/opencode.json` | 同目录下的 `AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 或 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 或 `~/.claude/CLAUDE.md` | — |
+| Hermes Agent | 有效 profile 的 `config.yaml`（`$HERMES_HOME`、`$HOME/.hermes` 或 `%LOCALAPPDATA%/hermes`） | 无 | 无 |
+
+Hermes 配置是 profile 级别的 native stdio MCP，注册 `mcp_servers.kiokuko`，其中 `command: kiokuko`、`args: [mcp]`。Hermes 内置 memory 和 skills 与 Kiokuko 分离；模型是否使用这些 MCP 工具取决于 MCP tool descriptions，属于 best effort。
 
 如果 OpenCode 的 `opencode.jsonc` 已存在，Kiokuko 会保留注释并更新该文件。如果 Codex 中已存在不受 Kiokuko 管理的 `[mcp_servers.kiokuko]` 表，设置程序不会猜测应该覆盖哪项配置，而是直接停止。受管理的 OpenCode 防护会把可见智能体限制为 12 个 step；每个用户请求最多调用一次 `task_prepare` 和一次 `memory_checkpoint`；检查点完成后关闭工具阶段；连续三次出现相同调用或相同的只读检索结果后阻止再次执行。计数器和指纹仅保存在进程内存中。
 
@@ -60,7 +64,7 @@ MCP 接口被有意保持为最小范围：
 - `memory_recall`：读取有界的 project/global 上下文，并始终标记为 untrusted。
 - `memory_checkpoint`：在用户请求结束时仅执行一次，将有界的持久性条目保存为 `candidate` 和 `untrusted`；疑似密钥的内容会被拒绝。
 
-这种自动使用由指令驱动，并不会拦截提示词。Codex、OpenCode 和 Claude Code 仍可能决定在某个回合不调用工具。OpenCode 设置只会安装上述受限的本地循环防护；Kiokuko 不会捕获完整对话、自动安装获取到的技能，也不会静默地将记忆提升为 verified 状态。
+这种自动使用由指令驱动，并不会拦截提示词。Codex、OpenCode、Claude Code 和 Hermes Agent 仍可能决定在某个回合不调用工具；Hermes 的自动/模型使用是基于 MCP tool descriptions 的 best effort。Hermes 内置 memory 和 skills 保持独立。Kiokuko 不会创建 Hermes 全局指令文件、plugin 或 hook，不会捕获完整对话、自动安装获取到的技能，也不会静默地将记忆提升为 verified 状态。OpenCode 设置只会安装上述受限的本地循环防护。
 
 ## 开发
 

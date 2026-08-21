@@ -64,8 +64,9 @@ test('exposes help for the use command', () => {
 test('exposes Claude Code as a global setup client', () => {
   const setup = buildCli().commands.find((command) => command.name() === 'setup');
   assert.ok(setup);
-  assert.match(setup.helpInformation(), /codex,opencode,claude/);
+  assert.match(setup.helpInformation(), /codex,opencode,claude,hermes/);
   assert.match(setup.description(), /Claude Code/);
+  assert.match(setup.description(), /Hermes Agent/);
 });
 
 test('exposes foreground serve options without capability-token controls', () => {

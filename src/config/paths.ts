@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, lstat, readFile } from 'node:fs/promises';
 import { KiokukoError } from '../errors.js';
 
 export interface PathEnvironment {
@@ -149,6 +149,66 @@ export function getOpenCodeLoopGuardPath(options: PathEnvironment = {}): string 
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-loop-guard.js');
+}
+
+function getHermesRoot(options: PathEnvironment): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  if (env.HERMES_HOME) return env.HERMES_HOME;
+
+  if (platform === 'win32') {
+    const localAppData = env.LOCALAPPDATA ?? (env.USERPROFILE ? join(env.USERPROFILE, 'AppData', 'Local') : undefined);
+    if (!localAppData) throw new KiokukoError('VALIDATION_ERROR', 'A Hermes home directory is unavailable');
+    return join(localAppData, 'hermes');
+  }
+
+  if (!env.HOME) throw new KiokukoError('VALIDATION_ERROR', 'A Hermes home directory is unavailable');
+  return join(env.HOME, '.hermes');
+}
+
+function isProfileShapedHermesHome(home: string, platform: NodeJS.Platform): boolean {
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  const normalized = platformPath.normalize(home);
+  const profileName = platformPath.basename(normalized);
+  return profileName.length > 0
+    && profileName !== '.'
+    && profileName !== '..'
+    && platformPath.basename(platformPath.dirname(normalized)) === 'profiles';
+}
+
+/** Resolve the effective Hermes profile home without consulting or mutating the active Hermes profile. */
+export async function getHermesHome(options: PathEnvironment = {}): Promise<string> {
+  const { platform, env } = selectedEnvironment(options);
+  const root = getHermesRoot(options);
+  if (env.HERMES_HOME && isProfileShapedHermesHome(root, platform)) return root;
+
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  let activeProfile: string;
+  try {
+    activeProfile = (await readFile(join(root, 'active_profile'), 'utf8')).trim();
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') return root;
+    throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile marker is unavailable');
+  }
+
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(activeProfile)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile marker is invalid');
+  }
+  if (activeProfile === 'default') return root;
+
+  const profileHome = join(root, 'profiles', activeProfile);
+  try {
+    if (!(await lstat(profileHome)).isDirectory()) throw new Error('not a directory');
+  } catch {
+    throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile directory is unavailable');
+  }
+  return profileHome;
+}
+
+export async function getHermesConfigPath(options: PathEnvironment = {}): Promise<string> {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(await getHermesHome(options), 'config.yaml');
 }
 
 export async function ensurePlatformDataDirectory(options: PathEnvironment = {}): Promise<string> {

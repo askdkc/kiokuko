@@ -7,6 +7,7 @@ import {
   getCodexConfigPath,
   getCodexInstructionsPath,
   getGlobalDatabasePath,
+  getHermesConfigPath,
   getOpenCodeConfigDirectory,
   getOpenCodeInstructionsPath,
   getOpenCodeLoopGuardPath,
@@ -20,8 +21,9 @@ import { renderOpenCodeConfig } from '../setup/opencode-config.js';
 import { renderOpenCodeLoopGuard } from '../setup/opencode-loop-guard.js';
 import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
 import { renderClaudeConfig } from '../setup/claude-config.js';
+import { renderHermesConfig } from '../setup/hermes-config.js';
 
-export const SETUP_CLIENTS = ['codex', 'opencode', 'claude'] as const;
+export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
 type SetupAction = 'created' | 'updated' | 'unchanged';
 
@@ -109,6 +111,14 @@ async function restoreFiles(files: PlannedFile[]): Promise<void> {
   }
 }
 
+function setupNextStep(clients: SetupClient[]): string {
+  return clients.map((client) => {
+    if (client === 'hermes') return 'Restart Hermes Agent or use /reload-mcp to reload its profile-scoped MCP configuration.';
+    const label = client === 'codex' ? 'Codex' : client === 'opencode' ? 'OpenCode' : 'Claude Code';
+    return `Restart ${label} so it reloads global MCP and instruction configuration.`;
+  }).join(' ');
+}
+
 export async function setupGlobalClients(options: SetupOptions = {}): Promise<SetupResult> {
   const clients = options.clients ?? [...SETUP_CLIENTS];
   if (clients.length === 0 || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
@@ -136,6 +146,9 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
     files.push(await planFile(getClaudeMcpConfigPath(pathEnvironment), 'claude', 'mcp-config', (existing) => renderClaudeConfig(existing, command)));
     files.push(await planFile(getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
   }
+  if (clients.includes('hermes')) {
+    files.push(await planFile(await getHermesConfigPath(pathEnvironment), 'hermes', 'mcp-config', (existing) => renderHermesConfig(existing, command)));
+  }
 
   const result: SetupResult = {
     clients,
@@ -145,7 +158,7 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
     appliedMigrations: [],
     files: files.map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
     dryRun: options.dryRun ?? false,
-    nextStep: `Restart ${clients.map((client) => client === 'codex' ? 'Codex' : client === 'opencode' ? 'OpenCode' : 'Claude Code').join(' and ')} so ${clients.length === 1 ? 'it reloads' : 'they reload'} global MCP and instruction configuration.`,
+    nextStep: setupNextStep(clients),
   };
   if (options.dryRun) return result;
 

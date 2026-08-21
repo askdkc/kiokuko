@@ -44,9 +44,9 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     env: temporary.env,
     databasePath: temporary.databasePath,
   });
-  assert.equal(first.files.length, 7);
+  assert.equal(first.files.length, 8);
   assert.equal(first.files.filter((file) => file.action === 'updated').length, 6);
-  assert.equal(first.files.filter((file) => file.action === 'created').length, 1);
+  assert.equal(first.files.filter((file) => file.action === 'created').length, 2);
 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
   assert.match(codexConfig, /^model = "gpt-test"/);
@@ -63,6 +63,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   const claude = JSON.parse(await readFile(path.join(temporary.home, '.claude.json'), 'utf8')) as { theme: string; mcpServers: { kiokuko: { type: string; command: string; args: string[]; env: object } } };
   assert.equal(claude.theme, 'dark');
   assert.deepEqual(claude.mcpServers.kiokuko, { type: 'stdio', command: 'kiokuko', args: ['mcp'], env: {} });
+  const hermesConfig = await readFile(path.join(temporary.home, '.hermes', 'config.yaml'), 'utf8');
+  assert.match(hermesConfig, /Managed by `kiokuko setup`\./);
+  assert.match(hermesConfig, /command: kiokuko/);
+  assert.match(hermesConfig, /- mcp/);
 
   for (const instructionsPath of [path.join(codexDirectory, 'AGENTS.md'), path.join(openCodeDirectory, 'AGENTS.md'), path.join(claudeDirectory, 'CLAUDE.md')]) {
     const instructions = await readFile(instructionsPath, 'utf8');
@@ -99,6 +103,117 @@ test('setup dry-run validates but writes no files or database', async () => {
   assert.equal(result.databaseAction, 'planned');
   assert.ok(result.files.every((file) => file.action === 'created'));
   for (const file of result.files) await assert.rejects(access(file.path));
+  await assert.rejects(access(temporary.databasePath));
+});
+
+test('setup resolves a sticky named Hermes profile without crossing into another profile', async () => {
+  const temporary = await temporaryEnvironment('sticky-profile');
+  const hermesRoot = path.join(temporary.root, 'hermes');
+  const mainProfile = path.join(hermesRoot, 'profiles', 'main');
+  await mkdir(mainProfile, { recursive: true });
+  await writeFile(path.join(hermesRoot, 'active_profile'), 'main\n');
+
+  const result = await setupGlobalClients({
+    clients: ['hermes'],
+    platform: 'linux',
+    env: { ...temporary.env, HERMES_HOME: hermesRoot },
+    databasePath: temporary.databasePath,
+  });
+
+  assert.deepEqual(result.files, [{
+    path: path.join(mainProfile, 'config.yaml'),
+    action: 'created',
+    purpose: 'mcp-config',
+    client: 'hermes',
+  }]);
+  assert.match(result.nextStep, /Hermes Agent/);
+  assert.match(result.nextStep, /\/reload-mcp/);
+  await access(path.join(mainProfile, 'config.yaml'));
+  await assert.rejects(access(path.join(hermesRoot, 'config.yaml')));
+  await assert.rejects(access(path.join(hermesRoot, 'profiles', 'default', 'config.yaml')));
+});
+
+test('a profile-shaped HERMES_HOME wins over the sticky root profile', async () => {
+  const temporary = await temporaryEnvironment('profile-home');
+  const hermesRoot = path.join(temporary.root, 'hermes');
+  const profileHome = path.join(hermesRoot, 'profiles', 'main');
+  await mkdir(profileHome, { recursive: true });
+  await writeFile(path.join(hermesRoot, 'active_profile'), 'other\n');
+
+  const result = await setupGlobalClients({
+    clients: ['hermes'],
+    platform: 'linux',
+    env: { ...temporary.env, HERMES_HOME: profileHome },
+    databasePath: temporary.databasePath,
+  });
+
+  assert.equal(result.files[0]?.path, path.join(profileHome, 'config.yaml'));
+  await access(path.join(profileHome, 'config.yaml'));
+  await assert.rejects(access(path.join(hermesRoot, 'profiles', 'other', 'config.yaml')));
+});
+
+test('a missing sticky Hermes profile is a fixed validation error', async () => {
+  const temporary = await temporaryEnvironment('missing-profile');
+  const hermesRoot = path.join(temporary.root, 'hermes');
+  await mkdir(hermesRoot, { recursive: true });
+  await writeFile(path.join(hermesRoot, 'active_profile'), 'missing\n');
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['hermes'],
+    platform: 'linux',
+    env: { ...temporary.env, HERMES_HOME: hermesRoot },
+    databasePath: temporary.databasePath,
+  }), (error: unknown) => {
+    assert.equal(error instanceof Error && 'code' in error && error.code === 'VALIDATION_ERROR', true);
+    assert.equal(error instanceof Error && error.message.includes('missing'), false);
+    return true;
+  });
+  await assert.rejects(access(temporary.databasePath));
+});
+
+test('malformed sticky Hermes profile content is rejected without echoing it', async () => {
+  for (const sentinel of ['../profile-secret', 'Main', 'a'.repeat(65)]) {
+    const temporary = await temporaryEnvironment('malformed-profile');
+    const hermesRoot = path.join(temporary.root, 'hermes');
+    await mkdir(path.join(hermesRoot, 'profiles', sentinel), { recursive: true });
+    await writeFile(path.join(hermesRoot, 'active_profile'), sentinel);
+
+    await assert.rejects(setupGlobalClients({
+      clients: ['hermes'],
+      platform: 'linux',
+      env: { ...temporary.env, HERMES_HOME: hermesRoot },
+      databasePath: temporary.databasePath,
+    }), (error: unknown) => {
+      assert.equal(error instanceof Error && 'code' in error && error.code === 'VALIDATION_ERROR', true);
+      assert.equal(error instanceof Error && error.message.includes(sentinel), false);
+      assert.equal(error instanceof Error && error.message.includes(hermesRoot), false);
+      return true;
+    });
+    await assert.rejects(access(temporary.databasePath));
+  }
+});
+
+test('a Hermes conflict plans no database or other client writes', async () => {
+  const temporary = await temporaryEnvironment('hermes-conflict');
+  const hermesHome = path.join(temporary.root, 'hermes');
+  const codexDirectory = path.join(temporary.home, '.codex');
+  const codexPath = path.join(codexDirectory, 'config.toml');
+  await mkdir(hermesHome, { recursive: true });
+  await mkdir(codexDirectory, { recursive: true });
+  const originalHermes = 'mcp_servers:\n  kiokuko:\n    command: human-tool\n    args: [mcp]\n';
+  await writeFile(path.join(hermesHome, 'config.yaml'), originalHermes);
+  const originalCodex = 'model = "human"\n';
+  await writeFile(codexPath, originalCodex);
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['hermes', 'codex'],
+    platform: 'linux',
+    env: { ...temporary.env, HERMES_HOME: hermesHome },
+    databasePath: temporary.databasePath,
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+  assert.equal(await readFile(codexPath, 'utf8'), originalCodex);
+  assert.equal(await readFile(path.join(hermesHome, 'config.yaml'), 'utf8'), originalHermes);
   await assert.rejects(access(temporary.databasePath));
 });
 

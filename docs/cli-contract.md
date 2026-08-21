@@ -19,18 +19,25 @@ Exit codes remain: 0 success, 2 usage, 3 validation, 4 not found, 5 conflict, 6 
 ## Global client setup and MCP
 
 ```bash
-kiokuko setup [--clients codex,opencode,claude] [--command kiokuko] [--dry-run] [--json]
+kiokuko setup [--clients codex,opencode,claude,hermes] [--command kiokuko] [--dry-run] [--json]
 kiokuko mcp
 ```
 
 `setup` initializes the user-global database and safely merges Codex, OpenCode,
-and/or Claude Code MCP and global instruction configuration. It computes and validates all
-file edits before writing, uses per-file atomic replacement, rolls back already
-written client files if a later write fails, rejects symlinks, and is
-idempotent. Before an existing database is migrated, `setup` creates and verifies
-a pre-migration SQLite backup and returns its path as `databaseBackupPath` in JSON.
-It rejects databases created by a newer Kiokuko schema before opening them for
-writes. `--dry-run` performs no writes.
+Claude Code, and/or Hermes MCP configuration. Codex, OpenCode, and Claude Code
+also use their existing global instruction surfaces; Hermes is profile-scoped
+native stdio MCP only and receives no global instruction file, plugin, or hook.
+It computes and validates all file edits before writing, uses per-file atomic
+replacement, rolls back already written client files if a later write fails,
+rejects symlinks, and is idempotent. Before an existing database is migrated,
+`setup` creates and verifies a pre-migration SQLite backup and returns its path as
+`databaseBackupPath` in JSON. It rejects databases created by a newer Kiokuko
+schema before opening them for writes. `--dry-run` performs no writes.
+
+For Hermes, use `kiokuko setup --clients hermes`, then restart Hermes Agent or
+run `/reload-mcp`. Hermes automatic/model use is best effort from MCP tool
+descriptions; its built-in memory and skills remain separate. Smoke-test
+the effective profile with `hermes mcp test kiokuko`.
 
 `mcp` is a foreground stdio MCP server. Protocol output is written only to
 stdout; ordinary CLI diagnostics must not contaminate that stream. It exposes:

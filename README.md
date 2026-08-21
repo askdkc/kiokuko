@@ -5,7 +5,7 @@ English | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [한국�
 Kiokuko(記憶庫) is model-agnostic external memory for AI coding agents. One global npm
 installation stores structured memory in the current user's SQLite database and
 exposes guided task preparation plus recall/checkpoint tools to Codex, OpenCode,
-and Claude Code over stdio MCP.
+Claude Code, and Hermes Agent over native stdio MCP.
 
 The name **Kiokuko** comes from the Japanese **記憶庫**: **記憶** means
 "memory," and **庫** means "storehouse," so the name describes a place for
@@ -23,14 +23,16 @@ kiokuko setup
 The npm package name is `@askdkc/kiokuko`; the installed CLI command remains
 `kiokuko`.
 
-Restart Codex, OpenCode, and Claude Code after setup. From then on, their global
-instructions tell the agent to call Kiokuko before non-trivial work and after
-durable work, and their global config starts `kiokuko mcp` when needed.
+Restart Codex, OpenCode, Claude Code, and Hermes Agent after setup. Hermes can also
+reload the MCP registry with `/reload-mcp`; smoke-test the active Hermes profile
+with `hermes mcp test kiokuko`. Codex, OpenCode, and Claude Code use their existing
+instruction surfaces to request Kiokuko before non-trivial work and after durable
+work. Hermes uses its profile-scoped native MCP registration only: Kiokuko does not
+create a global instruction file, Hermes plugin, or Hermes hook.
 
 `setup` is explicit and idempotent. npm `postinstall` never edits AI-client
-configuration. Existing TOML/JSON/JSONC settings, comments, instruction content,
-line endings, and file modes are preserved; Kiokuko owns only its managed
-sections.
+configuration. Existing TOML/JSON/JSONC/YAML settings, comments, instruction content, line endings,
+and file modes are preserved; Kiokuko owns only its managed sections.
 
 When an existing database has pending migrations, setup first creates and
 integrity-checks a backup in the adjacent `backups/` directory under the current
@@ -45,6 +47,7 @@ kiokuko setup --dry-run --json
 kiokuko setup --clients codex
 kiokuko setup --clients opencode
 kiokuko setup --clients claude
+kiokuko setup --clients hermes
 
 # Use an absolute executable path if the client process does not inherit npm's PATH
 kiokuko setup --command /absolute/path/to/kiokuko
@@ -57,6 +60,9 @@ The setup targets are:
 | Codex | `$CODEX_HOME/config.toml` or `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` or `~/.codex/AGENTS.md` | — |
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` or `~/.config/opencode/opencode.json` | the adjacent `AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` or `~/.claude/CLAUDE.md` | — |
+| Hermes Agent | effective profile `config.yaml` under `$HERMES_HOME`, `$HOME/.hermes`, or `%LOCALAPPDATA%/hermes` | none | none |
+
+Hermes is configured as a profile-scoped native stdio MCP server with `command: kiokuko` and `args: [mcp]`. `setup` follows a valid sticky `active_profile` when `HERMES_HOME` is a root, and never silently falls back from a missing named profile.
 
 If an OpenCode `opencode.jsonc` already exists, Kiokuko updates that file and
 preserves comments. If Codex already has an unmanaged
@@ -91,11 +97,14 @@ The MCP surface is deliberately small:
 - `memory_checkpoint`: once at the end of a user request, store bounded durable entries as `candidate` and
   `untrusted`; secret-like content is rejected.
 
-This is instruction-driven automatic use, not prompt interception. Codex,
-OpenCode, and Claude Code can still choose not to call a tool on a particular
-turn. The OpenCode setup installs only the bounded local loop guard described
-above; Kiokuko does not capture full transcripts, install fetched skills, or
-silently promote memory to verified status.
+This is instruction-driven automatic use for clients with instruction surfaces,
+not prompt interception. Codex, OpenCode, Claude Code, and Hermes Agent can still
+choose not to call a tool on a particular turn; Hermes automatic/model use is best
+effort from MCP tool descriptions. Hermes's built-in memory and skills
+remain separate. Kiokuko does not capture full transcripts, install fetched skills,
+create a Hermes global instruction file, or silently promote memory to verified
+status. The OpenCode setup installs only the bounded local loop guard described
+above.
 
 ## Development
 

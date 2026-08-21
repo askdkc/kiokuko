@@ -144,8 +144,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion}).${backupNotice}`);
   });
 
-  cli.command('setup').description('Configure global Kiokuko memory for Codex, OpenCode, and Claude Code')
-    .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude', 'codex,opencode,claude')
+  cli.command('setup').description('Configure global Kiokuko memory for Codex, OpenCode, Claude Code, and Hermes Agent')
+    .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes', 'codex,opencode,claude,hermes')
     .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
     .option('--dry-run', 'Validate and show planned changes without writing')
     .option('--json', 'Emit a JSON response')
