@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | 한국어
 
-Kiokuko는 AI 코딩 에이전트를 위한 모델 독립적인 외부 메모리 도구입니다. npm으로 한 번 전역 설치하면 현재 운영체제 사용자의 SQLite 데이터베이스에 구조화된 메모리를 저장하고, stdio MCP를 통해 Codex와 OpenCode에 고수준 recall/checkpoint 도구를 제공합니다.
+Kiokuko는 AI 코딩 에이전트를 위한 모델 독립적인 외부 메모리 도구입니다. npm으로 한 번 전역 설치하면 현재 운영체제 사용자의 SQLite 데이터베이스에 구조화된 메모리를 저장하고, stdio MCP를 통해 Codex, OpenCode 및 Claude Code에 작업 준비와 recall/checkpoint 도구를 제공합니다.
 
 ## 전역 설치 및 활성화
 
@@ -13,7 +13,7 @@ kiokuko setup
 
 npm 패키지 이름은 `@askdkc/kiokuko`이지만 설치되는 CLI 명령 이름은 계속 `kiokuko`입니다.
 
-설정 후 Codex와 OpenCode를 다시 시작하십시오. 이후 전역 `AGENTS.md`가 중요한 작업 전과 지속성 있는 작업 후에 Kiokuko를 호출하도록 에이전트에 지시하며, 도구가 필요할 때 전역 설정에서 `kiokuko mcp`를 시작합니다.
+설정 후 Codex, OpenCode 및 Claude Code를 다시 시작하십시오. 이후 각 클라이언트의 전역 지침이 중요한 작업 전과 지속성 있는 작업 후에 Kiokuko를 호출하도록 에이전트에 지시하며, 도구가 필요할 때 전역 설정에서 `kiokuko mcp`를 시작합니다.
 
 `setup`은 명시적으로 실행하는 멱등 작업입니다. npm `postinstall`은 AI 클라이언트 설정을 수정하지 않습니다. 기존 TOML/JSONC 설정, 주석, 지침 내용, 줄바꿈 형식 및 파일 모드는 유지되며 Kiokuko는 관리 구역만 수정합니다.
 
@@ -24,6 +24,7 @@ kiokuko setup --dry-run --json
 # 클라이언트 하나만 설정
 kiokuko setup --clients codex
 kiokuko setup --clients opencode
+kiokuko setup --clients claude
 
 # 클라이언트 프로세스가 npm의 PATH를 상속하지 않는 경우 절대 경로 사용
 kiokuko setup --command /absolute/path/to/kiokuko
@@ -35,6 +36,7 @@ kiokuko setup --command /absolute/path/to/kiokuko
 |---|---|---|
 | Codex | `$CODEX_HOME/config.toml` 또는 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 또는 `~/.codex/AGENTS.md` |
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 또는 `~/.config/opencode/opencode.json` | 같은 디렉터리의 `AGENTS.md` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 또는 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 또는 `~/.claude/CLAUDE.md` |
 
 OpenCode의 `opencode.jsonc`가 이미 있으면 Kiokuko는 주석을 유지하면서 해당 파일을 수정합니다. Codex에 Kiokuko가 관리하지 않는 `[mcp_servers.kiokuko]` 테이블이 이미 있으면 어떤 설정을 덮어쓸지 추측하지 않고 설정을 중단합니다.
 
@@ -49,10 +51,12 @@ OpenCode의 `opencode.jsonc`가 이미 있으면 Kiokuko는 주석을 유지하�
 
 MCP 인터페이스는 의도적으로 작게 유지됩니다.
 
+- `task_prepare`: Akinator 방식 수집, 제한된 메모리/참조 검색, 현재 클라이언트가 제공한 스킬 및 MCP 도구 이름과의 매칭을 수행합니다.
+- `task_answer`: 사용자 요청 또는 검증된 저장소 근거로 뒷받침되는 답변만 사용해 수집을 계속합니다.
 - `memory_recall`: 제한된 project/global 컨텍스트를 읽으며 항상 untrusted로 표시합니다.
 - `memory_checkpoint`: 제한된 지속성 항목을 `candidate` 및 `untrusted`로 저장합니다. 비밀 정보로 보이는 내용은 거부됩니다.
 
-이는 지침에 기반한 자동 사용이며 프롬프트 가로채기가 아닙니다. Codex와 OpenCode가 특정 턴에서 도구를 호출하지 않을 가능성은 여전히 있습니다. Kiokuko는 훅을 설치하거나 전체 대화를 수집하거나 메모리를 조용히 verified 상태로 승격하지 않습니다.
+이는 지침에 기반한 자동 사용이며 프롬프트 가로채기가 아닙니다. Codex, OpenCode 및 Claude Code가 특정 턴에서 도구를 호출하지 않을 가능성은 여전히 있습니다. Kiokuko는 훅을 설치하거나 전체 대화를 수집하거나 가져온 스킬을 자동 설치하거나 메모리를 조용히 verified 상태로 승격하지 않습니다.
 
 ## 개발
 
@@ -75,7 +79,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator 방식 지식 수집
 
-중요한 작업에서 `guide`는 작업 유형, 대상 및 성공 조건과 같이 누락된 고가치 필드만 질문합니다. 그런 다음 쿼리와 Bot 목적 태그를 사용하여 로컬 메모리를 선택합니다.
+중요한 작업에서는 설정된 에이전트 지침이 `task_prepare`를 호출합니다. 이 도구는 작업 유형, 대상 및 성공 조건과 같이 누락된 고가치 필드만 질문한 뒤 쿼리와 Bot 목적 태그를 사용하여 로컬 메모리를 선택합니다. 클라이언트가 현재 사용 가능한 스킬과 MCP 도구 이름을 제공하면 필요한 기능을 매칭하고 `available`, `missing`, `unknown`을 구분해 반환합니다. 이 목록은 일시적으로만 사용되며 저장되지 않습니다. CLI의 `guide` 명령으로 같은 수집을 수동 실행할 수 있습니다.
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \
@@ -87,10 +91,11 @@ kiokuko guide answer <session-id> --workspace <workspace> \
 kiokuko guide context <session-id> --workspace <workspace> --json
 ```
 
-로컬 검색에서 관련 항목을 찾지 못하면 `guide context`는 다음 허용 목록의 공개 저장소에서만 현재 `main` 트리를 가져와 선택한 Markdown 스킬이나 참조 자료를 `candidate` 항목으로 저장할 수 있습니다.
+로컬 검색에서 관련 항목을 찾지 못하고 클라이언트가 사용 가능한 스킬이 0개라고 명시한 경우에만 `task_prepare`가 다음 단일 허용 목록 공개 저장소에서 현재 `main` 트리를 가져올 수 있습니다.
 
-- https://github.com/NousResearch/hermes-agent
-- https://github.com/obra/superpowers
+- https://github.com/mattpocock/skills
+
+capability 목록 생략은 0개가 아니라 "알 수 없음"으로 처리되어 폴백을 비활성화합니다. 스킬이 하나라도 있어도 비활성화됩니다. 수동 CLI 사용은 `guide context ... --no-client-skills`로 같은 조건을 명시해야 합니다. `disable-model-invocation: true`로 표시된 스킬은 자동 선택에서 제외됩니다.
 
 가져온 각 항목에는 저장소, commit SHA 및 소스 경로가 기록됩니다. 신뢰되지 않은 참조 자료이므로 자동으로 `verified`로 승격되거나 명령으로 실행되지 않습니다. 반복 동기화는 콘텐츠 해시를 통해 멱등성을 유지합니다.
 

@@ -24,24 +24,28 @@ async function temporaryEnvironment(prefix: string) {
   };
 }
 
-test('setup safely merges Codex and OpenCode global configuration and is idempotent', async () => {
+test('setup safely merges Codex, OpenCode, and Claude Code global configuration and is idempotent', async () => {
   const temporary = await temporaryEnvironment('merge');
   const codexDirectory = path.join(temporary.home, '.codex');
   const openCodeDirectory = path.join(temporary.config, 'opencode');
+  const claudeDirectory = path.join(temporary.home, '.claude');
   await mkdir(codexDirectory, { recursive: true });
   await mkdir(openCodeDirectory, { recursive: true });
+  await mkdir(claudeDirectory, { recursive: true });
   await writeFile(path.join(codexDirectory, 'config.toml'), 'model = "gpt-test"\n');
   await writeFile(path.join(codexDirectory, 'AGENTS.md'), '# Human Codex rules\n');
   await writeFile(path.join(openCodeDirectory, 'opencode.jsonc'), '{\n  // keep this comment\n  "theme": "dark",\n}\n');
   await writeFile(path.join(openCodeDirectory, 'AGENTS.md'), '# Human OpenCode rules\n');
+  await writeFile(path.join(temporary.home, '.claude.json'), '{\n  "theme": "dark"\n}\n');
+  await writeFile(path.join(claudeDirectory, 'CLAUDE.md'), '# Human Claude rules\n');
 
   const first = await setupGlobalClients({
     platform: 'linux',
     env: temporary.env,
     databasePath: temporary.databasePath,
   });
-  assert.equal(first.files.length, 4);
-  assert.equal(first.files.filter((file) => file.action === 'updated').length, 4);
+  assert.equal(first.files.length, 6);
+  assert.equal(first.files.filter((file) => file.action === 'updated').length, 6);
 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
   assert.match(codexConfig, /^model = "gpt-test"/);
@@ -52,12 +56,16 @@ test('setup safely merges Codex and OpenCode global configuration and is idempot
   const openCode = parse(openCodeText) as { theme: string; mcp: { kiokuko: { type: string; command: string[]; enabled: boolean } } };
   assert.equal(openCode.theme, 'dark');
   assert.deepEqual(openCode.mcp.kiokuko, { type: 'local', command: ['kiokuko', 'mcp'], enabled: true });
+  const claude = JSON.parse(await readFile(path.join(temporary.home, '.claude.json'), 'utf8')) as { theme: string; mcpServers: { kiokuko: { type: string; command: string; args: string[]; env: object } } };
+  assert.equal(claude.theme, 'dark');
+  assert.deepEqual(claude.mcpServers.kiokuko, { type: 'stdio', command: 'kiokuko', args: ['mcp'], env: {} });
 
-  for (const instructionsPath of [path.join(codexDirectory, 'AGENTS.md'), path.join(openCodeDirectory, 'AGENTS.md')]) {
+  for (const instructionsPath of [path.join(codexDirectory, 'AGENTS.md'), path.join(openCodeDirectory, 'AGENTS.md'), path.join(claudeDirectory, 'CLAUDE.md')]) {
     const instructions = await readFile(instructionsPath, 'utf8');
     assert.match(instructions, /^# Human/);
     assert.equal((instructions.match(/BEGIN KIOKUKO GLOBAL MEMORY/g) ?? []).length, 1);
-    assert.match(instructions, /memory_recall/);
+    assert.match(instructions, /task_prepare/);
+    assert.match(instructions, /task_answer/);
     assert.match(instructions, /memory_checkpoint/);
   }
 

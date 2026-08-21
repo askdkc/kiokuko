@@ -136,8 +136,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion})`);
   });
 
-  cli.command('setup').description('Configure global Kiokuko memory for Codex and OpenCode')
-    .option('--clients <clients>', 'Comma-separated clients: codex,opencode', 'codex,opencode')
+  cli.command('setup').description('Configure global Kiokuko memory for Codex, OpenCode, and Claude Code')
+    .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude', 'codex,opencode,claude')
     .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
     .option('--dry-run', 'Validate and show planned changes without writing')
     .option('--json', 'Emit a JSON response')
@@ -197,8 +197,14 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     }));
     humanOrJson(options.json, 'guide.answer', data, data.question?.prompt ?? 'Akinator context is ready');
   });
-  guide.command('context').description('Build the knowledge and skill context for an intake session').argument('<session-id>').requiredOption('--workspace <name>').option('--json').action(async (sessionId: string, options: { workspace: string; json?: boolean }) => {
-    const data = await withDatabase((database) => getAkinatorContext(database, { workspace: options.workspace, sessionId }));
+  guide.command('context').description('Build the knowledge and skill context for an intake session').argument('<session-id>').requiredOption('--workspace <name>')
+    .option('--no-client-skills', 'Allow the mattpocock/skills fallback because the client has no available skills')
+    .option('--json').action(async (sessionId: string, options: { workspace: string; clientSkills?: boolean; json?: boolean }) => {
+    const data = await withDatabase((database) => getAkinatorContext(database, {
+      workspace: options.workspace,
+      sessionId,
+      ...(options.clientSkills === false ? { allowExternalSkillFallback: true } : {}),
+    }));
     humanOrJson(options.json, 'guide.context', data, `${data.entries.length} knowledge entries selected`);
   });
 

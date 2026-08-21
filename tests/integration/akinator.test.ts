@@ -16,19 +16,14 @@ async function temporaryDatabase(prefix: string) {
 }
 
 function sourceFetch(): typeof fetch {
-  const skill = `---\nname: test-driven-development\ndescription: Use when implementing any feature or bugfix.\n---\n\n# Test-driven development\n\nWrite a failing test before implementation and verify the smallest green change.\n`;
+  const skill = `---\nname: tdd\ndescription: Use when implementing any feature or bugfix.\n---\n\n# Test-driven development\n\nWrite a failing test before implementation and verify the smallest green change.\n`;
   const responses = new Map<string, unknown>([
-    ['https://api.github.com/repos/NousResearch/hermes-agent/commits/main', { sha: 'hermes-commit-1' }],
-    ['https://api.github.com/repos/NousResearch/hermes-agent/git/trees/hermes-commit-1?recursive=1', {
+    ['https://api.github.com/repos/mattpocock/skills/commits/main', { sha: 'mattpocock-commit-1' }],
+    ['https://api.github.com/repos/mattpocock/skills/git/trees/mattpocock-commit-1?recursive=1', {
       truncated: false,
-      tree: [{ path: 'skills/software-development/test-driven-development/SKILL.md', type: 'blob' }],
+      tree: [{ path: 'skills/engineering/tdd/SKILL.md', type: 'blob' }],
     }],
-    ['https://raw.githubusercontent.com/NousResearch/hermes-agent/hermes-commit-1/skills/software-development/test-driven-development/SKILL.md', skill],
-    ['https://api.github.com/repos/obra/superpowers/commits/main', { sha: 'superpowers-commit-1' }],
-    ['https://api.github.com/repos/obra/superpowers/git/trees/superpowers-commit-1?recursive=1', {
-      truncated: false,
-      tree: [],
-    }],
+    ['https://raw.githubusercontent.com/mattpocock/skills/mattpocock-commit-1/skills/engineering/tdd/SKILL.md', skill],
   ]);
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -217,16 +212,17 @@ test('falls back to current official source skills when local retrieval is insuf
     const context = await getAkinatorContext(database, {
       workspace: 'project:source',
       sessionId: started.session.id,
+      allowExternalSkillFallback: true,
       fetchImpl: sourceFetch(),
       now: '2026-08-20T00:03:00.000Z',
     });
     assert.equal(context.externalSync.attempted, true);
     assert.ok(context.externalSync.imported >= 1);
-    assert.ok(context.entries.some((entry) => entry.tags.includes('source:hermes-agent')));
-    const imported = context.entries.find((entry) => entry.tags.includes('source:hermes-agent'));
+    assert.ok(context.entries.some((entry) => entry.tags.includes('source:mattpocock-skills')));
+    const imported = context.entries.find((entry) => entry.tags.includes('source:mattpocock-skills'));
     assert.equal(imported?.status, 'candidate');
     assert.equal(imported?.trustLevel, 'untrusted');
-    assert.match(String(imported?.provenance.reference), /hermes-commit-1/);
+    assert.match(String(imported?.provenance.reference), /mattpocock-commit-1/);
   } finally {
     database.close();
   }

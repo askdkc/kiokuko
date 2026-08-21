@@ -70,6 +70,34 @@ test('rejects secret-like task text before opening a write transaction', async (
   }
 });
 
+test('rejects secret-like profile hints before opening a write transaction', async () => {
+  const database = await temporaryDatabase('akinator-service-profile-secret');
+  const secret = 'api_key = hidden-profile-secret-value-12345';
+  try {
+    await assert.rejects(
+      () => startAkinatorService(database, {
+        workspace: 'project:service-profile-secret',
+        task: 'Implement a feature',
+        profileHints: { target: secret },
+        idFactory: () => 'service-profile-secret-fixed',
+      }),
+      (error: unknown) => {
+        const typed = error as { code?: string; message?: string; details?: unknown };
+        assert.equal(typed.code, 'SECURITY_REJECTION');
+        assert.equal(typed.message?.includes(secret), false);
+        assert.equal(JSON.stringify(typed.details ?? {}).includes(secret), false);
+        return true;
+      },
+    );
+    assert.equal(
+      database.prepare('SELECT COUNT(*) AS count FROM akinator_sessions').get<{ count: number }>()?.count,
+      0,
+    );
+  } finally {
+    database.close();
+  }
+});
+
 test('rejects an oversized sanitized task snapshot before opening a write transaction', async () => {
   const database = await temporaryDatabase('akinator-service-task-size');
   try {
@@ -345,6 +373,37 @@ test('uses local finalized entries before attempting official source sync', asyn
     assert.equal(context.status, 'ready');
     assert.equal(context.externalSync.attempted, false);
     assert.ok(context.entries.some((entry) => entry.id === local.id));
+    assert.equal(fetchCalls, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('does not fetch external skills unless the caller explicitly confirms that no client skills are available', async () => {
+  const database = await temporaryDatabase('akinator-service-no-skill-fallback');
+  let fetchCalls = 0;
+  try {
+    const started = await startAkinatorService(database, {
+      workspace: 'project:service-no-skill-fallback',
+      task: 'Implement a feature',
+      profileHints: { target: 'src/feature.ts', expected: 'tests pass' },
+      now: '2026-08-20T00:00:00.000Z',
+      idFactory: () => 'service-no-skill-fallback-fixed',
+    });
+    assert.equal(started.status, 'ready');
+
+    const context = await getAkinatorContextService(database, {
+      workspace: 'project:service-no-skill-fallback',
+      sessionId: started.session.id,
+      fetchImpl: (async () => {
+        fetchCalls += 1;
+        throw new Error('network must not run without explicit zero-skill confirmation');
+      }) as typeof fetch,
+    });
+
+    assert.equal(context.status, 'ready');
+    assert.deepEqual(context.entries, []);
+    assert.deepEqual(context.externalSync, { attempted: false, imported: 0, sources: [] });
     assert.equal(fetchCalls, 0);
   } finally {
     database.close();

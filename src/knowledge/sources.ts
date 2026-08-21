@@ -3,7 +3,7 @@ import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { recordEntryInTransaction } from '../memory/entries.js';
 import { canonicalContentHash, type JsonObject } from '../serialization/validate.js';
-import type { TaskProfile, TaskType } from '../akinator/types.js';
+import type { TaskProfile } from '../akinator/types.js';
 
 export type FetchImpl = typeof fetch;
 
@@ -19,22 +19,13 @@ export interface OfficialSource {
 
 export const OFFICIAL_SOURCES: OfficialSource[] = [
   {
-    id: 'hermes-agent',
-    name: 'Hermes Agent',
-    owner: 'NousResearch',
-    repository: 'hermes-agent',
+    id: 'mattpocock-skills',
+    name: 'Matt Pocock Skills',
+    owner: 'mattpocock',
+    repository: 'skills',
     ref: 'main',
-    roots: ['skills', 'optional-skills', 'docs'],
-    repositoryUrl: 'https://github.com/NousResearch/hermes-agent',
-  },
-  {
-    id: 'superpowers',
-    name: 'Superpowers',
-    owner: 'obra',
-    repository: 'superpowers',
-    ref: 'main',
-    roots: ['skills', 'docs'],
-    repositoryUrl: 'https://github.com/obra/superpowers',
+    roots: ['skills'],
+    repositoryUrl: 'https://github.com/mattpocock/skills',
   },
 ];
 
@@ -185,12 +176,14 @@ function revision(value: unknown): string {
   return value;
 }
 
-function parseFrontmatter(content: string): { name: string | null; description: string | null } {
-  const name = /^name:\s*["']?(.+?)["']?\s*$/mu.exec(content)?.[1]?.trim() ?? null;
-  const description = /^description:\s*["']?(.+?)["']?\s*$/mu.exec(content)?.[1]?.trim() ?? null;
+function parseFrontmatter(content: string): { name: string | null; description: string | null; disableModelInvocation: boolean } {
+  const metadata = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(content)?.[1] ?? '';
+  const name = /^name:\s*["']?(.+?)["']?\s*$/mu.exec(metadata)?.[1]?.trim() ?? null;
+  const description = /^description:\s*["']?(.+?)["']?\s*$/mu.exec(metadata)?.[1]?.trim() ?? null;
   return {
     name: name?.slice(0, MAX_TITLE_CHARACTERS) || null,
     description: description?.slice(0, MAX_SUMMARY_CHARACTERS) || null,
+    disableModelInvocation: /^disable-model-invocation:\s*true\s*$/mu.test(metadata),
   };
 }
 
@@ -198,15 +191,15 @@ function tokens(value: string): Set<string> {
   return new Set((value.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? []).filter((token) => token.length > 1));
 }
 
-function pathRoleTags(path: string, taskType: TaskType | null): string[] {
+function pathRoleTags(path: string): string[] {
   const normalized = path.toLocaleLowerCase();
   const tags = new Set<string>();
-  if (taskType === 'build' || normalized.includes('test-driven') || normalized.includes('software-development')) tags.add('bot:builder');
-  if (taskType === 'debug' || normalized.includes('debug') || normalized.includes('review')) tags.add('bot:reviewer');
-  if (taskType === 'research' || normalized.includes('research') || normalized.includes('citation')) tags.add('bot:researcher');
-  if (taskType === 'devops' || normalized.includes('devops') || normalized.includes('infrastructure')) tags.add('bot:devops');
-  if (taskType === 'writing' || normalized.includes('writing') || normalized.includes('document')) tags.add('bot:writer');
-  if (taskType === 'analysis' || normalized.includes('analysis')) tags.add('bot:analyst');
+  if (/tdd|prototype|implement|codebase-design/u.test(normalized)) tags.add('bot:builder');
+  if (/diagnos|debug|code-review|resolving-merge-conflicts/u.test(normalized)) tags.add('bot:reviewer');
+  if (/research|citation|search/u.test(normalized)) tags.add('bot:researcher');
+  if (/wizard|devops|infrastructure|deploy/u.test(normalized)) tags.add('bot:devops');
+  if (/writing|document|to-spec|to-prd/u.test(normalized)) tags.add('bot:writer');
+  if (/analysis|domain-modeling|codebase-design/u.test(normalized)) tags.add('bot:analyst');
   return [...tags].sort();
 }
 
@@ -215,13 +208,13 @@ function scoreDocument(document: { path: string; title: string; summary: string 
   const searchable = tokens([document.path, document.title, document.summary ?? '', document.content.slice(0, 12_000)].join(' '));
   let score = [...query].filter((token) => searchable.has(token)).length;
   const normalizedPath = document.path.toLocaleLowerCase();
-  if (profile.taskType === 'build' && /test|implement|develop|software-development/u.test(normalizedPath)) score += 5;
-  if (profile.taskType === 'debug' && /debug|systematic/u.test(normalizedPath)) score += 5;
+  if (profile.taskType === 'build' && /tdd|test|implement|develop|codebase-design/u.test(normalizedPath)) score += 5;
+  if (profile.taskType === 'debug' && /debug|diagnos|systematic/u.test(normalizedPath)) score += 5;
   if (profile.taskType === 'research' && /research|citation|search/u.test(normalizedPath)) score += 5;
   if (profile.taskType === 'review' && /review|verification/u.test(normalizedPath)) score += 5;
   if (profile.taskType === 'devops' && /devops|infra|docker|server/u.test(normalizedPath)) score += 5;
   if (profile.taskType === 'writing' && /writing|document/u.test(normalizedPath)) score += 5;
-  if (recommendedTags.some((tag) => pathRoleTags(document.path, profile.taskType).includes(tag))) score += 3;
+  if (recommendedTags.some((tag) => pathRoleTags(document.path).includes(tag))) score += 3;
   return score;
 }
 
@@ -236,8 +229,7 @@ function documentTitle(source: OfficialSource, path: string, content: string): {
 }
 
 function isCandidatePath(source: OfficialSource, path: string): boolean {
-  if (!ALLOWED_PATH.test(path) || !path.endsWith('.md')) return false;
-  if (path === 'README.md' && source.id === 'superpowers') return true;
+  if (!ALLOWED_PATH.test(path) || !path.endsWith('/SKILL.md')) return false;
   return source.roots.some((root) => path === root || path.startsWith(`${root}/`));
 }
 
@@ -257,6 +249,7 @@ async function loadSourceDocuments(source: OfficialSource, fetchImpl: FetchImpl,
   const documents: PreparedOfficialSourceDocument[] = [];
   for (const item of paths) {
     const content = await fetchText(fetchImpl, rawDocumentUrl(source, commitValue, item.path));
+    if (parseFrontmatter(content).disableModelInvocation) continue;
     const title = documentTitle(source, item.path, content);
     const score = scoreDocument({ path: item.path, ...title, content }, task, profile, recommendedTags);
     if (score > 0) documents.push({
@@ -266,7 +259,7 @@ async function loadSourceDocuments(source: OfficialSource, fetchImpl: FetchImpl,
       content,
       ...title,
       score,
-      tags: pathRoleTags(item.path, profile.taskType),
+      tags: pathRoleTags(item.path),
     });
   }
   documents.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
@@ -299,18 +292,6 @@ export async function prepareOfficialSourceSync(input: PrepareOfficialSourceSync
     }
   }));
   return clonePrepared({ attempted: true, sources });
-}
-
-function sourceTags(document: PreparedOfficialSourceDocument, profile: TaskProfile): string[] {
-  const source = sourceForId(document.sourceId);
-  const skillName = document.path.split('/').at(-2) ?? 'document';
-  const kindTag = document.path.endsWith('/SKILL.md') ? 'external:skill' : 'external:knowledge';
-  return [...new Set([
-    `source:${source.id}`,
-    kindTag,
-    `skill:${skillName}`,
-    ...pathRoleTags(document.path, profile.taskType),
-  ])].sort();
 }
 
 function validatePrepared(prepared: unknown): PreparedOfficialSourceSync {

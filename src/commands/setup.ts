@@ -2,6 +2,8 @@ import { access, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicWriteText, readRegularFile } from '../agent-file/atomic-write.js';
 import {
+  getClaudeInstructionsPath,
+  getClaudeMcpConfigPath,
   getCodexConfigPath,
   getCodexInstructionsPath,
   getGlobalDatabasePath,
@@ -15,8 +17,9 @@ import { ensureGlobalWorkspace } from '../memory/workspaces.js';
 import { KiokukoError } from '../errors.js';
 import { renderOpenCodeConfig } from '../setup/opencode-config.js';
 import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
+import { renderClaudeConfig } from '../setup/claude-config.js';
 
-export const SETUP_CLIENTS = ['codex', 'opencode'] as const;
+export const SETUP_CLIENTS = ['codex', 'opencode', 'claude'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
 type SetupAction = 'created' | 'updated' | 'unchanged';
 
@@ -124,6 +127,10 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
     files.push(await planFile(await openCodeConfigPath(pathEnvironment), 'opencode', 'mcp-config', (existing) => renderOpenCodeConfig(existing, command)));
     files.push(await planFile(getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
   }
+  if (clients.includes('claude')) {
+    files.push(await planFile(getClaudeMcpConfigPath(pathEnvironment), 'claude', 'mcp-config', (existing) => renderClaudeConfig(existing, command)));
+    files.push(await planFile(getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
+  }
 
   const result: SetupResult = {
     clients,
@@ -131,7 +138,7 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
     databaseAction: options.dryRun ? 'planned' : 'initialized',
     files: files.map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
     dryRun: options.dryRun ?? false,
-    nextStep: `Restart ${clients.map((client) => client === 'codex' ? 'Codex' : 'OpenCode').join(' and ')} so ${clients.length === 1 ? 'it reloads' : 'they reload'} global MCP and AGENTS.md configuration.`,
+    nextStep: `Restart ${clients.map((client) => client === 'codex' ? 'Codex' : client === 'opencode' ? 'OpenCode' : 'Claude Code').join(' and ')} so ${clients.length === 1 ? 'it reloads' : 'they reload'} global MCP and instruction configuration.`,
   };
   if (options.dryRun) return result;
 

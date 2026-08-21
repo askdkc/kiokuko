@@ -40,6 +40,7 @@ export interface AnswerAkinatorInput {
 export interface AkinatorContextInput {
   workspace: string;
   sessionId: string;
+  allowExternalSkillFallback?: boolean;
   fetchImpl?: FetchImpl;
   now?: string;
 }
@@ -70,6 +71,15 @@ function assertBoundedTask(value: string): void {
 
 function assertBoundedAnswer(value: string, questionId: keyof TaskProfile): void {
   sanitizeAnswer({ apiVersion: '1', questionId, value });
+}
+
+function assertSafeProfile(profile: TaskProfile): void {
+  for (const field of PROFILE_FIELDS) {
+    const value = profile[field];
+    if (value === null) continue;
+    rejectSecret(value);
+    assertBoundedAnswer(value, field);
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -124,15 +134,17 @@ function answerInput(value: unknown): AnswerAkinatorInput {
 
 function contextInput(value: unknown): AkinatorContextInput {
   if (!isPlainObject(value)) validation('Invalid Akinator context input');
-  const allowed = new Set(['workspace', 'sessionId', 'fetchImpl', 'now']);
+  const allowed = new Set(['workspace', 'sessionId', 'allowExternalSkillFallback', 'fetchImpl', 'now']);
   if (Object.keys(value).some((field) => !allowed.has(field))) validation('Unknown Akinator context input field');
   if (typeof value.workspace !== 'string' || value.workspace.trim().length === 0) validation('workspace must be a non-empty string');
   if (typeof value.sessionId !== 'string' || value.sessionId.trim().length === 0) validation('sessionId must be a non-empty string');
+  if (value.allowExternalSkillFallback !== undefined && typeof value.allowExternalSkillFallback !== 'boolean') validation('allowExternalSkillFallback must be a boolean');
   if (value.fetchImpl !== undefined && typeof value.fetchImpl !== 'function') validation('fetchImpl must be a function');
   if (value.now !== undefined && typeof value.now !== 'string') validation('now must be a string');
   return {
     workspace: value.workspace,
     sessionId: value.sessionId,
+    ...(value.allowExternalSkillFallback === undefined ? {} : { allowExternalSkillFallback: value.allowExternalSkillFallback }),
     ...(value.fetchImpl === undefined ? {} : { fetchImpl: value.fetchImpl as FetchImpl }),
     ...(value.now === undefined ? {} : { now: value.now }),
   };
@@ -215,6 +227,7 @@ export function startAkinatorInTransaction(
   rejectSecret(task);
   assertBoundedTask(task);
   const profile: TaskProfile = deriveProfile(task, normalized.profileHints ?? {});
+  assertSafeProfile(profile);
   const evaluation = evaluateProfile(profile, 0);
   const now = normalized.now ?? new Date().toISOString();
   const id = (normalized.idFactory ?? randomUUID)();
@@ -320,7 +333,7 @@ export async function getAkinatorContextService(
 
   let entries = localEntries(database, session, result.recommendedTags);
   let externalSync: AkinatorContext['externalSync'] = { attempted: false, imported: 0, sources: [] };
-  if (entries.length === 0) {
+  if (entries.length === 0 && normalized.allowExternalSkillFallback === true) {
     externalSync = await syncOfficialSources({
       database,
       workspace: normalized.workspace,

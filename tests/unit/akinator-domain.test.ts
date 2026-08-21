@@ -166,8 +166,7 @@ test('hashes semantic profiles canonically and returns stable role-first skill t
   const tags = evaluateProfile(profileA, 0).recommendedTags;
   assert.deepEqual(tags, [
     'bot:builder',
-    'skill:test-driven-development',
-    'skill:repository-build-test-investigation',
+    'skill:tdd',
   ]);
   assert.equal(new Set(tags).size, tags.length);
 });

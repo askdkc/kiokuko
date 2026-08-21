@@ -1,40 +1,57 @@
 # Client compatibility policy
 
-Status: global MCP integration for Codex and OpenCode; lifecycle hooks remain disabled.
+Status: global MCP integration for Codex, OpenCode, and Claude Code; lifecycle hooks remain disabled.
 
 | Client | Global MCP registration | Global instructions | Automatic-use level | Hooks/plugins |
 |---|---|---|---|---|
 | Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | instruction-driven, best effort | not installed |
 | OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | instruction-driven, best effort | not installed |
+| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | instruction-driven, best effort | not installed |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | client-specific | none |
 
 Codex's current official documentation supports stdio MCP servers and global
 configuration. OpenCode's current official documentation supports local MCP
-commands and global rules. `kiokuko setup` uses those supported surfaces:
+commands and global rules. Claude Code supports user-scoped stdio MCP servers,
+global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
+instruction surfaces, but does not install client skills:
 
 - [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)
 - [Codex hooks](https://learn.chatgpt.com/docs/hooks)
 - [OpenCode MCP servers](https://opencode.ai/docs/mcp-servers/)
 - [OpenCode rules](https://opencode.ai/docs/rules/)
 - [OpenCode plugins](https://opencode.ai/docs/plugins/)
+- [Claude Code MCP servers](https://code.claude.com/docs/en/mcp)
+- [Claude Code memory and CLAUDE.md](https://code.claude.com/docs/en/memory)
+- [Claude Code skills](https://code.claude.com/docs/en/skills)
+- [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 
 ## Guarantees and non-guarantees
 
-Setup guarantees safe, repeatable configuration merging and makes the two MCP
+Setup guarantees safe, repeatable configuration merging and makes the four MCP
 tools available globally after the client reloads its configuration. Global
-instructions request recall before non-trivial work and checkpointing after
+instructions request `task_prepare` before non-trivial work, grounded
+`task_answer` calls when intake fields are missing, and checkpointing after
 substantial verified work.
 
-Neither client guarantees that a model will call an available tool for every
+No supported client guarantees that a model will call an available tool for every
 prompt. Therefore “automatic” means no per-repository install and no manual CLI
 lifecycle after one-time setup; it does not mean Kiokuko intercepts every
 prompt or response.
 
-Kiokuko does not install Codex hooks or OpenCode plugins by default. Those
+Kiokuko does not install Codex/Claude hooks or OpenCode plugins by default. Those
 surfaces can observe more lifecycle data, but they add trust prompts, versioned
 event-shape dependencies, and transcript/privacy risk. Adding them later must
 be a separate explicit opt-in with clean-room fixtures and bounded sanitized
 payloads.
+
+`task_prepare` can accept an ephemeral catalog of skill and MCP-tool names from
+the calling client. Kiokuko matches Akinator policy recommendations and task
+terms against that catalog, but cannot enumerate another MCP server or a
+client's private skill registry by itself. A result therefore distinguishes
+`available`, `missing`, and `unknown`; it never treats a fetched `SKILL.md` as
+installed or executable. The `mattpocock/skills` reference fallback is enabled
+only when the client explicitly supplies a catalog containing zero skills.
+Omitted catalogs and catalogs containing any skill disable it.
 
 ## Scope boundary
 

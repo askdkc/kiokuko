@@ -166,15 +166,10 @@ function recommendedTags(profile: TaskProfile): string[] {
           : profile.taskType === 'writing' ? 'writer'
             : profile.taskType === 'analysis' ? 'analyst' : 'common';
   tags.add(`bot:${role}`);
-  if (profile.taskType === 'build') {
-    tags.add('skill:test-driven-development');
-    tags.add('skill:repository-build-test-investigation');
-  }
-  if (profile.taskType === 'debug') tags.add('skill:systematic-debugging');
-  if (profile.taskType === 'research') tags.add('skill:grounded-citations');
-  if (profile.taskType === 'review') tags.add('skill:requesting-code-review');
-  if (profile.taskType === 'devops') tags.add('skill:server-resource-monitoring');
-  if (profile.taskType === 'writing') tags.add('skill:writing-plans');
+  if (profile.taskType === 'build') tags.add('skill:tdd');
+  if (profile.taskType === 'debug') tags.add('skill:diagnosing-bugs');
+  if (profile.taskType === 'research') tags.add('skill:research');
+  if (profile.taskType === 'review') tags.add('skill:code-review');
   return [...tags];
 }
 

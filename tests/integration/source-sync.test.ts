@@ -29,8 +29,13 @@ const fakeFetch: FetchImpl = (input) => {
   const body = url.includes('/commits/')
     ? JSON.stringify({ sha: 'test-sentinel-1' })
     : url.includes('/git/trees/')
-      ? JSON.stringify({ tree: [{ path: 'skills/local/SKILL.md', type: 'blob' }] })
-      : '# Local build skill\n\nTests pass.';
+      ? JSON.stringify({ tree: [
+        { path: 'skills/engineering/tdd/SKILL.md', type: 'blob' },
+        { path: 'skills/engineering/implement/SKILL.md', type: 'blob' },
+      ] })
+      : url.includes('/implement/')
+        ? '---\nname: implement\ndisable-model-invocation: true\n---\n\nImplement a spec.'
+        : '---\nname: tdd\n---\n\n# Local build skill\n\nTests pass.';
   return Promise.resolve({ ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) } as unknown as Response);
 };
 
@@ -48,18 +53,18 @@ test('preparation performs bounded network work without a database and persisten
   const database = await createDatabase();
   const first = persistOfficialSourceSync(database, { workspace: 'source-workspace', prepared, now });
   const second = persistOfficialSourceSync(database, { workspace: 'source-workspace', prepared, now });
-  assert.equal(first.imported, 2);
+  assert.equal(first.imported, 1);
   assert.equal(second.imported, 0);
-  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 2);
-  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM audit_events').get<{ count: number }>()?.count, 2);
-  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM knowledge_sources').get<{ count: number }>()?.count, 2);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 1);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM audit_events').get<{ count: number }>()?.count, 1);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM knowledge_sources').get<{ count: number }>()?.count, 1);
 });
 
 test('compatibility sync awaits preparation before its one persistence transaction', async () => {
   const database = await createDatabase();
   const result = await syncOfficialSources(input(database));
-  assert.equal(result.imported, 2);
-  assert.deepEqual(result.sources.map((source) => source.commit), ['test-sentinel-1', 'test-sentinel-1']);
+  assert.equal(result.imported, 1);
+  assert.deepEqual(result.sources.map((source) => source.commit), ['test-sentinel-1']);
 });
 
 test('standalone persistence rolls back every source write after a late database failure', async () => {
@@ -74,12 +79,12 @@ test('standalone persistence rolls back every source write after a late database
 
 test('partial source preparation returns one fixed safe error without leaking fetch details', async () => {
   const failingFetch: FetchImpl = (input, init) => {
-    if (String(input).includes('/repos/obra/superpowers/')) return Promise.reject(new Error('SECRET token at /home/ubuntu/private'));
+    if (String(input).includes('/repos/mattpocock/skills/')) return Promise.reject(new Error('SECRET token at /home/ubuntu/private'));
     return fakeFetch(input, init);
   };
   const prepared = await prepareOfficialSourceSync({ workspace: 'source-workspace', task: 'Implement src/app.ts', profile, recommendedTags: ['bot:builder'], fetchImpl: failingFetch });
-  const source = prepared.sources.find((candidate) => candidate.sourceId === 'superpowers');
-  assert.deepEqual(source, { sourceId: 'superpowers', commit: null, documents: [], error: 'source_unavailable' });
+  const source = prepared.sources.find((candidate) => candidate.sourceId === 'mattpocock-skills');
+  assert.deepEqual(source, { sourceId: 'mattpocock-skills', commit: null, documents: [], error: 'source_unavailable' });
   assert.equal(JSON.stringify(prepared).includes('SECRET'), false);
   assert.equal(JSON.stringify(prepared).includes('/home/ubuntu/private'), false);
 });

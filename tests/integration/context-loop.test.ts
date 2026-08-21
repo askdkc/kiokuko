@@ -78,7 +78,7 @@ test('unbound broker prepares official sources only after an empty local result,
         : '# External context\n\nImplement external context and pass tests.';
     return { ok: true, status: 200, text: async () => body } as unknown as Response;
   }) as typeof fetch;
-  const broker = new ContextBroker(db, { fetchImpl });
+  const broker = new ContextBroker(db, { fetchImpl, allowExternalSkillFallback: true });
   const result = await broker.query({
     workspace: 'external-requery',
     task: 'Implement external context',
@@ -87,6 +87,27 @@ test('unbound broker prepares official sources only after an empty local result,
   });
   assert.equal(result.status, 'unbound');
   assert.equal(result.context?.items.length, 1);
-  assert.equal(result.externalSyncSummary.imported, 2);
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM entries WHERE workspace = ?').get<{ count: number }>('external-requery')?.count, 2);
+  assert.equal(result.externalSyncSummary.imported, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM entries WHERE workspace = ?').get<{ count: number }>('external-requery')?.count, 1);
+});
+
+test('unbound broker does not fetch fallback skills without explicit zero-skill policy', async () => {
+  const db = await database();
+  let fetched = false;
+  const broker = new ContextBroker(db, {
+    fetchImpl: (async () => {
+      fetched = true;
+      throw new Error('network must stay disabled');
+    }) as typeof fetch,
+  });
+  const result = await broker.query({
+    workspace: 'external-disabled',
+    task: 'Implement external context',
+    taskProfile: { taskType: 'build', target: 'src/external.ts', expected: 'tests pass', constraints: null },
+    limit: 1,
+  });
+
+  assert.equal(result.context?.items.length, 0);
+  assert.equal(result.externalSyncSummary.attempted, false);
+  assert.equal(fetched, false);
 });

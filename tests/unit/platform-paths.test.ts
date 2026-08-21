@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  getClaudeConfigDirectory,
+  getClaudeInstructionsPath,
+  getClaudeMcpConfigPath,
   getCodexConfigPath,
   getCodexInstructionsPath,
   getDatabaseLockPath,
@@ -103,7 +106,7 @@ test('falls back to the platform home data directory', () => {
   );
 });
 
-test('derives documented global Codex and OpenCode paths without touching the real home directory', () => {
+test('derives documented global Codex, OpenCode, and Claude paths without touching the real home directory', () => {
   const options = {
     platform: 'linux' as const,
     env: { HOME: '/tmp/fake-home', XDG_CONFIG_HOME: '/tmp/fake-config' },
@@ -112,5 +115,10 @@ test('derives documented global Codex and OpenCode paths without touching the re
   assert.equal(getCodexInstructionsPath(options), '/tmp/fake-home/.codex/AGENTS.md');
   assert.equal(getOpenCodeConfigDirectory(options), '/tmp/fake-config/opencode');
   assert.equal(getOpenCodeInstructionsPath(options), '/tmp/fake-config/opencode/AGENTS.md');
+  assert.equal(getClaudeConfigDirectory(options), '/tmp/fake-home/.claude');
+  assert.equal(getClaudeMcpConfigPath(options), '/tmp/fake-home/.claude.json');
+  assert.equal(getClaudeInstructionsPath(options), '/tmp/fake-home/.claude/CLAUDE.md');
   assert.equal(getCodexConfigPath({ ...options, env: { ...options.env, CODEX_HOME: '/tmp/custom-codex' } }), '/tmp/custom-codex/config.toml');
+  assert.equal(getClaudeMcpConfigPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/.claude.json');
+  assert.equal(getClaudeInstructionsPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/CLAUDE.md');
 });

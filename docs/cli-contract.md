@@ -19,12 +19,12 @@ Exit codes remain: 0 success, 2 usage, 3 validation, 4 not found, 5 conflict, 6 
 ## Global client setup and MCP
 
 ```bash
-kiokuko setup [--clients codex,opencode] [--command kiokuko] [--dry-run] [--json]
+kiokuko setup [--clients codex,opencode,claude] [--command kiokuko] [--dry-run] [--json]
 kiokuko mcp
 ```
 
-`setup` initializes the user-global database and safely merges the global Codex
-and/or OpenCode MCP and `AGENTS.md` configuration. It computes and validates all
+`setup` initializes the user-global database and safely merges Codex, OpenCode,
+and/or Claude Code MCP and global instruction configuration. It computes and validates all
 file edits before writing, uses per-file atomic replacement, rolls back already
 written client files if a later write fails, rejects symlinks, and is
 idempotent. `--dry-run` performs no writes.
@@ -34,6 +34,11 @@ stdout; ordinary CLI diagnostics must not contaminate that stream. It exposes:
 
 - `memory_recall(query, cwd?, scope?, limit?, maxChars?)`
 - `memory_checkpoint(cwd?, memories[])`
+- `task_prepare(task, cwd?, profileHints?, capabilities?, maxContextChars?)`
+- `task_answer(sessionId, questionId, value, cwd?, capabilities?, maxContextChars?)`
+
+Capability catalogs are request-only metadata and are not persisted. Returned
+memory, references, and capability recommendations are advisory and untrusted.
 
 Automatic repository resolution updates only the global path registry; it does
 not create `.kiokuko.json` or `AGENTS.md` in the repository. `kiokuko use`
@@ -72,6 +77,10 @@ The bridge maps to `/api/v1/agent/runs`, intake answers, events, checkpoints, cl
 ## Existing guide and memory paths
 
 `kiokuko guide` remains the compatibility CLI for the shared Akinator service. Existing recall/search/read/record/lifecycle/call/export/import/backup/doctor behavior remains available. The Agent Gateway does not change memory export semantics.
+
+`kiokuko guide context` performs no external skill fetch by default. The caller
+must pass `--no-client-skills` to assert that no client skills are available and
+enable the allowlisted `mattpocock/skills` reference fallback.
 
 ## Web API compatibility
 

@@ -2,7 +2,7 @@
 
 [English](README.md) | 日本語 | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
 
-Kiokukoは、AIコーディングエージェント向けのモデル非依存な外部記憶です。npmでグローバルインストールすると、現在のOSユーザー用SQLiteデータベースに構造化された記憶を保存し、stdio MCP経由でCodexとOpenCodeに高水準のrecall/checkpointツールを提供します。
+Kiokukoは、AIコーディングエージェント向けのモデル非依存な外部記憶です。npmでグローバルインストールすると、現在のOSユーザー用SQLiteデータベースに構造化された記憶を保存し、stdio MCP経由でCodex、OpenCode、Claude Codeにタスク準備とrecall/checkpointツールを提供します。
 
 ## グローバルへのインストールと有効化
 
@@ -13,9 +13,9 @@ kiokuko setup
 
 npmパッケージ名は`@askdkc/kiokuko`ですが、インストールされるCLIコマンド名は引き続き`kiokuko`です。
 
-セットアップ後にCodexとOpenCodeを再起動してください。それ以降は、グローバルな`AGENTS.md`が重要な作業の前後にKiokukoを呼び出すようエージェントへ指示し、ツールが必要になるとグローバル設定から`kiokuko mcp`が起動されます。
+セットアップ後にCodex、OpenCode、Claude Codeを再起動してください。それ以降は、各クライアントのグローバル指示が重要な作業の前後にKiokukoを呼び出すようエージェントへ指示し、必要になるとグローバル設定から`kiokuko mcp`が起動されます。
 
-`setup`は明示的に実行する冪等な処理です。npmの`postinstall`がAIクライアントの設定を変更することはありません。既存のTOML/JSONC設定、コメント、指示内容、改行コード、ファイルモードを維持し、Kiokukoは管理対象セクションだけを更新します。
+`setup`は明示的に実行する冪等な処理です。npmの`postinstall`がAIクライアントの設定を変更することはありません。既存のTOML/JSON/JSONC設定、コメント、指示内容、改行コード、ファイルモードを維持し、Kiokukoは管理対象セクションだけを更新します。
 
 ```bash
 # 書き込まずに変更対象ファイルと予定内容を確認
@@ -24,6 +24,7 @@ kiokuko setup --dry-run --json
 # 一方のクライアントだけを設定
 kiokuko setup --clients codex
 kiokuko setup --clients opencode
+kiokuko setup --clients claude
 
 # クライアントプロセスがnpmのPATHを継承しない場合は絶対パスを指定
 kiokuko setup --command /absolute/path/to/kiokuko
@@ -35,6 +36,7 @@ kiokuko setup --command /absolute/path/to/kiokuko
 |---|---|---|
 | Codex | `$CODEX_HOME/config.toml`または`~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md`または`~/.codex/AGENTS.md` |
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`または`~/.config/opencode/opencode.json` | 同じディレクトリの`AGENTS.md` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` |
 
 OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。
 
@@ -49,10 +51,12 @@ OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメン�
 
 MCPの公開インターフェースは意図的に小さくしています。
 
+- `task_prepare`: Akinator形式の取り込み、上限付きの記憶・参照検索、現在のクライアントから渡されたSKILL/MCPツール名との照合を一度に行います。
+- `task_answer`: ユーザーの依頼または確認済みのリポジトリ情報に根拠がある回答だけで、取り込みを続行します。
 - `memory_recall`: 上限付きのproject/globalコンテキストを読み取ります。結果には常にuntrustedマークが付きます。
 - `memory_checkpoint`: 上限付きの永続的な記憶を`candidate`かつ`untrusted`として保存します。シークレットに見える内容は拒否されます。
 
-これは指示による自動利用であり、プロンプトの横取りではありません。CodexやOpenCodeが特定のターンでツールを呼ばない可能性は残ります。Kiokukoはフックをインストールせず、会話全文を取得せず、記憶を暗黙にverifiedへ昇格させません。
+これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Codeが特定のターンでツールを呼ばない可能性は残ります。Kiokukoはフックをインストールせず、会話全文を取得せず、取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。
 
 ## 開発
 
@@ -75,7 +79,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator形式の知識取り込み
 
-重要な作業に対して、`guide`はタスク種別、対象、成功条件など、不足している価値の高い項目だけを質問します。その後、クエリとBot用途タグを使ってローカル記憶を選択します。
+重要な作業では、セットアップ済みのエージェント指示が`task_prepare`を呼び出します。このツールはタスク種別、対象、成功条件など、不足している価値の高い項目だけを質問し、クエリとBot用途タグからローカル記憶を選択します。クライアントが現在利用可能なSKILLとMCPツールの名前を渡した場合は、必要な機能を照合し、`available`、`missing`、`unknown`を区別して返します。この一覧は一時的にだけ使用され、保存されません。CLIの`guide`コマンドでも同じ取り込みを手動実行できます。
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \
@@ -87,10 +91,11 @@ kiokuko guide answer <session-id> --workspace <workspace> \
 kiokuko guide context <session-id> --workspace <workspace> --json
 ```
 
-ローカル検索で関連エントリが見つからない場合、`guide context`は次の許可済み公開リポジトリに限って現在の`main`ツリーを取得し、選択したMarkdownスキルや参照情報を`candidate`エントリとして保存できます。
+ローカル検索で関連エントリが見つからず、クライアントが利用可能なSKILLは0件だと明示した場合に限り、`task_prepare`は次の単一の許可済み公開リポジトリから現在の`main`ツリーを取得できます。
 
-- https://github.com/NousResearch/hermes-agent
-- https://github.com/obra/superpowers
+- https://github.com/mattpocock/skills
+
+capability一覧の省略は0件ではなく「不明」として扱い、フォールバックを無効にします。SKILLが1件以上ある場合も無効です。CLIで手動利用する場合は、`guide context ... --no-client-skills`で同じ条件を明示します。`disable-model-invocation: true`のSKILLは自動選択から除外します。
 
 インポートされた各エントリには、リポジトリ、commit SHA、ソースパスが記録されます。これらは信頼されていない参照資料であり、自動的に`verified`へ昇格したり、コマンドとして実行されたりすることはありません。同期の再実行はコンテンツハッシュにより冪等です。
 

@@ -14,9 +14,12 @@ Kiokuko v1 is a same-user, loopback-only service. Remote bind, TLS termination, 
 
 The stdio MCP path is local to the spawning AI client and does not open a
 network listener. It exposes no raw SQL or arbitrary-workspace parameter.
-`memory_recall` resolves only the supplied/current working directory plus the
-reserved global workspace. `memory_checkpoint` accepts bounded typed entries,
-runs secret detection, and always writes `candidate` + `untrusted` memory.
+`task_prepare`, `task_answer`, and `memory_recall` resolve only the
+supplied/current working directory plus the reserved global workspace.
+Client-supplied capability catalogs are bounded, used only for the current
+response, and never persisted. `memory_checkpoint` accepts bounded typed
+entries, runs secret detection, and always writes `candidate` + `untrusted`
+memory.
 
 ## Pre-persistence sanitization
 
@@ -44,7 +47,7 @@ Stored content is returned with an `untrusted` marker and rendered as text nodes
 
 ## Existing source fallback
 
-The Akinator guide may fetch only code-allowlisted public official sources, outside server write transactions. Imported documents are sanitized, bounded, commit-pinned, `candidate`, and `untrusted`; incomplete source trees are rejected. Named client support is not inferred from documentation reachability.
+The Akinator guide may fetch only `https://github.com/mattpocock/skills`, outside server write transactions, and only after an explicit zero-skill assertion. An omitted capability catalog does not opt in. Documents marked `disable-model-invocation: true` are excluded. Imported documents are sanitized, bounded, commit-pinned, `candidate`, and `untrusted`; incomplete source trees are rejected. Imported `SKILL.md` content is reference data, not an installed capability, and is never automatically executed. Named client support is not inferred from documentation reachability.
 
 ## Privacy operations
 

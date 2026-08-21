@@ -34,6 +34,7 @@ test('exposes the Akinator guide subcommands', () => {
   const guide = buildCli().commands.find((command) => command.name() === 'guide');
   assert.ok(guide);
   assert.deepEqual(guide.commands.map((command) => command.name()), ['start', 'answer', 'context']);
+  assert.match(guide.commands.find((command) => command.name() === 'context')?.helpInformation() ?? '', /--no-client-skills/);
 });
 
 test('exposes the generic agent lifecycle subcommands and required options', () => {
@@ -52,6 +53,13 @@ test('exposes help for the use command', () => {
   assert.match(use.helpInformation(), /--root/);
   assert.match(use.helpInformation(), /--workspace/);
   assert.match(use.helpInformation(), /--dry-run/);
+});
+
+test('exposes Claude Code as a global setup client', () => {
+  const setup = buildCli().commands.find((command) => command.name() === 'setup');
+  assert.ok(setup);
+  assert.match(setup.helpInformation(), /codex,opencode,claude/);
+  assert.match(setup.description(), /Claude Code/);
 });
 
 test('exposes foreground serve options without capability-token controls', () => {

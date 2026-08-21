@@ -155,12 +155,12 @@ const DEFAULT_CHARACTER_BUDGET = CONTEXT_RANKING_DEFAULT_CHARACTER_BUDGET;
 const MAX_CHARACTER_BUDGET = CONTEXT_RANKING_MAX_CHARACTER_BUDGET;
 
 const TASK_AFFINITY: Readonly<Record<TaskType, { kinds: readonly EntryKind[]; tags: readonly string[] }>> = {
-  build: { kinds: ['decision', 'lesson', 'reference'], tags: ['build', 'builder', 'implementation', 'skill:test-driven-development'] },
-  debug: { kinds: ['lesson', 'decision', 'reference'], tags: ['debug', 'debugging', 'reviewer', 'skill:systematic-debugging'] },
-  research: { kinds: ['reference', 'fact'], tags: ['research', 'researcher', 'skill:grounded-citations'] },
-  review: { kinds: ['lesson', 'decision', 'reference'], tags: ['review', 'reviewer', 'code-review', 'skill:requesting-code-review'] },
-  devops: { kinds: ['lesson', 'decision', 'reference'], tags: ['devops', 'skill:server-resource-monitoring'] },
-  writing: { kinds: ['preference', 'reference', 'decision'], tags: ['writing', 'writer', 'skill:writing-plans'] },
+  build: { kinds: ['decision', 'lesson', 'reference'], tags: ['build', 'builder', 'implementation', 'skill:tdd', 'skill:codebase-design', 'skill:test-driven-development'] },
+  debug: { kinds: ['lesson', 'decision', 'reference'], tags: ['debug', 'debugging', 'reviewer', 'skill:diagnosing-bugs', 'skill:systematic-debugging'] },
+  research: { kinds: ['reference', 'fact'], tags: ['research', 'researcher', 'skill:research', 'skill:grounded-citations'] },
+  review: { kinds: ['lesson', 'decision', 'reference'], tags: ['review', 'reviewer', 'code-review', 'skill:code-review', 'skill:requesting-code-review'] },
+  devops: { kinds: ['lesson', 'decision', 'reference'], tags: ['devops', 'skill:wizard', 'skill:server-resource-monitoring'] },
+  writing: { kinds: ['preference', 'reference', 'decision'], tags: ['writing', 'writer', 'skill:writing-for-agents', 'skill:writing-plans'] },
   analysis: { kinds: ['fact', 'reference', 'decision'], tags: ['analysis', 'analyst'] },
 };
 

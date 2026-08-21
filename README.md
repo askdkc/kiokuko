@@ -4,7 +4,8 @@ English | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [한국�
 
 Kiokuko(記憶庫) is model-agnostic external memory for AI coding agents. One global npm
 installation stores structured memory in the current user's SQLite database and
-exposes high-level recall/checkpoint tools to Codex and OpenCode over stdio MCP.
+exposes guided task preparation plus recall/checkpoint tools to Codex, OpenCode,
+and Claude Code over stdio MCP.
 
 The name **Kiokuko** comes from the Japanese **記憶庫**: **記憶** means
 "memory," and **庫** means "storehouse," so the name describes a place for
@@ -20,12 +21,12 @@ kiokuko setup
 The npm package name is `@askdkc/kiokuko`; the installed CLI command remains
 `kiokuko`.
 
-Restart Codex and OpenCode after setup. From then on, their global `AGENTS.md`
-instructs the agent to call Kiokuko before non-trivial work and after durable
-work, and their global config starts `kiokuko mcp` when the tools are needed.
+Restart Codex, OpenCode, and Claude Code after setup. From then on, their global
+instructions tell the agent to call Kiokuko before non-trivial work and after
+durable work, and their global config starts `kiokuko mcp` when needed.
 
 `setup` is explicit and idempotent. npm `postinstall` never edits AI-client
-configuration. Existing TOML/JSONC settings, comments, instruction content,
+configuration. Existing TOML/JSON/JSONC settings, comments, instruction content,
 line endings, and file modes are preserved; Kiokuko owns only its managed
 sections.
 
@@ -36,6 +37,7 @@ kiokuko setup --dry-run --json
 # Configure only one client
 kiokuko setup --clients codex
 kiokuko setup --clients opencode
+kiokuko setup --clients claude
 
 # Use an absolute executable path if the client process does not inherit npm's PATH
 kiokuko setup --command /absolute/path/to/kiokuko
@@ -47,6 +49,7 @@ The setup targets are:
 |---|---|---|
 | Codex | `$CODEX_HOME/config.toml` or `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` or `~/.codex/AGENTS.md` |
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` or `~/.config/opencode/opencode.json` | the adjacent `AGENTS.md` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` or `~/.claude/CLAUDE.md` |
 
 If an OpenCode `opencode.jsonc` already exists, Kiokuko updates that file and
 preserves comments. If Codex already has an unmanaged
@@ -68,14 +71,19 @@ full-database search:
 
 The MCP surface is deliberately small:
 
+- `task_prepare`: run the Akinator intake, recall bounded memory and references,
+  and match required skills/MCP tools against the capability names supplied by
+  the current client.
+- `task_answer`: continue an intake only with an answer grounded in the user
+  request or verified repository evidence.
 - `memory_recall`: read bounded project/global context, always marked untrusted.
 - `memory_checkpoint`: store bounded durable entries as `candidate` and
   `untrusted`; secret-like content is rejected.
 
-This is instruction-driven automatic use, not prompt interception. Codex and
-OpenCode can still choose not to call a tool on a particular turn. Kiokuko does
-not install hooks, capture full transcripts, or silently promote memory to
-verified status.
+This is instruction-driven automatic use, not prompt interception. Codex,
+OpenCode, and Claude Code can still choose not to call a tool on a particular
+turn. Kiokuko does not install hooks, capture full transcripts, install fetched
+skills, or silently promote memory to verified status.
 
 ## Development
 
@@ -100,9 +108,13 @@ requires it.
 
 ## Akinator-style knowledge intake
 
-For non-trivial work, `guide` asks only for missing high-value fields such as
-the task type, target, and success condition. It then selects local memory by
-query and Bot-purpose tags:
+For non-trivial work, the installed agent instructions call `task_prepare`.
+That tool asks only for missing high-value fields such as the task type, target,
+and success condition, then selects local memory by query and Bot-purpose tags.
+If the client supplies its currently available skill and MCP-tool names, the
+result also identifies matching capabilities and clearly distinguishes
+available, missing, and unknown skills. The catalog is ephemeral and is not
+stored. The CLI `guide` commands expose the same intake for manual use:
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \
@@ -114,12 +126,17 @@ kiokuko guide answer <session-id> --workspace <workspace> \
 kiokuko guide context <session-id> --workspace <workspace> --json
 ```
 
-If local retrieval produces no relevant entries, `guide context` can fetch the
-current `main` tree from only these allowlisted public repositories and store
-the selected Markdown skills or references as `candidate` entries:
+If local retrieval produces no relevant entries and the client explicitly
+reports zero available skills, `task_prepare` can fetch the current `main` tree
+from the single allowlisted fallback repository:
 
-- https://github.com/NousResearch/hermes-agent
-- https://github.com/obra/superpowers
+- https://github.com/mattpocock/skills
+
+An omitted capability catalog means “unknown,” not zero, and disables this
+fallback. A catalog containing any skill also disables it. Manual CLI use must
+state the same condition explicitly with `guide context ... --no-client-skills`.
+Skills marked `disable-model-invocation: true` are excluded from automatic
+selection.
 
 Each imported entry records its repository, commit SHA, and source path. It is
 untrusted reference material and is never auto-promoted to `verified` or

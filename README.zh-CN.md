@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md) | 简体中文 | [한국어](README.ko.md)
 
-Kiokuko 是面向 AI 编程智能体、与模型无关的外部记忆工具。通过一次 npm 全局安装，它会将结构化记忆保存在当前操作系统用户的 SQLite 数据库中，并通过 stdio MCP 向 Codex 和 OpenCode 提供高层级的 recall/checkpoint 工具。
+Kiokuko 是面向 AI 编程智能体、与模型无关的外部记忆工具。通过一次 npm 全局安装，它会将结构化记忆保存在当前操作系统用户的 SQLite 数据库中，并通过 stdio MCP 向 Codex、OpenCode 和 Claude Code 提供任务准备及 recall/checkpoint 工具。
 
 ## 全局安装与启用
 
@@ -13,7 +13,7 @@ kiokuko setup
 
 npm 包名是 `@askdkc/kiokuko`，安装后的 CLI 命令名仍然是 `kiokuko`。
 
-设置完成后，请重启 Codex 和 OpenCode。此后，全局 `AGENTS.md` 会指示智能体在处理重要工作之前调用 Kiokuko，并在产生持久性成果后写入检查点；需要工具时，全局配置会启动 `kiokuko mcp`。
+设置完成后，请重启 Codex、OpenCode 和 Claude Code。此后，各客户端的全局指令会要求智能体在处理重要工作之前调用 Kiokuko，并在产生持久性成果后写入检查点；需要工具时，全局配置会启动 `kiokuko mcp`。
 
 `setup` 是显式且幂等的操作。npm 的 `postinstall` 永远不会修改 AI 客户端配置。现有 TOML/JSONC 设置、注释、指令内容、换行符和文件权限都会保留；Kiokuko 只管理自己的区块。
 
@@ -24,6 +24,7 @@ kiokuko setup --dry-run --json
 # 只配置一个客户端
 kiokuko setup --clients codex
 kiokuko setup --clients opencode
+kiokuko setup --clients claude
 
 # 如果客户端进程未继承 npm 的 PATH，请使用可执行文件绝对路径
 kiokuko setup --command /absolute/path/to/kiokuko
@@ -35,6 +36,7 @@ kiokuko setup --command /absolute/path/to/kiokuko
 |---|---|---|
 | Codex | `$CODEX_HOME/config.toml` 或 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 或 `~/.codex/AGENTS.md` |
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 或 `~/.config/opencode/opencode.json` | 同目录下的 `AGENTS.md` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 或 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 或 `~/.claude/CLAUDE.md` |
 
 如果 OpenCode 的 `opencode.jsonc` 已存在，Kiokuko 会保留注释并更新该文件。如果 Codex 中已存在不受 Kiokuko 管理的 `[mcp_servers.kiokuko]` 表，设置程序不会猜测应该覆盖哪项配置，而是直接停止。
 
@@ -49,10 +51,12 @@ kiokuko setup --command /absolute/path/to/kiokuko
 
 MCP 接口被有意保持为最小范围：
 
+- `task_prepare`：执行 Akinator 式采集、有界记忆/参考检索，并与当前客户端提供的技能和 MCP 工具名称进行匹配。
+- `task_answer`：仅使用用户请求或已验证仓库证据支持的答案继续采集。
 - `memory_recall`：读取有界的 project/global 上下文，并始终标记为 untrusted。
 - `memory_checkpoint`：将有界的持久性条目保存为 `candidate` 和 `untrusted`；疑似密钥的内容会被拒绝。
 
-这种自动使用由指令驱动，并不会拦截提示词。Codex 和 OpenCode 仍可能决定在某个回合不调用工具。Kiokuko 不会安装钩子、捕获完整对话，也不会静默地将记忆提升为 verified 状态。
+这种自动使用由指令驱动，并不会拦截提示词。Codex、OpenCode 和 Claude Code 仍可能决定在某个回合不调用工具。Kiokuko 不会安装钩子、捕获完整对话、自动安装获取到的技能，也不会静默地将记忆提升为 verified 状态。
 
 ## 开发
 
@@ -75,7 +79,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator 式知识采集
 
-对于重要工作，`guide` 只会询问任务类型、目标和成功条件等缺失的高价值字段。随后，它会根据查询和 Bot 用途标签选择本地记忆：
+对于重要工作，设置好的智能体指令会调用 `task_prepare`。该工具只询问任务类型、目标和成功条件等缺失的高价值字段，再根据查询和 Bot 用途标签选择本地记忆。如果客户端提供当前可用的技能和 MCP 工具名称，结果还会匹配所需能力，并区分 `available`、`missing` 和 `unknown`；该目录仅临时使用，不会存储。CLI 的 `guide` 命令可手动执行同一流程：
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \
@@ -87,10 +91,11 @@ kiokuko guide answer <session-id> --workspace <workspace> \
 kiokuko guide context <session-id> --workspace <workspace> --json
 ```
 
-如果本地检索没有产生相关条目，`guide context` 只能从以下白名单公开仓库获取当前 `main` 分支树，并将选中的 Markdown 技能或参考资料保存为 `candidate` 条目：
+只有在本地检索没有相关条目，且客户端明确报告可用技能为零时，`task_prepare` 才能从以下唯一白名单公开仓库获取当前 `main` 分支树：
 
-- https://github.com/NousResearch/hermes-agent
-- https://github.com/obra/superpowers
+- https://github.com/mattpocock/skills
+
+省略 capability 目录表示“未知”而不是零，并会禁用该回退；存在任何技能也会禁用它。手动 CLI 使用必须通过 `guide context ... --no-client-skills` 明确声明同一条件。标记为 `disable-model-invocation: true` 的技能不会被自动选择。
 
 每个导入条目都会记录其仓库、commit SHA 和源路径。这些内容是不受信任的参考资料，永远不会自动提升为 `verified`，也不会作为命令执行。重复同步通过内容哈希保持幂等。
 

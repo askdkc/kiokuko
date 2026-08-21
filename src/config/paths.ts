@@ -97,6 +97,35 @@ export function getCodexInstructionsPath(options: PathEnvironment = {}): string 
   return join(getCodexHome(options), 'AGENTS.md');
 }
 
+/** Claude Code's documented personal configuration directory. */
+export function getClaudeConfigDirectory(options: PathEnvironment = {}): string {
+  const { env } = selectedEnvironment(options);
+  if (env.CLAUDE_CONFIG_DIR) return env.CLAUDE_CONFIG_DIR;
+  const { home, join } = requireHome(options);
+  return join(home, '.claude');
+}
+
+/**
+ * Claude Code stores personal MCP servers in ~/.claude.json. When
+ * CLAUDE_CONFIG_DIR is set, the equivalent state file is .claude.json inside
+ * that directory.
+ */
+export function getClaudeMcpConfigPath(options: PathEnvironment = {}): string {
+  const { platform, env } = selectedEnvironment(options);
+  if (env.CLAUDE_CONFIG_DIR) {
+    const join = platform === 'win32' ? path.win32.join : path.posix.join;
+    return join(env.CLAUDE_CONFIG_DIR, '.claude.json');
+  }
+  const { home, join } = requireHome(options);
+  return join(home, '.claude.json');
+}
+
+export function getClaudeInstructionsPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getClaudeConfigDirectory(options), 'CLAUDE.md');
+}
+
 /** OpenCode's documented global configuration directory. */
 export function getOpenCodeConfigDirectory(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);

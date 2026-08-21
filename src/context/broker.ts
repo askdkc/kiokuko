@@ -75,6 +75,7 @@ export interface ContextBrokerPersistence {
 export interface ContextBrokerOptions {
   readonly now?: () => string;
   readonly fetchImpl?: typeof fetch;
+  readonly allowExternalSkillFallback?: boolean;
 }
 
 interface RunContext {
@@ -489,7 +490,7 @@ export class ContextBroker {
 
     let ranked = rank(this.database, query, prior);
     let externalSyncSummary = emptyExternalSummary();
-    if (ranked.length < query.limit && query.taskProfile !== undefined) {
+    if (ranked.length < query.limit && query.taskProfile !== undefined && this.options.allowExternalSkillFallback === true) {
       const prepared = await prepareOfficialSourceSync({
         workspace: query.workspace,
         task: query.task,

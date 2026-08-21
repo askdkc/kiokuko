@@ -14,7 +14,7 @@ Kiokuko is a model-agnostic local control plane with three deliberately separate
 - Existing memory services own record/read/search/recall/lifecycle behavior.
 - Existing Akinator intake owns task-profile inference, at most three high-value questions, and `ready`/`exhausted` transitions.
 - The Agent Event Gateway owns authenticated HTTP/JSON lifecycle, idempotency, event collection, projection, context delivery, and deterministic recommendations.
-- Codex/OpenCode ordinary memory access uses a stdio MCP server and the existing memory services directly. Generic execution-ledger commands still call the gateway over HTTP; they never open SQLite for agent-event operations.
+- Codex/OpenCode/Claude Code task preparation and ordinary memory access use a stdio MCP server and the existing Akinator/memory services directly. Generic execution-ledger commands still call the gateway over HTTP; they never open SQLite for agent-event operations.
 - The loopback Web UI reads the same server/service composition and preserves legacy memory routes.
 
 The gateway is not a transparent provider-traffic reverse proxy. Provider credentials and model APIs are outside the v1 boundary.
@@ -22,9 +22,9 @@ The gateway is not a transparent provider-traffic reverse proxy. Provider creden
 ## Dependency direction
 
 ```text
-Codex / OpenCode
+Codex / OpenCode / Claude Code
        ↓ stdio MCP
-scoped memory facade
+agent-task preparation / scoped memory facade
        ↓
 memory retrieval / candidate record
        ↓
@@ -58,5 +58,10 @@ A foreground `kiokuko serve --port 0` process keeps one primary SQLite connectio
 ## Context loop
 
 A run opens with the shared Akinator intake. Memory is withheld while intake needs an answer. When ready/exhausted, the finalized profile and recommended tags select an initial bounded context. Events then build a deterministic projection. A checkpoint commits events first, projects through the accepted cursor, suppresses unchanged re-delivery, re-ranks memory using current paths/errors/profile/feedback, stores selection reasons and revisions, and returns recommendations. Explicit close, feedback, and candidate-only promotion complete the loop.
+
+External skill lookup is not a general context backfill. The MCP task path may
+consult the single allowlisted `mattpocock/skills` source only when its ephemeral
+client capability catalog explicitly contains zero skills. Unknown catalogs and
+catalogs with one or more skills keep network fallback disabled.
 
 All delivered memory/event text is untrusted stored data. The agent must independently verify current files, APIs, versions, and runtime state.
