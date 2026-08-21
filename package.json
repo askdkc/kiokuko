@@ -32,7 +32,6 @@
     "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run pack:check"
   },
   "dependencies": {
-    "@askdkc/kiokuko": "^0.1.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "commander": "^14.0.1",
     "jsonc-parser": "^3.3.1",
