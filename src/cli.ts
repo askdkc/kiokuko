@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { Command, CommanderError } from 'commander';
 import { initializeDatabase } from './commands/init.js';
 import { useRepository } from './commands/use.js';
@@ -21,6 +22,12 @@ import type { SqliteDatabase } from './db/adapter.js';
 import { answerAkinator, getAkinatorContext, startAkinator } from './akinator/orchestrator.js';
 import { parseSetupClients, setupGlobalClients } from './commands/setup.js';
 import { runMcpServer } from './mcp/server.js';
+
+const packageMetadata = createRequire(import.meta.url)('../package.json') as { version?: unknown };
+if (typeof packageMetadata.version !== 'string' || packageMetadata.version.length === 0) {
+  throw new Error('Kiokuko package version is unavailable');
+}
+const packageVersion = packageMetadata.version;
 
 async function readJsonInput(filePath: string): Promise<unknown> {
   const text = filePath === '-' ? await new Promise<string>((resolve, reject) => {
@@ -127,7 +134,7 @@ async function dispatchRequest(request: unknown): Promise<unknown> {
 
 export function buildCli(dependencies: CliDependencies = {}): Command {
   const cli = new Command();
-  cli.name('kiokuko').description('Model-agnostic external memory for AI coding agents').version('0.1.0');
+  cli.name('kiokuko').description('Model-agnostic external memory for AI coding agents').version(packageVersion);
   cli.exitOverride();
   cli.configureOutput({ outputError: () => undefined });
 

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
+
+test('reports the package version instead of a stale hard-coded CLI version', () => {
+  const packageMetadata = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
+  assert.equal(buildCli().version(), packageMetadata.version);
+});
 
 test('registers required commands', () => {
   const names = buildCli().commands.map((command) => command.name());
