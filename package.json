@@ -1,6 +1,6 @@
 {
   "name": "@askdkc/kiokuko",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Model-agnostic external memory for AI coding agents",
   "type": "module",
   "bin": {
