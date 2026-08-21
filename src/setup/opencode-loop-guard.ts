@@ -8,6 +8,7 @@ const MAX_AGENT_STEPS = 12
 const MAX_CONSECUTIVE_REPEATS = 3
 const BUILTIN_AGENTS = ['build', 'plan', 'general', 'explore', 'scout']
 const HIDDEN_AGENTS = new Set(['compaction', 'title', 'summary'])
+const READ_ONLY_DISCOVERY_TOOLS = new Set(['read', 'grep', 'glob', 'find', 'search', 'webfetch', 'websearch', 'memory_recall'])
 
 function freshTurn(messageID) {
   return {
@@ -54,13 +55,19 @@ function lifecycleTool(tool) {
   return undefined
 }
 
+function isReadOnlyDiscoveryTool(tool) {
+  const normalized = tool.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  if (READ_ONLY_DISCOVERY_TOOLS.has(normalized)) return true
+  return [...READ_ONLY_DISCOVERY_TOOLS].some((name) => normalized.endsWith('_' + name))
+}
+
 function capAgentSteps(config) {
   if (!config.agent || typeof config.agent !== 'object' || Array.isArray(config.agent)) config.agent = {}
   for (const name of BUILTIN_AGENTS) {
     if (!config.agent[name] || typeof config.agent[name] !== 'object' || Array.isArray(config.agent[name])) config.agent[name] = {}
   }
   for (const [name, agent] of Object.entries(config.agent)) {
-    if (HIDDEN_AGENTS.has(name) || !agent || typeof agent !== 'object' || Array.isArray(agent)) continue
+    if (HIDDEN_AGENTS.has(name) || !agent || typeof agent !== 'object' || Array.isArray(agent) || agent.hidden === true) continue
     if (!Number.isInteger(agent.steps) || agent.steps < 1 || agent.steps > MAX_AGENT_STEPS) agent.steps = MAX_AGENT_STEPS
   }
 }
@@ -91,7 +98,7 @@ export const KiokukoLoopGuard = async () => {
       sessions.set(input.sessionID, freshTurn(input.messageID))
     },
     event: async ({ event }) => {
-      if (!['session.idle', 'session.deleted', 'session.error'].includes(event.type)) return
+      if (!['session.idle', 'session.deleted'].includes(event.type)) return
       const sessionID = sessionIDFromEvent(event)
       if (sessionID) sessions.delete(sessionID)
     },
@@ -129,6 +136,11 @@ export const KiokukoLoopGuard = async () => {
       const state = stateFor(input.sessionID)
       if (lifecycleTool(input.tool) === 'memory_checkpoint') state.checkpointCompleted = true
 
+      if (!isReadOnlyDiscoveryTool(input.tool)) {
+        state.lastResultFingerprint = undefined
+        state.repeatedResultCount = 0
+        return
+      }
       const resultFingerprint = await fingerprint({ tool: input.tool, title: output.title, output: output.output, metadata: output.metadata })
       if (resultFingerprint === state.lastResultFingerprint) state.repeatedResultCount += 1
       else {

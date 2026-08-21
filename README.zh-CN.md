@@ -19,6 +19,8 @@ npm 包名是 `@askdkc/kiokuko`，安装后的 CLI 命令名仍然是 `kiokuko`�
 
 `setup` 是显式且幂等的操作。npm 的 `postinstall` 永远不会修改 AI 客户端配置。现有 TOML/JSONC 设置、注释、指令内容、换行符和文件权限都会保留；Kiokuko 只管理自己的区块。
 
+如果现有数据库存在尚未应用的迁移，setup 会先在当前用户数据目录下的 `backups/` 中创建备份并执行完整性检查。由更新版本 Kiokuko 写入的数据库会被拒绝，且不会受到修改。
+
 ```bash
 # 不写入任何内容，预览确切的目标文件和计划变更
 kiokuko setup --dry-run --json
@@ -40,7 +42,7 @@ kiokuko setup --command /absolute/path/to/kiokuko
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 或 `~/.config/opencode/opencode.json` | 同目录下的 `AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 或 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 或 `~/.claude/CLAUDE.md` | — |
 
-如果 OpenCode 的 `opencode.jsonc` 已存在，Kiokuko 会保留注释并更新该文件。如果 Codex 中已存在不受 Kiokuko 管理的 `[mcp_servers.kiokuko]` 表，设置程序不会猜测应该覆盖哪项配置，而是直接停止。受管理的 OpenCode 防护会把可见智能体限制为 12 个 step；每个用户请求最多调用一次 `task_prepare` 和一次 `memory_checkpoint`；检查点完成后关闭工具阶段；连续三次出现相同调用或相同结果后阻止再次执行。计数器和指纹仅保存在进程内存中。
+如果 OpenCode 的 `opencode.jsonc` 已存在，Kiokuko 会保留注释并更新该文件。如果 Codex 中已存在不受 Kiokuko 管理的 `[mcp_servers.kiokuko]` 表，设置程序不会猜测应该覆盖哪项配置，而是直接停止。受管理的 OpenCode 防护会把可见智能体限制为 12 个 step；每个用户请求最多调用一次 `task_prepare` 和一次 `memory_checkpoint`；检查点完成后关闭工具阶段；连续三次出现相同调用或相同的只读检索结果后阻止再次执行。计数器和指纹仅保存在进程内存中。
 
 ## 记忆作用域
 
@@ -81,7 +83,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator 式知识采集
 
-对于重要工作，设置好的智能体指令会调用 `task_prepare`。该工具只询问任务类型、目标和成功条件等缺失的高价值字段，再根据查询和 Bot 用途标签选择本地记忆。如果客户端提供当前可用的技能和 MCP 工具名称，结果还会匹配所需能力，并区分 `available`、`missing` 和 `unknown`；该目录仅临时使用，不会存储。CLI 的 `guide` 命令可手动执行同一流程：
+对于重要工作，设置好的智能体指令会调用 `task_prepare`。该工具只询问任务类型、目标和成功条件等缺失的高价值字段，再根据查询和角色与用途标签选择本地记忆。如果客户端提供当前可用的技能和 MCP 工具名称，结果还会匹配所需能力，并区分 `available`、`missing` 和 `unknown`；该目录仅临时使用，不会存储。CLI 的 `guide` 命令可手动执行同一流程：
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \
@@ -103,7 +105,7 @@ kiokuko guide context <session-id> --workspace <workspace> --json
 
 ## 本地 Web UI
 
-启动仅限回环地址的 HTTP 服务器，即可按 Bot 用途、记忆类型和跨类别标签浏览记忆条目，并在浏览器中编辑 candidate 条目：
+启动仅限回环地址的 HTTP 服务器，即可按角色与用途、记忆类型和跨类别标签浏览记忆条目，并在浏览器中编辑 candidate 条目：
 
 ```bash
 kiokuko web

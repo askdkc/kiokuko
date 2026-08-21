@@ -33,9 +33,9 @@ OpenCode it also installs a dependency-free local guard through the documented
 global plugin directory. The guard caps visible agents at 12 steps, rejects a
 second `task_prepare` or `memory_checkpoint` in one user turn, rejects tool use
 after a completed checkpoint, and blocks a fourth identical call or the next
-call after three identical results. State consists only of in-memory counters
-and SHA-256 fingerprints and is cleared on the next user message or terminal
-session event. Global
+call after three identical read-only discovery results. State consists only of
+in-memory counters and SHA-256 fingerprints and is cleared on the next user
+message or terminal session event. Global
 instructions request `task_prepare` before non-trivial work, grounded
 `task_answer` calls when intake fields are missing, and checkpointing after
 substantial verified work.

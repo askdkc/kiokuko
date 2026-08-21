@@ -118,3 +118,29 @@ test('setup refuses an unmanaged Codex kiokuko table before writing anything', a
   assert.equal(await readFile(configPath, 'utf8'), original);
   await assert.rejects(access(temporary.databasePath));
 });
+
+test('setup refuses an unmanaged OpenCode loop guard before writing anything', async () => {
+  const temporary = await temporaryEnvironment('opencode-guard-conflict');
+  const openCodeDirectory = path.join(temporary.config, 'opencode');
+  const pluginsDirectory = path.join(openCodeDirectory, 'plugins');
+  await mkdir(pluginsDirectory, { recursive: true });
+  const configPath = path.join(openCodeDirectory, 'opencode.json');
+  const instructionsPath = path.join(openCodeDirectory, 'AGENTS.md');
+  const guardPath = path.join(pluginsDirectory, 'kiokuko-loop-guard.js');
+  const originalGuard = 'export const HumanPlugin = async () => ({})\n';
+  await writeFile(configPath, '{"theme":"dark"}\n');
+  await writeFile(instructionsPath, '# Human OpenCode rules\n');
+  await writeFile(guardPath, originalGuard);
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['opencode'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+  }), /unmanaged file/);
+
+  assert.equal(await readFile(configPath, 'utf8'), '{"theme":"dark"}\n');
+  assert.equal(await readFile(instructionsPath, 'utf8'), '# Human OpenCode rules\n');
+  assert.equal(await readFile(guardPath, 'utf8'), originalGuard);
+  await assert.rejects(access(temporary.databasePath));
+});

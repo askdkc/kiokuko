@@ -27,7 +27,10 @@ kiokuko mcp
 and/or Claude Code MCP and global instruction configuration. It computes and validates all
 file edits before writing, uses per-file atomic replacement, rolls back already
 written client files if a later write fails, rejects symlinks, and is
-idempotent. `--dry-run` performs no writes.
+idempotent. Before an existing database is migrated, `setup` creates and verifies
+a pre-migration SQLite backup and returns its path as `databaseBackupPath` in JSON.
+It rejects databases created by a newer Kiokuko schema before opening them for
+writes. `--dry-run` performs no writes.
 
 `mcp` is a foreground stdio MCP server. Protocol output is written only to
 stdout; ordinary CLI diagnostics must not contaminate that stream. It exposes:

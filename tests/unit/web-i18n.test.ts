@@ -37,6 +37,14 @@ test('every Web UI locale has the complete non-empty message catalog and matchin
   }
 });
 
+test('visible role filters avoid bot terminology in every locale', () => {
+  const visibleKeys = ['subtitle', 'filtersPanelTitle', 'filtersNavLabel', 'botFilterTitle'] as const;
+  const botTerminology = /\bbot\b|机器人|봇/iu;
+  for (const locale of WEB_LOCALES) {
+    for (const key of visibleKeys) assert.doesNotMatch(WEB_MESSAGES[locale][key], botTerminology, `${locale}.${key}`);
+  }
+});
+
 test('Web locale normalization accepts supported regional variants without mislabeling Traditional Chinese', () => {
   assert.equal(normalizeWebLocale('en-GB'), 'en');
   assert.equal(normalizeWebLocale('ja-JP'), 'ja');
@@ -56,11 +64,19 @@ test('Web locale resolution uses the first supported candidate and falls back de
 
 test('generated Web UI exposes locale detection, persistence, selection, and translated accessibility hooks', () => {
   assert.match(WEB_HTML, /<html lang="en">/);
-  assert.match(WEB_HTML, /<select id="locale"[^>]+data-i18n-aria-label="languageLabel"/);
+  assert.match(WEB_HTML, /<button id="language-toggle"[^>]+aria-haspopup="menu"[^>]+data-i18n-aria-label="languageLabel"/);
+  assert.match(WEB_HTML, /<div id="language-menu"[^>]+role="menu"[^>]+hidden/);
+  assert.doesNotMatch(WEB_HTML, /<select id="locale"/);
   assert.match(WEB_HTML, /navigator\.languages/);
   assert.match(WEB_HTML, /localStorage\.getItem\(localeStorageKey\)/);
   assert.match(WEB_HTML, /localStorage\.setItem\(localeStorageKey, state\.locale\)/);
   assert.match(WEB_HTML, /document\.documentElement\.lang = state\.locale/);
   assert.match(WEB_HTML, /data-i18n-placeholder="searchPlaceholder"/);
   for (const label of Object.values(WEB_LOCALE_LABELS)) assert.match(WEB_HTML, new RegExp(label));
+});
+
+test('generated Web UI top-aligns the title and places the language picker at the upper right', () => {
+  assert.match(WEB_HTML, /\.topbar \{[^}]*align-items:start/);
+  assert.match(WEB_HTML, /\.language-picker \{[^}]*align-self:flex-end/);
+  assert.match(WEB_HTML, /<div class="brand">[\s\S]*<div class="topbar-side">[\s\S]*<div id="language-picker" class="language-picker"/);
 });

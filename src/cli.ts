@@ -140,7 +140,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
   cli.command('init').description('Initialize the global Kiokuko database').option('--json').action(async (options: { json?: boolean }) => {
     const result = await initializeDatabase();
-    humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion})`);
+    const backupNotice = result.backupPath === null ? '' : ` Pre-migration backup: ${result.backupPath}`;
+    humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion}).${backupNotice}`);
   });
 
   cli.command('setup').description('Configure global Kiokuko memory for Codex, OpenCode, and Claude Code')
@@ -157,7 +158,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       const changed = data.files.filter((file) => file.action !== 'unchanged').length;
       const message = options.dryRun
         ? `Kiokuko setup plan for ${data.clients.join(', ')}: ${changed} file${changed === 1 ? '' : 's'} would change.`
-        : `Kiokuko configured for ${data.clients.join(', ')} (${changed} file${changed === 1 ? '' : 's'} changed). ${data.nextStep}`;
+        : `Kiokuko configured for ${data.clients.join(', ')} (${changed} file${changed === 1 ? '' : 's'} changed).${data.databaseBackupPath === null ? '' : ` Pre-migration backup: ${data.databaseBackupPath}.`} ${data.nextStep}`;
       humanOrJson(options.json, 'setup', data, message);
     });
 

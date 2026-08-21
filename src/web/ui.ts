@@ -21,15 +21,29 @@ export const WEB_HTML = String.raw`<!doctype html>
   <style>
     :root { color-scheme: light; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0; --panel:#ffffff; --surface:#f8fafc; --accent:#2563eb; --accent-soft:#eff6ff; --warn:#b45309; --danger:#b91c1c; }
     * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
     body { margin:0; background:linear-gradient(135deg,#f8fafc,#eef2ff); color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
     button,input,select,textarea { font:inherit; }
     button { cursor:pointer; }
     .shell { max-width:1440px; margin:0 auto; padding:28px; }
-    .topbar { display:flex; gap:18px; justify-content:space-between; align-items:flex-end; margin-bottom:22px; }
+    .topbar { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(420px,.9fr); gap:24px; align-items:start; margin-bottom:22px; }
+    .brand,.topbar-side { min-width:0; }
+    .topbar-side { display:flex; flex-direction:column; gap:10px; align-self:stretch; }
     .eyebrow { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.16em; text-transform:uppercase; }
     h1 { margin:4px 0 0; font-size:clamp(28px,4vw,44px); letter-spacing:-.04em; }
     .subtitle { margin:8px 0 0; color:var(--muted); }
-    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .language-picker { position:relative; align-self:flex-end; z-index:10; }
+    .language-toggle { display:grid; place-items:center; width:44px; height:44px; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); box-shadow:0 6px 18px rgba(15,23,42,.06); }
+    .language-toggle:hover,.language-toggle[aria-expanded="true"] { border-color:#93c5fd; background:var(--accent-soft); color:var(--accent); }
+    .language-toggle:focus-visible,.language-option:focus-visible { outline:3px solid rgba(37,99,235,.25); outline-offset:2px; }
+    .language-toggle svg { width:22px; height:22px; }
+    .language-menu { position:absolute; top:calc(100% + 8px); right:0; display:grid; gap:2px; width:max-content; min-width:168px; padding:6px; border:1px solid var(--line); border-radius:14px; background:var(--panel); box-shadow:0 18px 48px rgba(15,23,42,.16); }
+    .language-option { display:flex; align-items:center; justify-content:space-between; gap:18px; width:100%; border:0; border-radius:9px; padding:9px 11px; background:transparent; color:var(--ink); text-align:left; }
+    .language-option:hover,.language-option:focus-visible,.language-option[aria-checked="true"] { background:var(--accent-soft); color:var(--accent); }
+    .language-option[aria-checked="true"]::after { content:"✓"; font-weight:800; }
+    .toolbar { display:flex; gap:10px; align-items:center; justify-content:flex-end; flex-wrap:wrap; margin-top:auto; }
+    .topbar-side .control { flex:1 1 210px; width:auto; min-width:0; }
+    .topbar-side .search { flex:1.4 1 240px; width:auto; min-width:0; }
     .control, .search { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); padding:10px 12px; }
     .search { min-width:260px; }
     .button { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); padding:10px 14px; font-weight:700; }
@@ -80,29 +94,36 @@ export const WEB_HTML = String.raw`<!doctype html>
     .detail-text { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); font-size:13px; }
     @media (max-width:680px) { .operator-grid { grid-template-columns:1fr; } }
     @media (max-width:1050px) { .layout { grid-template-columns:180px minmax(280px,1fr); } .editor-panel { grid-column:1 / -1; } }
-    @media (max-width:680px) { .shell { padding:16px; } .topbar { display:block; } .toolbar { margin-top:16px; } .search { min-width:0; flex:1; } .layout { grid-template-columns:1fr; } .genres-panel { order:0; } .list-panel { order:1; } .editor-panel { order:2; } .entry-list { max-height:none; } }
+    @media (max-width:680px) { .shell { padding:16px; } .topbar { display:block; position:relative; } .brand { padding-right:56px; } .topbar-side { margin-top:16px; align-self:auto; } .language-picker { position:absolute; top:0; right:0; } .toolbar { justify-content:stretch; margin-top:0; } .topbar-side .control,.topbar-side .search { flex:1 1 100%; width:100%; } .search { min-width:0; } .layout { grid-template-columns:1fr; } .genres-panel { order:0; } .list-panel { order:1; } .editor-panel { order:2; } .entry-list { max-height:none; } }
   </style>
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
-      <div>
+      <div class="brand">
         <div class="eyebrow" data-i18n="eyebrow">Local memory console</div>
         <h1>Kiokuko Web</h1>
-        <p class="subtitle" data-i18n="subtitle">Browse SQLite memory by bot role, memory type, and cross-cutting tags, and safely edit candidate entries.</p>
+        <p class="subtitle" data-i18n="subtitle">Browse SQLite memory by role and purpose, memory type, and cross-cutting tags, and safely edit candidate entries.</p>
       </div>
-      <div class="toolbar">
-        <select id="locale" class="control" aria-label="Language" data-i18n-aria-label="languageLabel"></select>
-        <select id="workspace" class="control" aria-label="Workspace" data-i18n-aria-label="workspaceLabel"></select>
-        <input id="search" class="search" type="search" placeholder="Search memory…" aria-label="Search memory…" data-i18n-placeholder="searchPlaceholder" data-i18n-aria-label="searchPlaceholder">
-        <button id="refresh" class="button" type="button" data-i18n="refresh">Refresh</button>
+      <div class="topbar-side">
+        <div id="language-picker" class="language-picker">
+          <button id="language-toggle" class="language-toggle" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="language-menu" aria-label="Language" data-i18n-aria-label="languageLabel">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"></path></svg>
+          </button>
+          <div id="language-menu" class="language-menu" role="menu" aria-label="Language" data-i18n-aria-label="languageLabel" hidden></div>
+        </div>
+        <div class="toolbar">
+          <select id="workspace" class="control" aria-label="Workspace" data-i18n-aria-label="workspaceLabel"></select>
+          <input id="search" class="search" type="search" placeholder="Search memory…" aria-label="Search memory…" data-i18n-placeholder="searchPlaceholder" data-i18n-aria-label="searchPlaceholder">
+          <button id="refresh" class="button" type="button" data-i18n="refresh">Refresh</button>
+        </div>
       </div>
     </header>
     <div id="status" class="status" role="status"></div>
     <section class="layout">
       <aside class="panel genres-panel">
-        <div class="panel-head"><h2 data-i18n="filtersPanelTitle">Bot role / tags</h2></div>
-        <nav id="genres" class="genres" aria-label="Filter by bot role, memory type, or tag" data-i18n-aria-label="filtersNavLabel"></nav>
+        <div class="panel-head"><h2 data-i18n="filtersPanelTitle">Role and purpose / tags</h2></div>
+        <nav id="genres" class="genres" aria-label="Filter by role and purpose, memory type, or tag" data-i18n-aria-label="filtersNavLabel"></nav>
       </aside>
       <section class="panel list-panel">
         <div class="panel-head"><h2 id="list-title">Memory</h2><span id="result-count" class="badge">0 items</span></div>
@@ -166,6 +187,35 @@ export const WEB_HTML = String.raw`<!doctype html>
     const setStatus = (message, error = false) => { state.localizedStatus = null; showStatus(message, error); };
     const setLocalizedStatus = (key, parameters = {}, error = false) => { state.localizedStatus = { key, parameters, error }; showStatus(t(key, parameters), error); };
     const setLocalizedCountStatus = (key, count, error = false) => { state.localizedStatus = { key, count, error, plural: true }; showStatus(tp(key, count), error); };
+    const renderLanguageMenu = () => {
+      const menu = $('language-menu');
+      menu.replaceChildren(...i18n.locales.map((locale) => {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'language-option';
+        option.lang = locale;
+        option.dataset.locale = locale;
+        option.setAttribute('role', 'menuitemradio');
+        option.setAttribute('aria-checked', String(locale === state.locale));
+        option.textContent = i18n.localeLabels[locale];
+        option.addEventListener('click', () => selectLocale(locale));
+        return option;
+      }));
+    };
+    const setLanguageMenuOpen = (open, restoreFocus = false) => {
+      const menu = $('language-menu');
+      const toggle = $('language-toggle');
+      menu.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+      if (open) requestAnimationFrame(() => menu.querySelector('[aria-checked="true"]')?.focus());
+      else if (restoreFocus) toggle.focus();
+    };
+    const selectLocale = (value) => {
+      state.locale = normalizeLocale(value) || i18n.defaultLocale;
+      try { localStorage.setItem(localeStorageKey, state.locale); } catch {}
+      setLanguageMenuOpen(false, true);
+      applyTranslations(); renderFilters(); renderEntries(); renderRuns(); renderRunDetail(); updateEditorState();
+    };
     const applyTranslations = () => {
       document.documentElement.lang = state.locale;
       document.querySelectorAll('[data-i18n]').forEach((element) => { element.textContent = t(element.dataset.i18n); });
@@ -175,7 +225,7 @@ export const WEB_HTML = String.raw`<!doctype html>
         const value = labelForStatus(element.dataset.i18nStatus);
         if ('value' in element) element.value = value; else element.textContent = value;
       });
-      $('locale').value = state.locale;
+      renderLanguageMenu();
       if (state.localizedStatus) showStatus(state.localizedStatus.plural ? tp(state.localizedStatus.key, state.localizedStatus.count) : t(state.localizedStatus.key, state.localizedStatus.parameters), state.localizedStatus.error);
     };
     const api = async (path, options) => {
@@ -322,12 +372,27 @@ export const WEB_HTML = String.raw`<!doctype html>
     async function loadEntries() { if (!state.workspace) return; try { const params = new URLSearchParams({ workspace: state.workspace }); if (state.kind !== 'all') params.set('kind', state.kind); if (state.tag) params.set('tag', state.tag); if (state.query) params.set('q', state.query); const result = await api('/api/entries?' + params); state.entries = result.entries; if (state.selected && !state.entries.some((entry) => entry.id === state.selected.id)) state.selected = null; renderEntries(); renderFilters(); if (!state.selected && state.entries[0]) await selectEntry(state.entries[0].id); else renderEditor(); setLocalizedCountStatus('displayedCount', result.entries.length); } catch (error) { setStatus(error.message, true); } }
     async function loadTags() { if (!state.workspace) return; try { const result = await api('/api/tags?workspace=' + encodeURIComponent(state.workspace)); state.tags = result.tags; renderFilters(); } catch (error) { setStatus(error.message, true); } }
     async function loadWorkspaces() { try { const result = await api('/api/workspaces'); const select = $('workspace'); select.replaceChildren(...result.workspaces.map((item) => { const option = document.createElement('option'); option.value = item.workspace; option.textContent = (item.displayName || item.workspace) + ' (' + item.count + ')'; return option; })); if (!state.workspace && result.workspaces[0]) state.workspace = result.workspaces[0].workspace; select.value = state.workspace; if (state.workspace) { await loadTags(); await loadEntries(); await loadRuns(); } else setLocalizedStatus('noWorkspace', {}, true); } catch (error) { setStatus(error.message, true); } }
-    $('locale').replaceChildren(...i18n.locales.map((locale) => { const option = document.createElement('option'); option.value = locale; option.lang = locale; option.textContent = i18n.localeLabels[locale]; return option; }));
-    $('locale').addEventListener('change', (event) => {
-      state.locale = normalizeLocale(event.target.value) || i18n.defaultLocale;
-      try { localStorage.setItem(localeStorageKey, state.locale); } catch {}
-      applyTranslations(); renderFilters(); renderEntries(); renderRuns(); renderRunDetail(); updateEditorState();
+    $('language-toggle').addEventListener('click', () => {
+      setLanguageMenuOpen($('language-toggle').getAttribute('aria-expanded') !== 'true');
     });
+    $('language-toggle').addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      setLanguageMenuOpen(true);
+    });
+    $('language-menu').addEventListener('keydown', (event) => {
+      const options = [...$('language-menu').querySelectorAll('.language-option')];
+      const current = options.indexOf(document.activeElement);
+      let next = null;
+      if (event.key === 'ArrowDown') next = options[(current + 1) % options.length];
+      if (event.key === 'ArrowUp') next = options[(current - 1 + options.length) % options.length];
+      if (event.key === 'Home') next = options[0];
+      if (event.key === 'End') next = options.at(-1);
+      if (event.key === 'Escape') { event.preventDefault(); setLanguageMenuOpen(false, true); return; }
+      if (next) { event.preventDefault(); next.focus(); }
+    });
+    document.addEventListener('click', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
+    document.addEventListener('focusin', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
     $('workspace').addEventListener('change', (event) => { state.workspace = event.target.value; state.selected = null; state.selectedRun = null; state.runs = []; state.tag = ''; loadTags().then(loadEntries).then(loadRuns); });
     $('refresh').addEventListener('click', () => loadWorkspaces());
     let searchTimer; $('search').addEventListener('input', (event) => { clearTimeout(searchTimer); state.query = event.target.value.trim(); searchTimer = setTimeout(() => loadEntries(), 180); });

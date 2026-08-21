@@ -19,6 +19,8 @@ npmパッケージ名は`@askdkc/kiokuko`ですが、インストールされる
 
 `setup`は明示的に実行する冪等な処理です。npmの`postinstall`がAIクライアントの設定を変更することはありません。既存のTOML/JSON/JSONC設定、コメント、指示内容、改行コード、ファイルモードを維持し、Kiokukoは管理対象セクションだけを更新します。
 
+既存データベースに未適用のマイグレーションがある場合、setupは先に現在のユーザー用データディレクトリ内の`backups/`へバックアップを作成し、整合性を検査します。現在のKiokukoより新しいバージョンで更新されたデータベースは変更せず拒否します。
+
 ```bash
 # 書き込まずに変更対象ファイルと予定内容を確認
 kiokuko setup --dry-run --json
@@ -40,7 +42,7 @@ kiokuko setup --command /absolute/path/to/kiokuko
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`または`~/.config/opencode/opencode.json` | 同じディレクトリの`AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` | — |
 
-OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。管理対象のOpenCodeガードは、可視エージェントを12 stepに制限し、1ユーザー要求につき`task_prepare`と`memory_checkpoint`を各1回までにし、チェックポイント後のツール利用を閉じ、同一呼び出しまたは同一結果が3回続いた後の再実行を停止します。カウンターとフィンガープリントはプロセスメモリにだけ保持します。
+OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。管理対象のOpenCodeガードは、可視エージェントを12 stepに制限し、1ユーザー要求につき`task_prepare`と`memory_checkpoint`を各1回までにし、チェックポイント後のツール利用を閉じ、同一呼び出しまたは読み取り専用の探索結果が3回続いた後の再実行を停止します。カウンターとフィンガープリントはプロセスメモリにだけ保持します。
 
 ## 記憶のスコープ
 
@@ -81,7 +83,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator形式の知識取り込み
 
-重要な作業では、セットアップ済みのエージェント指示が`task_prepare`を呼び出します。このツールはタスク種別、対象、成功条件など、不足している価値の高い項目だけを質問し、クエリとBot用途タグからローカル記憶を選択します。クライアントが現在利用可能なSKILLとMCPツールの名前を渡した場合は、必要な機能を照合し、`available`、`missing`、`unknown`を区別して返します。この一覧は一時的にだけ使用され、保存されません。CLIの`guide`コマンドでも同じ取り込みを手動実行できます。
+重要な作業では、セットアップ済みのエージェント指示が`task_prepare`を呼び出します。このツールはタスク種別、対象、成功条件など、不足している価値の高い項目だけを質問し、クエリと役割・用途タグからローカル記憶を選択します。クライアントが現在利用可能なSKILLとMCPツールの名前を渡した場合は、必要な機能を照合し、`available`、`missing`、`unknown`を区別して返します。この一覧は一時的にだけ使用され、保存されません。CLIの`guide`コマンドでも同じ取り込みを手動実行できます。
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \
@@ -103,7 +105,7 @@ capability一覧の省略は0件ではなく「不明」として扱い、フォ
 
 ## ローカルWeb UI
 
-ループバック専用HTTPサーバーを起動すると、Bot用途、記憶タイプ、横断タグで記憶エントリを閲覧し、ブラウザからcandidateエントリを編集できます。
+ループバック専用HTTPサーバーを起動すると、役割・用途、記憶タイプ、横断タグで記憶エントリを閲覧し、ブラウザからcandidateエントリを編集できます。
 
 ```bash
 kiokuko web

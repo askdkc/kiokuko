@@ -87,6 +87,30 @@ test('rejects a changed checksum for an applied migration', async () => {
   }
 });
 
+test('rejects a database created by a newer migration set without changing it', async () => {
+  const directory = await temporaryDirectory('future-version');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await writeFile(path.join(migrationsDirectory, '001_initial.sql'), 'CREATE TABLE future_fixture (id INTEGER PRIMARY KEY);\n');
+  const databasePath = path.join(directory, 'data.sqlite3');
+  const connection = openConnection(databasePath);
+  try {
+    migrateDatabase(connection, migrationsDirectory);
+    connection.prepare(`
+      INSERT INTO schema_migrations (version, name, checksum, applied_at)
+      VALUES (2, '002_from_the_future.sql', ?, ?)
+    `).run('f'.repeat(64), '2026-08-21T00:00:00.000Z');
+    const before = connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count;
+    assert.throws(
+      () => migrateDatabase(connection, migrationsDirectory),
+      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR' && /newer/i.test((error as Error).message),
+    );
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, before);
+  } finally {
+    connection.close();
+  }
+});
+
 test('rolls back the complete migration when SQL fails', async () => {
   const directory = await temporaryDirectory('rollback');
   const migrationsDirectory = path.join(directory, 'migrations');

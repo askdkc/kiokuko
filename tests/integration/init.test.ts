@@ -12,6 +12,7 @@ import { initializeDatabase } from '../../src/commands/init.js';
   assert.equal(result.databasePath, databasePath);
   await access(databasePath);
   assert.equal(result.currentVersion, 4);
+  assert.equal(result.backupPath, null);
   assert.equal(result.capabilities.driver, 'node:sqlite');
   assert.equal(result.capabilities.foreignKeys, true);
   assert.equal(result.capabilities.journalMode, 'wal');

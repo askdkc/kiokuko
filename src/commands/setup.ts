@@ -47,6 +47,8 @@ export interface SetupResult {
   clients: SetupClient[];
   databasePath: string;
   databaseAction: 'initialized' | 'planned';
+  databaseBackupPath: string | null;
+  appliedMigrations: number[];
   files: Array<Pick<PlannedFile, 'path' | 'action' | 'purpose' | 'client'>>;
   dryRun: boolean;
   nextStep: string;
@@ -139,16 +141,20 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
     clients,
     databasePath,
     databaseAction: options.dryRun ? 'planned' : 'initialized',
+    databaseBackupPath: null,
+    appliedMigrations: [],
     files: files.map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
     dryRun: options.dryRun ?? false,
     nextStep: `Restart ${clients.map((client) => client === 'codex' ? 'Codex' : client === 'opencode' ? 'OpenCode' : 'Claude Code').join(' and ')} so ${clients.length === 1 ? 'it reloads' : 'they reload'} global MCP and instruction configuration.`,
   };
   if (options.dryRun) return result;
 
-  await initializeDatabase({
+  const initialized = await initializeDatabase({
     databasePath,
     ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
   });
+  result.databaseBackupPath = initialized.backupPath;
+  result.appliedMigrations = initialized.applied;
   const database = openConnection(databasePath);
   try {
     ensureGlobalWorkspace(database);

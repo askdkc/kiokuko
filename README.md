@@ -32,6 +32,11 @@ configuration. Existing TOML/JSON/JSONC settings, comments, instruction content,
 line endings, and file modes are preserved; Kiokuko owns only its managed
 sections.
 
+When an existing database has pending migrations, setup first creates and
+integrity-checks a backup in the adjacent `backups/` directory under the current
+user's data directory. A
+database written by a newer Kiokuko version is rejected without modification.
+
 ```bash
 # Preview exact target files without writing anything
 kiokuko setup --dry-run --json
@@ -58,8 +63,9 @@ preserves comments. If Codex already has an unmanaged
 `[mcp_servers.kiokuko]` table, setup refuses to guess which configuration to
 overwrite. The managed OpenCode guard caps visible agents at 12 steps, permits
 `task_prepare` and `memory_checkpoint` only once per user request, closes tool
-use after a checkpoint, and stops repeated calls/results after three unchanged
-iterations. It keeps its counters and fingerprints in process memory only.
+use after a checkpoint, and stops repeated calls or read-only discovery results
+after three unchanged iterations. It keeps its counters and fingerprints in
+process memory only.
 
 ## Memory scope
 
@@ -116,7 +122,7 @@ requires it.
 
 For non-trivial work, the installed agent instructions call `task_prepare`.
 That tool asks only for missing high-value fields such as the task type, target,
-and success condition, then selects local memory by query and Bot-purpose tags.
+and success condition, then selects local memory by query and role and purpose tags.
 If the client supplies its currently available skill and MCP-tool names, the
 result also identifies matching capabilities and clearly distinguishes
 available, missing, and unknown skills. The catalog is ephemeral and is not
@@ -150,7 +156,7 @@ executed as a command. Repeated sync is content-hash idempotent.
 
 ## Local web UI
 
-Start a loopback-only HTTP server to browse memory entries by Bot purpose,
+Start a loopback-only HTTP server to browse memory entries by role and purpose,
 memory type, and cross-cutting tags, and edit candidate entries from the browser:
 
 ```bash

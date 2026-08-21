@@ -19,6 +19,8 @@ npm 패키지 이름은 `@askdkc/kiokuko`이지만 설치되는 CLI 명령 이�
 
 `setup`은 명시적으로 실행하는 멱등 작업입니다. npm `postinstall`은 AI 클라이언트 설정을 수정하지 않습니다. 기존 TOML/JSONC 설정, 주석, 지침 내용, 줄바꿈 형식 및 파일 모드는 유지되며 Kiokuko는 관리 구역만 수정합니다.
 
+기존 데이터베이스에 적용되지 않은 마이그레이션이 있으면 setup은 먼저 현재 사용자의 데이터 디렉터리 안에 있는 `backups/`에 백업을 만들고 무결성을 검사합니다. 현재 Kiokuko보다 새로운 버전에서 기록된 데이터베이스는 변경하지 않고 거부합니다.
+
 ```bash
 # 아무것도 쓰지 않고 정확한 대상 파일과 예정된 변경 사항 확인
 kiokuko setup --dry-run --json
@@ -40,7 +42,7 @@ kiokuko setup --command /absolute/path/to/kiokuko
 | OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 또는 `~/.config/opencode/opencode.json` | 같은 디렉터리의 `AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 또는 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 또는 `~/.claude/CLAUDE.md` | — |
 
-OpenCode의 `opencode.jsonc`가 이미 있으면 Kiokuko는 주석을 유지하면서 해당 파일을 수정합니다. Codex에 Kiokuko가 관리하지 않는 `[mcp_servers.kiokuko]` 테이블이 이미 있으면 어떤 설정을 덮어쓸지 추측하지 않고 설정을 중단합니다. 관리되는 OpenCode 가드는 보이는 에이전트를 12 step으로 제한하고, 사용자 요청마다 `task_prepare`와 `memory_checkpoint`를 각각 한 번만 허용하며, 체크포인트 후 도구 단계를 닫고, 동일 호출 또는 동일 결과가 세 번 연속 나온 뒤의 재실행을 차단합니다. 카운터와 지문은 프로세스 메모리에만 보관됩니다.
+OpenCode의 `opencode.jsonc`가 이미 있으면 Kiokuko는 주석을 유지하면서 해당 파일을 수정합니다. Codex에 Kiokuko가 관리하지 않는 `[mcp_servers.kiokuko]` 테이블이 이미 있으면 어떤 설정을 덮어쓸지 추측하지 않고 설정을 중단합니다. 관리되는 OpenCode 가드는 보이는 에이전트를 12 step으로 제한하고, 사용자 요청마다 `task_prepare`와 `memory_checkpoint`를 각각 한 번만 허용하며, 체크포인트 후 도구 단계를 닫고, 동일 호출 또는 읽기 전용 탐색 결과가 세 번 연속 나온 뒤의 재실행을 차단합니다. 카운터와 지문은 프로세스 메모리에만 보관됩니다.
 
 ## 메모리 범위
 
@@ -81,7 +83,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator 방식 지식 수집
 
-중요한 작업에서는 설정된 에이전트 지침이 `task_prepare`를 호출합니다. 이 도구는 작업 유형, 대상 및 성공 조건과 같이 누락된 고가치 필드만 질문한 뒤 쿼리와 Bot 목적 태그를 사용하여 로컬 메모리를 선택합니다. 클라이언트가 현재 사용 가능한 스킬과 MCP 도구 이름을 제공하면 필요한 기능을 매칭하고 `available`, `missing`, `unknown`을 구분해 반환합니다. 이 목록은 일시적으로만 사용되며 저장되지 않습니다. CLI의 `guide` 명령으로 같은 수집을 수동 실행할 수 있습니다.
+중요한 작업에서는 설정된 에이전트 지침이 `task_prepare`를 호출합니다. 이 도구는 작업 유형, 대상 및 성공 조건과 같이 누락된 고가치 필드만 질문한 뒤 쿼리와 역할과 용도 태그를 사용하여 로컬 메모리를 선택합니다. 클라이언트가 현재 사용 가능한 스킬과 MCP 도구 이름을 제공하면 필요한 기능을 매칭하고 `available`, `missing`, `unknown`을 구분해 반환합니다. 이 목록은 일시적으로만 사용되며 저장되지 않습니다. CLI의 `guide` 명령으로 같은 수집을 수동 실행할 수 있습니다.
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \
@@ -103,7 +105,7 @@ capability 목록 생략은 0개가 아니라 "알 수 없음"으로 처리되�
 
 ## 로컬 Web UI
 
-루프백 전용 HTTP 서버를 시작하면 Bot 목적, 메모리 유형 및 교차 태그별로 메모리 항목을 탐색하고 브라우저에서 candidate 항목을 편집할 수 있습니다.
+루프백 전용 HTTP 서버를 시작하면 역할과 용도, 메모리 유형 및 교차 태그별로 메모리 항목을 탐색하고 브라우저에서 candidate 항목을 편집할 수 있습니다.
 
 ```bash
 kiokuko web

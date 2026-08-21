@@ -32,12 +32,14 @@ test('caps visible OpenCode agents at twelve steps while preserving stricter lim
       custom: { steps: 30 },
       strict: { steps: 5 },
       summary: {},
+      hidden: { hidden: true, steps: 30 },
     },
   };
   await hooks.config!(config);
   assert.equal(config.agent.custom.steps, 12);
   assert.equal(config.agent.strict.steps, 5);
   assert.equal('steps' in config.agent.summary, false);
+  assert.equal(config.agent.hidden.steps, 30);
   for (const name of ['build', 'plan', 'general', 'explore', 'scout']) {
     assert.equal((config.agent as Record<string, { steps?: number }>)[name]?.steps, 12);
   }
@@ -100,4 +102,11 @@ test('blocks consecutive identical calls and repeated no-progress results', asyn
     before({ tool: 'read', sessionID, callID: 'after-stagnation' }, { args: { filePath: 'README.md' } }),
     /three consecutive tool calls produced the same result/,
   );
+
+  await chat({ sessionID, messageID: 'message-mutating' }, {});
+  for (let index = 0; index < 4; index += 1) {
+    const input = { tool: 'apply_patch', sessionID, callID: `patch-${index}`, args: { patch: `change-${index}` } };
+    await before(input, { args: input.args });
+    await after(input, { title: 'Applied', output: 'Done!', metadata: {} });
+  }
 });

@@ -40,7 +40,9 @@ export function openConnection(filePath: string, options: ConnectionOptions = {}
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
   `);
-  configureJournalMode(database);
-  database.exec('PRAGMA synchronous = NORMAL;');
+  if (!options.readOnly) {
+    configureJournalMode(database);
+    database.exec('PRAGMA synchronous = NORMAL;');
+  }
   return new NodeSqliteAdapter(filePath, database);
 }
