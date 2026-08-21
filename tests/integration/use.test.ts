@@ -30,18 +30,18 @@ test('use creates binding and AGENTS.md, then is unchanged on repeat', async () 
   await access(databasePath);
 });
 
-test('use creates version-4 binding, result, and repository metadata', async () => {
+test('use creates version-5 binding, result, and repository metadata', async () => {
   const root = await repository('version');
   const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-data-'));
   const databasePath = path.join(data, 'kiokuko.sqlite3');
   const result = await useRepository({ root, databasePath });
   const binding = JSON.parse(await readFile(path.join(root, '.kiokuko.json'), 'utf8')) as { templateVersion: number };
-  assert.equal(result.templateVersion, 4);
-  assert.equal(binding.templateVersion, 4);
+  assert.equal(result.templateVersion, 5);
+  assert.equal(binding.templateVersion, 5);
 
   const database = openConnection(databasePath);
   try {
-    assert.equal(database.prepare('SELECT agent_template_version AS version FROM repositories WHERE repository_id = ?').get<{ version: number }>(result.repositoryId)?.version, 4);
+    assert.equal(database.prepare('SELECT agent_template_version AS version FROM repositories WHERE repository_id = ?').get<{ version: number }>(result.repositoryId)?.version, 5);
   } finally {
     database.close();
   }
@@ -69,12 +69,12 @@ test('use upgrades a version-1 binding and managed block without changing identi
   const upgradedBinding = JSON.parse(await readFile(bindingPath, 'utf8')) as { repositoryId: string; workspace: string; templateVersion: number };
   assert.equal(upgraded.agentFileAction, 'updated');
   assert.equal(upgraded.bindingAction, 'updated');
-  assert.equal(upgraded.templateVersion, 4);
+  assert.equal(upgraded.templateVersion, 5);
   assert.equal(upgradedBinding.repositoryId, first.repositoryId);
   assert.equal(upgradedBinding.workspace, 'upgrade-workspace');
-  assert.equal(upgradedBinding.templateVersion, 4);
+  assert.equal(upgradedBinding.templateVersion, 5);
   assert.match(upgradedAgent, /^human before\r\n/);
-  assert.match(upgradedAgent, /<!-- kiokuko-template-version: 4 -->/);
+  assert.match(upgradedAgent, /<!-- kiokuko-template-version: 5 -->/);
   assert.match(upgradedAgent, /\r\nhuman after\r\n$/);
 
   const repeatedAgent = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
@@ -88,7 +88,7 @@ test('use upgrades a version-1 binding and managed block without changing identi
     const row = database.prepare('SELECT repository_id AS repositoryId, workspace, agent_template_version AS version FROM repositories WHERE repository_id = ?').get<{ repositoryId: string; workspace: string; version: number }>(first.repositoryId);
     assert.equal(row?.repositoryId, first.repositoryId);
     assert.equal(row?.workspace, 'upgrade-workspace');
-    assert.equal(row?.version, 4);
+    assert.equal(row?.version, 5);
   } finally {
     database.close();
   }
@@ -101,7 +101,7 @@ test('use dry-run does not create database or repository files', async () => {
   const databasePath = path.join(data, 'kiokuko.sqlite3');
   const result = await useRepository({ root, databasePath, dryRun: true });
   assert.equal(result.dryRun, true);
-  assert.equal(result.templateVersion, 4);
+  assert.equal(result.templateVersion, 5);
   assert.equal(result.bindingAction, 'planned');
   assert.equal(result.agentFileAction, 'created');
   await assert.rejects(access(path.join(root, '.kiokuko.json')));
@@ -115,16 +115,16 @@ test('no-agent-file still upgrades version metadata without creating AGENTS.md',
   const databasePath = path.join(data, 'kiokuko.sqlite3');
   const result = await useRepository({ root, databasePath, noAgentFile: true });
   const binding = JSON.parse(await readFile(path.join(root, '.kiokuko.json'), 'utf8')) as { templateVersion: number };
-  assert.equal(result.templateVersion, 4);
+  assert.equal(result.templateVersion, 5);
   assert.equal(result.agentFile, null);
   assert.equal(result.agentFileAction, 'skipped');
   assert.equal(result.bindingAction, 'created');
-  assert.equal(binding.templateVersion, 4);
+  assert.equal(binding.templateVersion, 5);
   await assert.rejects(access(path.join(root, 'AGENTS.md')));
 
   const database = openConnection(databasePath);
   try {
-    assert.equal(database.prepare('SELECT agent_template_version AS version FROM repositories WHERE repository_id = ?').get<{ version: number }>(result.repositoryId)?.version, 4);
+    assert.equal(database.prepare('SELECT agent_template_version AS version FROM repositories WHERE repository_id = ?').get<{ version: number }>(result.repositoryId)?.version, 5);
   } finally {
     database.close();
   }

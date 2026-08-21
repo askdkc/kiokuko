@@ -17,4 +17,6 @@ database, config, or instruction files.
 The generated instructions describe the high-level `task_prepare`,
 `task_answer`, and `memory_checkpoint` MCP lifecycle, with `memory_recall`
 remaining available for explicit retrieval. They do not require a foreground
-server, shell event streaming, hooks, or plugins.
+server or shell event streaming. OpenCode setup additionally writes the
+dependency-free managed `plugins/kiokuko-loop-guard.js`; Codex and Claude Code
+remain instruction-only.

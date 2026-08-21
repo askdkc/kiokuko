@@ -5,7 +5,7 @@ Status: global MCP integration for Codex, OpenCode, and Claude Code; lifecycle h
 | Client | Global MCP registration | Global instructions | Automatic-use level | Hooks/plugins |
 |---|---|---|---|---|
 | Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | instruction-driven, best effort | not installed |
-| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | instruction-driven, best effort | not installed |
+| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | instructions plus bounded enforcement | managed `plugins/kiokuko-loop-guard.js` |
 | Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | instruction-driven, best effort | not installed |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | client-specific | none |
 
@@ -28,7 +28,14 @@ instruction surfaces, but does not install client skills:
 ## Guarantees and non-guarantees
 
 Setup guarantees safe, repeatable configuration merging and makes the four MCP
-tools available globally after the client reloads its configuration. Global
+tools available globally after the client reloads its configuration. For
+OpenCode it also installs a dependency-free local guard through the documented
+global plugin directory. The guard caps visible agents at 12 steps, rejects a
+second `task_prepare` or `memory_checkpoint` in one user turn, rejects tool use
+after a completed checkpoint, and blocks a fourth identical call or the next
+call after three identical results. State consists only of in-memory counters
+and SHA-256 fingerprints and is cleared on the next user message or terminal
+session event. Global
 instructions request `task_prepare` before non-trivial work, grounded
 `task_answer` calls when intake fields are missing, and checkpointing after
 substantial verified work.
@@ -38,11 +45,11 @@ prompt. Therefore “automatic” means no per-repository install and no manual 
 lifecycle after one-time setup; it does not mean Kiokuko intercepts every
 prompt or response.
 
-Kiokuko does not install Codex/Claude hooks or OpenCode plugins by default. Those
-surfaces can observe more lifecycle data, but they add trust prompts, versioned
-event-shape dependencies, and transcript/privacy risk. Adding them later must
-be a separate explicit opt-in with clean-room fixtures and bounded sanitized
-payloads.
+Kiokuko does not install Codex or Claude hooks. The OpenCode loop guard is the
+only installed plugin; it observes tool names, arguments, and results only long
+enough to fingerprint them in memory and never logs or persists those values.
+Broader lifecycle capture remains out of scope because it would add versioned
+event-shape dependencies and transcript/privacy risk.
 
 `task_prepare` can accept an ephemeral catalog of skill and MCP-tool names from
 the calling client. Kiokuko matches Akinator policy recommendations and task

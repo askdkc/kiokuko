@@ -44,8 +44,9 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     env: temporary.env,
     databasePath: temporary.databasePath,
   });
-  assert.equal(first.files.length, 6);
+  assert.equal(first.files.length, 7);
   assert.equal(first.files.filter((file) => file.action === 'updated').length, 6);
+  assert.equal(first.files.filter((file) => file.action === 'created').length, 1);
 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
   assert.match(codexConfig, /^model = "gpt-test"/);
@@ -56,6 +57,9 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   const openCode = parse(openCodeText) as { theme: string; mcp: { kiokuko: { type: string; command: string[]; enabled: boolean } } };
   assert.equal(openCode.theme, 'dark');
   assert.deepEqual(openCode.mcp.kiokuko, { type: 'local', command: ['kiokuko', 'mcp'], enabled: true });
+  const openCodeGuard = await readFile(path.join(openCodeDirectory, 'plugins', 'kiokuko-loop-guard.js'), 'utf8');
+  assert.match(openCodeGuard, /MAX_AGENT_STEPS = 12/);
+  assert.match(openCodeGuard, /task_prepare is limited to once per user request/);
   const claude = JSON.parse(await readFile(path.join(temporary.home, '.claude.json'), 'utf8')) as { theme: string; mcpServers: { kiokuko: { type: string; command: string; args: string[]; env: object } } };
   assert.equal(claude.theme, 'dark');
   assert.deepEqual(claude.mcpServers.kiokuko, { type: 'stdio', command: 'kiokuko', args: ['mcp'], env: {} });

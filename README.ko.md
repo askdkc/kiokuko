@@ -34,13 +34,13 @@ kiokuko setup --command /absolute/path/to/kiokuko
 
 설정 대상은 다음과 같습니다.
 
-| 클라이언트 | MCP 설정 | 전역 지침 |
-|---|---|---|
-| Codex | `$CODEX_HOME/config.toml` 또는 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 또는 `~/.codex/AGENTS.md` |
-| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 또는 `~/.config/opencode/opencode.json` | 같은 디렉터리의 `AGENTS.md` |
-| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 또는 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 또는 `~/.claude/CLAUDE.md` |
+| 클라이언트 | MCP 설정 | 전역 지침 | 런타임 가드 |
+|---|---|---|---|
+| Codex | `$CODEX_HOME/config.toml` 또는 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 또는 `~/.codex/AGENTS.md` | — |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 또는 `~/.config/opencode/opencode.json` | 같은 디렉터리의 `AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 또는 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 또는 `~/.claude/CLAUDE.md` | — |
 
-OpenCode의 `opencode.jsonc`가 이미 있으면 Kiokuko는 주석을 유지하면서 해당 파일을 수정합니다. Codex에 Kiokuko가 관리하지 않는 `[mcp_servers.kiokuko]` 테이블이 이미 있으면 어떤 설정을 덮어쓸지 추측하지 않고 설정을 중단합니다.
+OpenCode의 `opencode.jsonc`가 이미 있으면 Kiokuko는 주석을 유지하면서 해당 파일을 수정합니다. Codex에 Kiokuko가 관리하지 않는 `[mcp_servers.kiokuko]` 테이블이 이미 있으면 어떤 설정을 덮어쓸지 추측하지 않고 설정을 중단합니다. 관리되는 OpenCode 가드는 보이는 에이전트를 12 step으로 제한하고, 사용자 요청마다 `task_prepare`와 `memory_checkpoint`를 각각 한 번만 허용하며, 체크포인트 후 도구 단계를 닫고, 동일 호출 또는 동일 결과가 세 번 연속 나온 뒤의 재실행을 차단합니다. 카운터와 지문은 프로세스 메모리에만 보관됩니다.
 
 ## 메모리 범위
 
@@ -53,12 +53,12 @@ OpenCode의 `opencode.jsonc`가 이미 있으면 Kiokuko는 주석을 유지하�
 
 MCP 인터페이스는 의도적으로 작게 유지됩니다.
 
-- `task_prepare`: Akinator 방식 수집, 제한된 메모리/참조 검색, 현재 클라이언트가 제공한 스킬 및 MCP 도구 이름과의 매칭을 수행합니다.
+- `task_prepare`: 사용자 요청마다 한 번만 Akinator 방식 수집, 제한된 메모리/참조 검색, 현재 클라이언트가 제공한 스킬 및 MCP 도구 이름과의 매칭을 수행합니다.
 - `task_answer`: 사용자 요청 또는 검증된 저장소 근거로 뒷받침되는 답변만 사용해 수집을 계속합니다.
 - `memory_recall`: 제한된 project/global 컨텍스트를 읽으며 항상 untrusted로 표시합니다.
-- `memory_checkpoint`: 제한된 지속성 항목을 `candidate` 및 `untrusted`로 저장합니다. 비밀 정보로 보이는 내용은 거부됩니다.
+- `memory_checkpoint`: 사용자 요청 마지막에 한 번만 제한된 지속성 항목을 `candidate` 및 `untrusted`로 저장합니다. 비밀 정보로 보이는 내용은 거부됩니다.
 
-이는 지침에 기반한 자동 사용이며 프롬프트 가로채기가 아닙니다. Codex, OpenCode 및 Claude Code가 특정 턴에서 도구를 호출하지 않을 가능성은 여전히 있습니다. Kiokuko는 훅을 설치하거나 전체 대화를 수집하거나 가져온 스킬을 자동 설치하거나 메모리를 조용히 verified 상태로 승격하지 않습니다.
+이는 지침에 기반한 자동 사용이며 프롬프트 가로채기가 아닙니다. Codex, OpenCode 및 Claude Code가 특정 턴에서 도구를 호출하지 않을 가능성은 여전히 있습니다. OpenCode 설정은 위에서 설명한 제한된 로컬 루프 가드만 설치합니다. Kiokuko는 전체 대화를 수집하거나 가져온 스킬을 자동 설치하거나 메모리를 조용히 verified 상태로 승격하지 않습니다.
 
 ## 개발
 

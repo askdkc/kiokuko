@@ -34,13 +34,13 @@ kiokuko setup --command /absolute/path/to/kiokuko
 
 セットアップ対象は次のとおりです。
 
-| クライアント | MCP設定 | グローバル指示 |
-|---|---|---|
-| Codex | `$CODEX_HOME/config.toml`または`~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md`または`~/.codex/AGENTS.md` |
-| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`または`~/.config/opencode/opencode.json` | 同じディレクトリの`AGENTS.md` |
-| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` |
+| クライアント | MCP設定 | グローバル指示 | 実行時ガード |
+|---|---|---|---|
+| Codex | `$CODEX_HOME/config.toml`または`~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md`または`~/.codex/AGENTS.md` | — |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`または`~/.config/opencode/opencode.json` | 同じディレクトリの`AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` | — |
 
-OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。
+OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。管理対象のOpenCodeガードは、可視エージェントを12 stepに制限し、1ユーザー要求につき`task_prepare`と`memory_checkpoint`を各1回までにし、チェックポイント後のツール利用を閉じ、同一呼び出しまたは同一結果が3回続いた後の再実行を停止します。カウンターとフィンガープリントはプロセスメモリにだけ保持します。
 
 ## 記憶のスコープ
 
@@ -53,12 +53,12 @@ OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメン�
 
 MCPの公開インターフェースは意図的に小さくしています。
 
-- `task_prepare`: Akinator形式の取り込み、上限付きの記憶・参照検索、現在のクライアントから渡されたSKILL/MCPツール名との照合を一度に行います。
+- `task_prepare`: 1ユーザー要求につき1回だけ、Akinator形式の取り込み、上限付きの記憶・参照検索、現在のクライアントから渡されたSKILL/MCPツール名との照合を行います。
 - `task_answer`: ユーザーの依頼または確認済みのリポジトリ情報に根拠がある回答だけで、取り込みを続行します。
 - `memory_recall`: 上限付きのproject/globalコンテキストを読み取ります。結果には常にuntrustedマークが付きます。
-- `memory_checkpoint`: 上限付きの永続的な記憶を`candidate`かつ`untrusted`として保存します。シークレットに見える内容は拒否されます。
+- `memory_checkpoint`: ユーザー要求の最後に1回だけ、上限付きの永続的な記憶を`candidate`かつ`untrusted`として保存します。シークレットに見える内容は拒否されます。
 
-これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Codeが特定のターンでツールを呼ばない可能性は残ります。Kiokukoはフックをインストールせず、会話全文を取得せず、取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。
+これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Codeが特定のターンでツールを呼ばない可能性は残ります。OpenCodeセットアップは上記の限定的なローカルループガードだけをインストールします。Kiokukoは会話全文を取得せず、取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。
 
 ## 開発
 

@@ -47,16 +47,19 @@ kiokuko setup --command /absolute/path/to/kiokuko
 
 The setup targets are:
 
-| Client | MCP config | Global instructions |
-|---|---|---|
-| Codex | `$CODEX_HOME/config.toml` or `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` or `~/.codex/AGENTS.md` |
-| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` or `~/.config/opencode/opencode.json` | the adjacent `AGENTS.md` |
-| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` or `~/.claude/CLAUDE.md` |
+| Client | MCP config | Global instructions | Runtime guard |
+|---|---|---|---|
+| Codex | `$CODEX_HOME/config.toml` or `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` or `~/.codex/AGENTS.md` | — |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` or `~/.config/opencode/opencode.json` | the adjacent `AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` or `~/.claude/CLAUDE.md` | — |
 
 If an OpenCode `opencode.jsonc` already exists, Kiokuko updates that file and
 preserves comments. If Codex already has an unmanaged
 `[mcp_servers.kiokuko]` table, setup refuses to guess which configuration to
-overwrite.
+overwrite. The managed OpenCode guard caps visible agents at 12 steps, permits
+`task_prepare` and `memory_checkpoint` only once per user request, closes tool
+use after a checkpoint, and stops repeated calls/results after three unchanged
+iterations. It keeps its counters and fingerprints in process memory only.
 
 ## Memory scope
 
@@ -73,19 +76,20 @@ full-database search:
 
 The MCP surface is deliberately small:
 
-- `task_prepare`: run the Akinator intake, recall bounded memory and references,
+- `task_prepare`: once per user request, run the Akinator intake, recall bounded memory and references,
   and match required skills/MCP tools against the capability names supplied by
   the current client.
 - `task_answer`: continue an intake only with an answer grounded in the user
   request or verified repository evidence.
 - `memory_recall`: read bounded project/global context, always marked untrusted.
-- `memory_checkpoint`: store bounded durable entries as `candidate` and
+- `memory_checkpoint`: once at the end of a user request, store bounded durable entries as `candidate` and
   `untrusted`; secret-like content is rejected.
 
 This is instruction-driven automatic use, not prompt interception. Codex,
 OpenCode, and Claude Code can still choose not to call a tool on a particular
-turn. Kiokuko does not install hooks, capture full transcripts, install fetched
-skills, or silently promote memory to verified status.
+turn. The OpenCode setup installs only the bounded local loop guard described
+above; Kiokuko does not capture full transcripts, install fetched skills, or
+silently promote memory to verified status.
 
 ## Development
 

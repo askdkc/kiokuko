@@ -22,6 +22,10 @@ test('MCP exposes high-level recall/checkpoint tools and persists candidate memo
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['memory_checkpoint', 'memory_recall', 'task_answer', 'task_prepare']);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_recall')?.annotations?.readOnlyHint, true);
+    assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
+    assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, true);
+    assert.match(tools.tools.find((tool) => tool.name === 'task_prepare')?.description ?? '', /once for the current user request/);
+    assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /call no more tools/);
 
     const checkpoint = await client.callTool({
       name: 'memory_checkpoint',

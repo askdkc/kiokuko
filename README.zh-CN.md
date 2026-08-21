@@ -34,13 +34,13 @@ kiokuko setup --command /absolute/path/to/kiokuko
 
 设置目标如下：
 
-| 客户端 | MCP 配置 | 全局指令 |
-|---|---|---|
-| Codex | `$CODEX_HOME/config.toml` 或 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 或 `~/.codex/AGENTS.md` |
-| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 或 `~/.config/opencode/opencode.json` | 同目录下的 `AGENTS.md` |
-| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 或 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 或 `~/.claude/CLAUDE.md` |
+| 客户端 | MCP 配置 | 全局指令 | 运行时防护 |
+|---|---|---|---|
+| Codex | `$CODEX_HOME/config.toml` 或 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 或 `~/.codex/AGENTS.md` | — |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 或 `~/.config/opencode/opencode.json` | 同目录下的 `AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 或 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 或 `~/.claude/CLAUDE.md` | — |
 
-如果 OpenCode 的 `opencode.jsonc` 已存在，Kiokuko 会保留注释并更新该文件。如果 Codex 中已存在不受 Kiokuko 管理的 `[mcp_servers.kiokuko]` 表，设置程序不会猜测应该覆盖哪项配置，而是直接停止。
+如果 OpenCode 的 `opencode.jsonc` 已存在，Kiokuko 会保留注释并更新该文件。如果 Codex 中已存在不受 Kiokuko 管理的 `[mcp_servers.kiokuko]` 表，设置程序不会猜测应该覆盖哪项配置，而是直接停止。受管理的 OpenCode 防护会把可见智能体限制为 12 个 step；每个用户请求最多调用一次 `task_prepare` 和一次 `memory_checkpoint`；检查点完成后关闭工具阶段；连续三次出现相同调用或相同结果后阻止再次执行。计数器和指纹仅保存在进程内存中。
 
 ## 记忆作用域
 
@@ -53,12 +53,12 @@ kiokuko setup --command /absolute/path/to/kiokuko
 
 MCP 接口被有意保持为最小范围：
 
-- `task_prepare`：执行 Akinator 式采集、有界记忆/参考检索，并与当前客户端提供的技能和 MCP 工具名称进行匹配。
+- `task_prepare`：每个用户请求仅执行一次 Akinator 式采集、有界记忆/参考检索，并与当前客户端提供的技能和 MCP 工具名称进行匹配。
 - `task_answer`：仅使用用户请求或已验证仓库证据支持的答案继续采集。
 - `memory_recall`：读取有界的 project/global 上下文，并始终标记为 untrusted。
-- `memory_checkpoint`：将有界的持久性条目保存为 `candidate` 和 `untrusted`；疑似密钥的内容会被拒绝。
+- `memory_checkpoint`：在用户请求结束时仅执行一次，将有界的持久性条目保存为 `candidate` 和 `untrusted`；疑似密钥的内容会被拒绝。
 
-这种自动使用由指令驱动，并不会拦截提示词。Codex、OpenCode 和 Claude Code 仍可能决定在某个回合不调用工具。Kiokuko 不会安装钩子、捕获完整对话、自动安装获取到的技能，也不会静默地将记忆提升为 verified 状态。
+这种自动使用由指令驱动，并不会拦截提示词。Codex、OpenCode 和 Claude Code 仍可能决定在某个回合不调用工具。OpenCode 设置只会安装上述受限的本地循环防护；Kiokuko 不会捕获完整对话、自动安装获取到的技能，也不会静默地将记忆提升为 verified 状态。
 
 ## 开发
 

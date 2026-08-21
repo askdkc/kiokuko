@@ -145,6 +145,12 @@ export function getOpenCodeInstructionsPath(options: PathEnvironment = {}): stri
   return join(getOpenCodeConfigDirectory(options), 'AGENTS.md');
 }
 
+export function getOpenCodeLoopGuardPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-loop-guard.js');
+}
+
 export async function ensurePlatformDataDirectory(options: PathEnvironment = {}): Promise<string> {
   const directory = getPlatformDataDirectory(options);
   await mkdir(directory, { recursive: true, mode: 0o700 });

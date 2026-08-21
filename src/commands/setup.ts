@@ -9,6 +9,7 @@ import {
   getGlobalDatabasePath,
   getOpenCodeConfigDirectory,
   getOpenCodeInstructionsPath,
+  getOpenCodeLoopGuardPath,
   type PathEnvironment,
 } from '../config/paths.js';
 import { initializeDatabase } from './init.js';
@@ -16,6 +17,7 @@ import { openConnection } from '../db/connection.js';
 import { ensureGlobalWorkspace } from '../memory/workspaces.js';
 import { KiokukoError } from '../errors.js';
 import { renderOpenCodeConfig } from '../setup/opencode-config.js';
+import { renderOpenCodeLoopGuard } from '../setup/opencode-loop-guard.js';
 import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
 import { renderClaudeConfig } from '../setup/claude-config.js';
 
@@ -29,7 +31,7 @@ interface PlannedFile {
   mode: number;
   original: string | undefined;
   action: SetupAction;
-  purpose: 'mcp-config' | 'instructions';
+  purpose: 'mcp-config' | 'instructions' | 'runtime-guard';
   client: SetupClient;
 }
 
@@ -126,6 +128,7 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
   if (clients.includes('opencode')) {
     files.push(await planFile(await openCodeConfigPath(pathEnvironment), 'opencode', 'mcp-config', (existing) => renderOpenCodeConfig(existing, command)));
     files.push(await planFile(getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
+    files.push(await planFile(getOpenCodeLoopGuardPath(pathEnvironment), 'opencode', 'runtime-guard', renderOpenCodeLoopGuard));
   }
   if (clients.includes('claude')) {
     files.push(await planFile(getClaudeMcpConfigPath(pathEnvironment), 'claude', 'mcp-config', (existing) => renderClaudeConfig(existing, command)));

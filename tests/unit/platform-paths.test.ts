@@ -11,6 +11,7 @@ import {
   getGlobalDatabasePath,
   getOpenCodeConfigDirectory,
   getOpenCodeInstructionsPath,
+  getOpenCodeLoopGuardPath,
   getRuntimeDescriptorPath,
   getRuntimeDirectory,
 } from '../../src/config/paths.js';
@@ -115,6 +116,7 @@ test('derives documented global Codex, OpenCode, and Claude paths without touchi
   assert.equal(getCodexInstructionsPath(options), '/tmp/fake-home/.codex/AGENTS.md');
   assert.equal(getOpenCodeConfigDirectory(options), '/tmp/fake-config/opencode');
   assert.equal(getOpenCodeInstructionsPath(options), '/tmp/fake-config/opencode/AGENTS.md');
+  assert.equal(getOpenCodeLoopGuardPath(options), '/tmp/fake-config/opencode/plugins/kiokuko-loop-guard.js');
   assert.equal(getClaudeConfigDirectory(options), '/tmp/fake-home/.claude');
   assert.equal(getClaudeMcpConfigPath(options), '/tmp/fake-home/.claude.json');
   assert.equal(getClaudeInstructionsPath(options), '/tmp/fake-home/.claude/CLAUDE.md');

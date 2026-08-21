@@ -21,6 +21,13 @@ response, and never persisted. `memory_checkpoint` accepts bounded typed
 entries, runs secret detection, and always writes `candidate` + `untrusted`
 memory.
 
+OpenCode setup writes a dependency-free local loop-guard plugin. It receives
+the tool hook data already exposed by OpenCode, computes SHA-256 fingerprints
+for repetition detection, and retains only those fingerprints and bounded
+counters in process memory. It does not log, persist, or transmit tool
+arguments/results. A new user message or terminal session event clears the
+state.
+
 ## Pre-persistence sanitization
 
 Every captured task, profile hint, intake answer, event, evidence summary, feedback comment, and proposal follows this order:
