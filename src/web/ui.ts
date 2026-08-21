@@ -1,5 +1,19 @@
+import { DEFAULT_WEB_LOCALE, WEB_LOCALE_LABELS, WEB_LOCALES, WEB_MESSAGES } from './i18n.js';
+
+const WEB_I18N_CONFIG = JSON.stringify({
+  defaultLocale: DEFAULT_WEB_LOCALE,
+  localeLabels: WEB_LOCALE_LABELS,
+  locales: WEB_LOCALES,
+  messages: WEB_MESSAGES,
+})
+  .replaceAll('&', '\\u0026')
+  .replaceAll('<', '\\u003c')
+  .replaceAll('>', '\\u003e')
+  .replaceAll('\u2028', '\\u2028')
+  .replaceAll('\u2029', '\\u2029');
+
 export const WEB_HTML = String.raw`<!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -56,7 +70,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     .notice { border-radius:12px; padding:11px 12px; background:#fffbeb; color:var(--warn); font-size:13px; }
     .notice.error { background:#fef2f2; color:var(--danger); }
     .status { color:var(--muted); font-size:12px; min-height:18px; }
-    .operator-panel { grid-column:1 / -1; }
+    .operator-panel { grid-column:1 / -1; margin-top:16px; }
     .operator-grid { display:grid; grid-template-columns:minmax(240px,.7fr) minmax(420px,1.3fr); gap:16px; }
     .run-list { display:flex; flex-direction:column; gap:8px; max-height:360px; overflow:auto; }
     .run-card { border:1px solid var(--line); border-radius:12px; padding:11px; background:var(--panel); text-align:left; }
@@ -73,56 +87,103 @@ export const WEB_HTML = String.raw`<!doctype html>
   <main class="shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">Local memory console</div>
+        <div class="eyebrow" data-i18n="eyebrow">Local memory console</div>
         <h1>Kiokuko Web</h1>
-        <p class="subtitle">Bot用途・記憶タイプ・横断タグからSQLiteの記憶を確認し、安全に候補エントリを編集します。</p>
+        <p class="subtitle" data-i18n="subtitle">Browse SQLite memory by bot role, memory type, and cross-cutting tags, and safely edit candidate entries.</p>
       </div>
       <div class="toolbar">
-        <select id="workspace" class="control" aria-label="ワークスペース"></select>
-        <input id="search" class="search" type="search" placeholder="記憶を検索…" aria-label="記憶を検索">
-        <button id="refresh" class="button" type="button">更新</button>
+        <select id="locale" class="control" aria-label="Language" data-i18n-aria-label="languageLabel"></select>
+        <select id="workspace" class="control" aria-label="Workspace" data-i18n-aria-label="workspaceLabel"></select>
+        <input id="search" class="search" type="search" placeholder="Search memory…" aria-label="Search memory…" data-i18n-placeholder="searchPlaceholder" data-i18n-aria-label="searchPlaceholder">
+        <button id="refresh" class="button" type="button" data-i18n="refresh">Refresh</button>
       </div>
     </header>
     <div id="status" class="status" role="status"></div>
     <section class="layout">
       <aside class="panel genres-panel">
-        <div class="panel-head"><h2>Bot用途 / タグ</h2></div>
-        <nav id="genres" class="genres" aria-label="Bot用途・記憶タイプ・タグのフィルター"></nav>
+        <div class="panel-head"><h2 data-i18n="filtersPanelTitle">Bot role / tags</h2></div>
+        <nav id="genres" class="genres" aria-label="Filter by bot role, memory type, or tag" data-i18n-aria-label="filtersNavLabel"></nav>
       </aside>
       <section class="panel list-panel">
-        <div class="panel-head"><h2 id="list-title">記憶</h2><span id="result-count" class="badge">0件</span></div>
+        <div class="panel-head"><h2 id="list-title">Memory</h2><span id="result-count" class="badge">0 items</span></div>
         <div class="panel-body"><div id="entry-list" class="entry-list"></div></div>
       </section>
       <section class="panel editor-panel">
-        <div class="panel-head"><h2>内容</h2><span id="editor-state" class="badge">未選択</span></div>
+        <div class="panel-head"><h2 data-i18n="editorTitle">Details</h2><span id="editor-state" class="badge" data-i18n="unselected">Not selected</span></div>
         <div class="panel-body"><div id="editor"></div></div>
       </section>
     </section>
     <section class="panel operator-panel">
-      <div class="panel-head"><h2>Agent run operator view</h2><span class="badge">stored data is untrusted / non-actionable</span></div>
+      <div class="panel-head"><h2 data-i18n="operatorTitle">Agent run operator view</h2><span class="badge" data-i18n="trustBadge">stored data is untrusted / non-actionable</span></div>
       <div class="panel-body operator-grid">
         <div><div id="run-list" class="run-list"></div><div id="run-page" class="status"></div></div>
-        <div id="run-detail"><div class="editor-empty">runを選択すると intake、profile、timeline、delivery、feedback、coverage を表示します。</div></div>
+        <div id="run-detail"><div class="editor-empty" data-i18n="runSelectFull">Select a run to view its intake, profile, timeline, delivery, feedback, and coverage.</div></div>
       </div>
     </section>
   </main>
   <script>
+    const i18n = ${WEB_I18N_CONFIG};
+    const localeStorageKey = 'kiokuko.web.locale';
+    const normalizeLocale = (value) => {
+      if (typeof value !== 'string') return null;
+      const normalized = value.trim().replaceAll('_', '-').toLowerCase();
+      if (!normalized) return null;
+      const parts = normalized.split('-');
+      const language = parts[0];
+      if (language === 'en' || language === 'ja' || language === 'ko') return language;
+      if (language === 'zh' && (parts.length === 1 || parts.includes('hans') || parts.includes('cn') || parts.includes('sg'))) return 'zh-CN';
+      return null;
+    };
+    const readStoredLocale = () => { try { return localStorage.getItem(localeStorageKey); } catch { return null; } };
+    const browserLocales = Array.isArray(navigator.languages) ? navigator.languages : [navigator.language];
+    const localeCandidates = [new URLSearchParams(location.search).get('lang'), readStoredLocale(), ...browserLocales];
+    const initialLocale = localeCandidates.map(normalizeLocale).find(Boolean) || i18n.defaultLocale;
     const kinds = [
-      ['all', 'すべて'], ['fact', '事実'], ['decision', '決定'], ['lesson', '教訓'], ['preference', '好み'], ['reference', '参照']
+      ['all', 'kind.all'], ['fact', 'kind.fact'], ['decision', 'kind.decision'], ['lesson', 'kind.lesson'], ['preference', 'kind.preference'], ['reference', 'kind.reference']
     ];
     const botModes = [
-      ['bot:common', '共通'], ['bot:researcher', 'Researcher'], ['bot:builder', 'Builder'], ['bot:reviewer', 'Reviewer'], ['bot:devops', 'DevOps'], ['bot:writer', 'Writer'], ['bot:analyst', 'Analyst']
+      ['bot:common', 'bot.common'], ['bot:researcher', 'bot.researcher'], ['bot:builder', 'bot.builder'], ['bot:reviewer', 'bot.reviewer'], ['bot:devops', 'bot.devops'], ['bot:writer', 'bot.writer'], ['bot:analyst', 'bot.analyst']
     ];
-    const state = { workspace: '', kind: 'all', tag: '', query: '', entries: [], tags: [], selected: null, runs: [], selectedRun: null };
+    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], tags: [], selected: null, runs: [], selectedRun: null, localizedStatus: null };
     const $ = (id) => document.getElementById(id);
+    const t = (key, parameters = {}) => {
+      const template = i18n.messages[state.locale]?.[key] ?? i18n.messages[i18n.defaultLocale]?.[key] ?? key;
+      return template.replace(/\{([^}]+)\}/g, (_match, name) => Object.prototype.hasOwnProperty.call(parameters, name) ? String(parameters[name]) : '');
+    };
+    const tp = (key, count) => {
+      const category = new Intl.PluralRules(state.locale).select(count) === 'one' ? 'one' : 'other';
+      return t(key + '.' + category, { count });
+    };
+    const setI18nText = (element, key) => { element.dataset.i18n = key; element.textContent = t(key); return element; };
+    const labelForKind = (kind) => { const item = kinds.find(([value]) => value === kind); return item ? t(item[1]) : kind; };
+    const labelForStatus = (status) => i18n.messages[state.locale]?.['status.' + status] ?? status;
+    const updateEditorState = () => {
+      const element = $('editor-state');
+      if (state.selected) { delete element.dataset.i18n; element.dataset.i18nStatus = state.selected.status; element.textContent = labelForStatus(state.selected.status); }
+      else { delete element.dataset.i18nStatus; setI18nText(element, 'unselected'); }
+    };
+    const showStatus = (message, error = false) => { $('status').textContent = message; $('status').className = error ? 'status notice error' : 'status'; };
+    const setStatus = (message, error = false) => { state.localizedStatus = null; showStatus(message, error); };
+    const setLocalizedStatus = (key, parameters = {}, error = false) => { state.localizedStatus = { key, parameters, error }; showStatus(t(key, parameters), error); };
+    const setLocalizedCountStatus = (key, count, error = false) => { state.localizedStatus = { key, count, error, plural: true }; showStatus(tp(key, count), error); };
+    const applyTranslations = () => {
+      document.documentElement.lang = state.locale;
+      document.querySelectorAll('[data-i18n]').forEach((element) => { element.textContent = t(element.dataset.i18n); });
+      document.querySelectorAll('[data-i18n-aria-label]').forEach((element) => { element.setAttribute('aria-label', t(element.dataset.i18nAriaLabel)); });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach((element) => { element.setAttribute('placeholder', t(element.dataset.i18nPlaceholder)); });
+      document.querySelectorAll('[data-i18n-status]').forEach((element) => {
+        const value = labelForStatus(element.dataset.i18nStatus);
+        if ('value' in element) element.value = value; else element.textContent = value;
+      });
+      $('locale').value = state.locale;
+      if (state.localizedStatus) showStatus(state.localizedStatus.plural ? tp(state.localizedStatus.key, state.localizedStatus.count) : t(state.localizedStatus.key, state.localizedStatus.parameters), state.localizedStatus.error);
+    };
     const api = async (path, options) => {
       const response = await fetch(path, options);
       const value = await response.json();
-      if (!response.ok) throw new Error(value.error?.message || 'リクエストに失敗しました');
+      if (!response.ok) throw new Error(value.error?.message || t('requestFailed'));
       return value;
     };
-    const setStatus = (message, error = false) => { $('status').textContent = message; $('status').className = error ? 'status notice error' : 'status'; };
-    const labelForKind = (kind) => (kinds.find((item) => item[0] === kind) || [kind, kind])[1];
     const escapeTags = (value) => value.split(',').map((item) => item.trim()).filter(Boolean);
 
     function filterButton(key, label, count, active, onClick) {
@@ -145,32 +206,32 @@ export const WEB_HTML = String.raw`<!doctype html>
     function renderFilters() {
       const kindCounts = Object.fromEntries(kinds.map(([kind]) => [kind, kind === 'all' ? state.entries.length : state.entries.filter((entry) => entry.kind === kind).length]));
       const tagCounts = Object.fromEntries(state.tags.map((item) => [item.tag, item.count]));
-      const botButtons = botModes.map(([tag, label]) => filterButton(tag, label, tagCounts[tag], state.tag === tag, () => { state.tag = tag; renderFilters(); loadEntries(); }));
-      const kindButtons = kinds.map(([kind, label]) => filterButton(kind, label, kindCounts[kind], state.kind === kind, () => { state.kind = kind; renderFilters(); loadEntries(); }));
+      const botButtons = botModes.map(([tag, label]) => filterButton(tag, t(label), tagCounts[tag], state.tag === tag, () => { state.tag = tag; renderFilters(); loadEntries(); }));
+      const kindButtons = kinds.map(([kind, label]) => filterButton(kind, t(label), kindCounts[kind], state.kind === kind, () => { state.kind = kind; renderFilters(); loadEntries(); }));
       const tagButtons = state.tags
         .filter((item) => !botModes.some(([tag]) => tag === item.tag))
         .map((item) => filterButton(item.tag, '#' + item.tag, item.count, state.tag === item.tag, () => { state.tag = item.tag; renderFilters(); loadEntries(); }));
-      const root = $('genres'); root.replaceChildren(filterGroup('Bot用途（タグ）', botButtons), filterGroup('記憶タイプ', kindButtons));
-      if (tagButtons.length > 0) root.append(filterGroup('横断タグ', tagButtons));
+      const root = $('genres'); root.replaceChildren(filterGroup(t('botFilterTitle'), botButtons), filterGroup(t('memoryTypeFilterTitle'), kindButtons));
+      if (tagButtons.length > 0) root.append(filterGroup(t('crossTagFilterTitle'), tagButtons));
     }
 
     function renderEntries() {
-      $('result-count').textContent = String(state.entries.length) + '件';
-      $('list-title').textContent = state.tag ? '#' + state.tag : (state.kind === 'all' ? '記憶' : labelForKind(state.kind));
+      $('result-count').textContent = tp('entryCount', state.entries.length);
+      $('list-title').textContent = state.tag ? '#' + state.tag : (state.kind === 'all' ? t('entriesTitle') : labelForKind(state.kind));
       const list = $('entry-list');
       if (!state.entries.length) {
-        const empty = document.createElement('div'); empty.className = 'editor-empty'; empty.textContent = '該当する記憶はありません。'; list.replaceChildren(empty); return;
+        const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'noEntries'); list.replaceChildren(empty); return;
       }
       list.replaceChildren(...state.entries.map((entry) => {
         const card = document.createElement('article'); card.className = 'entry-card ' + (state.selected?.id === entry.id ? 'selected' : '');
         const meta = document.createElement('div'); meta.className = 'entry-meta';
         const kind = document.createElement('span'); kind.className = 'badge'; kind.textContent = labelForKind(entry.kind);
-        const status = document.createElement('span'); status.className = 'badge ' + entry.status; status.textContent = entry.status;
-        const revision = document.createElement('span'); revision.textContent = 'revision ' + entry.revision; meta.append(kind, status, revision);
+        const status = document.createElement('span'); status.className = 'badge ' + entry.status; status.textContent = labelForStatus(entry.status);
+        const revision = document.createElement('span'); revision.textContent = t('revision') + ' ' + entry.revision; meta.append(kind, status, revision);
         const title = document.createElement('h3'); title.textContent = entry.title;
         const snippet = document.createElement('p'); snippet.className = 'snippet'; snippet.textContent = entry.summary || entry.body;
         const tags = document.createElement('div'); tags.className = 'tags'; entry.tags.forEach((tag) => { const item = document.createElement('button'); item.type = 'button'; item.className = 'tag'; item.textContent = '#' + tag; item.addEventListener('click', (event) => { event.stopPropagation(); state.tag = tag; renderFilters(); loadEntries(); }); tags.append(item); });
-        const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'button'; edit.textContent = '編集'; edit.style.marginTop = '12px'; edit.addEventListener('click', (event) => { event.stopPropagation(); selectEntry(entry.id); });
+        const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'button'; setI18nText(edit, 'edit'); edit.style.marginTop = '12px'; edit.addEventListener('click', (event) => { event.stopPropagation(); selectEntry(entry.id); });
         card.append(meta, title, snippet, tags, edit); card.addEventListener('click', () => selectEntry(entry.id)); return card;
       }));
     }
@@ -178,27 +239,27 @@ export const WEB_HTML = String.raw`<!doctype html>
     function renderEditor() {
       const editor = $('editor');
       const entry = state.selected;
-      $('editor-state').textContent = entry ? entry.status : '未選択';
-      if (!entry) { const empty = document.createElement('div'); empty.className = 'editor-empty'; empty.textContent = '左の記憶を選択すると内容を編集できます。'; editor.replaceChildren(empty); return; }
+      updateEditorState();
+      if (!entry) { const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'selectMemory'); editor.replaceChildren(empty); return; }
       const form = document.createElement('form'); form.className = 'form';
       const row = document.createElement('div'); row.className = 'form-row';
-      const kindLabel = document.createElement('label'); kindLabel.textContent = '記憶タイプ'; const kind = document.createElement('select'); kinds.filter(([value]) => value !== 'all').forEach(([value, label]) => { const option = document.createElement('option'); option.value = value; option.textContent = label; kind.append(option); }); kind.value = entry.kind; kindLabel.append(kind);
-      const statusLabel = document.createElement('label'); statusLabel.textContent = '状態'; const status = document.createElement('input'); status.value = entry.status; status.disabled = true; statusLabel.append(status); row.append(kindLabel, statusLabel);
-      const titleLabel = document.createElement('label'); titleLabel.textContent = 'タイトル'; const title = document.createElement('input'); title.value = entry.title; titleLabel.append(title);
-      const bodyLabel = document.createElement('label'); bodyLabel.textContent = '本文'; const body = document.createElement('textarea'); body.className = 'body'; body.value = entry.body; bodyLabel.append(body);
-      const summaryLabel = document.createElement('label'); summaryLabel.textContent = '要約'; const summary = document.createElement('textarea'); summary.value = entry.summary || ''; summaryLabel.append(summary);
-      const tagsLabel = document.createElement('label'); tagsLabel.textContent = 'タグ（カンマ区切り）'; const tags = document.createElement('input'); tags.value = entry.tags.join(', '); tagsLabel.append(tags);
+      const kindLabel = document.createElement('label'); const kindLabelText = document.createElement('span'); setI18nText(kindLabelText, 'memoryType'); const kind = document.createElement('select'); kinds.filter(([value]) => value !== 'all').forEach(([value, label]) => { const option = document.createElement('option'); option.value = value; setI18nText(option, label); kind.append(option); }); kind.value = entry.kind; kindLabel.append(kindLabelText, kind);
+      const statusLabel = document.createElement('label'); const statusLabelText = document.createElement('span'); setI18nText(statusLabelText, 'status'); const status = document.createElement('input'); status.value = labelForStatus(entry.status); status.dataset.i18nStatus = entry.status; status.disabled = true; statusLabel.append(statusLabelText, status); row.append(kindLabel, statusLabel);
+      const titleLabel = document.createElement('label'); const titleLabelText = document.createElement('span'); setI18nText(titleLabelText, 'title'); const title = document.createElement('input'); title.value = entry.title; titleLabel.append(titleLabelText, title);
+      const bodyLabel = document.createElement('label'); const bodyLabelText = document.createElement('span'); setI18nText(bodyLabelText, 'body'); const body = document.createElement('textarea'); body.className = 'body'; body.value = entry.body; bodyLabel.append(bodyLabelText, body);
+      const summaryLabel = document.createElement('label'); const summaryLabelText = document.createElement('span'); setI18nText(summaryLabelText, 'summary'); const summary = document.createElement('textarea'); summary.value = entry.summary || ''; summaryLabel.append(summaryLabelText, summary);
+      const tagsLabel = document.createElement('label'); const tagsLabelText = document.createElement('span'); setI18nText(tagsLabelText, 'commaSeparatedTags'); const tags = document.createElement('input'); tags.value = entry.tags.join(', '); tagsLabel.append(tagsLabelText, tags);
       const jsonRow = document.createElement('div'); jsonRow.className = 'form-row';
-      const scopeLabel = document.createElement('label'); scopeLabel.textContent = 'scope JSON'; const scope = document.createElement('textarea'); scope.value = JSON.stringify(entry.scope, null, 2); scopeLabel.append(scope);
-      const provenanceLabel = document.createElement('label'); provenanceLabel.textContent = 'provenance JSON'; const provenance = document.createElement('textarea'); provenance.value = JSON.stringify(entry.provenance, null, 2); provenanceLabel.append(provenance); jsonRow.append(scopeLabel, provenanceLabel);
+      const scopeLabel = document.createElement('label'); const scopeLabelText = document.createElement('span'); setI18nText(scopeLabelText, 'scopeJson'); const scope = document.createElement('textarea'); scope.value = JSON.stringify(entry.scope, null, 2); scopeLabel.append(scopeLabelText, scope);
+      const provenanceLabel = document.createElement('label'); const provenanceLabelText = document.createElement('span'); setI18nText(provenanceLabelText, 'provenanceJson'); const provenance = document.createElement('textarea'); provenance.value = JSON.stringify(entry.provenance, null, 2); provenanceLabel.append(provenanceLabelText, provenance); jsonRow.append(scopeLabel, provenanceLabel);
       const actions = document.createElement('div'); actions.className = 'toolbar';
-      const save = document.createElement('button'); save.type = 'submit'; save.className = 'button primary'; save.textContent = '保存';
-      const note = document.createElement('div'); note.className = entry.status === 'candidate' ? 'notice' : 'notice error'; note.textContent = entry.status === 'candidate' ? '候補エントリはrevisionを確認して更新します。' : 'verified / superseded は直接上書きできません。履歴を保つためCLIで置換してください。';
+      const save = document.createElement('button'); save.type = 'submit'; save.className = 'button primary'; setI18nText(save, 'save');
+      const note = document.createElement('div'); note.className = entry.status === 'candidate' ? 'notice' : 'notice error'; setI18nText(note, entry.status === 'candidate' ? 'candidateNotice' : 'immutableNotice');
       if (entry.status !== 'candidate') { save.disabled = true; [kind, title, body, summary, tags, scope, provenance].forEach((control) => { control.disabled = true; }); }
       actions.append(save); form.append(row, titleLabel, bodyLabel, summaryLabel, tagsLabel, jsonRow, note, actions); form.addEventListener('submit', async (event) => { event.preventDefault(); if (save.disabled) return; try {
         const payload = { expectedRevision: entry.revision, kind: kind.value, title: title.value, body: body.value, summary: summary.value || null, scope: JSON.parse(scope.value || '{}'), provenance: JSON.parse(provenance.value || '{}'), tags: escapeTags(tags.value) };
         await api('/api/entries/' + encodeURIComponent(entry.id) + '?workspace=' + encodeURIComponent(state.workspace), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
-        setStatus('保存しました。'); await loadEntries(); await selectEntry(entry.id);
+        setLocalizedStatus('saved'); await loadEntries(); await selectEntry(entry.id);
       } catch (error) { setStatus(error.message, true); }
       }); editor.replaceChildren(form);
     }
@@ -213,37 +274,37 @@ export const WEB_HTML = String.raw`<!doctype html>
       } catch (error) { setStatus(error.message, true); }
     }
 
-    function detailBlock(title, value) {
+    function detailBlock(titleKey, value) {
       const block = document.createElement('section'); block.className = 'detail-block';
-      const heading = document.createElement('h3'); heading.textContent = title;
+      const heading = document.createElement('h3'); setI18nText(heading, titleKey);
       const text = document.createElement('div'); text.className = 'detail-text'; text.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
       block.append(heading, text); return block;
     }
 
     function renderRunDetail() {
       const root = $('run-detail'); const detail = state.selectedRun;
-      if (!detail) { const empty = document.createElement('div'); empty.className = 'editor-empty'; empty.textContent = 'runを選択すると詳細を表示します。'; root.replaceChildren(empty); return; }
-      const heading = document.createElement('h3'); heading.textContent = 'Stored context / recommendations: untrusted, non-actionable';
+      if (!detail) { const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'runSelect'); root.replaceChildren(empty); return; }
+      const heading = document.createElement('h3'); setI18nText(heading, 'contextWarning');
       const blocks = [
-        detailBlock('run / intake', { run: detail.run, intake: detail.intake }),
-        detailBlock('initial profile (immutable view)', detail.profile.initial),
-        detailBlock('projected profile (ledger revisions)', detail.profile.projected),
-        detailBlock('policy / profile source', { policyVersion: detail.profile.policyVersion, source: detail.profile.source, initialProfileHash: detail.profile.initialProfileHash }),
-        detailBlock('coverage / evidence warnings', { coverage: detail.coverage, evidenceState: detail.evidenceState, warnings: detail.warnings }),
-        detailBlock('timeline / evidence', { timeline: detail.timeline, evidence: detail.evidence }),
-        detailBlock('context deliveries / selection reasons', detail.deliveries),
-        detailBlock('context / run / intake feedback', detail.feedback),
-        detailBlock('memory proposal links', { proposals: detail.proposals, links: detail.memoryLinks }),
+        detailBlock('detailRunIntake', { run: detail.run, intake: detail.intake }),
+        detailBlock('detailInitialProfile', detail.profile.initial),
+        detailBlock('detailProjectedProfile', detail.profile.projected),
+        detailBlock('detailPolicySource', { policyVersion: detail.profile.policyVersion, source: detail.profile.source, initialProfileHash: detail.profile.initialProfileHash }),
+        detailBlock('detailCoverageWarnings', { coverage: detail.coverage, evidenceState: detail.evidenceState, warnings: detail.warnings }),
+        detailBlock('detailTimelineEvidence', { timeline: detail.timeline, evidence: detail.evidence }),
+        detailBlock('detailDeliveriesReasons', detail.deliveries),
+        detailBlock('detailFeedback', detail.feedback),
+        detailBlock('detailProposalLinks', { proposals: detail.proposals, links: detail.memoryLinks }),
       ];
       root.replaceChildren(heading, ...blocks);
     }
 
     function renderRuns() {
       const root = $('run-list');
-      if (!state.runs.length) { const empty = document.createElement('div'); empty.className = 'editor-empty'; empty.textContent = 'runはありません。'; root.replaceChildren(empty); return; }
+      if (!state.runs.length) { const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'noRuns'); root.replaceChildren(empty); return; }
       root.replaceChildren(...state.runs.map((run) => {
         const button = document.createElement('button'); button.type = 'button'; button.className = 'run-card' + (state.selectedRun?.run?.runId === run.runId ? ' selected' : '');
-        button.textContent = run.runId + ' / ' + (run.status || 'unknown') + ' / ' + (run.title || 'untitled');
+        button.textContent = run.runId + ' / ' + (run.status || t('unknown')) + ' / ' + (run.title || t('untitled'));
         button.addEventListener('click', () => loadRunDetail(run.runId)); return button;
       }));
     }
@@ -252,18 +313,25 @@ export const WEB_HTML = String.raw`<!doctype html>
       if (!state.workspace) return;
       try {
         const result = await api('/api/operator/runs?workspace=' + encodeURIComponent(state.workspace) + '&limit=50');
-        state.runs = result.items || []; renderRuns(); $('run-page').textContent = result.nextCursor ? '次ページあり（bounded cursor）' : '末尾';
+        state.runs = result.items || []; renderRuns(); setI18nText($('run-page'), result.nextCursor ? 'nextPage' : 'end');
         if (!state.selectedRun && state.runs[0]) await loadRunDetail(state.runs[0].runId);
         else renderRunDetail();
       } catch (error) { setStatus(error.message, true); }
     }
 
-    async function loadEntries() { if (!state.workspace) return; try { const params = new URLSearchParams({ workspace: state.workspace }); if (state.kind !== 'all') params.set('kind', state.kind); if (state.tag) params.set('tag', state.tag); if (state.query) params.set('q', state.query); const result = await api('/api/entries?' + params); state.entries = result.entries; if (state.selected && !state.entries.some((entry) => entry.id === state.selected.id)) state.selected = null; renderEntries(); renderFilters(); if (!state.selected && state.entries[0]) await selectEntry(state.entries[0].id); else renderEditor(); setStatus(String(result.entries.length) + '件を表示中'); } catch (error) { setStatus(error.message, true); } }
+    async function loadEntries() { if (!state.workspace) return; try { const params = new URLSearchParams({ workspace: state.workspace }); if (state.kind !== 'all') params.set('kind', state.kind); if (state.tag) params.set('tag', state.tag); if (state.query) params.set('q', state.query); const result = await api('/api/entries?' + params); state.entries = result.entries; if (state.selected && !state.entries.some((entry) => entry.id === state.selected.id)) state.selected = null; renderEntries(); renderFilters(); if (!state.selected && state.entries[0]) await selectEntry(state.entries[0].id); else renderEditor(); setLocalizedCountStatus('displayedCount', result.entries.length); } catch (error) { setStatus(error.message, true); } }
     async function loadTags() { if (!state.workspace) return; try { const result = await api('/api/tags?workspace=' + encodeURIComponent(state.workspace)); state.tags = result.tags; renderFilters(); } catch (error) { setStatus(error.message, true); } }
-    async function loadWorkspaces() { try { const result = await api('/api/workspaces'); const select = $('workspace'); select.replaceChildren(...result.workspaces.map((item) => { const option = document.createElement('option'); option.value = item.workspace; option.textContent = (item.displayName || item.workspace) + ' (' + item.count + ')'; return option; })); if (!state.workspace && result.workspaces[0]) state.workspace = result.workspaces[0].workspace; select.value = state.workspace; if (state.workspace) { await loadTags(); await loadEntries(); await loadRuns(); } else setStatus('workspaceがありません。CLIで kiokuko use または record を実行してください。', true); } catch (error) { setStatus(error.message, true); } }
+    async function loadWorkspaces() { try { const result = await api('/api/workspaces'); const select = $('workspace'); select.replaceChildren(...result.workspaces.map((item) => { const option = document.createElement('option'); option.value = item.workspace; option.textContent = (item.displayName || item.workspace) + ' (' + item.count + ')'; return option; })); if (!state.workspace && result.workspaces[0]) state.workspace = result.workspaces[0].workspace; select.value = state.workspace; if (state.workspace) { await loadTags(); await loadEntries(); await loadRuns(); } else setLocalizedStatus('noWorkspace', {}, true); } catch (error) { setStatus(error.message, true); } }
+    $('locale').replaceChildren(...i18n.locales.map((locale) => { const option = document.createElement('option'); option.value = locale; option.lang = locale; option.textContent = i18n.localeLabels[locale]; return option; }));
+    $('locale').addEventListener('change', (event) => {
+      state.locale = normalizeLocale(event.target.value) || i18n.defaultLocale;
+      try { localStorage.setItem(localeStorageKey, state.locale); } catch {}
+      applyTranslations(); renderFilters(); renderEntries(); renderRuns(); renderRunDetail(); updateEditorState();
+    });
     $('workspace').addEventListener('change', (event) => { state.workspace = event.target.value; state.selected = null; state.selectedRun = null; state.runs = []; state.tag = ''; loadTags().then(loadEntries).then(loadRuns); });
     $('refresh').addEventListener('click', () => loadWorkspaces());
     let searchTimer; $('search').addEventListener('input', (event) => { clearTimeout(searchTimer); state.query = event.target.value.trim(); searchTimer = setTimeout(() => loadEntries(), 180); });
+    applyTranslations();
     loadWorkspaces();
   </script>
 </body>

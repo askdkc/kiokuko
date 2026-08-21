@@ -6,6 +6,8 @@ Kiokuko는 AI 코딩 에이전트를 위한 모델 독립적인 외부 메모리
 
 ## 전역 설치 및 활성화
 
+Node.js 24 이상이 필요합니다.
+
 ```bash
 npm install --global @askdkc/kiokuko
 kiokuko setup
@@ -107,6 +109,8 @@ capability 목록 생략은 0개가 아니라 "알 수 없음"으로 처리되�
 kiokuko web
 # http://127.0.0.1:4173 열기
 ```
+
+UI는 영어, 일본어, 중국어 간체 및 한국어를 지원합니다. 처음에는 브라우저 언어를 사용하고 명시적으로 선택한 언어는 브라우저에 저장합니다. `?lang=en`, `?lang=ja`, `?lang=zh-CN`, `?lang=ko`로 재정의할 수도 있습니다.
 
 `--port 0`을 사용하면 사용 가능한 포트를 자동으로 선택하고, `--json`을 사용하면 선택된 URL을 JSON으로 출력합니다. Web UI는 루프백이 아닌 인터페이스에 서버를 노출하지 않습니다. verified 및 superseded 항목은 읽기 전용이며 candidate 편집에는 낙관적 리비전 검사를 사용하고 감사 기록을 유지합니다.
 

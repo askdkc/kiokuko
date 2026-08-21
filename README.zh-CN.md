@@ -6,6 +6,8 @@ Kiokuko 是面向 AI 编程智能体、与模型无关的外部记忆工具。�
 
 ## 全局安装与启用
 
+需要Node.js 24或更高版本。
+
 ```bash
 npm install --global @askdkc/kiokuko
 kiokuko setup
@@ -107,6 +109,8 @@ kiokuko guide context <session-id> --workspace <workspace> --json
 kiokuko web
 # 打开 http://127.0.0.1:4173
 ```
+
+UI支持英语、日语、简体中文和韩语。首次使用时采用浏览器语言，明确选择的语言会保存在浏览器中；也可以使用`?lang=en`、`?lang=ja`、`?lang=zh-CN`或`?lang=ko`覆盖。
 
 使用 `--port 0` 可自动选择可用端口，使用 `--json` 可将所选 URL 以 JSON 输出。Web UI 不会在非回环接口上公开服务器。verified 和 superseded 条目为只读；编辑 candidate 时会使用乐观修订检查，并保留审计记录。
 

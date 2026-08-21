@@ -6,6 +6,8 @@ Kiokukoは、AIコーディングエージェント向けのモデル非依存�
 
 ## グローバルへのインストールと有効化
 
+Node.js 24以上が必要です。
+
 ```bash
 npm install --global @askdkc/kiokuko
 kiokuko setup
@@ -107,6 +109,8 @@ capability一覧の省略は0件ではなく「不明」として扱い、フォ
 kiokuko web
 # http://127.0.0.1:4173 を開く
 ```
+
+UIは英語、日本語、簡体字中国語、韓国語に対応します。初回はブラウザの言語を使用し、明示的に選択した言語はブラウザに保存されます。`?lang=en`、`?lang=ja`、`?lang=zh-CN`、`?lang=ko`で上書きできます。
 
 `--port 0`で空いているポートを自動選択でき、`--json`で選択されたURLをJSONとして出力できます。Web UIが非ループバックインターフェースへサーバーを公開することはありません。verifiedおよびsupersededエントリは読み取り専用です。candidateの編集には楽観的リビジョン検査が使われ、監査履歴が維持されます。
 

@@ -13,6 +13,8 @@ storing memories.
 
 ## Install and enable globally
 
+Node.js 24 or newer is required.
+
 ```bash
 npm install --global @askdkc/kiokuko
 kiokuko setup
@@ -151,6 +153,11 @@ memory type, and cross-cutting tags, and edit candidate entries from the browser
 kiokuko web
 # open http://127.0.0.1:4173
 ```
+
+The UI supports English, Japanese, Simplified Chinese, and Korean. It uses the
+browser language on first use, persists an explicit language selection in the
+browser, and accepts `?lang=en`, `?lang=ja`, `?lang=zh-CN`, or `?lang=ko` as an
+override.
 
 Use `--port 0` to select an available port, or `--json` to print the selected
 URL as JSON. The web UI does not expose the server on non-loopback interfaces.
