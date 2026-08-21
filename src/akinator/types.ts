@@ -17,6 +17,43 @@ export interface AkinatorQuestion {
   required: boolean;
 }
 
+export type AkinatorReasoningStage = 'exploring' | 'narrowing' | 'actionable';
+
+export interface ActionHypothesis {
+  id: TaskType;
+  label: string;
+  description: string;
+  status: 'possible' | 'rejected' | 'selected';
+}
+
+export interface ReasoningSiloLevel {
+  level: 'intent' | 'action-family' | 'target' | 'success' | 'action' | 'verification';
+  status: 'resolved' | 'missing';
+  value: string | null;
+}
+
+export interface AkinatorReasoning {
+  policyVersion: string;
+  stage: AkinatorReasoningStage;
+  hypotheses: ActionHypothesis[];
+  questions: Array<{
+    id: keyof TaskProfile;
+    status: 'answered' | 'pending';
+    purpose: string;
+    discriminates: string[];
+  }>;
+  selectedAction: string | null;
+  conditions: string[];
+  verification: string[];
+  stopConditions: string[];
+  silo: {
+    levels: ReasoningSiloLevel[];
+    resolved: number;
+    total: number;
+    completeness: number;
+  };
+}
+
 export interface AkinatorSessionView {
   id: string;
   workspace: string;

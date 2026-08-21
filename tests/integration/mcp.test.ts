@@ -20,12 +20,16 @@ test('MCP exposes high-level recall/checkpoint tools and persists candidate memo
   await client.connect(clientTransport);
   try {
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['memory_checkpoint', 'memory_recall', 'task_answer', 'task_prepare']);
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['curator_check', 'curator_globalize', 'memory_checkpoint', 'memory_recall', 'task_answer', 'task_prepare']);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_recall')?.annotations?.readOnlyHint, true);
+    assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.readOnlyHint, true);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, true);
     assert.match(tools.tools.find((tool) => tool.name === 'task_prepare')?.description ?? '', /once for the current user request/);
     assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /call no more tools/);
+    const globalizeSchema = tools.tools.find((tool) => tool.name === 'curator_globalize')?.inputSchema as { properties?: { confirmed?: { const?: unknown } }; required?: string[] };
+    assert.equal(globalizeSchema.properties?.confirmed?.const, true);
+    assert.ok(globalizeSchema.required?.includes('confirmed'));
 
     const checkpoint = await client.callTool({
       name: 'memory_checkpoint',
@@ -62,12 +66,15 @@ test('MCP exposes high-level recall/checkpoint tools and persists candidate memo
       },
     });
     const preparedContent = prepared.structuredContent as {
-      intake: { status: string; sessionId: string };
+      intake: { status: string; sessionId: string; reasoning: { stage: string; selectedAction: string; silo: { completeness: number } } };
       memory: { project: { memory: { items: Array<{ metadata: { untrusted: boolean } }> } } };
       capabilities: { recommendations: Array<{ kind: string; name: string; availability: string }> };
       nextAction: string;
     };
     assert.equal(preparedContent.intake.status, 'ready');
+    assert.equal(preparedContent.intake.reasoning.stage, 'actionable');
+    assert.match(preparedContent.intake.reasoning.selectedAction, /src\/beacon\.ts/u);
+    assert.equal(preparedContent.intake.reasoning.silo.completeness, 1);
     assert.equal(preparedContent.nextAction, 'proceed');
     assert.equal(preparedContent.memory.project.memory.items[0]?.metadata.untrusted, true);
     assert.ok(preparedContent.capabilities.recommendations.some((item) => item.kind === 'skill' && item.name === 'tdd' && item.availability === 'available'));

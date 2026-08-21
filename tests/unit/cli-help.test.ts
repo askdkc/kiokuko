@@ -20,6 +20,7 @@ test('registers required commands', () => {
     'read',
     'record',
     'promote',
+    'curator',
     'supersede',
     'link',
     'export',
@@ -34,6 +35,17 @@ test('registers required commands', () => {
   ]) {
     assert.ok(names.includes(name), `missing ${name}`);
   }
+});
+
+test('exposes the curator review and confirmation options', () => {
+  const curator = buildCli().commands.find((command) => command.name() === 'curator');
+  assert.ok(curator);
+  const help = curator.helpInformation();
+  assert.match(help, /--workspace <name>/);
+  assert.match(help, /--entry-id <id>/);
+  assert.match(help, /--skill-ready-only/);
+  assert.match(help, /--yes/);
+  assert.match(help, /--json/);
 });
 
 test('exposes the Akinator guide subcommands', () => {

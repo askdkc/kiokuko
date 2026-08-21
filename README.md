@@ -81,21 +81,66 @@ full-database search:
 - `project` memory is resolved automatically from `.kiokuko.json`, the known
   canonical path, or the Git remote. Another project's memory is excluded.
 - `global` memory is reserved for genuinely cross-project preferences and
-  lessons.
+  lessons. New global lessons should include applicability (language,
+  framework, runtime, database, tool, or platform) or an explicit portable
+  reason; unscoped global candidates are penalized during task preparation.
 - default `auto` recall returns only the current project plus global memory.
 - a repository without a remote gets a stable path-derived identity. Kiokuko
   does not write anything into the repository during automatic resolution.
 
 The MCP surface is deliberately small:
 
-- `task_prepare`: once per user request, run the Akinator intake, recall bounded memory and references,
-  and match required skills/MCP tools against the capability names supplied by
-  the current client.
+- `task_prepare`: once per user request, run the Akinator intake, open a
+  lightweight execution-ledger run, and return one bounded ranked context
+  delivery from the current project plus applicable global memory. The run and
+  delivery IDs are returned for the final checkpoint.
 - `task_answer`: continue an intake only with an answer grounded in the user
   request or verified repository evidence.
 - `memory_recall`: read bounded project/global context, always marked untrusted.
-- `memory_checkpoint`: once at the end of a user request, store bounded durable entries as `candidate` and
-  `untrusted`; secret-like content is rejected.
+- `curator_check`: before the final checkpoint, return only skill-ready
+  candidates by default. A qualified hit is a completed, actionable Akinator
+  path with fresh verification or a passing test; retrieval frequency is never
+  counted.
+- `curator_globalize`: store one revision-checked regenerated draft only after
+  the user explicitly approves the displayed skill name and three-line overview.
+- `memory_checkpoint`: once at the end of a user request, atomically store
+  candidate memory, bounded evidence, context feedback, ledger links, and the
+  terminal run outcome. It also records the Akinator narrowing path for each
+  proposed memory. Secret-like content, absolute paths, raw output, and
+  unbounded evidence are rejected.
+
+Search uses additive hybrid lanes: exact structured signals, word FTS5,
+trigram substring FTS5, bounded literal fallback, and exact tags. Existing
+word-search data remains intact across migrations. Use
+`kiokuko setup --clients opencode --opencode-capture minimal|standard` to opt
+into in-memory OpenCode evidence metadata, and add
+`--opencode-mode strict` only when mutating tools must follow `task_prepare`.
+
+## Curator
+
+`kiokuko curator` finds project candidate memories that look reusable across
+projects. It deterministically removes project identifiers and paths, then
+regenerates a portable draft with purpose, procedure, applicability, and
+verification sections. It prints the skill name, a three-line overview, and
+the full draft before asking for explicit confirmation. Curator separately
+reports qualified hits, independent runs, workspaces, and abstraction-to-action
+silo completeness. Use `--skill-ready-only` for the filtered periodic-prompt
+set, `--json` to inspect candidates without changing memory, `--yes` only for
+an explicit batch confirmation, or `--entry-id <id>` to review one entry:
+
+```bash
+kiokuko curator
+kiokuko curator --json
+kiokuko curator --skill-ready-only
+kiokuko curator --entry-id <entry-id>
+```
+
+The Web UI has a Curator button with the same draft review and one-button
+confirmation flow. The generated draft—not the original project-specific
+body—is stored as the Global entry. The generator is local and deterministic;
+it does not call an external LLM. Globalized entries retain source workspace,
+source revision, and provenance, and remain untrusted candidates until
+separately promoted.
 
 This is instruction-driven automatic use for clients with instruction surfaces,
 not prompt interception. Codex, OpenCode, Claude Code, and Hermes Agent can still
@@ -130,8 +175,13 @@ requires it.
 ## Akinator-style knowledge intake
 
 For non-trivial work, the installed agent instructions call `task_prepare`.
-That tool asks only for missing high-value fields such as the task type, target,
-and success condition, then selects local memory by query and role and purpose tags.
+The Akinator is an active reasoning guide, not a popularity counter or a fixed
+profile form. It starts with competing action families, uses each question to
+discriminate among or concretize them, and returns an abstraction-to-action silo:
+intent, action family, target, success state, selected action, verification, and
+stop conditions. It asks only for missing high-value fields such as the task
+type, target, and observable success condition, then selects local memory by
+query and role and purpose tags.
 If the client supplies its currently available skill and MCP-tool names, the
 result also identifies matching capabilities and clearly distinguishes
 available, missing, and unknown skills. The catalog is ephemeral and is not

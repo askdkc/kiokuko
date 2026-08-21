@@ -13,6 +13,7 @@ import { readAkinatorSession, readRunIntakeLink } from '../akinator/store.js';
 import { startHttpServer, type HttpApplicationContext, type HttpServerOptions } from '../server/http.js';
 import { createAgentV1Handler } from '../server/agent-application.js';
 import { WEB_HTML } from './ui.js';
+import { curateMemoryCandidates, globalizeCuratorCandidate } from '../memory/curator.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 4173;
@@ -365,6 +366,25 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     const workspace = requireWorkspace(url.searchParams.get('workspace') ?? '');
     const tags = await workspaceTags(context.database, workspace);
     jsonResponse(response, 200, { workspace, tags });
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/curator/candidates') {
+    const workspace = requireWorkspace(url.searchParams.get('workspace') ?? '');
+    const skillReadyOnly = booleanQuery(url.searchParams.get('skillReadyOnly'), 'skillReadyOnly') ?? false;
+    const result = await curateMemoryCandidates(context.database, { workspace, limit: Math.min(limitQuery(url.searchParams.get('limit')), 50), skillReadyOnly });
+    jsonResponse(response, 200, result);
+    return;
+  }
+  if (request.method === 'POST' && url.pathname === '/api/curator/globalize') {
+    const workspace = requireWorkspace(url.searchParams.get('workspace') ?? '');
+    const payload = await readJsonBody(request);
+    const result = await context.enqueueWrite(() => globalizeCuratorCandidate(context.database, {
+      workspace,
+      entryId: payload.entryId as string,
+      expectedRevision: payload.expectedRevision as number,
+      ...(typeof payload.actor === 'string' ? { actor: payload.actor } : {}),
+    }));
+    jsonResponse(response, 200, result);
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/entries') {

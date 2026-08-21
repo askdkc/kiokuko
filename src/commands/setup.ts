@@ -18,7 +18,7 @@ import { openConnection } from '../db/connection.js';
 import { ensureGlobalWorkspace } from '../memory/workspaces.js';
 import { KiokukoError } from '../errors.js';
 import { renderOpenCodeConfig } from '../setup/opencode-config.js';
-import { renderOpenCodeLoopGuard } from '../setup/opencode-loop-guard.js';
+import { renderOpenCodeLoopGuard, type OpenCodeLoopGuardOptions } from '../setup/opencode-loop-guard.js';
 import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
 import { renderClaudeConfig } from '../setup/claude-config.js';
 import { renderHermesConfig } from '../setup/hermes-config.js';
@@ -43,6 +43,8 @@ export interface SetupOptions extends PathEnvironment {
   dryRun?: boolean;
   databasePath?: string;
   migrationsDirectory?: string;
+  opencodeCapture?: OpenCodeLoopGuardOptions['captureProfile'];
+  opencodeMode?: OpenCodeLoopGuardOptions['mode'];
 }
 
 export interface SetupResult {
@@ -140,7 +142,10 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
   if (clients.includes('opencode')) {
     files.push(await planFile(await openCodeConfigPath(pathEnvironment), 'opencode', 'mcp-config', (existing) => renderOpenCodeConfig(existing, command)));
     files.push(await planFile(getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
-    files.push(await planFile(getOpenCodeLoopGuardPath(pathEnvironment), 'opencode', 'runtime-guard', renderOpenCodeLoopGuard));
+    files.push(await planFile(getOpenCodeLoopGuardPath(pathEnvironment), 'opencode', 'runtime-guard', (existing) => renderOpenCodeLoopGuard(existing, {
+      ...(options.opencodeCapture === undefined ? {} : { captureProfile: options.opencodeCapture }),
+      ...(options.opencodeMode === undefined ? {} : { mode: options.opencodeMode }),
+    })));
   }
   if (clients.includes('claude')) {
     files.push(await planFile(getClaudeMcpConfigPath(pathEnvironment), 'claude', 'mcp-config', (existing) => renderClaudeConfig(existing, command)));

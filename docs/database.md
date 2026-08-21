@@ -10,13 +10,15 @@ The selected adapter is built-in `node:sqlite`. Writable connections enable fore
 
 ## Migrations
 
-Migrations are forward-only and each applied file records its SHA-256 checksum. Applied migrations 001–003 are immutable:
+Migrations are forward-only and each applied file records its SHA-256 checksum. Applied migrations 001–004 are immutable. Hybrid retrieval is additive in migrations 005 and 006; it retains the word FTS index, adds trigram and structured-signal projections, and versions cross-scope delivery metadata without rewriting v1 rows. Migration 007 adds qualified Akinator reasoning paths for Curator without backfilling or treating retrieval history as evidence:
 
 1. repositories, bindings, curated memory, tags/links, memory audit;
 2. FTS5 and synchronization triggers;
 3. Akinator sessions/answers and allowlisted knowledge source snapshots.
 
 Migration 004 adds the Agent Gateway execution ledger described in `execution-ledger.md`: runs, one-to-one intake links, intake feedback, append-only events/evidence, context deliveries/entries/feedback, run feedback, memory provenance links, and purge tombstones. It is additive and preserves existing memory/Akinator rows on upgrade.
+
+`akinator_reasoning_paths` links one proposed entry revision to one run and its intake session. The unique `(run_id, entry_id, entry_revision)` key blocks same-run duplication. `qualified` is set only by the checkpoint service for completed actionable paths with fresh verification or a passing test. Concept aggregation uses a server-derived normalized hash; no user-supplied concept key or retrieval counter can increase it.
 
 Before any command applies pending migrations to an existing supported database,
 Kiokuko opens it read-only, validates that its migration history is a contiguous

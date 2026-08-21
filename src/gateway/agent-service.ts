@@ -23,7 +23,7 @@ import {
 } from '../ledger/types.js';
 import { LedgerStore } from '../ledger/store.js';
 import { listLedgerEvents, listLedgerRuns, readLedgerRun } from '../ledger/query.js';
-import { evaluateProfile, profileHash } from '../akinator/domain.js';
+import { AKINATOR_POLICY_VERSION, evaluateProfile, profileHash } from '../akinator/domain.js';
 import {
   answerAkinatorInTransaction,
   startAkinatorInTransaction,
@@ -423,7 +423,7 @@ export class AgentGatewayService {
           runId,
           sessionId,
           workspace: request.workspace,
-          policyVersion: 'v1',
+          policyVersion: AKINATOR_POLICY_VERSION,
           profileSchemaVersion: 1,
           profileSources: sourceMap(request, result.session.profile),
           initialProfileHash: null,

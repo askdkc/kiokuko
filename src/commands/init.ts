@@ -5,6 +5,7 @@ import { detectCapabilities, type SqliteCapabilities } from '../db/capabilities.
 import { openConnection } from '../db/connection.js';
 import { defaultMigrationsDirectory, inspectMigrationPlan, migrateDatabase } from '../db/migrate.js';
 import { createPreMigrationBackup } from '../db/upgrade-backup.js';
+import { rebuildHybridSearch } from '../memory/rebuild-search.js';
 
 export interface InitOptions {
   databasePath?: string;
@@ -48,6 +49,10 @@ export async function initializeDatabase(options: InitOptions = {}): Promise<Ini
   const connection = openConnection(databasePath);
   try {
     const migration = migrateDatabase(connection, migrationsDirectory);
+    // Migration 005 can only backfill the raw SQLite projections. Build the
+    // application-owned structured signal projection once when that migration
+    // is applied; subsequent writes keep it synchronized transactionally.
+    if (migration.applied.some((version) => version >= 5)) rebuildHybridSearch(connection);
     return {
       databasePath,
       dataDirectory,

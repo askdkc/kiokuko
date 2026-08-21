@@ -19,7 +19,21 @@ supplied/current working directory plus the reserved global workspace.
 Client-supplied capability catalogs are bounded, used only for the current
 response, and never persisted. `memory_checkpoint` accepts bounded typed
 entries, runs secret detection, and always writes `candidate` + `untrusted`
-memory.
+memory. Global candidates require structured applicability or a portable
+reason; legacy global preferences receive an explicit server-defined portable
+reason for compatibility. Curator suggestions are deterministic heuristics over
+project candidates plus qualified Akinator paths, not trusted model decisions.
+Retrieval frequency is never accepted as qualification. The path store requires
+a linked intake/run, one path per entry revision per run, a completed actionable
+silo, grounded target/success sources, and fresh verification or a passing test.
+These are bounded client evidence claims, not cryptographic proof; the resulting
+candidate remains untrusted and requires human review. CLI and Web UI Global化 require
+explicit user action. MCP `curator_globalize` additionally requires the caller
+to assert `confirmed=true` after showing the skill name and three-line overview;
+this is a protocol guard, not proof of consent, so installed client instructions
+also prohibit inferred permission. All flows use optimistic revision checks,
+strip project path signals from the new global scope, and keep the result
+`candidate` + `untrusted`.
 
 OpenCode setup writes a dependency-free local loop-guard plugin. It receives
 the tool hook data already exposed by OpenCode, computes SHA-256 fingerprints
@@ -27,6 +41,12 @@ for repetition detection, and retains only those fingerprints and bounded
 counters in process memory. It does not log, persist, or transmit tool
 arguments/results. A new user message or terminal session event clears the
 state.
+
+Evidence capture is opt-in (`off` is the default). `minimal` keeps only
+allowlisted tool classifications, outcomes, relative paths, and bounded
+digests; `standard` additionally keeps sanitized error signatures, test target
+names, and verification freshness. No raw stdout/stderr, diffs, transcripts,
+environment values, or arbitrary tool arguments are copied into a checkpoint.
 
 ## Pre-persistence sanitization
 

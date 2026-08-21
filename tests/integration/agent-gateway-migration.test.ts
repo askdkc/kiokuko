@@ -96,11 +96,11 @@ function seedGateway(database: ReturnType<typeof openConnection>, workspace = 'w
   insertIntake(database);
 }
 
-test('fresh migration applies schema 004 and every gateway table and index', async () => {
+test('fresh migration applies the current schema and every gateway table and index', async () => {
   const directory = await temporaryDirectory('gateway-fresh');
   const database = openConnection(path.join(directory, 'data.sqlite3'));
   try {
-    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [1, 2, 3, 4]);
+    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [1, 2, 3, 4, 5, 6, 7]);
     assert.deepEqual(
       gatewayTables.filter((table) => !exists(database, 'table', table)),
       [],
@@ -144,7 +144,7 @@ test('upgrade migration preserves existing memory and Akinator data', async () =
       VALUES ('source-1', 'https://example.test/source', 'main', 'abc123', 1, ?)
     `).run(now);
 
-    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [4]);
+    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [4, 5, 6, 7]);
     assert.equal(database.prepare('SELECT display_name FROM repositories WHERE repository_id = ?').get<{ display_name: string }>('repo-1')?.display_name, 'Existing');
     assert.equal(database.prepare('SELECT body FROM entries WHERE id = ?').get<{ body: string }>('entry-1')?.body, 'Existing body');
     assert.equal(database.prepare('SELECT answer_json FROM akinator_answers WHERE session_id = ?').get<{ answer_json: string }>('session-1')?.answer_json, '"build"');

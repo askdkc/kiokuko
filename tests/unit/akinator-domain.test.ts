@@ -215,5 +215,5 @@ test('rejects question counts beyond the three-question policy budget', () => {
 });
 
 test('exposes a stable domain policy version', () => {
-  assert.equal(AKINATOR_POLICY_VERSION, 'v1');
+  assert.equal(AKINATOR_POLICY_VERSION, 'v2');
 });

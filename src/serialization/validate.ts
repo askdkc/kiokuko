@@ -42,7 +42,19 @@ const RECORD_FIELDS = new Set([
   'createdBy',
   'actor',
 ]);
-const PROVENANCE_FIELDS = new Set(['type', 'reference']);
+const PROVENANCE_FIELDS = new Set([
+  'type',
+  'reference',
+  'sourceRepositoryId',
+  'sourceWorkspace',
+  'sourceCommit',
+  'runId',
+  'deliveryId',
+  'evidenceIds',
+  'sourcePaths',
+  'clientKind',
+  'timestamp',
+]);
 
 function validation(message: string, details: Record<string, unknown> = {}): never {
   throw new KiokukoError('VALIDATION_ERROR', message, details);
@@ -131,6 +143,19 @@ function validateProvenance(value: unknown): JsonObject {
   if (Object.keys(provenance).length > 0) {
     if (!isNonEmptyString(provenance.type)) validation('provenance.type must be a non-empty string');
     if (!isNonEmptyString(provenance.reference)) validation('provenance.reference must be a non-empty string');
+    for (const field of ['sourceRepositoryId', 'sourceWorkspace', 'sourceCommit', 'runId', 'deliveryId', 'clientKind', 'timestamp'] as const) {
+      if (provenance[field] !== undefined && !isNonEmptyString(provenance[field])) {
+        validation(`provenance.${field} must be a non-empty string`);
+      }
+    }
+    for (const field of ['evidenceIds', 'sourcePaths'] as const) {
+      const values = provenance[field];
+      if (values !== undefined) {
+        if (!Array.isArray(values) || values.length > 200 || values.some((item) => !isNonEmptyString(item))) {
+          validation(`provenance.${field} must be a bounded string array`);
+        }
+      }
+    }
   }
   return provenance;
 }

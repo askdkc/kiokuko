@@ -62,7 +62,22 @@ MCPの公開インターフェースは意図的に小さくしています。
 - `task_prepare`: 1ユーザー要求につき1回だけ、Akinator形式の取り込み、上限付きの記憶・参照検索、現在のクライアントから渡されたSKILL/MCPツール名との照合を行います。
 - `task_answer`: ユーザーの依頼または確認済みのリポジトリ情報に根拠がある回答だけで、取り込みを続行します。
 - `memory_recall`: 上限付きのproject/globalコンテキストを読み取ります。結果には常にuntrustedマークが付きます。
-- `memory_checkpoint`: ユーザー要求の最後に1回だけ、上限付きの永続的な記憶を`candidate`かつ`untrusted`として保存します。シークレットに見える内容は拒否されます。
+- `curator_check`: 最終checkpointの前に、原則としてスキル化可能な候補だけを返します。qualified hitは「実行可能なAkinator経路を独立runで完了し、freshな検証または成功テストがある」場合だけです。検索・recall回数は数えません。
+- `curator_globalize`: 表示されたスキル名と3行概要をユーザーが明示的に承認した後だけ、revision確認済みの再生成ドラフトをGlobalへ保存します。
+- `memory_checkpoint`: ユーザー要求の最後に1回だけ、上限付きの永続的な記憶を`candidate`かつ`untrusted`として保存します。同時に、提案記憶ごとのAkinator絞り込み経路をrunと検証証拠に結び付けます。シークレットに見える内容は拒否されます。
+
+## Curator
+
+`kiokuko curator`は、プロジェクト内のcandidate記憶から、他のプロジェクトでも再利用できそうな知識を判定します。プロジェクト識別子やパスを中立化し、「目的・手順・適用条件・検証」の構造を持つ汎用ドラフトをローカルで決定論的に再生成します。スキル名、3行程度の概要、再生成した本文に加え、qualified hit数、独立run数、workspace数、抽象→具体サイロ充足度を表示してから、対話的にGlobalへの追加を確認します。`--skill-ready-only`は定期確認に使う高根拠候補だけへ絞り込みます。
+
+```bash
+kiokuko curator
+kiokuko curator --json
+kiokuko curator --skill-ready-only
+kiokuko curator --entry-id <entry-id>
+```
+
+Web UIの`Curator`ボタンでも再生成ドラフトを確認でき、候補ごとの`ドラフトをGlobalに追加`ボタンで追加できます。Globalには元のプロジェクト固有本文ではなく再生成ドラフトを保存します。外部LLMやAPIキーは使いません。追加後もGlobalエントリは`candidate`かつ`untrusted`のままで、元のworkspace・revision・provenanceを保持します。
 
 これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Code、Hermes Agentが特定のターンでツールを呼ばない可能性は残ります。Hermesでの自動利用・モデル利用はMCP tool descriptionによるbest effortです。Hermesの組み込みmemoryとskillsは分離されたままです。KiokukoはHermes用のグローバル指示ファイル、plugin、hookを作成せず、会話全文を取得せず、取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。OpenCodeセットアップは上記の限定的なローカルループガードだけをインストールします。
 
@@ -87,7 +102,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator形式の知識取り込み
 
-重要な作業では、セットアップ済みのエージェント指示が`task_prepare`を呼び出します。このツールはタスク種別、対象、成功条件など、不足している価値の高い項目だけを質問し、クエリと役割・用途タグからローカル記憶を選択します。クライアントが現在利用可能なSKILLとMCPツールの名前を渡した場合は、必要な機能を照合し、`available`、`missing`、`unknown`を区別して返します。この一覧は一時的にだけ使用され、保存されません。CLIの`guide`コマンドでも同じ取り込みを手動実行できます。
+重要な作業では、セットアップ済みのエージェント指示が`task_prepare`を呼び出します。Akinatorは人気投票や固定フォームではなく、抽象的な意図から複数の行動系列を候補にし、質問ごとに候補を除外・具体化して、選択行動、検証方法、停止条件まで収束させる推論ガイドです。返却する抽象→具体サイロは、意図、行動系列、対象、成功状態、選択行動、検証の各層と充足度を持ちます。タスク種別、対象、観測可能な成功条件など、不足している価値の高い項目だけを質問し、その後にクエリと役割・用途タグからローカル記憶を選択します。クライアントが現在利用可能なSKILLとMCPツールの名前を渡した場合は、必要な機能を照合し、`available`、`missing`、`unknown`を区別して返します。この一覧は一時的にだけ使用され、保存されません。CLIの`guide`コマンドでも同じ取り込みを手動実行できます。
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \

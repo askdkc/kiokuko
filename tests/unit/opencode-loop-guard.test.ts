@@ -76,6 +76,17 @@ test('allows task_prepare and memory_checkpoint only once per user request and c
   );
 });
 
+test('limits curator_check to one periodic review per user request', async () => {
+  const plugin = await loadGuard();
+  const before = plugin['tool.execute.before']!;
+  const sessionID = 'session-curator';
+  await before({ tool: 'kiokuko_curator_check', sessionID, callID: 'call-1' }, { args: { limit: 5 } });
+  await assert.rejects(
+    before({ tool: 'mcp__kiokuko__curator_check', sessionID, callID: 'call-2' }, { args: { limit: 5 } }),
+    /curator_check is limited to once per user request/u,
+  );
+});
+
 test('blocks consecutive identical calls and repeated no-progress results', async () => {
   const hooks = await loadGuard();
   const before = hooks['tool.execute.before']!;

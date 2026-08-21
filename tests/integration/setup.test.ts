@@ -75,6 +75,8 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /task_prepare/);
     assert.match(instructions, /task_answer/);
     assert.match(instructions, /memory_checkpoint/);
+    assert.match(instructions, /curator_check/);
+    assert.match(instructions, /curator_globalize/);
   }
 
   const database = openConnection(temporary.databasePath);

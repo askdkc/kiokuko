@@ -22,8 +22,8 @@ test('applies the initial migration and is idempotent', async () => {
   const connection = openConnection(databasePath);
   try {
     const first = migrateDatabase(connection, initialMigrations);
-    assert.deepEqual(first.applied, [1, 2, 3, 4]);
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 4);
+    assert.deepEqual(first.applied, [1, 2, 3, 4, 5, 6, 7]);
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 7);
     for (const table of [
       'repositories',
       'repository_locations',
@@ -45,6 +45,7 @@ test('applies the initial migration and is idempotent', async () => {
       'run_feedback',
       'ledger_memory_links',
       'ledger_purge_audit',
+      'akinator_reasoning_paths',
     ]) {
       assert.equal(
         connection.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?").get<{ present: number }>(table)?.present,
@@ -160,7 +161,7 @@ test('concurrent processes initialize one migration exactly once', async () => {
 
   const connection = openConnection(databasePath);
   try {
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 4);
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 7);
   } finally {
     connection.close();
   }

@@ -22,6 +22,8 @@ import type { SqliteDatabase } from './db/adapter.js';
 import { answerAkinator, getAkinatorContext, startAkinator } from './akinator/orchestrator.js';
 import { parseSetupClients, setupGlobalClients } from './commands/setup.js';
 import { runMcpServer } from './mcp/server.js';
+import { runCuratorCommand } from './commands/curator.js';
+import { globalizeCuratorCandidate } from './memory/curator.js';
 
 const packageMetadata = createRequire(import.meta.url)('../package.json') as { version?: unknown };
 if (typeof packageMetadata.version !== 'string' || packageMetadata.version.length === 0) {
@@ -92,6 +94,20 @@ async function dispatchRequest(request: unknown): Promise<unknown> {
   if (operation === 'read') return withDatabase((database) => readEntry(database, { workspace: String(args.workspace ?? ''), entryId: String(args.entryId ?? '') }));
   if (operation === 'search') return withDatabase((database) => searchEntries(database, args as never));
   if (operation === 'recall') return withDatabase((database) => recallEntries(database, args as never));
+  if (operation === 'curator') return withDatabase((database) => runCuratorCommand(database, {
+    ...(typeof args.workspace === 'string' ? { workspace: args.workspace } : {}),
+    ...(typeof args.cwd === 'string' ? { cwd: args.cwd } : {}),
+    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+    ...(typeof args.entryId === 'string' ? { entryId: args.entryId } : {}),
+    yes: args.yes === true,
+    json: true,
+  }));
+  if (operation === 'curator_globalize') return withDatabase((database) => globalizeCuratorCandidate(database, {
+    workspace: String(args.workspace ?? ''),
+    entryId: String(args.entryId ?? ''),
+    expectedRevision: Number(args.expectedRevision),
+    ...(typeof args.actor === 'string' ? { actor: args.actor } : {}),
+  }));
   if (operation === 'guide_start') return withDatabase((database) => startAkinator(database, {
     workspace: String(args.workspace ?? ''),
     task: String(args.task ?? ''),
@@ -148,12 +164,18 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes', 'codex,opencode,claude,hermes')
     .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
     .option('--dry-run', 'Validate and show planned changes without writing')
+    .option('--opencode-capture <profile>', 'OpenCode evidence capture: off,minimal,standard', 'off')
+    .option('--opencode-mode <mode>', 'OpenCode prepare enforcement: advisory,strict', 'advisory')
     .option('--json', 'Emit a JSON response')
-    .action(async (options: { clients: string; command: string; dryRun?: boolean; json?: boolean }) => {
+    .action(async (options: { clients: string; command: string; dryRun?: boolean; json?: boolean; opencodeCapture: string; opencodeMode: string }) => {
+      if (!['off', 'minimal', 'standard'].includes(options.opencodeCapture)) throw new KiokukoError('VALIDATION_ERROR', 'opencode capture must be off, minimal, or standard');
+      if (!['advisory', 'strict'].includes(options.opencodeMode)) throw new KiokukoError('VALIDATION_ERROR', 'opencode mode must be advisory or strict');
       const data = await setupGlobalClients({
         clients: parseSetupClients(options.clients),
         command: options.command,
         dryRun: options.dryRun === true,
+        opencodeCapture: options.opencodeCapture as 'off' | 'minimal' | 'standard',
+        opencodeMode: options.opencodeMode as 'advisory' | 'strict',
       });
       const changed = data.files.filter((file) => file.action !== 'unchanged').length;
       const message = options.dryRun
@@ -245,6 +267,27 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   promote.action(async (entryId: string, options: { workspace: string; expectedRevision: string; json?: boolean }) => {
     const data = await withDatabase((database) => promoteEntry(database, { workspace: options.workspace, entryId, expectedRevision: parseExpectedRevision(options.expectedRevision) }));
     humanOrJson(options.json, 'promote', data, `Promoted ${data.id}`);
+  });
+
+  const curator = cli.command('curator').description('Review reusable knowledge and add confirmed candidates to global memory')
+    .option('--workspace <name>', 'Project workspace (defaults to the current repository)')
+    .option('--cwd <path>', 'Repository path used when resolving the current workspace')
+    .option('--entry-id <id>', 'Review one candidate entry')
+    .option('--limit <number>', 'Maximum candidates to review', '10')
+    .option('--skill-ready-only', 'Show only candidates backed by qualified independent Akinator runs')
+    .option('--yes', 'Add every displayed candidate without interactive prompts')
+    .option('--json', 'Emit candidates as JSON without changing memory');
+  curator.action(async (options: { workspace?: string; cwd?: string; entryId?: string; limit: string; skillReadyOnly?: boolean; yes?: boolean; json?: boolean }) => {
+    const data = await withDatabase((database) => runCuratorCommand(database, {
+      ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      limit: Number(options.limit),
+      ...(options.entryId === undefined ? {} : { entryId: options.entryId }),
+      skillReadyOnly: options.skillReadyOnly === true,
+      yes: options.yes === true,
+      json: options.json === true,
+    }));
+    humanOrJson(options.json, 'curator', data, `${data.candidates.length} curator candidate${data.candidates.length === 1 ? '' : 's'} reviewed; ${data.globalized.length} added to global memory`);
   });
 
   const supersede = cli.command('supersede').description('Supersede an existing entry').argument('<old-entry-id>').requiredOption('--with <entry-id>').requiredOption('--workspace <name>').requiredOption('--expected-revision <number>').option('--json');

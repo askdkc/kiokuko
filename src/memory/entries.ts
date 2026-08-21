@@ -5,6 +5,7 @@ import { KiokukoError } from '../errors.js';
 import { canonicalContentHash, canonicalJson, type JsonObject, validateRecordInput, requireWorkspace, type EntryKind, type EntryStatus, type TrustLevel } from '../serialization/validate.js';
 import { recordAuditEvent } from './audit.js';
 import { findSecret } from './secrets.js';
+import { syncEntrySearchSignals } from './structured-memory.js';
 
 export interface RecordEntryInput {
   workspace: string;
@@ -212,6 +213,14 @@ export function recordEntryInTransaction(database: SqliteDatabase, input: Record
   for (const tag of validated.tags) {
     database.prepare('INSERT INTO tags (entry_id, tag) VALUES (?, ?)').run(id, tag);
   }
+  syncEntrySearchSignals(database, {
+    entryId: id,
+    title: validated.title,
+    body: validated.body,
+    summary: validated.summary,
+    tags: validated.tags,
+    scope: validated.scope,
+  });
 
   recordAuditEvent(database, {
     entryId: id,
@@ -306,6 +315,14 @@ export function updateCandidateEntry(database: SqliteDatabase, input: UpdateCand
     );
     database.prepare('DELETE FROM tags WHERE entry_id = ?').run(input.entryId);
     for (const tag of validated.tags) database.prepare('INSERT INTO tags (entry_id, tag) VALUES (?, ?)').run(input.entryId, tag);
+    syncEntrySearchSignals(database, {
+      entryId: input.entryId,
+      title: validated.title,
+      body: validated.body,
+      summary: validated.summary,
+      tags: validated.tags,
+      scope: validated.scope,
+    });
     recordAuditEvent(database, {
       entryId: input.entryId,
       workspace,

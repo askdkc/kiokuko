@@ -37,7 +37,37 @@ export const CONTEXT_RANKING_COMPONENTS = [
   'contradiction',
 ] as const;
 
+/** Additive v2 delivery components; v1 rows continue to use the list above. */
+export const CONTEXT_RANKING_COMPONENTS_V2 = [
+  'status',
+  'trust',
+  'confidence',
+  'retrieval',
+  'taskAffinity',
+  'recommendedTags',
+  'scopeAffinity',
+  'applicability',
+  'pathOverlap',
+  'errorSignature',
+  'exactSignal',
+  'feedback',
+  'recency',
+  'contradiction',
+] as const;
+
 export const CONTEXT_SELECTION_REASON_ORDER = [
+  'project_origin',
+  'global_origin',
+  'scope_affinity',
+  'applicability_match',
+  'applicability_unknown',
+  'applicability_mismatch',
+  'unscoped_global_prior',
+  'exact_signal_match',
+  'word_match',
+  'substring_match',
+  'literal_fallback_match',
+  'tag_match',
   'verified',
   'candidate',
   'system_verified_trust',
@@ -60,6 +90,7 @@ export const CONTEXT_SELECTION_REASON_ORDER = [
 ] as const;
 
 export type ContextRankingComponent = (typeof CONTEXT_RANKING_COMPONENTS)[number];
+export type ContextRankingV2Component = (typeof CONTEXT_RANKING_COMPONENTS_V2)[number];
 export type FeedbackVerdict = 'helpful' | 'irrelevant' | 'stale' | 'conflicting';
 
 export interface ContextCandidateSnapshot {

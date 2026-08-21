@@ -29,10 +29,13 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 5 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 6 -->/);
   assert.match(rendered, /task_prepare/);
   assert.match(rendered, /task_answer/);
   assert.match(rendered, /memory_checkpoint/);
+  assert.match(rendered, /curator_check/);
+  assert.match(rendered, /curator_globalize/);
+  assert.match(rendered, /Akinator hypotheses/);
   assert.match(rendered, /untrusted advisory data/);
   assert.match(rendered, /candidate/);
   assert.match(rendered, /at most once for the current user request/);

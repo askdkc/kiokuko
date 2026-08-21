@@ -1,7 +1,13 @@
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
-import { CONTEXT_RANKING_COMPONENTS, CONTEXT_SELECTION_REASON_ORDER, type ContextRankingComponent } from './ranking.js';
+import {
+  CONTEXT_RANKING_COMPONENTS,
+  CONTEXT_RANKING_COMPONENTS_V2,
+  CONTEXT_SELECTION_REASON_ORDER,
+  type ContextRankingComponent,
+  type ContextRankingV2Component,
+} from './ranking.js';
 import { sanitizeJson } from '../security/sanitize.js';
 import { canonicalJson } from '../serialization/validate.js';
 
@@ -23,13 +29,17 @@ const DATABASE_MESSAGE = 'Context delivery database operation failed';
 const INTEGRITY_MESSAGE = 'Stored context delivery is invalid';
 
 export type ContextDeliveryScoreComponents = { [Component in ContextRankingComponent]: number };
+export type ContextDeliveryScoreComponentsV2 = { [Component in ContextRankingV2Component]: number };
+export type ContextDeliveryScoreComponentsAny = ContextDeliveryScoreComponents | ContextDeliveryScoreComponentsV2;
 
 export interface ContextDeliveryItemInput {
   entryId: string;
   entryRevision: number;
   rank: number;
-  scoreComponents: ContextDeliveryScoreComponents;
+  scoreComponents: ContextDeliveryScoreComponentsAny;
   selectionReasons: string[];
+  /** Set only for v2 cross-scope deliveries; project remains the v1 default. */
+  origin?: 'project' | 'global';
 }
 
 export interface ExternalSyncSourceSummary {
@@ -61,6 +71,7 @@ export interface ContextDeliveryInput {
   truncated: boolean;
   createdAt: string;
   items: ContextDeliveryItemInput[];
+  scoreSchemaVersion?: number;
 }
 
 export interface ContextDeliveryItemView extends ContextDeliveryItemInput {
@@ -109,6 +120,7 @@ interface DeliveryHeaderRow extends SqliteRow {
   created_at: unknown;
   run_workspace: unknown;
   run_last_sequence: unknown;
+  score_schema_version: unknown;
 }
 
 interface DeliveryEntryRow extends SqliteRow {
@@ -120,6 +132,7 @@ interface DeliveryEntryRow extends SqliteRow {
   selection_reason_json: unknown;
   entry_workspace: unknown;
   current_revision: unknown;
+  origin_scope: unknown;
 }
 
 interface DeliveryCursor {
@@ -305,22 +318,23 @@ function storedBoolean(value: unknown): boolean {
   return value === 1;
 }
 
-function scoreComponents(value: unknown): ContextDeliveryScoreComponents {
-  const object = objectInput(value, CONTEXT_RANKING_COMPONENTS, true);
+function scoreComponentsForVersion(value: unknown, version: number): ContextDeliveryScoreComponentsAny {
+  const components = version >= 2 ? CONTEXT_RANKING_COMPONENTS_V2 : CONTEXT_RANKING_COMPONENTS;
+  const object = objectInput(value, components, true);
   const keys = ownKeys(object);
-  if (keys.length !== CONTEXT_RANKING_COMPONENTS.length || CONTEXT_RANKING_COMPONENTS.some((component) => !keys.includes(component))) validation();
-  const result = {} as ContextDeliveryScoreComponents;
-  for (const component of CONTEXT_RANKING_COMPONENTS) {
+  if (keys.length !== components.length || components.some((component) => !keys.includes(component))) validation();
+  const result = {} as Record<string, number>;
+  for (const component of components) {
     const score = readField(object, component);
     if (typeof score !== 'number' || !Number.isSafeInteger(score) || !Number.isFinite(score) || score < -MAX_SCORE_COMPONENT || score > MAX_SCORE_COMPONENT) validation();
     result[component] = score;
   }
-  return result;
+  return result as ContextDeliveryScoreComponentsAny;
 }
 
-function storedScoreComponents(value: unknown): ContextDeliveryScoreComponents {
+function storedScoreComponents(value: unknown, version: number): ContextDeliveryScoreComponentsAny {
   try {
-    return scoreComponents(value);
+    return scoreComponentsForVersion(value, version);
   } catch {
     integrity();
   }
@@ -349,24 +363,26 @@ function storedSelectionReasons(value: unknown): string[] {
   }
 }
 
-function validateDeliveryItems(value: unknown): ContextDeliveryItemInput[] {
+function validateDeliveryItems(value: unknown, scoreSchemaVersion: number): ContextDeliveryItemInput[] {
   const array = arrayInput(value);
   if (array.length > MAX_ITEMS) validation();
   const entries = new Set<string>();
   return array.map((item, index) => {
-    const object = objectInput(item, ['entryId', 'entryRevision', 'rank', 'scoreComponents', 'selectionReasons'], true);
+    const object = objectInput(item, ['entryId', 'entryRevision', 'rank', 'scoreComponents', 'selectionReasons', 'origin'], false);
     const entryId = boundedIdentifier(readField(object, 'entryId'));
     if (entries.has(entryId)) validation();
     entries.add(entryId);
     const entryRevision = positiveSafeInteger(readField(object, 'entryRevision'));
     const rank = positiveSafeInteger(readField(object, 'rank'));
     if (rank !== index + 1) validation();
+    const origin = object.origin === undefined ? undefined : object.origin === 'project' || object.origin === 'global' ? object.origin : validation();
     return {
       entryId,
       entryRevision,
       rank,
-      scoreComponents: scoreComponents(readField(object, 'scoreComponents')),
+      scoreComponents: scoreComponentsForVersion(readField(object, 'scoreComponents'), scoreSchemaVersion),
       selectionReasons: selectionReasons(readField(object, 'selectionReasons')),
+      ...(origin === undefined ? {} : { origin }),
     };
   });
 }
@@ -426,8 +442,11 @@ function validateContextDeliveryInput(value: unknown): ValidatedContextDeliveryI
     const object = objectInput(value, [
       'workspace', 'deliveryId', 'runId', 'throughSequence', 'intakeSessionId', 'taskProfileHash',
       'queryHash', 'policyVersion', 'externalSyncSummary', 'charBudget', 'charCount', 'truncated',
-      'createdAt', 'items',
-    ], true);
+      'createdAt', 'items', 'scoreSchemaVersion',
+    ], false);
+    for (const field of ['workspace', 'deliveryId', 'runId', 'throughSequence', 'intakeSessionId', 'taskProfileHash', 'queryHash', 'policyVersion', 'externalSyncSummary', 'charBudget', 'charCount', 'truncated', 'createdAt', 'items']) {
+      if (!hasOwn(object, field)) validation();
+    }
     const workspace = boundedIdentifier(readField(object, 'workspace'));
     const deliveryId = boundedIdentifier(readField(object, 'deliveryId'));
     const runId = boundedIdentifier(readField(object, 'runId'));
@@ -444,7 +463,8 @@ function validateContextDeliveryInput(value: unknown): ValidatedContextDeliveryI
     if (typeof charCount !== 'number' || !Number.isSafeInteger(charCount) || charCount < 0 || charCount > charBudget) validation();
     const truncated = booleanValue(readField(object, 'truncated'));
     const createdAt = timestamp(readField(object, 'createdAt'));
-    const items = validateDeliveryItems(readField(object, 'items'));
+    const scoreSchemaVersion = object.scoreSchemaVersion === undefined ? undefined : positiveSafeInteger(object.scoreSchemaVersion);
+    const items = validateDeliveryItems(readField(object, 'items'), scoreSchemaVersion ?? 1);
     return {
       workspace,
       deliveryId,
@@ -460,6 +480,7 @@ function validateContextDeliveryInput(value: unknown): ValidatedContextDeliveryI
       truncated,
       createdAt,
       items,
+      ...(scoreSchemaVersion === undefined ? {} : { scoreSchemaVersion }),
     };
   } catch {
     validation();
@@ -540,7 +561,9 @@ function canonicalDeliveryBody(input: ContextDeliveryInput): string {
       rank: item.rank,
       scoreComponents: item.scoreComponents,
       selectionReasons: item.selectionReasons,
+      ...(item.origin === undefined ? {} : { origin: item.origin }),
     })),
+    scoreSchemaVersion: input.scoreSchemaVersion ?? 1,
   });
 }
 
@@ -549,7 +572,7 @@ function selectHeaderByDeliveryId(database: SqliteDatabase, deliveryId: string):
     SELECT cd.delivery_id, cd.run_id, cd.through_sequence, cd.intake_session_id,
            cd.task_profile_hash, cd.query_hash, cd.policy_version,
            cd.external_sync_summary_json, cd.char_budget, cd.char_count,
-           cd.truncated, cd.created_at,
+           cd.truncated, cd.created_at, cd.score_schema_version,
            lr.workspace AS run_workspace, lr.last_sequence AS run_last_sequence
       FROM context_deliveries AS cd
       LEFT JOIN ledger_runs AS lr ON lr.run_id = cd.run_id
@@ -573,8 +596,11 @@ function assertRunForWrite(database: SqliteDatabase, input: ValidatedContextDeli
     if (!intake || intake.session_id !== input.intakeSessionId || intake.session_id_join !== input.intakeSessionId || intake.session_workspace !== input.workspace) notFound();
   }
   for (const item of input.items) {
-    const entry = database.prepare('SELECT id, workspace, revision FROM entries WHERE id = ?').get<{ id: unknown; workspace: unknown; revision: unknown }>(item.entryId);
-    if (!entry || entry.workspace !== input.workspace || entry.id !== item.entryId) notFound();
+    const entry = database.prepare('SELECT id, workspace, revision, scope_json FROM entries WHERE id = ?').get<{ id: unknown; workspace: unknown; revision: unknown; scope_json: unknown }>(item.entryId);
+    if (!entry || entry.id !== item.entryId) notFound();
+    if (item.origin === 'global') {
+      if (entry.workspace !== 'global' || typeof entry.scope_json !== 'string' || !/"visibility"\s*:\s*"global"/u.test(entry.scope_json)) notFound();
+    } else if (entry.workspace !== input.workspace) notFound();
     const revision = storedPositiveSafeInteger(entry.revision);
     if (item.entryRevision > revision) conflict();
   }
@@ -621,6 +647,7 @@ function validateStoredHeader(row: DeliveryHeaderRow, workspace: string): Contex
   const taskProfileHash = storedHash(row.task_profile_hash);
   const queryHash = storedHash(row.query_hash);
   const policyVersion = boundedStoredIdentifier(row.policy_version);
+  const scoreSchemaVersion = storedPositiveSafeInteger(row.score_schema_version);
   const externalSyncSummary = validateStoredExternalSummary(row.external_sync_summary_json, workspace);
   const charBudget = storedPositiveSafeInteger(row.char_budget);
   if (charBudget > MAX_CHAR_BUDGET) integrity();
@@ -643,13 +670,14 @@ function validateStoredHeader(row: DeliveryHeaderRow, workspace: string): Contex
     truncated,
     createdAt,
     items: [],
+    ...(scoreSchemaVersion > 1 ? { scoreSchemaVersion } : {}),
   };
 }
 
 function selectDeliveryEntries(database: SqliteDatabase, deliveryId: string): DeliveryEntryRow[] {
   return database.prepare(`
     SELECT cde.delivery_id, cde.entry_id, cde.entry_revision, cde.rank,
-           cde.score_components_json, cde.selection_reason_json,
+           cde.score_components_json, cde.selection_reason_json, cde.origin_scope,
            e.workspace AS entry_workspace, e.revision AS current_revision
       FROM context_delivery_entries AS cde
       LEFT JOIN entries AS e ON e.id = cde.entry_id
@@ -669,7 +697,9 @@ function validateStoredEntries(database: SqliteDatabase, header: ContextDelivery
     if (deliveryId !== header.deliveryId || entryIds.has(entryId)) integrity();
     entryIds.add(entryId);
     const entryWorkspace = boundedStoredIdentifier(row.entry_workspace);
-    if (entryWorkspace !== header.workspace) integrity();
+    const origin = row.origin_scope === 'global' ? 'global' : row.origin_scope === 'project' ? 'project' : integrity();
+    if (origin === 'project' && entryWorkspace !== header.workspace) integrity();
+    if (origin === 'global' && entryWorkspace !== 'global') integrity();
     const currentRevision = storedPositiveSafeInteger(row.current_revision);
     const entryRevision = storedPositiveSafeInteger(row.entry_revision);
     if (entryRevision > currentRevision) integrity();
@@ -678,10 +708,10 @@ function validateStoredEntries(database: SqliteDatabase, header: ContextDelivery
     expectedRank += 1;
     const scoreValue = validateStoredJson(row.score_components_json);
     const reasonValue = validateStoredJson(row.selection_reason_json);
-    const score = storedScoreComponents(scoreValue);
+    const score = storedScoreComponents(scoreValue, header.scoreSchemaVersion ?? 1);
     const reasons = storedSelectionReasons(reasonValue);
     if (canonicalJson(score) !== row.score_components_json || canonicalJson(reasons) !== row.selection_reason_json) integrity();
-    return { entryId, entryRevision, rank, scoreComponents: score, selectionReasons: reasons };
+    return { entryId, entryRevision, rank, scoreComponents: score, selectionReasons: reasons, ...(origin === 'global' ? { origin } : {}) };
   });
 }
 
@@ -725,8 +755,8 @@ function writeContextDelivery(database: SqliteDatabase, input: ValidatedContextD
   database.prepare(`
     INSERT INTO context_deliveries (
       delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-      policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at, score_schema_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.deliveryId,
     input.runId,
@@ -740,12 +770,13 @@ function writeContextDelivery(database: SqliteDatabase, input: ValidatedContextD
     input.charCount,
     input.truncated ? 1 : 0,
     input.createdAt,
+    input.scoreSchemaVersion ?? 1,
   );
   for (const item of input.items) {
     database.prepare(`
       INSERT INTO context_delivery_entries (
-        delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json, origin_scope
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.deliveryId,
       item.entryId,
@@ -753,6 +784,7 @@ function writeContextDelivery(database: SqliteDatabase, input: ValidatedContextD
       item.rank,
       canonicalJson(item.scoreComponents),
       canonicalJson(item.selectionReasons),
+      item.origin ?? 'project',
     );
   }
   return readStoredDelivery(database, input.workspace, input.deliveryId);
@@ -803,7 +835,7 @@ export function listContextDeliveries(database: SqliteDatabase, input: unknown):
       SELECT cd.delivery_id, cd.run_id, cd.through_sequence, cd.intake_session_id,
              cd.task_profile_hash, cd.query_hash, cd.policy_version,
              cd.external_sync_summary_json, cd.char_budget, cd.char_count,
-             cd.truncated, cd.created_at,
+             cd.truncated, cd.created_at, cd.score_schema_version,
              lr.workspace AS run_workspace, lr.last_sequence AS run_last_sequence
         FROM context_deliveries AS cd
         LEFT JOIN ledger_runs AS lr ON lr.run_id = cd.run_id

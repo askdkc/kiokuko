@@ -72,6 +72,12 @@ test('generated Web UI exposes locale detection, persistence, selection, and tra
   assert.match(WEB_HTML, /localStorage\.setItem\(localeStorageKey, state\.locale\)/);
   assert.match(WEB_HTML, /document\.documentElement\.lang = state\.locale/);
   assert.match(WEB_HTML, /data-i18n-placeholder="searchPlaceholder"/);
+  assert.match(WEB_HTML, /<button id="curator-button"[^>]+data-i18n="curator"/);
+  assert.match(WEB_HTML, /<section id="curator-panel"/);
+  assert.match(WEB_HTML, /candidate\.draft\.body/);
+  assert.match(WEB_HTML, /curatorDraftChanges/);
+  assert.match(WEB_HTML, /candidate\.knowledge\.qualifiedHits/);
+  assert.match(WEB_HTML, /\/api\/curator\/globalize/);
   for (const label of Object.values(WEB_LOCALE_LABELS)) assert.match(WEB_HTML, new RegExp(label));
 });
 

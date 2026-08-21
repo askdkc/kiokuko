@@ -345,7 +345,8 @@ function inspectReferences(database: SqliteDatabase, workspace: string | undefin
   }
   const entries = database.prepare(`SELECT cde.*, cd.run_id, r.workspace AS run_workspace, e.revision AS current_revision, e.workspace AS entry_workspace FROM context_delivery_entries AS cde LEFT JOIN context_deliveries AS cd ON cd.delivery_id = cde.delivery_id LEFT JOIN ledger_runs AS r ON r.run_id = cd.run_id LEFT JOIN entries AS e ON e.id = cde.entry_id${scope} ORDER BY cde.delivery_id ASC, cde.entry_id ASC`).all<Row>(...param);
   for (const row of entries) {
-    if (row.run_id === null || row.run_id === undefined || row.current_revision === null || row.current_revision === undefined || row.entry_workspace !== row.run_workspace) findings.add('references', 'orphan_delivery_entry_reference', 'context_delivery_entries', row.entry_id);
+    const entryWorkspaceMatches = row.origin_scope === 'global' ? row.entry_workspace === 'global' : row.entry_workspace === row.run_workspace;
+    if (row.run_id === null || row.run_id === undefined || row.current_revision === null || row.current_revision === undefined || !entryWorkspaceMatches) findings.add('references', 'orphan_delivery_entry_reference', 'context_delivery_entries', row.entry_id);
     if (integer(row.entry_revision) === undefined || (row.entry_revision as number) < 1 || (integer(row.current_revision) !== undefined && (row.entry_revision as number) > (row.current_revision as number))) findings.add('contextDeliveries', 'invalid_entry_revision', 'context_delivery_entries', row.entry_id);
     if (integer(row.rank) === undefined || (row.rank as number) < 1) findings.add('contextDeliveries', 'invalid_rank', 'context_delivery_entries', row.entry_id);
     parseJson(row.score_components_json, ['contextDeliveries', 'storedValues'], 'context_delivery_entries.score_components_json', row.entry_id, findings, 'object');
@@ -376,9 +377,10 @@ function inspectContext(database: SqliteDatabase, workspace: string | undefined,
 function inspectFeedback(database: SqliteDatabase, workspace: string | undefined, findings: FindingCollector): void {
   const scope = workspace === undefined ? '' : ' WHERE r.workspace = ?';
   const param = workspace === undefined ? [] : [workspace];
-  const context = database.prepare(`SELECT cf.*, r.workspace AS run_workspace, cd.run_id AS delivery_run_id, cde.entry_id AS linked_entry_id, e.workspace AS entry_workspace FROM context_feedback AS cf LEFT JOIN ledger_runs AS r ON r.run_id = cf.run_id LEFT JOIN context_deliveries AS cd ON cd.delivery_id = cf.delivery_id LEFT JOIN context_delivery_entries AS cde ON cde.delivery_id = cf.delivery_id AND cde.entry_id = cf.entry_id LEFT JOIN entries AS e ON e.id = cf.entry_id${scope} ORDER BY cf.feedback_id ASC`).all<Row>(...param);
+  const context = database.prepare(`SELECT cf.*, r.workspace AS run_workspace, cd.run_id AS delivery_run_id, cde.entry_id AS linked_entry_id, cde.origin_scope AS origin_scope, e.workspace AS entry_workspace FROM context_feedback AS cf LEFT JOIN ledger_runs AS r ON r.run_id = cf.run_id LEFT JOIN context_deliveries AS cd ON cd.delivery_id = cf.delivery_id LEFT JOIN context_delivery_entries AS cde ON cde.delivery_id = cf.delivery_id AND cde.entry_id = cf.entry_id LEFT JOIN entries AS e ON e.id = cf.entry_id${scope} ORDER BY cf.feedback_id ASC`).all<Row>(...param);
   for (const row of context) {
-    if (row.run_workspace === null || row.run_workspace === undefined || row.delivery_run_id !== row.run_id || row.linked_entry_id !== row.entry_id || row.entry_workspace !== row.run_workspace) findings.add('feedbackLinks', 'feedback_tuple_mismatch', 'context_feedback', row.feedback_id);
+    const entryWorkspaceMatches = row.origin_scope === 'global' ? row.entry_workspace === 'global' : row.entry_workspace === row.run_workspace;
+    if (row.run_workspace === null || row.run_workspace === undefined || row.delivery_run_id !== row.run_id || row.linked_entry_id !== row.entry_id || !entryWorkspaceMatches) findings.add('feedbackLinks', 'feedback_tuple_mismatch', 'context_feedback', row.feedback_id);
     if (!CONTEXT_FEEDBACK_VERDICTS.has(str(row.verdict) ?? '')) findings.add('feedbackLinks', 'invalid_feedback_verdict', 'context_feedback', row.feedback_id);
     if (typeof row.actor !== 'string' || row.actor.length === 0) findings.add('storedValues', 'invalid_text', 'context_feedback', row.feedback_id);
     if (typeof row.idempotency_key !== 'string' || !HASH.test(row.idempotency_key)) findings.add('storedValues', 'invalid_hash_shape', 'context_feedback', row.feedback_id);

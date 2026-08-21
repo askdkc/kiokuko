@@ -4,7 +4,7 @@ import { TASK_TYPES } from './types.js';
 import type { AkinatorQuestion, TaskProfile, TaskType } from './types.js';
 
 /** Version of the deterministic question/answer policy represented by this module. */
-export const AKINATOR_POLICY_VERSION = 'v1' as const;
+export const AKINATOR_POLICY_VERSION = 'v2' as const;
 
 export type DomainStatus = 'needs_answer' | 'ready' | 'exhausted';
 

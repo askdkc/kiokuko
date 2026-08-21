@@ -19,7 +19,7 @@ Exit codes remain: 0 success, 2 usage, 3 validation, 4 not found, 5 conflict, 6 
 ## Global client setup and MCP
 
 ```bash
-kiokuko setup [--clients codex,opencode,claude,hermes] [--command kiokuko] [--dry-run] [--json]
+kiokuko setup [--clients codex,opencode,claude,hermes] [--command kiokuko] [--dry-run] [--opencode-capture off|minimal|standard] [--opencode-mode advisory|strict] [--json]
 kiokuko mcp
 ```
 
@@ -43,12 +43,17 @@ the effective profile with `hermes mcp test kiokuko`.
 stdout; ordinary CLI diagnostics must not contaminate that stream. It exposes:
 
 - `memory_recall(query, cwd?, scope?, limit?, maxChars?)`
-- `memory_checkpoint(cwd?, memories[])`
-- `task_prepare(task, cwd?, profileHints?, capabilities?, maxContextChars?)`
-- `task_answer(sessionId, questionId, value, cwd?, capabilities?, maxContextChars?)`
+- `memory_checkpoint(cwd?, runId?, deliveryId?, outcome?, feedback?, evidence?, memories?)`
+- `task_prepare(task, cwd?, profileHints?, capabilities?, client?, maxContextChars?)`
+- `task_answer(sessionId, questionId, value, cwd?, runId?, capabilities?, maxContextChars?)`
+- `curator_check(cwd?, workspace?, limit?, includeUnready?)`
+- `curator_globalize(workspace, entryId, expectedRevision, confirmed=true)`
 
 Capability catalogs are request-only metadata and are not persisted. Returned
-memory, references, and capability recommendations are advisory and untrusted.
+memory, references, context deliveries, and capability recommendations are
+advisory and untrusted. `task_prepare` returns additive `run` and `context`
+objects while preserving the legacy intake, memory, references, and nextAction
+fields.
 
 Automatic repository resolution updates only the global path registry; it does
 not create `.kiokuko.json` or `AGENTS.md` in the repository. `kiokuko use`
@@ -63,6 +68,26 @@ kiokuko web [--host 127.0.0.1] [--port 4173] [--json]
 ```
 
 `serve` is foreground and defaults to an available random port. `server status` reads and validates the same-user runtime descriptor but never emits its capability token. `web` uses the same server composition while preserving the legacy UI/route behavior.
+
+## Curator
+
+```bash
+kiokuko curator [--workspace <name>] [--cwd <path>] [--entry-id <id>] [--limit <number>] [--skill-ready-only] [--yes] [--json]
+```
+
+The command scores project candidate entries for cross-project reuse and
+deterministically regenerates a portable draft. Project identifiers and paths
+are generalized, while purpose, procedure, structured applicability, and a
+verification reminder are retained. The command shows the skill name, a
+three-line overview, the full draft, qualified-hit counts, independent-run and
+workspace counts, and the abstraction-to-action silo score. Interactive mode asks for explicit
+confirmation before creating a `global` candidate from that draft. `--json` is
+read-only; `--yes` is an explicit batch confirmation option. Globalization is
+revision checked and stores the source workspace, source revision, and draft
+generator version in provenance/reference metadata. The result remains a
+candidate/untrusted entry until normal promotion. No external LLM is called.
+`--skill-ready-only` requires at least two qualified independent runs, high silo
+completeness, and portability evidence. Recall/search frequency is not a hit.
 
 ## Generic agent HTTP bridge
 
@@ -94,4 +119,4 @@ enable the allowlisted `mattpocock/skills` reference fallback.
 
 ## Web API compatibility
 
-Legacy `/api/health`, `/api/workspaces`, `/api/tags`, and `/api/entries` remain mounted. Agent gateway endpoints use the v1 authenticated contract documented in `agent-gateway.md`. List operations use cursor pagination and hard limits; stored event/memory content is marked untrusted.
+Legacy `/api/health`, `/api/workspaces`, `/api/tags`, and `/api/entries` remain mounted. The UI Curator flow uses `GET /api/curator/candidates?workspace=...` to return the regenerated draft and revision-checked `POST /api/curator/globalize?workspace=...` to store that server-regenerated draft. Agent gateway endpoints use the v1 authenticated contract documented in `agent-gateway.md`. List operations use cursor pagination and hard limits; stored event/memory content is marked untrusted.

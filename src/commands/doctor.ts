@@ -10,6 +10,7 @@ import { isPidAlive } from '../server/instance-lock.js';
 import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
 import { inspectLedger } from '../ledger/maintenance.js';
 import { findSecret } from '../memory/secrets.js';
+import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -36,6 +37,7 @@ export interface DoctorResult {
     secrets: DoctorCheck;
     ledger: DoctorCheck;
     runtime: DoctorCheck;
+    hybridSearch: DoctorCheck;
   };
 }
 
@@ -95,6 +97,12 @@ export async function runDoctor(options: { databasePath?: string } = {}): Promis
     const entryCount = count(database, 'SELECT COUNT(*) AS count FROM entries');
     const ftsCount = fts5 ? count(database, 'SELECT COUNT(*) AS count FROM entries_fts') : 0;
     const ftsCheck = { ok: !fts5 || entryCount === ftsCount, count: Math.abs(entryCount - ftsCount), detail: `entries=${entryCount}, fts=${ftsCount}` };
+    const projection = hybridSearchProjectionStatus(database);
+    const hybridCheck = {
+      ok: projection.missingSignals === 0 && projection.extraSignals === 0 && projection.staleTrigram === 0,
+      count: projection.missingSignals + projection.extraSignals + projection.staleTrigram,
+      detail: `entries=${projection.entries}, trigram=${projection.trigram}, signals=${projection.signals}, missingSignals=${projection.missingSignals}, extraSignals=${projection.extraSignals}, staleTrigram=${projection.staleTrigram}`,
+    };
     const danglingLinks = count(database, `
       SELECT COUNT(*) AS count FROM entry_links l
       LEFT JOIN entries f ON f.id = l.from_entry_id
@@ -155,6 +163,7 @@ export async function runDoctor(options: { databasePath?: string } = {}): Promis
       secrets: { ok: secretCount === 0, count: secretCount },
       ledger: ledgerCheck,
       runtime,
+      hybridSearch: hybridCheck,
     };
     const ok = Object.values(checks).every((check) => check.ok);
     return { ok, databasePath: '<redacted>', currentVersion: initialized.currentVersion, capabilities: initialized.capabilities, integrity, fts5, checks };

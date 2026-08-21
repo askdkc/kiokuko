@@ -2,6 +2,7 @@ import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry, type EntryRecord } from './entries.js';
 import { requireWorkspace, type EntryKind, type EntryStatus } from '../serialization/validate.js';
+import { hybridSearchRows } from './hybrid-retrieval.js';
 
 export interface SearchEntriesInput {
   workspace: string;
@@ -166,27 +167,35 @@ function searchWithLike(database: SqliteDatabase, input: SearchEntriesInput, lim
     .all<SearchRow>(...parameters);
 }
 
-function selectRows(database: SqliteDatabase, input: SearchEntriesInput, limit: number): SearchRow[] {
+function selectRows(database: SqliteDatabase, input: SearchEntriesInput, limit: number): { rows: SearchRow[]; truncated: boolean } {
   const workspace = requireWorkspace(input.workspace);
   const normalizedInput = { ...input, workspace };
-  if (normalizedInput.query.trim().length === 0) return [];
+  if (normalizedInput.query.trim().length === 0) return { rows: [], truncated: false };
+
+  try {
+    return hybridSearchRows(database, { ...normalizedInput, limit });
+  } catch (error) {
+    if (!(error instanceof KiokukoError) || error.code !== 'VALIDATION_ERROR') throw error;
+  }
 
   const match = ftsQuery(normalizedInput.query);
   if (match && hasTable(database, 'entries_fts')) {
     try {
-      return searchWithFts(database, normalizedInput, limit, match);
+      const rows = searchWithFts(database, normalizedInput, limit + 1, match);
+      return { rows: rows.slice(0, limit), truncated: rows.length > limit };
     } catch (error) {
       if (!(error instanceof Error) || !/fts|match|syntax/i.test(error.message)) throw error;
     }
   }
-  return searchWithLike(database, normalizedInput, limit);
+  const rows = searchWithLike(database, normalizedInput, limit + 1);
+  return { rows: rows.slice(0, limit), truncated: rows.length > limit };
 }
 
 export function searchEntries(database: SqliteDatabase, input: SearchEntriesInput): SearchResult {
   const limit = normalizedLimit(input.limit, DEFAULT_SEARCH_LIMIT);
-  const rows = selectRows(database, input, limit);
-  const items = rows.map((row) => readEntry(database, { workspace: input.workspace, entryId: row.id }));
-  return { items, count: items.length, truncated: false };
+  const selected = selectRows(database, input, limit);
+  const items = selected.rows.map((row) => readEntry(database, { workspace: input.workspace, entryId: row.id }));
+  return { items, count: items.length, truncated: selected.truncated };
 }
 
 function recallSnippet(entry: EntryRecord, remaining: number): string {
@@ -198,7 +207,8 @@ function recallSnippet(entry: EntryRecord, remaining: number): string {
 export function recallEntries(database: SqliteDatabase, input: RecallEntriesInput): RecallResult {
   const limit = normalizedLimit(input.limit, DEFAULT_RECALL_LIMIT);
   const maxChars = normalizedMaxChars(input.maxChars);
-  const rows = selectRows(database, input, limit);
+  const selected = selectRows(database, input, limit);
+  const rows = selected.rows;
   const items: RecallItem[] = [];
   let characterCount = 0;
   let truncated = false;
@@ -229,6 +239,6 @@ export function recallEntries(database: SqliteDatabase, input: RecallEntriesInpu
     if (characterCount >= maxChars) break;
   }
 
-  if (items.length < rows.length) truncated = true;
+  if (items.length < rows.length || selected.truncated) truncated = true;
   return { items, count: items.length, characterCount, truncated };
 }

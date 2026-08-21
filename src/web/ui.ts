@@ -92,6 +92,16 @@ export const WEB_HTML = String.raw`<!doctype html>
     .detail-block { border-top:1px solid var(--line); padding-top:12px; margin-top:12px; }
     .detail-block h3 { margin:0 0 8px; font-size:14px; }
     .detail-text { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); font-size:13px; }
+    .curator-panel { margin-top:16px; }
+    .curator-list { display:grid; gap:12px; }
+    .curator-card { border:1px solid var(--line); border-radius:14px; padding:16px; background:var(--panel); }
+    .curator-card h3 { margin:8px 0; font-size:17px; }
+    .curator-overview { margin:8px 0 12px; color:var(--muted); white-space:pre-wrap; line-height:1.55; }
+    .curator-draft { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
+    .curator-draft h4 { margin:0 0 10px; font-size:14px; }
+    .curator-draft-label { margin:10px 0 4px; color:var(--muted); font-size:12px; font-weight:700; }
+    .curator-draft-value { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.5; }
+    .curator-reasons { color:var(--muted); font-size:12px; white-space:pre-wrap; }
     @media (max-width:680px) { .operator-grid { grid-template-columns:1fr; } }
     @media (max-width:1050px) { .layout { grid-template-columns:180px minmax(280px,1fr); } .editor-panel { grid-column:1 / -1; } }
     @media (max-width:680px) { .shell { padding:16px; } .topbar { display:block; position:relative; } .brand { padding-right:56px; } .topbar-side { margin-top:16px; align-self:auto; } .language-picker { position:absolute; top:0; right:0; } .toolbar { justify-content:stretch; margin-top:0; } .topbar-side .control,.topbar-side .search { flex:1 1 100%; width:100%; } .search { min-width:0; } .layout { grid-template-columns:1fr; } .genres-panel { order:0; } .list-panel { order:1; } .editor-panel { order:2; } .entry-list { max-height:none; } }
@@ -115,6 +125,7 @@ export const WEB_HTML = String.raw`<!doctype html>
         <div class="toolbar">
           <select id="workspace" class="control" aria-label="Workspace" data-i18n-aria-label="workspaceLabel"></select>
           <input id="search" class="search" type="search" placeholder="Search memory…" aria-label="Search memory…" data-i18n-placeholder="searchPlaceholder" data-i18n-aria-label="searchPlaceholder">
+          <button id="curator-button" class="button" type="button" data-i18n="curator">Curator</button>
           <button id="refresh" class="button" type="button" data-i18n="refresh">Refresh</button>
         </div>
       </div>
@@ -133,6 +144,13 @@ export const WEB_HTML = String.raw`<!doctype html>
         <div class="panel-head"><h2 data-i18n="editorTitle">Details</h2><span id="editor-state" class="badge" data-i18n="unselected">Not selected</span></div>
         <div class="panel-body"><div id="editor"></div></div>
       </section>
+    </section>
+    <section id="curator-panel" class="panel curator-panel" hidden>
+      <div class="panel-head"><h2 data-i18n="curatorTitle">Curator</h2><span class="badge" data-i18n="curatorBadge">user confirmation required</span></div>
+      <div class="panel-body">
+        <p class="subtitle" data-i18n="curatorDescription">Review reusable knowledge candidates and add them to global memory.</p>
+        <div id="curator-list" class="curator-list"></div>
+      </div>
     </section>
     <section class="panel operator-panel">
       <div class="panel-head"><h2 data-i18n="operatorTitle">Agent run operator view</h2><span class="badge" data-i18n="trustBadge">stored data is untrusted / non-actionable</span></div>
@@ -165,7 +183,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     const botModes = [
       ['bot:common', 'bot.common'], ['bot:researcher', 'bot.researcher'], ['bot:builder', 'bot.builder'], ['bot:reviewer', 'bot.reviewer'], ['bot:devops', 'bot.devops'], ['bot:writer', 'bot.writer'], ['bot:analyst', 'bot.analyst']
     ];
-    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], tags: [], selected: null, runs: [], selectedRun: null, localizedStatus: null };
+    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], tags: [], selected: null, runs: [], selectedRun: null, curatorCandidates: [], curatorGlobalized: new Set(), curatorOpen: false, localizedStatus: null };
     const $ = (id) => document.getElementById(id);
     const t = (key, parameters = {}) => {
       const template = i18n.messages[state.locale]?.[key] ?? i18n.messages[i18n.defaultLocale]?.[key] ?? key;
@@ -214,7 +232,7 @@ export const WEB_HTML = String.raw`<!doctype html>
       state.locale = normalizeLocale(value) || i18n.defaultLocale;
       try { localStorage.setItem(localeStorageKey, state.locale); } catch {}
       setLanguageMenuOpen(false, true);
-      applyTranslations(); renderFilters(); renderEntries(); renderRuns(); renderRunDetail(); updateEditorState();
+      applyTranslations(); renderFilters(); renderEntries(); renderRuns(); renderRunDetail(); renderCurator(); updateEditorState();
     };
     const applyTranslations = () => {
       document.documentElement.lang = state.locale;
@@ -316,6 +334,67 @@ export const WEB_HTML = String.raw`<!doctype html>
 
     async function selectEntry(id) { try { const result = await api('/api/entries/' + encodeURIComponent(id) + '?workspace=' + encodeURIComponent(state.workspace)); state.selected = result.entry; renderEntries(); renderEditor(); } catch (error) { setStatus(error.message, true); } }
 
+    function renderCurator() {
+      const panel = $('curator-panel');
+      panel.hidden = !state.curatorOpen;
+      if (!state.curatorOpen) return;
+      const root = $('curator-list');
+      if (!state.curatorCandidates.length) { const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'noCuratorCandidates'); root.replaceChildren(empty); return; }
+      root.replaceChildren(...state.curatorCandidates.map((candidate) => {
+        const card = document.createElement('article'); card.className = 'curator-card';
+        const meta = document.createElement('div'); meta.className = 'entry-meta';
+        const kind = document.createElement('span'); kind.className = 'badge'; kind.textContent = labelForKind(candidate.kind);
+        const score = document.createElement('span'); score.className = 'badge'; score.textContent = t('curatorScore', { score: candidate.score });
+        meta.append(kind, score);
+        if (candidate.knowledge && candidate.knowledge.skillReady) { const ready = document.createElement('span'); ready.className = 'badge'; setI18nText(ready, 'curatorSkillReady'); meta.append(ready); }
+        const heading = document.createElement('h3'); heading.textContent = candidate.skillName;
+        const overview = document.createElement('div'); overview.className = 'curator-overview'; overview.textContent = candidate.overview.join('\n');
+        const knowledge = document.createElement('div'); knowledge.className = 'curator-reasons'; knowledge.textContent = candidate.knowledge ? [
+          t('curatorEvidence', { hits: candidate.knowledge.qualifiedHits, runs: candidate.knowledge.independentRuns, workspaces: candidate.knowledge.independentWorkspaces }),
+          t('curatorSilo', { value: candidate.knowledge.averageCompleteness }),
+          ...(candidate.knowledge.readinessReasons || []),
+        ].join('\n') : '';
+        const draft = document.createElement('section'); draft.className = 'curator-draft';
+        const draftHeading = document.createElement('h4'); setI18nText(draftHeading, 'curatorDraft');
+        draft.append(draftHeading);
+        const draftFields = [
+          ['curatorDraftTitle', candidate.draft.title],
+          ['curatorDraftSummary', candidate.draft.summary],
+          ['curatorDraftBody', candidate.draft.body],
+          ['curatorDraftVersion', candidate.draft.version],
+          ['curatorDraftChanges', (candidate.draft.changes || []).map((change) => t({
+            'portable-sections-generated': 'curatorChangePortableSections',
+            'project-references-normalized': 'curatorChangeProjectReferences',
+            'paths-generalized': 'curatorChangePaths',
+            'applicability-retained': 'curatorChangeApplicability',
+          }[change] || 'curatorChangeUnknown')).join('\n')],
+        ];
+        for (const [labelKey, value] of draftFields) {
+          const label = document.createElement('div'); label.className = 'curator-draft-label'; setI18nText(label, labelKey);
+          const content = document.createElement('pre'); content.className = 'curator-draft-value'; content.textContent = value;
+          draft.append(label, content);
+        }
+        const reasons = document.createElement('div'); reasons.className = 'curator-reasons'; reasons.textContent = [...(candidate.reasons || []), ...(candidate.warnings || []).map((warning) => t('curatorWarning', { warning }))].join('\n');
+        const action = document.createElement('button'); action.type = 'button'; action.className = 'button primary';
+        const done = state.curatorGlobalized.has(candidate.entryId); action.disabled = done; setI18nText(action, done ? 'globalized' : 'globalize');
+        action.addEventListener('click', async () => {
+          action.disabled = true;
+          try {
+            await api('/api/curator/globalize?workspace=' + encodeURIComponent(state.workspace), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entryId: candidate.entryId, expectedRevision: candidate.revision }) });
+            state.curatorGlobalized.add(candidate.entryId); setLocalizedStatus('curatorAdded'); renderCurator(); await loadEntries();
+          } catch (error) { action.disabled = false; setStatus(error.message, true); }
+        });
+        card.append(meta, heading, overview, knowledge, draft, reasons, action); return card;
+      }));
+    }
+
+    async function loadCurator() {
+      if (!state.workspace) return;
+      state.curatorOpen = true; renderCurator();
+      try { const result = await api('/api/curator/candidates?workspace=' + encodeURIComponent(state.workspace) + '&limit=50'); state.curatorCandidates = result.candidates || []; renderCurator(); }
+      catch (error) { setStatus(error.message, true); }
+    }
+
     async function loadRunDetail(runId) {
       try {
         const result = await api('/api/operator/runs/' + encodeURIComponent(runId));
@@ -371,7 +450,7 @@ export const WEB_HTML = String.raw`<!doctype html>
 
     async function loadEntries() { if (!state.workspace) return; try { const params = new URLSearchParams({ workspace: state.workspace }); if (state.kind !== 'all') params.set('kind', state.kind); if (state.tag) params.set('tag', state.tag); if (state.query) params.set('q', state.query); const result = await api('/api/entries?' + params); state.entries = result.entries; if (state.selected && !state.entries.some((entry) => entry.id === state.selected.id)) state.selected = null; renderEntries(); renderFilters(); if (!state.selected && state.entries[0]) await selectEntry(state.entries[0].id); else renderEditor(); setLocalizedCountStatus('displayedCount', result.entries.length); } catch (error) { setStatus(error.message, true); } }
     async function loadTags() { if (!state.workspace) return; try { const result = await api('/api/tags?workspace=' + encodeURIComponent(state.workspace)); state.tags = result.tags; renderFilters(); } catch (error) { setStatus(error.message, true); } }
-    async function loadWorkspaces() { try { const result = await api('/api/workspaces'); const select = $('workspace'); select.replaceChildren(...result.workspaces.map((item) => { const option = document.createElement('option'); option.value = item.workspace; option.textContent = (item.displayName || item.workspace) + ' (' + item.count + ')'; return option; })); if (!state.workspace && result.workspaces[0]) state.workspace = result.workspaces[0].workspace; select.value = state.workspace; if (state.workspace) { await loadTags(); await loadEntries(); await loadRuns(); } else setLocalizedStatus('noWorkspace', {}, true); } catch (error) { setStatus(error.message, true); } }
+    async function loadWorkspaces() { try { const result = await api('/api/workspaces'); const select = $('workspace'); select.replaceChildren(...result.workspaces.map((item) => { const option = document.createElement('option'); option.value = item.workspace; option.textContent = (item.displayName || item.workspace) + ' (' + item.count + ')'; return option; })); if (!state.workspace && result.workspaces[0]) state.workspace = result.workspaces[0].workspace; select.value = state.workspace; if (state.workspace) { await loadTags(); await loadEntries(); await loadRuns(); if (state.curatorOpen) await loadCurator(); } else setLocalizedStatus('noWorkspace', {}, true); } catch (error) { setStatus(error.message, true); } }
     $('language-toggle').addEventListener('click', () => {
       setLanguageMenuOpen($('language-toggle').getAttribute('aria-expanded') !== 'true');
     });
@@ -393,7 +472,8 @@ export const WEB_HTML = String.raw`<!doctype html>
     });
     document.addEventListener('click', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
     document.addEventListener('focusin', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
-    $('workspace').addEventListener('change', (event) => { state.workspace = event.target.value; state.selected = null; state.selectedRun = null; state.runs = []; state.tag = ''; loadTags().then(loadEntries).then(loadRuns); });
+    $('workspace').addEventListener('change', (event) => { state.workspace = event.target.value; state.selected = null; state.selectedRun = null; state.runs = []; state.tag = ''; state.curatorCandidates = []; state.curatorGlobalized = new Set(); state.curatorOpen = false; renderCurator(); loadTags().then(loadEntries).then(loadRuns); });
+    $('curator-button').addEventListener('click', () => loadCurator());
     $('refresh').addEventListener('click', () => loadWorkspaces());
     let searchTimer; $('search').addEventListener('input', (event) => { clearTimeout(searchTimer); state.query = event.target.value.trim(); searchTimer = setTimeout(() => loadEntries(), 180); });
     applyTranslations();
