@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -114,41 +114,19 @@ test('fresh migration applies the current schema and every gateway table and ind
   }
 });
 
-test('upgrade migration preserves existing memory and Akinator data', async () => {
-  const directory = await temporaryDirectory('gateway-upgrade');
-  const preGatewayMigrations = path.join(directory, 'migrations');
-  await mkdir(preGatewayMigrations);
-  for (const name of ['001_initial.sql', '002_fts.sql', '003_akinator.sql']) {
-    await copyFile(path.join(migrationsDirectory, name), path.join(preGatewayMigrations, name));
-  }
-
-  const databasePath = path.join(directory, 'data.sqlite3');
-  const database = openConnection(databasePath);
+test('fresh migration uses immutable revisions instead of the legacy mutable entry shape', async () => {
+  const directory = await temporaryDirectory('gateway-revision-schema');
+  const database = openConnection(path.join(directory, 'data.sqlite3'));
   try {
-    migrateDatabase(database, preGatewayMigrations);
-    database.prepare(`
-      INSERT INTO repositories (repository_id, workspace, display_name, remote_fingerprint, binding_schema_version, agent_template_version, created_at, last_used_at)
-      VALUES ('repo-1', 'workspace-1', 'Existing', NULL, 1, 1, ?, ?)
-    `).run(now, now);
-    database.prepare(`
-      INSERT INTO entries (id, workspace, kind, status, title, body, summary, scope_json, provenance_json, trust_level, confidence, content_hash, revision, created_by, created_at, updated_at)
-      VALUES ('entry-1', 'workspace-1', 'lesson', 'candidate', 'Existing', 'Existing body', NULL, '{}', '{}', 'user_asserted', 0.5, 'hash-1', 1, 'test', ?, ?)
-    `).run(now, now);
-    insertSession(database);
-    database.prepare(`
-      INSERT INTO akinator_answers (session_id, question_id, answer_json, created_at)
-      VALUES ('session-1', 'taskType', '"build"', ?)
-    `).run(now);
-    database.prepare(`
-      INSERT INTO knowledge_sources (source_id, repository_url, ref_name, commit_sha, document_count, last_synced_at)
-      VALUES ('source-1', 'https://example.test/source', 'main', 'abc123', 1, ?)
-    `).run(now);
-
-    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [4, 5, 6, 7]);
-    assert.equal(database.prepare('SELECT display_name FROM repositories WHERE repository_id = ?').get<{ display_name: string }>('repo-1')?.display_name, 'Existing');
-    assert.equal(database.prepare('SELECT body FROM entries WHERE id = ?').get<{ body: string }>('entry-1')?.body, 'Existing body');
-    assert.equal(database.prepare('SELECT answer_json FROM akinator_answers WHERE session_id = ?').get<{ answer_json: string }>('session-1')?.answer_json, '"build"');
-    assert.equal(database.prepare('SELECT document_count FROM knowledge_sources WHERE source_id = ?').get<{ document_count: number }>('source-1')?.document_count, 1);
+    migrateDatabase(database, migrationsDirectory);
+    assert.deepEqual(database.prepare('PRAGMA table_info(entries)').all<{ name: string }>().map((column) => column.name), [
+      'id', 'workspace', 'status', 'trust_level', 'confidence', 'current_revision', 'superseded_by',
+      'created_by', 'created_at', 'updated_at', 'verified_at',
+    ]);
+    assert.deepEqual(database.prepare('PRAGMA table_info(entry_revisions)').all<{ name: string }>().map((column) => column.name), [
+      'entry_id', 'workspace', 'revision', 'kind', 'title', 'body', 'summary', 'scope_json',
+      'provenance_json', 'content_hash', 'created_by', 'created_at',
+    ]);
   } finally {
     database.close();
   }

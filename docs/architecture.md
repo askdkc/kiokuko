@@ -2,7 +2,7 @@
 
 Kiokuko is a model-agnostic local control plane with three deliberately separate stores:
 
-1. curated memory: `entries`, `tags`, and `entry_links`;
+1. curated memory: `entries` (identity/lifecycle), `entry_revisions` (immutable content), `entry_revision_tags`, and `entry_links`;
 2. memory mutation audit: existing `audit_events`;
 3. append-oriented execution ledger: runs, events, evidence, context deliveries, feedback, and promotion provenance.
 

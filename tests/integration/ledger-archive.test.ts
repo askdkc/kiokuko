@@ -260,7 +260,7 @@ test('archives the complete linked ledger graph without curated memory bodies or
     const lines = archive.content.trimEnd().split('\n').map((line: string) => JSON.parse(line) as Record<string, unknown>);
     const deliveryEntry = lines.find((line: Record<string, unknown>) => line.type === 'delivery_entry');
     assert.ok(deliveryEntry);
-    assert.deepEqual(Object.keys(deliveryEntry).sort(), ['delivery_id', 'entry_id', 'entry_revision', 'rank', 'score_components_json', 'selection_reason_json', 'type'].sort());
+    assert.deepEqual(Object.keys(deliveryEntry).sort(), ['delivery_id', 'entry_id', 'entry_revision', 'origin_scope', 'rank', 'score_components_json', 'selection_reason_json', 'type'].sort());
     assert.equal((deliveryEntry.score_components_json as string), '{"semantic":0.9,"trust":0.8}');
     assert.equal((deliveryEntry.selection_reason_json as string), '{"reason":"matching task"}');
 

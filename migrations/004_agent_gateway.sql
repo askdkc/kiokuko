@@ -165,12 +165,14 @@ CREATE INDEX idx_context_deliveries_run_created_at
 
 CREATE TABLE context_delivery_entries (
     delivery_id TEXT NOT NULL REFERENCES context_deliveries(delivery_id) ON DELETE CASCADE,
-    entry_id TEXT NOT NULL REFERENCES entries(id),
+    entry_id TEXT NOT NULL,
     entry_revision INTEGER NOT NULL CHECK (entry_revision > 0),
     rank INTEGER NOT NULL CHECK (rank > 0),
     score_components_json TEXT NOT NULL,
     selection_reason_json TEXT NOT NULL,
-    PRIMARY KEY (delivery_id, entry_id)
+    PRIMARY KEY (delivery_id, entry_id),
+    FOREIGN KEY (entry_id, entry_revision)
+        REFERENCES entry_revisions(entry_id, revision)
 );
 
 CREATE INDEX idx_context_delivery_entries_entry

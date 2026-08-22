@@ -41,11 +41,11 @@ export function promoteEntry(database: SqliteDatabase, input: PromoteInput): Ent
   const now = input.now ?? new Date().toISOString();
   const actor = input.actor ?? 'kiokuko-cli';
   withImmediateTransaction(database, () => {
-    const current = database.prepare('SELECT status, revision FROM entries WHERE id = ? AND workspace = ?').get<{ status: string; revision: number }>(input.entryId, input.workspace);
+    const current = database.prepare('SELECT status, current_revision FROM entries WHERE id = ? AND workspace = ?').get<{ status: string; current_revision: number }>(input.entryId, input.workspace);
     if (!current) throw new KiokukoError('NOT_FOUND', 'Entry not found');
-    if (current.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
+    if (Number(current.current_revision) !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
     if (current.status !== 'candidate') throw new KiokukoError('CONFLICT', 'Only candidate entries can be promoted');
-    database.prepare("UPDATE entries SET status = 'verified', verified_at = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND workspace = ? AND revision = ?")
+    database.prepare("UPDATE entries SET status = 'verified', verified_at = ?, updated_at = ? WHERE id = ? AND workspace = ? AND current_revision = ?")
       .run(now, now, input.entryId, input.workspace, input.expectedRevision);
     recordAuditEvent(database, { entryId: input.entryId, workspace: input.workspace, operation: 'promote', actor, details: { expectedRevision: input.expectedRevision }, createdAt: now });
   });
@@ -58,12 +58,12 @@ export function supersedeEntry(database: SqliteDatabase, input: SupersedeInput):
   const now = input.now ?? new Date().toISOString();
   const actor = input.actor ?? 'kiokuko-cli';
   withImmediateTransaction(database, () => {
-    const oldEntry = database.prepare('SELECT status, revision FROM entries WHERE id = ? AND workspace = ?').get<{ status: string; revision: number }>(input.oldEntryId, input.workspace);
+    const oldEntry = database.prepare('SELECT status, current_revision FROM entries WHERE id = ? AND workspace = ?').get<{ status: string; current_revision: number }>(input.oldEntryId, input.workspace);
     const replacement = database.prepare('SELECT id, status FROM entries WHERE id = ? AND workspace = ?').get<{ id: string; status: string }>(input.replacementEntryId, input.workspace);
     if (!oldEntry || !replacement) throw new KiokukoError('NOT_FOUND', 'Entry not found');
-    if (oldEntry.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
+    if (Number(oldEntry.current_revision) !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
     if (oldEntry.status === 'superseded') throw new KiokukoError('CONFLICT', 'Entry is already superseded');
-    database.prepare("UPDATE entries SET status = 'superseded', superseded_by = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND workspace = ? AND revision = ?")
+    database.prepare("UPDATE entries SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ? AND workspace = ? AND current_revision = ?")
       .run(input.replacementEntryId, now, input.oldEntryId, input.workspace, input.expectedRevision);
     recordAuditEvent(database, { entryId: input.oldEntryId, workspace: input.workspace, operation: 'supersede', actor, details: { replacementEntryId: input.replacementEntryId, expectedRevision: input.expectedRevision }, createdAt: now });
   });

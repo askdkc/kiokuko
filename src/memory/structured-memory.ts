@@ -184,6 +184,32 @@ export function syncEntrySearchSignals(database: SqliteDatabase, input: Paramete
   }
 }
 
+/** Refresh every search projection for the entry's current revision. */
+export function syncEntrySearchProjection(database: SqliteDatabase, input: Parameters<typeof extractEntrySearchSignals>[0]): void {
+  const row = database.prepare('SELECT rowid FROM entries WHERE id = ?').get<{ rowid: number }>(input.entryId);
+  if (row === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Search projection entry is missing');
+  const revision = database.prepare('SELECT current_revision FROM entries WHERE id = ?').get<{ current_revision: number }>(input.entryId);
+  if (revision === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Search projection revision is missing');
+  const revisionNumber = Number(revision.current_revision);
+  const tags = [...new Set(input.tags)].sort((left, right) => left.localeCompare(right));
+  const projectionTables = [
+    ['entries_fts', 'unicode61 remove_diacritics 2'],
+    ['entries_trigram', 'trigram'],
+  ] as const;
+  for (const [table] of projectionTables) {
+    if (!database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?").get(table)) continue;
+    database.prepare(`DELETE FROM ${table} WHERE rowid = ?`).run(row.rowid);
+    database.prepare(`
+      INSERT INTO ${table}(rowid, title, body, summary, tags_text)
+      SELECT e.rowid, r.title, r.body, COALESCE(r.summary, ''), ?
+        FROM entries AS e
+        JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+       WHERE e.id = ? AND e.current_revision = ?
+    `).run(tags.join(' '), input.entryId, revisionNumber);
+  }
+  syncEntrySearchSignals(database, { ...input, tags });
+}
+
 export function structuredMemoryHashFields(scope: JsonObject): string {
   return canonicalJson(scope);
 }

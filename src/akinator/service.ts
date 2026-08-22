@@ -199,7 +199,8 @@ function taggedEntries(database: SqliteDatabase, workspace: string, tags: string
   const rows = database.prepare(`
     SELECT e.id
     FROM entries e
-    JOIN tags t ON t.entry_id = e.id
+    JOIN entry_revision_tags t ON t.entry_id = e.id AND t.revision = e.current_revision
+    JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
     WHERE e.workspace = ? AND e.status <> 'superseded' AND t.tag IN (${placeholders})
     GROUP BY e.id
     ORDER BY e.updated_at DESC, e.id ASC LIMIT ?

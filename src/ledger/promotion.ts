@@ -290,8 +290,9 @@ function contentIdentity(value: {
 function findSameContentEntry(database: SqliteDatabase, input: ValidatedPromotionInput, memoryInput: RecordEntryInput): EntryRecord | undefined {
   const rows = database.prepare(`
     SELECT id
-      FROM entries
-     WHERE workspace = ? AND kind = ? AND title = ? AND body = ? AND summary IS ?
+      FROM entries AS e
+      JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+     WHERE e.workspace = ? AND r.kind = ? AND r.title = ? AND r.body = ? AND r.summary IS ?
   `).all<{ id: string }>(
     input.workspace,
     memoryInput.kind,
@@ -331,8 +332,9 @@ function promotePreparedInTransaction(database: SqliteDatabase, prepared: Prepar
 
   const hashExisting = database.prepare(`
     SELECT id, status, trust_level
-      FROM entries
-     WHERE workspace = ? AND content_hash = ?
+      FROM entries AS e
+      JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+     WHERE e.workspace = ? AND r.content_hash = ?
   `).get<ExistingEntryRow>(prepared.input.workspace, prepared.contentHash);
   const contentExisting = hashExisting === undefined
     ? findSameContentEntry(database, prepared.input, prepared.memoryInput)

@@ -6,61 +6,17 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
     tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER entries_fts_ai AFTER INSERT ON entries BEGIN
-    INSERT INTO entries_fts(rowid, title, body, summary, tags_text)
-    VALUES (
-        new.rowid,
-        new.title,
-        new.body,
-        COALESCE(new.summary, ''),
-        COALESCE((SELECT group_concat(tag, ' ') FROM tags WHERE entry_id = new.id), '')
-    );
-END;
-
-CREATE TRIGGER entries_fts_ad AFTER DELETE ON entries BEGIN
-    DELETE FROM entries_fts WHERE rowid = old.rowid;
-END;
-
-CREATE TRIGGER entries_fts_au AFTER UPDATE ON entries BEGIN
-    DELETE FROM entries_fts WHERE rowid = old.rowid;
-    INSERT INTO entries_fts(rowid, title, body, summary, tags_text)
-    VALUES (
-        new.rowid,
-        new.title,
-        new.body,
-        COALESCE(new.summary, ''),
-        COALESCE((SELECT group_concat(tag, ' ') FROM tags WHERE entry_id = new.id), '')
-    );
-END;
-
-CREATE TRIGGER tags_fts_ai AFTER INSERT ON tags BEGIN
-    DELETE FROM entries_fts WHERE rowid = (SELECT rowid FROM entries WHERE id = new.entry_id);
-    INSERT INTO entries_fts(rowid, title, body, summary, tags_text)
-    SELECT entries.rowid, entries.title, entries.body, COALESCE(entries.summary, ''),
-           COALESCE((SELECT group_concat(tag, ' ') FROM tags WHERE entry_id = entries.id), '')
-    FROM entries WHERE entries.id = new.entry_id;
-END;
-
-CREATE TRIGGER tags_fts_ad AFTER DELETE ON tags BEGIN
-    DELETE FROM entries_fts WHERE rowid = (SELECT rowid FROM entries WHERE id = old.entry_id);
-    INSERT INTO entries_fts(rowid, title, body, summary, tags_text)
-    SELECT entries.rowid, entries.title, entries.body, COALESCE(entries.summary, ''),
-           COALESCE((SELECT group_concat(tag, ' ') FROM tags WHERE entry_id = entries.id), '')
-    FROM entries WHERE entries.id = old.entry_id;
-END;
-
-CREATE TRIGGER tags_fts_au AFTER UPDATE OF tag ON tags BEGIN
-    DELETE FROM entries_fts WHERE rowid = (SELECT rowid FROM entries WHERE id = old.entry_id);
-    INSERT INTO entries_fts(rowid, title, body, summary, tags_text)
-    SELECT entries.rowid, entries.title, entries.body, COALESCE(entries.summary, ''),
-           COALESCE((SELECT group_concat(tag, ' ') FROM tags WHERE entry_id = entries.id), '')
-    FROM entries WHERE entries.id = new.entry_id;
-END;
-
+-- FTS is an application-controlled projection of the current revision. There
+-- are deliberately no triggers on entries or tags: historical revisions must
+-- never become searchable and projection refreshes must be explicit.
 INSERT INTO entries_fts(rowid, title, body, summary, tags_text)
-SELECT entries.rowid,
-       entries.title,
-       entries.body,
-       COALESCE(entries.summary, ''),
-       COALESCE((SELECT group_concat(tag, ' ') FROM tags WHERE entry_id = entries.id), '')
-FROM entries;
+SELECT e.rowid,
+       r.title,
+       r.body,
+       COALESCE(r.summary, ''),
+       COALESCE((SELECT group_concat(tag, ' ')
+                   FROM entry_revision_tags
+                  WHERE entry_id = e.id AND revision = e.current_revision), '')
+  FROM entries AS e
+  JOIN entry_revisions AS r
+    ON r.entry_id = e.id AND r.revision = e.current_revision;

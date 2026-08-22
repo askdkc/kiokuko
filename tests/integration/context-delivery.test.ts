@@ -6,6 +6,7 @@ import test from 'node:test';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordContextDelivery, recordContextDeliveryInTransaction, readContextDelivery, listContextDeliveries } from '../../src/context/delivery.js';
+import { recordEntry } from '../../src/memory/entries.js';
 
 const migrationsDirectory = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-20T00:00:00.000Z';
@@ -26,12 +27,17 @@ function seedDeliveryTarget(database: ReturnType<typeof openConnection>): void {
       metadata_json, last_sequence, last_source_sequence, started_at, ended_at, created_at, updated_at
     ) VALUES (?, ?, 'generic', '1.0.0', NULL, NULL, '1', 'standard', '{}', 'active', 'Delivery task', NULL, '{}', 3, NULL, ?, NULL, ?, ?)
   `).run('run-delivery-1', workspace, now, now, now);
-  database.prepare(`
-    INSERT INTO entries (
-      id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-      trust_level, confidence, content_hash, revision, created_by, created_at, updated_at
-    ) VALUES (?, ?, 'lesson', 'verified', 'Private delivery title', 'Private delivery body', 'Private delivery summary', '{}', '{}', 'source_verified', 0.9, 'entry-hash-delivery-1', 2, 'test', ?, ?)
-  `).run('entry-delivery-1', workspace, now, now);
+  recordEntry(database, {
+    workspace,
+    kind: 'lesson',
+    status: 'verified',
+    trustLevel: 'source_verified',
+    confidence: 0.9,
+    title: 'Private delivery title',
+    body: 'Private delivery body',
+    summary: 'Private delivery summary',
+    createdBy: 'test',
+  }, { idFactory: () => 'entry-delivery-1', now });
 }
 
 function deliveryInput(deliveryId: string, createdAt = now) {
@@ -397,12 +403,17 @@ test('rolls back the header, earlier children, and trigger side effects when a l
   const database = await temporaryDatabase('context-delivery-rollback');
   try {
     seedDeliveryTarget(database);
-    database.prepare(`
-      INSERT INTO entries (
-        id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-        trust_level, confidence, content_hash, revision, created_by, created_at, updated_at
-      ) VALUES (?, ?, 'lesson', 'verified', 'Private second title', 'Private second body', 'Private second summary', '{}', '{}', 'source_verified', 0.9, 'entry-hash-delivery-2', 1, 'test', ?, ?)
-    `).run('entry-delivery-2', workspace, now, now);
+    recordEntry(database, {
+      workspace,
+      kind: 'lesson',
+      status: 'verified',
+      trustLevel: 'source_verified',
+      confidence: 0.9,
+      title: 'Private second title',
+      body: 'Private second body',
+      summary: 'Private second summary',
+      createdBy: 'test',
+    }, { idFactory: () => 'entry-delivery-2', now });
     database.exec('CREATE TABLE delivery_side_effects (value TEXT NOT NULL)');
     database.exec(`
       CREATE TRIGGER fail_second_delivery_child
@@ -518,12 +529,16 @@ test('enforces run, intake, workspace, sequence, and historical entry revision r
       (error: unknown) => (error as { code?: string }).code === 'NOT_FOUND' && (error as Error).message === 'Context delivery target was not found',
     );
 
-    database.prepare(`
-      INSERT INTO entries (
-        id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-        trust_level, confidence, content_hash, revision, created_by, created_at, updated_at
-      ) VALUES (?, 'other-workspace', 'lesson', 'verified', 'Other title', 'Other body', NULL, '{}', '{}', 'source_verified', 0.9, 'entry-hash-other', 1, 'test', ?, ?)
-    `).run('entry-other-workspace', now, now);
+    recordEntry(database, {
+      workspace: 'other-workspace',
+      kind: 'lesson',
+      status: 'verified',
+      trustLevel: 'source_verified',
+      confidence: 0.9,
+      title: 'Other title',
+      body: 'Other body',
+      createdBy: 'test',
+    }, { idFactory: () => 'entry-other-workspace', now });
     assert.throws(
       () => recordContextDelivery(database, { ...deliveryInput('delivery-cross-entry-1'), items: [{ ...deliveryInput('x').items[0]!, entryId: 'entry-other-workspace' }] }),
       (error: unknown) => (error as { code?: string }).code === 'NOT_FOUND' && (error as Error).message === 'Context delivery target was not found',
@@ -537,10 +552,10 @@ test('owns input and output snapshots and does not mutate memory, run, intake, o
   const database = await temporaryDatabase('context-delivery-nonmutation');
   try {
     seedDeliveryTarget(database);
-    database.prepare('INSERT INTO tags (entry_id, tag) VALUES (?, ?)').run('entry-delivery-1', 'delivery-tag-sentinel');
+    database.prepare('INSERT INTO entry_revision_tags (entry_id, revision, tag) VALUES (?, ?, ?)').run('entry-delivery-1', 1, 'delivery-tag-sentinel');
     const before = {
-      entries: database.prepare('SELECT id, status, trust_level, revision, body, summary FROM entries ORDER BY id').all(),
-      tags: database.prepare('SELECT entry_id, tag FROM tags ORDER BY entry_id, tag').all(),
+      entries: database.prepare('SELECT e.id, e.status, e.trust_level, e.current_revision, r.body, r.summary FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision ORDER BY e.id').all(),
+      tags: database.prepare('SELECT entry_id, revision, tag FROM entry_revision_tags ORDER BY entry_id, revision, tag').all(),
       runs: database.prepare('SELECT run_id, workspace, status, last_sequence, metadata_json FROM ledger_runs ORDER BY run_id').all(),
       sessions: database.prepare('SELECT * FROM akinator_sessions ORDER BY id').all(),
       intakes: database.prepare('SELECT * FROM run_intakes ORDER BY run_id').all(),
@@ -558,8 +573,8 @@ test('owns input and output snapshots and does not mutate memory, run, intake, o
     assert.deepEqual(reread.items[0]?.selectionReasons, ['verified', 'source_verified_trust']);
     assert.deepEqual(reread.externalSyncSummary.sources, []);
 
-    assert.deepEqual(database.prepare('SELECT id, status, trust_level, revision, body, summary FROM entries ORDER BY id').all(), before.entries);
-    assert.deepEqual(database.prepare('SELECT entry_id, tag FROM tags ORDER BY entry_id, tag').all(), before.tags);
+    assert.deepEqual(database.prepare('SELECT e.id, e.status, e.trust_level, e.current_revision, r.body, r.summary FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision ORDER BY e.id').all(), before.entries);
+    assert.deepEqual(database.prepare('SELECT entry_id, revision, tag FROM entry_revision_tags ORDER BY entry_id, revision, tag').all(), before.tags);
     assert.deepEqual(database.prepare('SELECT run_id, workspace, status, last_sequence, metadata_json FROM ledger_runs ORDER BY run_id').all(), before.runs);
     assert.deepEqual(database.prepare('SELECT * FROM akinator_sessions ORDER BY id').all(), before.sessions);
     assert.deepEqual(database.prepare('SELECT * FROM run_intakes ORDER BY run_id').all(), before.intakes);
@@ -611,14 +626,11 @@ test('maps corrupt stored scalars, canonical metadata, revisions, and joins to f
     }
     database.exec('PRAGMA ignore_check_constraints = OFF; PRAGMA foreign_keys = ON;');
 
-    database.prepare('UPDATE entries SET revision = ? WHERE id = ?').run(3, 'entry-delivery-1');
+    database.prepare('UPDATE entries SET current_revision = ? WHERE id = ?').run(3, 'entry-delivery-1');
     assert.equal(readContextDelivery(database, { workspace, deliveryId: input.deliveryId }).items[0]?.entryRevision, 1);
     database.exec('PRAGMA ignore_check_constraints = ON;');
-    database.prepare('UPDATE entries SET revision = ? WHERE id = ?').run(0, 'entry-delivery-1');
-    assert.throws(
-      () => listContextDeliveries(database, { workspace, runId: 'run-delivery-1' }),
-      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR' && (error as Error).message === 'Stored context delivery is invalid',
-    );
+    database.prepare('UPDATE entries SET current_revision = ? WHERE id = ?').run(0, 'entry-delivery-1');
+    assert.doesNotThrow(() => listContextDeliveries(database, { workspace, runId: 'run-delivery-1' }));
   } finally {
     database.close();
   }

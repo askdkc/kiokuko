@@ -14,6 +14,7 @@ import {
   recordRunFeedback,
   recordRunFeedbackInTransaction,
 } from '../../src/context/feedback.js';
+import { recordEntry } from '../../src/memory/entries.js';
 
 const migrationsDirectory = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-20T00:00:00.000Z';
@@ -34,12 +35,16 @@ function seedLedgerContext(database: ReturnType<typeof openConnection>): void {
       metadata_json, last_sequence, last_source_sequence, started_at, ended_at, created_at, updated_at
     ) VALUES (?, ?, 'generic', '1.0.0', NULL, NULL, '1', 'standard', '{}', 'active', 'Feedback task', NULL, '{}', 0, NULL, ?, NULL, ?, ?)
   `).run('run-feedback-1', workspace, now, now, now);
-  database.prepare(`
-    INSERT INTO entries (
-      id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-      trust_level, confidence, content_hash, revision, created_by, created_at, updated_at
-    ) VALUES (?, ?, 'lesson', 'verified', 'Context lesson', 'Keep the context bounded.', NULL, '{}', '{}', 'source_verified', 0.9, 'entry-hash-1', 2, 'test', ?, ?)
-  `).run('entry-feedback-1', workspace, now, now);
+  recordEntry(database, {
+    workspace,
+    kind: 'lesson',
+    status: 'verified',
+    trustLevel: 'source_verified',
+    confidence: 0.9,
+    title: 'Context lesson',
+    body: 'Keep the context bounded.',
+    createdBy: 'test',
+  }, { idFactory: () => 'entry-feedback-1', now });
   database.prepare(`
     INSERT INTO context_deliveries (
       delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
@@ -562,7 +567,7 @@ test('feedback leaves memory, delivery, run, and Akinator-linked rows byte-for-b
   try {
     seedLedgerContext(database);
     const snapshot = {
-      entries: database.prepare('SELECT id, status, trust_level, revision, body, tag_values.tags FROM entries LEFT JOIN (SELECT entry_id, group_concat(tag, \',\') AS tags FROM tags GROUP BY entry_id) AS tag_values ON tag_values.entry_id = entries.id ORDER BY id').all(),
+      entries: database.prepare('SELECT e.id, e.status, e.trust_level, e.current_revision, r.body, r.summary FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision ORDER BY e.id').all(),
       deliveries: database.prepare('SELECT * FROM context_deliveries ORDER BY delivery_id').all(),
       deliveryEntries: database.prepare('SELECT * FROM context_delivery_entries ORDER BY delivery_id, entry_id').all(),
       runs: database.prepare('SELECT run_id, workspace, status, last_sequence, metadata_json FROM ledger_runs ORDER BY run_id').all(),
@@ -598,7 +603,7 @@ test('feedback leaves memory, delivery, run, and Akinator-linked rows byte-for-b
       createdAt: now,
     });
     assert.deepEqual({
-      entries: database.prepare('SELECT id, status, trust_level, revision, body, tag_values.tags FROM entries LEFT JOIN (SELECT entry_id, group_concat(tag, \',\') AS tags FROM tags GROUP BY entry_id) AS tag_values ON tag_values.entry_id = entries.id ORDER BY id').all(),
+      entries: database.prepare('SELECT e.id, e.status, e.trust_level, e.current_revision, r.body, r.summary FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision ORDER BY e.id').all(),
       deliveries: database.prepare('SELECT * FROM context_deliveries ORDER BY delivery_id').all(),
       deliveryEntries: database.prepare('SELECT * FROM context_delivery_entries ORDER BY delivery_id, entry_id').all(),
       runs: database.prepare('SELECT run_id, workspace, status, last_sequence, metadata_json FROM ledger_runs ORDER BY run_id').all(),

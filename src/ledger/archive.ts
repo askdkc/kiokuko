@@ -134,7 +134,7 @@ const RECORD_FIELDS: Record<ArchiveRecordType | 'manifest' | 'checksum', readonl
     'type', 'delivery_id', 'run_id', 'through_sequence', 'intake_session_id', 'task_profile_hash', 'query_hash',
     'policy_version', 'external_sync_summary_json', 'char_budget', 'char_count', 'truncated', 'created_at',
   ],
-  deliveryEntries: ['type', 'delivery_id', 'entry_id', 'entry_revision', 'rank', 'score_components_json', 'selection_reason_json'],
+  deliveryEntries: ['type', 'delivery_id', 'entry_id', 'entry_revision', 'rank', 'score_components_json', 'selection_reason_json', 'origin_scope'],
   contextFeedback: ['type', 'feedback_id', 'delivery_id', 'entry_id', 'run_id', 'verdict', 'comment', 'actor', 'idempotency_key', 'created_at'],
   runFeedback: [
     'type', 'feedback_id', 'run_id', 'outcome', 'recommendation_code', 'recommendation_verdict', 'rating', 'comment',
@@ -506,6 +506,7 @@ function normalizeRecord(type: ArchiveRecordType, source: Row, workspace: string
       normalized.rank = integerValue(raw.rank, 1);
       normalized.score_components_json = parsedJson(raw.score_components_json, scoreJson);
       normalized.selection_reason_json = parsedJson(raw.selection_reason_json, scoreJson);
+      normalized.origin_scope = enumValue(raw.origin_scope ?? 'project', new Set(['project', 'global']));
       break;
     case 'contextFeedback':
       normalized.feedback_id = stringValue(raw.feedback_id, true, IDENTIFIER_MAX_LENGTH);
@@ -581,10 +582,10 @@ function queryRows(database: SqliteDatabase, type: ArchiveRecordType, workspace:
     events: { sql: `SELECT e.${TABLE_FIELDS.events.join(', e.')} FROM ledger_events AS e JOIN ledger_runs AS lr ON lr.run_id = e.run_id WHERE lr.workspace = ? ORDER BY e.run_id ASC, e.sequence ASC`, parameters: [workspace] },
     evidence: { sql: `SELECT e.${TABLE_FIELDS.evidence.join(', e.')} FROM ledger_evidence AS e JOIN ledger_runs AS lr ON lr.run_id = e.run_id WHERE lr.workspace = ? ORDER BY e.run_id ASC, e.evidence_id ASC`, parameters: [workspace] },
     deliveries: { sql: `SELECT d.${TABLE_FIELDS.deliveries.join(', d.')} FROM context_deliveries AS d JOIN ledger_runs AS lr ON lr.run_id = d.run_id WHERE lr.workspace = ? ORDER BY d.run_id ASC, d.delivery_id ASC`, parameters: [workspace] },
-    deliveryEntries: { sql: `SELECT c.${TABLE_FIELDS.deliveryEntries.join(', c.')} FROM context_delivery_entries AS c JOIN context_deliveries AS d ON d.delivery_id = c.delivery_id JOIN ledger_runs AS lr ON lr.run_id = d.run_id JOIN entries AS e ON e.id = c.entry_id AND e.workspace = ? WHERE lr.workspace = ? ORDER BY c.delivery_id ASC, c.entry_id ASC`, parameters: [workspace, workspace] },
-    contextFeedback: { sql: `SELECT f.${TABLE_FIELDS.contextFeedback.join(', f.')} FROM context_feedback AS f JOIN ledger_runs AS lr ON lr.run_id = f.run_id JOIN context_deliveries AS d ON d.delivery_id = f.delivery_id AND d.run_id = f.run_id JOIN context_delivery_entries AS c ON c.delivery_id = f.delivery_id AND c.entry_id = f.entry_id JOIN entries AS e ON e.id = f.entry_id AND e.workspace = ? WHERE lr.workspace = ? ORDER BY f.feedback_id ASC`, parameters: [workspace, workspace] },
+    deliveryEntries: { sql: `SELECT c.${TABLE_FIELDS.deliveryEntries.join(', c.')} FROM context_delivery_entries AS c JOIN context_deliveries AS d ON d.delivery_id = c.delivery_id JOIN ledger_runs AS lr ON lr.run_id = d.run_id JOIN entry_revisions AS er ON er.entry_id = c.entry_id AND er.revision = c.entry_revision JOIN entries AS e ON e.id = c.entry_id WHERE lr.workspace = ? ORDER BY c.delivery_id ASC, c.entry_id ASC`, parameters: [workspace] },
+    contextFeedback: { sql: `SELECT f.${TABLE_FIELDS.contextFeedback.join(', f.')} FROM context_feedback AS f JOIN ledger_runs AS lr ON lr.run_id = f.run_id JOIN context_deliveries AS d ON d.delivery_id = f.delivery_id AND d.run_id = f.run_id JOIN context_delivery_entries AS c ON c.delivery_id = f.delivery_id AND c.entry_id = f.entry_id JOIN entries AS e ON e.id = f.entry_id WHERE lr.workspace = ? ORDER BY f.feedback_id ASC`, parameters: [workspace] },
     runFeedback: { sql: `SELECT f.${TABLE_FIELDS.runFeedback.join(', f.')} FROM run_feedback AS f JOIN ledger_runs AS lr ON lr.run_id = f.run_id WHERE lr.workspace = ? ORDER BY f.feedback_id ASC`, parameters: [workspace] },
-    memoryLinks: { sql: `SELECT l.${TABLE_FIELDS.memoryLinks.join(', l.')} FROM ledger_memory_links AS l JOIN ledger_runs AS lr ON lr.run_id = l.run_id JOIN entries AS e ON e.id = l.entry_id AND e.workspace = ? WHERE lr.workspace = ? ORDER BY l.link_id ASC`, parameters: [workspace, workspace] },
+    memoryLinks: { sql: `SELECT l.${TABLE_FIELDS.memoryLinks.join(', l.')} FROM ledger_memory_links AS l JOIN ledger_runs AS lr ON lr.run_id = l.run_id JOIN entries AS e ON e.id = l.entry_id WHERE lr.workspace = ? ORDER BY l.link_id ASC`, parameters: [workspace] },
     purgeAudit: { sql: `SELECT p.${TABLE_FIELDS.purgeAudit.join(', p.')} FROM ledger_purge_audit AS p WHERE EXISTS (SELECT 1 FROM ledger_runs AS r WHERE r.run_id = p.run_id AND r.workspace = ?) OR EXISTS (SELECT 1 FROM ledger_events AS e JOIN ledger_runs AS r ON r.run_id = e.run_id WHERE e.event_id = p.event_id AND r.workspace = ?) OR EXISTS (SELECT 1 FROM context_deliveries AS d JOIN ledger_runs AS r ON r.run_id = d.run_id WHERE d.delivery_id = p.delivery_id AND r.workspace = ?) OR EXISTS (SELECT 1 FROM entries AS e WHERE e.id = p.entry_id AND e.workspace = ?) ORDER BY p.purge_id ASC`, parameters: [workspace, workspace, workspace, workspace] },
   };
   const selected = scoped[type];
@@ -916,9 +917,16 @@ function hasUniqueConflict(database: SqliteDatabase, type: ArchiveRecordType, re
 function ensureMemoryReference(database: SqliteDatabase, record: ArchiveRecord, workspace: string): void {
   if (record.type !== 'deliveryEntries' && record.type !== 'contextFeedback' && record.type !== 'memoryLinks') return;
   const entryId = String(record.entry_id);
-  const entry = rows(database, 'SELECT id, workspace, revision FROM entries WHERE id = ?', entryId)[0];
+  const entry = record.type === 'deliveryEntries'
+    ? rows(database, `
+        SELECT e.id, e.workspace, er.revision
+          FROM entries AS e
+          JOIN entry_revisions AS er ON er.entry_id = e.id AND er.revision = ?
+         WHERE e.id = ?
+      `, Number(record.entry_revision), entryId)[0]
+    : rows(database, 'SELECT id, workspace FROM entries WHERE id = ?', entryId)[0];
   if (!entry) notFound();
-  if (entry.workspace !== workspace) conflict();
+  if (entry.workspace !== workspace && entry.workspace !== 'global') conflict();
   if (record.type === 'deliveryEntries' && Number(entry.revision) !== Number(record.entry_revision)) conflict();
 }
 
@@ -1013,5 +1021,3 @@ export function importLedgerArchive(database: SqliteDatabase | undefined, option
   }
   return { workspace: parsed.workspace, dryRun: false, counts: parsed.counts, imported, duplicates, conflicts };
 }
-
-

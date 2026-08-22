@@ -188,7 +188,7 @@ function workspaceSummaries(database: SqliteDatabase): WorkspaceSummary[] {
 
 function workspaceTags(database: SqliteDatabase, workspace: string): Array<{ tag: string; count: number }> {
   return database
-    .prepare("SELECT t.tag, COUNT(*) AS count FROM tags t JOIN entries e ON e.id = t.entry_id WHERE e.workspace = ? AND e.status <> 'superseded' GROUP BY t.tag ORDER BY t.tag ASC")
+    .prepare("SELECT t.tag, COUNT(*) AS count FROM entry_revision_tags t JOIN entries e ON e.id = t.entry_id AND e.current_revision = t.revision WHERE e.workspace = ? AND e.status <> 'superseded' GROUP BY t.tag ORDER BY t.tag ASC")
     .all<{ tag: string; count: number }>(workspace)
     .map((row) => ({ tag: row.tag, count: Number(row.count) }));
 }
@@ -213,22 +213,22 @@ function listEntries(
   }
 
   const parameters: Array<string | number> = [workspace];
-  const clauses = ['workspace = ?'];
-  if (!includeSuperseded) clauses.push("status <> 'superseded'");
+  const clauses = ['e.workspace = ?'];
+  if (!includeSuperseded) clauses.push("e.status <> 'superseded'");
   if (kind !== undefined) {
-    clauses.push('kind = ?');
+    clauses.push('r.kind = ?');
     parameters.push(kind);
   }
   if (status !== undefined) {
-    clauses.push('status = ?');
+    clauses.push('e.status = ?');
     parameters.push(status);
   }
   if (tag !== undefined) {
-    clauses.push('EXISTS (SELECT 1 FROM tags filter_tags WHERE filter_tags.entry_id = entries.id AND filter_tags.tag = ?)');
+    clauses.push('EXISTS (SELECT 1 FROM entry_revision_tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.revision = e.current_revision AND filter_tags.tag = ?)');
     parameters.push(tag);
   }
   parameters.push(limit);
-  const rows = database.prepare(`SELECT id FROM entries WHERE ${clauses.join(' AND ')} ORDER BY updated_at DESC, id ASC LIMIT ?`).all<{ id: string }>(...parameters);
+  const rows = database.prepare(`SELECT e.id FROM entries AS e JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision WHERE ${clauses.join(' AND ')} ORDER BY e.updated_at DESC, e.id ASC LIMIT ?`).all<{ id: string }>(...parameters);
   const entries = rows.map((row) => readEntry(database, { workspace, entryId: row.id }));
   return { entries, count: entries.length };
 }

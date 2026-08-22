@@ -5,7 +5,8 @@ import { KiokukoError } from '../errors.js';
 import { canonicalContentHash, canonicalJson, type JsonObject, validateRecordInput, requireWorkspace, type EntryKind, type EntryStatus, type TrustLevel } from '../serialization/validate.js';
 import { recordAuditEvent } from './audit.js';
 import { findSecret } from './secrets.js';
-import { syncEntrySearchSignals } from './structured-memory.js';
+import { syncEntrySearchProjection } from './structured-memory.js';
+import { insertEntryRevisionInTransaction } from './revisions.js';
 
 export interface RecordEntryInput {
   workspace: string;
@@ -73,17 +74,17 @@ export interface EntryRecord {
 interface EntryRow extends SqliteRow {
   id: string;
   workspace: string;
-  kind: EntryKind;
   status: EntryStatus;
+  trust_level: TrustLevel;
+  confidence: number;
+  current_revision: number;
+  kind: EntryKind;
   title: string;
   body: string;
   summary: string | null;
   scope_json: string;
   provenance_json: string;
-  trust_level: TrustLevel;
-  confidence: number;
   content_hash: string;
-  revision: number;
   superseded_by: string | null;
   created_by: string;
   created_at: string;
@@ -103,8 +104,8 @@ function parseStoredObject(value: string, field: string): JsonObject {
 
 function rowToEntry(database: SqliteDatabase, row: EntryRow): EntryRecord {
   const tags = database
-    .prepare('SELECT tag FROM tags WHERE entry_id = ? ORDER BY tag ASC')
-    .all<{ tag: string }>(row.id)
+    .prepare('SELECT tag FROM entry_revision_tags WHERE entry_id = ? AND revision = ? ORDER BY tag ASC')
+    .all<{ tag: string }>(row.id, row.current_revision)
     .map((tag) => tag.tag);
   return {
     id: row.id,
@@ -119,7 +120,7 @@ function rowToEntry(database: SqliteDatabase, row: EntryRow): EntryRecord {
     trustLevel: row.trust_level,
     confidence: Number(row.confidence),
     contentHash: row.content_hash,
-    revision: Number(row.revision),
+    revision: Number(row.current_revision),
     supersededBy: row.superseded_by,
     createdBy: row.created_by,
     createdAt: row.created_at,
@@ -132,11 +133,14 @@ function rowToEntry(database: SqliteDatabase, row: EntryRow): EntryRecord {
 function selectEntry(database: SqliteDatabase, workspace: string, entryId: string): EntryRecord | undefined {
   const row = database
     .prepare(
-      `SELECT id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-              trust_level, confidence, content_hash, revision, superseded_by, created_by,
-              created_at, updated_at, verified_at
-       FROM entries
-       WHERE id = ? AND workspace = ?`,
+      `SELECT e.id, e.workspace, e.status, e.trust_level, e.confidence,
+              e.current_revision, r.kind, r.title, r.body, r.summary,
+              r.scope_json, r.provenance_json, r.content_hash, e.superseded_by,
+              e.created_by, e.created_at, e.updated_at, e.verified_at
+         FROM entries AS e
+         JOIN entry_revisions AS r
+           ON r.entry_id = e.id AND r.revision = e.current_revision
+        WHERE e.id = ? AND e.workspace = ?`,
     )
     .get<EntryRow>(entryId, workspace);
   return row ? rowToEntry(database, row) : undefined;
@@ -171,7 +175,7 @@ export function recordEntryInTransaction(database: SqliteDatabase, input: Record
   const idFactory = options.idFactory ?? randomUUID;
 
   const existing = database
-    .prepare('SELECT id FROM entries WHERE workspace = ? AND content_hash = ?')
+    .prepare('SELECT entry_id AS id FROM entry_revisions WHERE workspace = ? AND content_hash = ? ORDER BY revision DESC LIMIT 1')
     .get<{ id: string }>(validated.workspace, contentHash);
   if (existing) {
     const record = selectEntry(database, validated.workspace, existing.id);
@@ -184,24 +188,16 @@ export function recordEntryInTransaction(database: SqliteDatabase, input: Record
   database
     .prepare(
       `INSERT INTO entries (
-        id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-        trust_level, confidence, content_hash, revision, superseded_by, created_by,
-        created_at, updated_at, verified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, workspace, status, trust_level, confidence, current_revision,
+        superseded_by, created_by, created_at, updated_at, verified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
       validated.workspace,
-      validated.kind,
       validated.status,
-      validated.title,
-      validated.body,
-      validated.summary,
-      JSON.stringify(validated.scope),
-      JSON.stringify(validated.provenance),
       validated.trustLevel,
       validated.confidence,
-      contentHash,
       1,
       null,
       validated.createdBy,
@@ -210,10 +206,22 @@ export function recordEntryInTransaction(database: SqliteDatabase, input: Record
       verifiedAt,
     );
 
-  for (const tag of validated.tags) {
-    database.prepare('INSERT INTO tags (entry_id, tag) VALUES (?, ?)').run(id, tag);
-  }
-  syncEntrySearchSignals(database, {
+  insertEntryRevisionInTransaction(database, {
+    entryId: id,
+    workspace: validated.workspace,
+    revision: 1,
+    kind: validated.kind,
+    title: validated.title,
+    body: validated.body,
+    summary: validated.summary,
+    scope: validated.scope,
+    provenance: validated.provenance,
+    tags: validated.tags,
+    contentHash,
+    createdBy: validated.createdBy,
+    createdAt: now,
+  });
+  syncEntrySearchProjection(database, {
     entryId: id,
     title: validated.title,
     body: validated.body,
@@ -289,33 +297,47 @@ export function updateCandidateEntry(database: SqliteDatabase, input: UpdateCand
   const now = input.now ?? new Date().toISOString();
 
   return withImmediateTransaction(database, () => {
-    const current = database.prepare('SELECT status, revision, content_hash FROM entries WHERE id = ? AND workspace = ?').get<{ status: EntryStatus; revision: number; content_hash: string }>(input.entryId, workspace);
+    const current = database.prepare(`
+      SELECT e.status, e.current_revision, r.content_hash
+        FROM entries AS e
+        JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+       WHERE e.id = ? AND e.workspace = ?
+    `).get<{ status: EntryStatus; current_revision: number; content_hash: string }>(input.entryId, workspace);
     if (!current) throw new KiokukoError('NOT_FOUND', 'Entry not found');
     if (current.status !== 'candidate') throw new KiokukoError('CONFLICT', 'Verified or superseded entries must be replaced, not edited');
-    if (Number(current.revision) !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
-    const duplicate = database.prepare('SELECT id FROM entries WHERE workspace = ? AND content_hash = ? AND id <> ?').get<{ id: string }>(workspace, contentHash, input.entryId);
+    if (Number(current.current_revision) !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
+    const duplicate = database.prepare('SELECT entry_id AS id FROM entry_revisions WHERE workspace = ? AND content_hash = ? AND entry_id <> ?').get<{ id: string }>(workspace, contentHash, input.entryId);
     if (duplicate) throw new KiokukoError('CONFLICT', 'Another entry already contains this content');
 
-    database.prepare(`
-      UPDATE entries SET kind = ?, title = ?, body = ?, summary = ?, scope_json = ?, provenance_json = ?,
-        content_hash = ?, revision = revision + 1, updated_at = ?, verified_at = NULL
-      WHERE id = ? AND workspace = ? AND revision = ?
-    `).run(
-      validated.kind,
-      validated.title,
-      validated.body,
-      validated.summary,
-      canonicalJson(validated.scope),
-      canonicalJson(validated.provenance),
+    const nextRevision = input.expectedRevision + 1;
+    insertEntryRevisionInTransaction(database, {
+      entryId: input.entryId,
+      workspace,
+      revision: nextRevision,
+      kind: validated.kind,
+      title: validated.title,
+      body: validated.body,
+      summary: validated.summary,
+      scope: validated.scope,
+      provenance: validated.provenance,
+      tags: validated.tags,
       contentHash,
+      createdBy: 'kiokuko-web',
+      createdAt: now,
+    });
+    database.prepare(`
+      UPDATE entries SET current_revision = ?, updated_at = ?, verified_at = NULL
+       WHERE id = ? AND workspace = ? AND current_revision = ?
+    `).run(
+      nextRevision,
       now,
       input.entryId,
       workspace,
       input.expectedRevision,
     );
-    database.prepare('DELETE FROM tags WHERE entry_id = ?').run(input.entryId);
-    for (const tag of validated.tags) database.prepare('INSERT INTO tags (entry_id, tag) VALUES (?, ?)').run(input.entryId, tag);
-    syncEntrySearchSignals(database, {
+    const pointer = database.prepare('SELECT current_revision FROM entries WHERE id = ? AND workspace = ?').get<{ current_revision: number }>(input.entryId, workspace);
+    if (!pointer || Number(pointer.current_revision) !== nextRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
+    syncEntrySearchProjection(database, {
       entryId: input.entryId,
       title: validated.title,
       body: validated.body,
@@ -328,7 +350,13 @@ export function updateCandidateEntry(database: SqliteDatabase, input: UpdateCand
       workspace,
       operation: 'record',
       actor: validated.actor,
-      details: { edited: true, previousRevision: input.expectedRevision, contentHash },
+      details: {
+        edited: true,
+        previousRevision: input.expectedRevision,
+        revision: nextRevision,
+        previousContentHash: current.content_hash,
+        contentHash,
+      },
       createdAt: now,
     });
     const updated = selectEntry(database, workspace, input.entryId);
