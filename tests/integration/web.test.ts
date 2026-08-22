@@ -108,7 +108,7 @@ async function fixture() {
 
 test('startWebServer preserves its handle and legacy health/UI routes', async () => {
   const data = await fixture();
-  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0 });
+  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0, httpOptions: { runtimeDirectory: path.join(data.directory, 'runtime') } });
   try {
     assert.equal(web.server.listening, true);
     assert.match(web.url, /^http:\/\/127\.0\.0\.1:\d+$/);
@@ -130,14 +130,14 @@ test('startWebServer preserves its handle and legacy health/UI routes', async ()
 test('startWebServer rejects non-loopback hosts before listening', async () => {
   const data = await fixture();
   await assert.rejects(
-    startWebServer({ databasePath: data.databasePath, host: '0.0.0.0', port: 0 }),
+    startWebServer({ databasePath: data.databasePath, host: '0.0.0.0', port: 0, httpOptions: { runtimeDirectory: path.join(data.directory, 'runtime') } }),
     /loopback/i,
   );
 });
 
 test('web filters by workspace, type, and cross-genre tags and supports candidate editing', async () => {
   const data = await fixture();
-  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0 });
+  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0, httpOptions: { runtimeDirectory: path.join(data.directory, 'runtime') } });
   try {
     const workspaces = await webFetch(web.url, '/api/workspaces').then((response) => response.json()) as { workspaces: Array<{ workspace: string }> };
     assert.deepEqual(workspaces.workspaces.map((item) => item.workspace), ['project:web-test']);
@@ -451,7 +451,7 @@ test('legacy mutations admitted before close drain through the shared queue and 
 
 test('web refuses direct edits to verified entries', async () => {
   const data = await fixture();
-  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0 });
+  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0, httpOptions: { runtimeDirectory: path.join(data.directory, 'runtime') } });
   try {
     const response = await webFetch(web.url, `/api/entries/${data.verified.id}?workspace=project%3Aweb-test`, {
       method: 'PUT',

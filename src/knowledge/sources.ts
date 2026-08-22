@@ -395,7 +395,7 @@ export function persistOfficialSourceSyncInTransaction(database: SqliteDatabase,
     let sourceImported = 0;
     for (const document of preparedSource.documents) {
       const built = documentInput(workspace, document);
-      const existing = database.prepare('SELECT id FROM entries WHERE workspace = ? AND content_hash = ?').get<{ id: string }>(workspace, built.contentHash);
+      const existing = database.prepare('SELECT entry_id AS id FROM entry_revisions WHERE workspace = ? AND content_hash = ? LIMIT 1').get<{ id: string }>(workspace, built.contentHash);
       try {
         recordEntryInTransaction(database, built.input, { now });
         if (!existing) sourceImported += 1;

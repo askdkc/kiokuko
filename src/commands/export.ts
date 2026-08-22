@@ -41,10 +41,13 @@ export function exportWorkspace(database: SqliteDatabase, options: ExportOptions
   const workspace = requireWorkspace(options.workspace);
   const entries: Record<string, unknown>[] = rows(
     database,
-    `SELECT id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-            trust_level, confidence, content_hash, revision, superseded_by, created_by,
-            created_at, updated_at, verified_at
-     FROM entries WHERE workspace = ? ORDER BY id ASC`,
+    `SELECT e.id, e.workspace, r.kind, e.status, r.title, r.body, r.summary,
+            r.scope_json, r.provenance_json, e.trust_level, e.confidence,
+            r.content_hash, e.current_revision AS revision, e.superseded_by,
+            e.created_by, e.created_at, e.updated_at, e.verified_at
+       FROM entries AS e
+       JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+      WHERE e.workspace = ? ORDER BY e.id ASC`,
     workspace,
   ).map((entry) => ({
     ...entry,
@@ -54,7 +57,10 @@ export function exportWorkspace(database: SqliteDatabase, options: ExportOptions
   const entryIds = new Set(entries.map((entry) => String(entry.id)));
   const tags = rows(
     database,
-    `SELECT entry_id, tag FROM tags WHERE entry_id IN (SELECT id FROM entries WHERE workspace = ?)
+    `SELECT t.entry_id, t.tag
+       FROM entry_revision_tags AS t
+       JOIN entries AS e ON e.id = t.entry_id AND e.current_revision = t.revision
+      WHERE e.workspace = ?
      ORDER BY entry_id ASC, tag ASC`,
     workspace,
   );

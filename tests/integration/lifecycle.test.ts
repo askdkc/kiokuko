@@ -22,7 +22,7 @@ test('enforces candidate promotion and stale revision conflicts', async () => {
     const entry = recordEntry(db, { workspace: 'project:life', kind: 'decision', title: 'Candidate', body: 'body' });
     const promoted = promoteEntry(db, { workspace: 'project:life', entryId: entry.id, expectedRevision: 1 });
     assert.equal(promoted.status, 'verified');
-    assert.equal(promoted.revision, 2);
+    assert.equal(promoted.revision, 1);
     assert.throws(() => promoteEntry(db, { workspace: 'project:life', entryId: entry.id, expectedRevision: 1 }), /stale|candidate/i);
   } finally {
     db.close();

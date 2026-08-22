@@ -27,23 +27,14 @@ CREATE TABLE repository_locations (
 CREATE TABLE entries (
     id TEXT PRIMARY KEY,
     workspace TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (
-        kind IN ('fact', 'decision', 'lesson', 'preference', 'reference')
-    ),
     status TEXT NOT NULL CHECK (
         status IN ('candidate', 'verified', 'superseded')
     ),
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    summary TEXT,
-    scope_json TEXT NOT NULL DEFAULT '{}',
-    provenance_json TEXT NOT NULL DEFAULT '{}',
     trust_level TEXT NOT NULL DEFAULT 'user_asserted' CHECK (
         trust_level IN ('untrusted', 'user_asserted', 'source_verified', 'system_verified')
     ),
     confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
-    content_hash TEXT NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1,
+    current_revision INTEGER NOT NULL CHECK (current_revision > 0),
     superseded_by TEXT REFERENCES entries(id),
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -52,18 +43,61 @@ CREATE TABLE entries (
     CHECK (status != 'superseded' OR superseded_by IS NOT NULL)
 );
 
-CREATE UNIQUE INDEX idx_entries_workspace_hash
-    ON entries(workspace, content_hash);
+CREATE UNIQUE INDEX idx_entries_id_workspace
+    ON entries(id, workspace);
 CREATE INDEX idx_entries_workspace_status
     ON entries(workspace, status, updated_at DESC);
-CREATE INDEX idx_entries_workspace_kind
-    ON entries(workspace, kind, updated_at DESC);
 
-CREATE TABLE tags (
-    entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-    tag TEXT NOT NULL,
-    PRIMARY KEY (entry_id, tag)
+CREATE TABLE entry_revisions (
+    entry_id TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    kind TEXT NOT NULL CHECK (
+        kind IN ('fact', 'decision', 'lesson', 'preference', 'reference')
+    ),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    summary TEXT,
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    content_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (entry_id, revision),
+    FOREIGN KEY (entry_id, workspace)
+        REFERENCES entries(id, workspace)
+        ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX idx_entry_revisions_workspace_hash
+    ON entry_revisions(workspace, content_hash);
+CREATE INDEX idx_entry_revisions_entry_created
+    ON entry_revisions(entry_id, revision DESC);
+
+CREATE TABLE entry_revision_tags (
+    entry_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (entry_id, revision, tag),
+    FOREIGN KEY (entry_id, revision)
+        REFERENCES entry_revisions(entry_id, revision)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX idx_entry_revision_tags_tag
+    ON entry_revision_tags(tag, entry_id, revision);
+
+CREATE TRIGGER entry_revisions_immutable_update
+BEFORE UPDATE ON entry_revisions
+BEGIN
+    SELECT RAISE(ABORT, 'entry_revisions are immutable');
+END;
+
+CREATE TRIGGER entry_revision_tags_immutable_update
+BEFORE UPDATE ON entry_revision_tags
+BEGIN
+    SELECT RAISE(ABORT, 'entry_revision_tags are immutable');
+END;
 
 CREATE TABLE entry_links (
     from_entry_id TEXT NOT NULL REFERENCES entries(id),

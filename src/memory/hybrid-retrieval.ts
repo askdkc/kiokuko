@@ -60,7 +60,7 @@ function filterSql(input: HybridSearchInput, parameters: Array<string | number>)
   parameters.push(input.workspace);
   if (!input.includeSuperseded) clauses.push("e.status <> 'superseded'");
   if (input.kind !== undefined) {
-    clauses.push('e.kind = ?');
+    clauses.push('r.kind = ?');
     parameters.push(input.kind);
   }
   if (input.status !== undefined) {
@@ -68,7 +68,7 @@ function filterSql(input: HybridSearchInput, parameters: Array<string | number>)
     parameters.push(input.status);
   }
   if (input.tag !== undefined) {
-    clauses.push('EXISTS (SELECT 1 FROM tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.tag = ?)');
+    clauses.push('EXISTS (SELECT 1 FROM entry_revision_tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.revision = e.current_revision AND filter_tags.tag = ?)');
     parameters.push(input.tag);
   }
   return clauses.join(' AND ');
@@ -91,6 +91,7 @@ function exactSignalLane(database: SqliteDatabase, input: HybridSearchInput, par
     SELECT e.id, COUNT(*) AS score
     FROM entry_search_signals AS s
     JOIN entries AS e ON e.id = s.entry_id
+    JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
     WHERE e.workspace = ? AND s.normalized_value IN (${values.map(() => '?').join(', ')}) AND ${filters}
     GROUP BY e.id
     ORDER BY score DESC, ${rankSql()}
@@ -111,7 +112,9 @@ function tagLane(database: SqliteDatabase, input: HybridSearchInput, parsed: Par
   parameters.push(MAX_LANE_CANDIDATES);
   return database.prepare(`
     SELECT e.id, COUNT(*) AS score
-    FROM tags AS t JOIN entries AS e ON e.id = t.entry_id
+    FROM entry_revision_tags AS t
+    JOIN entries AS e ON e.id = t.entry_id AND e.current_revision = t.revision
+    JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
     WHERE lower(t.tag) IN (${tagParameters}) AND ${filters}
     GROUP BY e.id
     ORDER BY score DESC, ${rankSql()}
@@ -133,6 +136,7 @@ function wordFtsLane(database: SqliteDatabase, input: HybridSearchInput, parsed:
       rows.push(...database.prepare(`
         SELECT e.id, bm25(entries_fts) AS score
         FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid
+        JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
         WHERE entries_fts MATCH ? AND ${filters}
         ORDER BY score ASC, ${rankSql()}
         LIMIT ?
@@ -156,6 +160,7 @@ function trigramLane(database: SqliteDatabase, input: HybridSearchInput, parsed:
       rows.push(...database.prepare(`
         SELECT e.id, bm25(entries_trigram) AS score
         FROM entries_trigram JOIN entries e ON e.rowid = entries_trigram.rowid
+        JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
         WHERE entries_trigram MATCH ? AND ${filters}
         ORDER BY score ASC, ${rankSql()}
         LIMIT ?
@@ -181,8 +186,9 @@ function likeLane(database: SqliteDatabase, input: HybridSearchInput, parsed: Pa
     parameters.push(MAX_LANE_CANDIDATES);
     const rows = database.prepare(`
       SELECT e.id, 0 AS score FROM entries AS e
-      WHERE (e.title LIKE ? ESCAPE '\\' OR e.body LIKE ? ESCAPE '\\' OR COALESCE(e.summary, '') LIKE ? ESCAPE '\\'
-        OR EXISTS (SELECT 1 FROM tags t WHERE t.entry_id = e.id AND t.tag LIKE ? ESCAPE '\\'))
+      JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+      WHERE (r.title LIKE ? ESCAPE '\\' OR r.body LIKE ? ESCAPE '\\' OR COALESCE(r.summary, '') LIKE ? ESCAPE '\\'
+        OR EXISTS (SELECT 1 FROM entry_revision_tags t WHERE t.entry_id = e.id AND t.revision = e.current_revision AND t.tag LIKE ? ESCAPE '\\'))
         AND ${filters}
       ORDER BY ${rankSql()} LIMIT ?
     `).all<SearchRow>(...parameters);

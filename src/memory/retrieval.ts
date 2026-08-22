@@ -97,7 +97,7 @@ function filterSql(input: SearchEntriesInput, parameters: Array<string | number>
   parameters.push(input.workspace);
   if (!input.includeSuperseded) clauses.push("e.status <> 'superseded'");
   if (input.kind) {
-    clauses.push('e.kind = ?');
+    clauses.push('r.kind = ?');
     parameters.push(input.kind);
   }
   if (input.status) {
@@ -105,7 +105,7 @@ function filterSql(input: SearchEntriesInput, parameters: Array<string | number>
     parameters.push(input.status);
   }
   if (input.tag) {
-    clauses.push('EXISTS (SELECT 1 FROM tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.tag = ?)');
+    clauses.push('EXISTS (SELECT 1 FROM entry_revision_tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.revision = e.current_revision AND filter_tags.tag = ?)');
     parameters.push(input.tag);
   }
   return clauses.join(' AND ');
@@ -131,9 +131,10 @@ function searchWithFts(database: SqliteDatabase, input: SearchEntriesInput, limi
   parameters.push(limit);
   return database
     .prepare(
-      `SELECT e.id, bm25(entries_fts) AS score
+       `SELECT e.id, bm25(entries_fts) AS score
        FROM entries_fts
        JOIN entries e ON e.rowid = entries_fts.rowid
+       JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
        WHERE entries_fts MATCH ? AND ${filters}
        ORDER BY score ASC, ${rankingSql()}
        LIMIT ?`,
@@ -151,13 +152,14 @@ function searchWithLike(database: SqliteDatabase, input: SearchEntriesInput, lim
     .prepare(
        `SELECT e.id, 0 AS score
        FROM entries e
+       JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
        WHERE (
-         e.title LIKE ?
-         OR e.body LIKE ?
-         OR COALESCE(e.summary, '') LIKE ?
+         r.title LIKE ?
+         OR r.body LIKE ?
+         OR COALESCE(r.summary, '') LIKE ?
          OR EXISTS (
-           SELECT 1 FROM tags like_tags
-           WHERE like_tags.entry_id = e.id AND like_tags.tag LIKE ?
+           SELECT 1 FROM entry_revision_tags like_tags
+           WHERE like_tags.entry_id = e.id AND like_tags.revision = e.current_revision AND like_tags.tag LIKE ?
          )
        )
          AND ${filters}

@@ -343,11 +343,11 @@ function inspectReferences(database: SqliteDatabase, workspace: string | undefin
     if (row.intake_session_id !== null && row.intake_workspace !== row.run_workspace) findings.add('references', 'delivery_intake_workspace_mismatch', 'context_deliveries', row.delivery_id);
     scanRow(row, 'context_deliveries', row.delivery_id, findings);
   }
-  const entries = database.prepare(`SELECT cde.*, cd.run_id, r.workspace AS run_workspace, e.revision AS current_revision, e.workspace AS entry_workspace FROM context_delivery_entries AS cde LEFT JOIN context_deliveries AS cd ON cd.delivery_id = cde.delivery_id LEFT JOIN ledger_runs AS r ON r.run_id = cd.run_id LEFT JOIN entries AS e ON e.id = cde.entry_id${scope} ORDER BY cde.delivery_id ASC, cde.entry_id ASC`).all<Row>(...param);
+  const entries = database.prepare(`SELECT cde.*, cd.run_id, r.workspace AS run_workspace, er.workspace AS revision_workspace, e.workspace AS entry_workspace FROM context_delivery_entries AS cde LEFT JOIN context_deliveries AS cd ON cd.delivery_id = cde.delivery_id LEFT JOIN ledger_runs AS r ON r.run_id = cd.run_id LEFT JOIN entry_revisions AS er ON er.entry_id = cde.entry_id AND er.revision = cde.entry_revision LEFT JOIN entries AS e ON e.id = cde.entry_id${scope} ORDER BY cde.delivery_id ASC, cde.entry_id ASC`).all<Row>(...param);
   for (const row of entries) {
     const entryWorkspaceMatches = row.origin_scope === 'global' ? row.entry_workspace === 'global' : row.entry_workspace === row.run_workspace;
-    if (row.run_id === null || row.run_id === undefined || row.current_revision === null || row.current_revision === undefined || !entryWorkspaceMatches) findings.add('references', 'orphan_delivery_entry_reference', 'context_delivery_entries', row.entry_id);
-    if (integer(row.entry_revision) === undefined || (row.entry_revision as number) < 1 || (integer(row.current_revision) !== undefined && (row.entry_revision as number) > (row.current_revision as number))) findings.add('contextDeliveries', 'invalid_entry_revision', 'context_delivery_entries', row.entry_id);
+    if (row.run_id === null || row.run_id === undefined || row.revision_workspace === null || row.revision_workspace === undefined || !entryWorkspaceMatches || row.revision_workspace !== row.entry_workspace) findings.add('references', 'orphan_delivery_entry_reference', 'context_delivery_entries', row.entry_id);
+    if (integer(row.entry_revision) === undefined || (row.entry_revision as number) < 1) findings.add('contextDeliveries', 'invalid_entry_revision', 'context_delivery_entries', row.entry_id);
     if (integer(row.rank) === undefined || (row.rank as number) < 1) findings.add('contextDeliveries', 'invalid_rank', 'context_delivery_entries', row.entry_id);
     parseJson(row.score_components_json, ['contextDeliveries', 'storedValues'], 'context_delivery_entries.score_components_json', row.entry_id, findings, 'object');
     parseJson(row.selection_reason_json, ['contextDeliveries', 'storedValues'], 'context_delivery_entries.selection_reason_json', row.entry_id, findings, 'object');
@@ -411,7 +411,7 @@ function inspectFeedback(database: SqliteDatabase, workspace: string | undefined
   }
   const links = database.prepare(`SELECT l.*, r.workspace AS run_workspace, ev.run_id AS event_run_id, d.run_id AS delivery_run_id, e.workspace AS entry_workspace FROM ledger_memory_links AS l LEFT JOIN ledger_runs AS r ON r.run_id = l.run_id LEFT JOIN ledger_events AS ev ON ev.event_id = l.event_id LEFT JOIN context_deliveries AS d ON d.delivery_id = l.delivery_id LEFT JOIN entries AS e ON e.id = l.entry_id${scope} ORDER BY l.link_id ASC`).all<Row>(...param);
   for (const row of links) {
-    if (row.run_workspace === null || row.run_workspace === undefined || row.entry_workspace !== row.run_workspace) findings.add('references', 'orphan_memory_link', 'ledger_memory_links', row.link_id);
+    if (row.run_workspace === null || row.run_workspace === undefined || (row.entry_workspace !== row.run_workspace && row.entry_workspace !== 'global')) findings.add('references', 'orphan_memory_link', 'ledger_memory_links', row.link_id);
     if (row.event_id === null && row.delivery_id === null) findings.add('feedbackLinks', 'memory_link_without_source', 'ledger_memory_links', row.link_id);
     if (row.event_id !== null && row.event_run_id !== row.run_id) findings.add('feedbackLinks', 'memory_link_event_mismatch', 'ledger_memory_links', row.link_id);
     if (row.delivery_id !== null && row.delivery_run_id !== row.run_id) findings.add('feedbackLinks', 'memory_link_delivery_mismatch', 'ledger_memory_links', row.link_id);

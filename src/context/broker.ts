@@ -307,8 +307,8 @@ function priorData(database: SqliteDatabase, query: PreparedQuery): { delivered:
   const feedbackPage = listContextFeedback(database, { workspace: query.workspace, runId: query.run.runId, limit: 100 });
   const feedback = feedbackPage.records.map((record: ContextFeedbackRecord) => ({ entryId: record.entryId, verdict: record.verdict }));
   const stale = deliveries.flatMap((delivery) => delivery.items.flatMap((item) => {
-    const current = database.prepare('SELECT revision FROM entries WHERE id = ? AND workspace = ?').get<{ revision: number }>(item.entryId, query.workspace);
-    return current && current.revision > item.entryRevision ? [{ entryId: item.entryId, deliveredRevision: item.entryRevision, currentRevision: current.revision, stale: true as const }] : [];
+    const current = database.prepare('SELECT current_revision FROM entries WHERE id = ?').get<{ current_revision: number }>(item.entryId);
+    return current && Number(current.current_revision) > item.entryRevision ? [{ entryId: item.entryId, deliveredRevision: item.entryRevision, currentRevision: Number(current.current_revision), stale: true as const }] : [];
   }));
   return { delivered, feedback, stale };
 }
@@ -385,7 +385,11 @@ function emptyExternalSummary(): ExternalSyncSummary {
 function storedContext(database: SqliteDatabase, query: PreparedQuery, delivery: ContextDeliveryView): ContextBrokerContext {
   let remaining = query.characterBudget;
   const items = delivery.items.map((item) => {
-    const entry = database.prepare('SELECT id, revision, title, summary, body FROM entries WHERE id = ? AND workspace = ?').get<{ id: string; revision: number; title: string; summary: string | null; body: string }>(item.entryId, query.workspace);
+    const entry = database.prepare(`
+      SELECT r.entry_id AS id, r.revision, r.title, r.summary, r.body
+        FROM entry_revisions AS r
+       WHERE r.entry_id = ? AND r.revision = ?
+    `).get<{ id: string; revision: number; title: string; summary: string | null; body: string }>(item.entryId, item.entryRevision);
     if (!entry) throw new KiokukoError('INTEGRITY_ERROR', 'Stored context entry is missing');
     const take = (value: string, budget: number): string => Array.from(value).slice(0, Math.max(0, budget)).join('');
     const count = (value: string): number => Array.from(value).length;

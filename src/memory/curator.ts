@@ -442,11 +442,12 @@ function curatedReference(entry: EntryRecord): string {
 function existingGlobalEntry(database: SqliteDatabase, reference: string): EntryRecord | undefined {
   const row = database.prepare(`
     SELECT id
-      FROM entries
-     WHERE workspace = ? AND status <> 'superseded'
-       AND json_extract(provenance_json, '$.type') = 'curator_globalize'
-       AND json_extract(provenance_json, '$.reference') = ?
-     ORDER BY revision DESC, id ASC
+      FROM entries AS e
+      JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+     WHERE e.workspace = ? AND e.status <> 'superseded'
+       AND json_extract(r.provenance_json, '$.type') = 'curator_globalize'
+       AND json_extract(r.provenance_json, '$.reference') = ?
+     ORDER BY e.current_revision DESC, e.id ASC
      LIMIT 1
   `).get<{ id: string }>(GLOBAL_WORKSPACE, reference);
   return row ? readEntry(database, { workspace: GLOBAL_WORKSPACE, entryId: row.id }) : undefined;

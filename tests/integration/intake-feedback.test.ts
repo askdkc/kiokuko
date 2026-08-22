@@ -13,6 +13,7 @@ import {
   recordIntakeFeedback,
   recordIntakeFeedbackInTransaction,
 } from '../../src/context/feedback.js';
+import { recordEntry } from '../../src/memory/entries.js';
 
 const migrationsDirectory = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-20T00:00:00.000Z';
@@ -500,13 +501,17 @@ test('does not mutate Akinator, ledger, memory, delivery, or existing feedback s
   const database = await temporaryDatabase('intake-feedback-nonmutation');
   try {
     seedIntake(database);
-    database.prepare(`
-      INSERT INTO entries (
-        id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-        trust_level, confidence, content_hash, revision, created_by, created_at, updated_at
-      ) VALUES (?, ?, 'lesson', 'verified', 'Unchanged entry', 'Keep this unchanged.', NULL, '{}', '{}', 'source_verified', 0.9, 'entry-intake-1', 2, 'test', ?, ?)
-    `).run('entry-intake-1', workspace, now, now);
-    database.prepare('INSERT INTO tags (entry_id, tag) VALUES (?, ?)').run('entry-intake-1', 'ranking-sentinel');
+    recordEntry(database, {
+      workspace,
+      kind: 'lesson',
+      status: 'verified',
+      trustLevel: 'source_verified',
+      confidence: 0.9,
+      title: 'Unchanged entry',
+      body: 'Keep this unchanged.',
+      createdBy: 'test',
+      tags: ['ranking-sentinel'],
+    }, { idFactory: () => 'entry-intake-1', now });
     database.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
@@ -536,7 +541,7 @@ test('does not mutate Akinator, ledger, memory, delivery, or existing feedback s
       runs: database.prepare('SELECT * FROM ledger_runs ORDER BY run_id').all(),
       events: database.prepare('SELECT * FROM ledger_events ORDER BY run_id, sequence').all(),
       entries: database.prepare('SELECT * FROM entries ORDER BY id').all(),
-      tags: database.prepare('SELECT * FROM tags ORDER BY entry_id, tag').all(),
+      tags: database.prepare('SELECT * FROM entry_revision_tags ORDER BY entry_id, revision, tag').all(),
       deliveries: database.prepare('SELECT * FROM context_deliveries ORDER BY delivery_id').all(),
       deliveryEntries: database.prepare('SELECT * FROM context_delivery_entries ORDER BY delivery_id, entry_id').all(),
       contextFeedback: database.prepare('SELECT * FROM context_feedback ORDER BY feedback_id').all(),

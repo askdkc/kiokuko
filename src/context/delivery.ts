@@ -131,7 +131,7 @@ interface DeliveryEntryRow extends SqliteRow {
   score_components_json: unknown;
   selection_reason_json: unknown;
   entry_workspace: unknown;
-  current_revision: unknown;
+  revision_workspace: unknown;
   origin_scope: unknown;
 }
 
@@ -596,13 +596,16 @@ function assertRunForWrite(database: SqliteDatabase, input: ValidatedContextDeli
     if (!intake || intake.session_id !== input.intakeSessionId || intake.session_id_join !== input.intakeSessionId || intake.session_workspace !== input.workspace) notFound();
   }
   for (const item of input.items) {
-    const entry = database.prepare('SELECT id, workspace, revision, scope_json FROM entries WHERE id = ?').get<{ id: unknown; workspace: unknown; revision: unknown; scope_json: unknown }>(item.entryId);
+    const entry = database.prepare(`
+      SELECT e.id, e.workspace, r.scope_json
+        FROM entry_revisions AS r
+        JOIN entries AS e ON e.id = r.entry_id
+       WHERE r.entry_id = ? AND r.revision = ?
+    `).get<{ id: unknown; workspace: unknown; scope_json: unknown }>(item.entryId, item.entryRevision);
     if (!entry || entry.id !== item.entryId) notFound();
     if (item.origin === 'global') {
       if (entry.workspace !== 'global' || typeof entry.scope_json !== 'string' || !/"visibility"\s*:\s*"global"/u.test(entry.scope_json)) notFound();
     } else if (entry.workspace !== input.workspace) notFound();
-    const revision = storedPositiveSafeInteger(entry.revision);
-    if (item.entryRevision > revision) conflict();
   }
 }
 
@@ -678,9 +681,11 @@ function selectDeliveryEntries(database: SqliteDatabase, deliveryId: string): De
   return database.prepare(`
     SELECT cde.delivery_id, cde.entry_id, cde.entry_revision, cde.rank,
            cde.score_components_json, cde.selection_reason_json, cde.origin_scope,
-           e.workspace AS entry_workspace, e.revision AS current_revision
+           e.workspace AS entry_workspace, r.workspace AS revision_workspace
       FROM context_delivery_entries AS cde
-      LEFT JOIN entries AS e ON e.id = cde.entry_id
+      LEFT JOIN entry_revisions AS r
+        ON r.entry_id = cde.entry_id AND r.revision = cde.entry_revision
+      LEFT JOIN entries AS e ON e.id = r.entry_id
      WHERE cde.delivery_id = ?
      ORDER BY cde.rank ASC, cde.entry_id ASC
   `).all<DeliveryEntryRow>(deliveryId);
@@ -700,9 +705,9 @@ function validateStoredEntries(database: SqliteDatabase, header: ContextDelivery
     const origin = row.origin_scope === 'global' ? 'global' : row.origin_scope === 'project' ? 'project' : integrity();
     if (origin === 'project' && entryWorkspace !== header.workspace) integrity();
     if (origin === 'global' && entryWorkspace !== 'global') integrity();
-    const currentRevision = storedPositiveSafeInteger(row.current_revision);
     const entryRevision = storedPositiveSafeInteger(row.entry_revision);
-    if (entryRevision > currentRevision) integrity();
+    const revisionWorkspace = boundedStoredIdentifier(row.revision_workspace);
+    if (revisionWorkspace !== entryWorkspace) integrity();
     const rank = storedPositiveSafeInteger(row.rank);
     if (rank !== expectedRank) integrity();
     expectedRank += 1;

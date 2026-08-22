@@ -1,6 +1,6 @@
 # Execution ledger
 
-The execution ledger is an append-oriented audit of agent runs. It is separate from curated memory (`entries`, `tags`, `entry_links`) and from memory mutation audit (`audit_events`). A ledger event never becomes verified memory automatically.
+The execution ledger is an append-oriented audit of agent runs. It is separate from curated memory (`entries`, `entry_revisions`, `entry_revision_tags`, `entry_links`) and from memory mutation audit (`audit_events`). A ledger event never becomes verified memory automatically.
 
 ## Storage model
 
@@ -11,7 +11,7 @@ Migration `004_agent_gateway.sql` adds:
 - `intake_feedback`: question/profile feedback with XOR target and actor/idempotency uniqueness.
 - `ledger_events`: contiguous local sequence, source identity, canonical/source types, bounded sanitized payload, redaction metadata, and hash-chain fields.
 - `ledger_evidence`: bounded command/test/file/diff/URL/artifact locators and digests; never binary or unlimited output.
-- `context_deliveries` and `context_delivery_entries`: exact cursor/profile/query/policy/budget and selected entry revision/rank/score/reason.
+- `context_deliveries` and `context_delivery_entries`: exact cursor/profile/query/policy/budget and selected immutable entry revision/rank/score/reason. The child row has a composite foreign key to `entry_revisions`, so a delivery cannot reference a missing or silently substituted revision.
 - `context_feedback` and `run_feedback`: explicit weak ranking signals and outcome/recommendation feedback.
 - `ledger_memory_links`: provenance from run/event/delivery to promoted candidate memory.
 - `ledger_purge_audit`: content-free tombstones after privacy purge.

@@ -11,6 +11,7 @@ import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
 import { inspectLedger } from '../ledger/maintenance.js';
 import { findSecret } from '../memory/secrets.js';
 import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
+import { canonicalContentHash } from '../serialization/validate.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -27,6 +28,11 @@ export interface DoctorResult {
   fts5: boolean;
   checks: {
     integrity: DoctorCheck;
+    foreignKeys: DoctorCheck;
+    entryRevisions: DoctorCheck;
+    revisionTags: DoctorCheck;
+    deliveryRevisions: DoctorCheck;
+    revisionHashes: DoctorCheck;
     migrations: DoctorCheck;
     fts: DoctorCheck;
     danglingLinks: DoctorCheck;
@@ -94,6 +100,7 @@ export async function runDoctor(options: { databasePath?: string; runtimeDescrip
   const database = openConnection(initialized.databasePath);
   try {
     const integrity = database.prepare('PRAGMA integrity_check').get<{ integrity_check: string }>()?.integrity_check ?? 'unknown';
+    const foreignKeyRows = database.prepare('PRAGMA foreign_key_check').all();
     const fts5 = Boolean(database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'entries_fts'").get());
     const migrationRows = count(database, 'SELECT COUNT(*) AS count FROM schema_migrations');
     const expectedMigrations = initialized.currentVersion;
@@ -101,7 +108,49 @@ export async function runDoctor(options: { databasePath?: string; runtimeDescrip
 
     const entryCount = count(database, 'SELECT COUNT(*) AS count FROM entries');
     const ftsCount = fts5 ? count(database, 'SELECT COUNT(*) AS count FROM entries_fts') : 0;
-    const ftsCheck = { ok: !fts5 || entryCount === ftsCount, count: Math.abs(entryCount - ftsCount), detail: `entries=${entryCount}, fts=${ftsCount}` };
+    let ftsCurrentMismatches = 0;
+    if (fts5) {
+      const currentRows = database.prepare(`
+        SELECT e.rowid, e.id, r.title, r.body, r.summary, e.current_revision
+          FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
+      `).all<{ rowid: number; id: string; title: string; body: string; summary: string | null; current_revision: number }>();
+      for (const row of currentRows) {
+        const projected = database.prepare('SELECT title, body, summary, tags_text FROM entries_fts WHERE rowid = ?').get<{ title: string; body: string; summary: string; tags_text: string }>(row.rowid);
+        const tags = database.prepare('SELECT tag FROM entry_revision_tags WHERE entry_id = ? AND revision = ? ORDER BY tag').all<{ tag: string }>(row.id, row.current_revision).map((tag) => tag.tag);
+        if (!projected || projected.title !== row.title || projected.body !== row.body || projected.summary !== (row.summary ?? '') || projected.tags_text !== tags.join(' ')) ftsCurrentMismatches += 1;
+      }
+    }
+    const ftsCheck = { ok: !fts5 || (entryCount === ftsCount && ftsCurrentMismatches === 0), count: Math.abs(entryCount - ftsCount) + ftsCurrentMismatches, detail: `entries=${entryCount}, fts=${ftsCount}, currentMismatches=${ftsCurrentMismatches}` };
+    const missingCurrentRevisions = count(database, `
+      SELECT COUNT(*) AS count FROM entries e
+      LEFT JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
+      WHERE r.entry_id IS NULL
+    `);
+    const orphanRevisionTags = count(database, `
+      SELECT COUNT(*) AS count FROM entry_revision_tags t
+      LEFT JOIN entry_revisions r ON r.entry_id = t.entry_id AND r.revision = t.revision
+      WHERE r.entry_id IS NULL
+    `);
+    const missingDeliveryRevisions = count(database, `
+      SELECT COUNT(*) AS count FROM context_delivery_entries d
+      LEFT JOIN entry_revisions r ON r.entry_id = d.entry_id AND r.revision = d.entry_revision
+      WHERE r.entry_id IS NULL
+    `);
+    const revisionRows = database.prepare(`
+      SELECT r.entry_id, r.revision, r.kind, r.title, r.body, r.summary,
+             r.scope_json, r.provenance_json, r.content_hash
+        FROM entry_revisions AS r
+    `).all<{ entry_id: string; revision: number; kind: string; title: string; body: string; summary: string | null; scope_json: string; provenance_json: string; content_hash: string }>();
+    let revisionHashMismatches = 0;
+    for (const row of revisionRows) {
+      try {
+        const tags = database.prepare('SELECT tag FROM entry_revision_tags WHERE entry_id = ? AND revision = ? ORDER BY tag').all<{ tag: string }>(row.entry_id, row.revision).map((tag) => tag.tag);
+        const expected = canonicalContentHash({ kind: row.kind, title: row.title, body: row.body, summary: row.summary, scope: JSON.parse(row.scope_json), provenance: JSON.parse(row.provenance_json), tags });
+        if (expected !== row.content_hash) revisionHashMismatches += 1;
+      } catch {
+        revisionHashMismatches += 1;
+      }
+    }
     const projection = hybridSearchProjectionStatus(database);
     const hybridCheck = {
       ok: projection.missingSignals === 0 && projection.extraSignals === 0 && projection.staleTrigram === 0,
@@ -140,7 +189,10 @@ export async function runDoctor(options: { databasePath?: string; runtimeDescrip
     const agentFilesCheck = { ok: missingAgentFiles === 0, count: missingAgentFiles };
 
     let secretCount = 0;
-    const secretRows = database.prepare('SELECT title, body, summary, scope_json, provenance_json FROM entries').all<{ title: string; body: string; summary: string | null; scope_json: string; provenance_json: string }>();
+    const secretRows = database.prepare(`
+      SELECT r.title, r.body, r.summary, r.scope_json, r.provenance_json
+        FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
+    `).all<{ title: string; body: string; summary: string | null; scope_json: string; provenance_json: string }>();
     for (const row of secretRows) {
       if (findSecret(`${row.title}\n${row.body}\n${row.summary ?? ''}\n${row.scope_json}\n${row.provenance_json}`)) secretCount += 1;
     }
@@ -158,6 +210,11 @@ export async function runDoctor(options: { databasePath?: string; runtimeDescrip
     const runtime = await runtimeCheck(initialized.databasePath, options.runtimeDescriptorPath);
     const checks = {
       integrity: { ok: integrity === 'ok', detail: integrity },
+      foreignKeys: { ok: foreignKeyRows.length === 0, count: foreignKeyRows.length },
+      entryRevisions: { ok: missingCurrentRevisions === 0, count: missingCurrentRevisions },
+      revisionTags: { ok: orphanRevisionTags === 0, count: orphanRevisionTags },
+      deliveryRevisions: { ok: missingDeliveryRevisions === 0, count: missingDeliveryRevisions },
+      revisionHashes: { ok: revisionHashMismatches === 0, count: revisionHashMismatches },
       migrations: migrationCheck,
       fts: ftsCheck,
       danglingLinks: { ok: danglingLinks === 0, count: danglingLinks },

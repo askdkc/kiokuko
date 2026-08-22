@@ -50,9 +50,10 @@ BEGIN
            AND a.workspace = NEW.workspace
     ) OR NOT EXISTS (
         SELECT 1
-          FROM entries AS e
+        FROM entries AS e
+        JOIN entry_revisions AS er
+          ON er.entry_id = e.id AND er.revision = NEW.entry_revision
          WHERE e.id = NEW.entry_id
-           AND e.revision = NEW.entry_revision
-           AND e.workspace IN (NEW.workspace, 'global')
+           AND er.workspace IN (NEW.workspace, 'global')
     );
 END;

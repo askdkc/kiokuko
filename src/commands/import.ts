@@ -4,6 +4,8 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { findSecret } from '../memory/secrets.js';
+import { insertEntryRevisionInTransaction } from '../memory/revisions.js';
+import { syncEntrySearchProjection } from '../memory/structured-memory.js';
 import {
   ENTRY_KINDS,
   ENTRY_STATUSES,
@@ -59,6 +61,7 @@ interface ImportEntry {
   createdAt: string;
   updatedAt: string;
   verifiedAt: string | null;
+  tags: string[];
 }
 
 const RELATIONS = new Set(['supports', 'contradicts', 'derived_from', 'related_to']);
@@ -204,6 +207,7 @@ function importedEntry(raw: Record<string, unknown>, workspace: string): ImportE
     createdAt,
     updatedAt,
     verifiedAt,
+    tags: validated.tags,
   };
 }
 
@@ -235,7 +239,12 @@ function validateRelatedLines(document: ImportDocument, entryIds: Set<string>): 
 }
 
 function existingEntry(database: SqliteDatabase, id: string): { id: string; content_hash: string } | undefined {
-  return database.prepare('SELECT id, content_hash FROM entries WHERE id = ?').get<{ id: string; content_hash: string }>(id);
+  return database.prepare(`
+    SELECT e.id, r.content_hash
+      FROM entries AS e
+      JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+     WHERE e.id = ?
+  `).get<{ id: string; content_hash: string }>(id);
 }
 
 export async function importWorkspace(database: SqliteDatabase | undefined, options: ImportOptions): Promise<ImportResult> {
@@ -272,7 +281,7 @@ export async function importWorkspace(database: SqliteDatabase | undefined, opti
       duplicates += 1;
       continue;
     }
-    const byHash = database.prepare('SELECT id FROM entries WHERE workspace = ? AND content_hash = ?').get<{ id: string }>(workspace, entry.contentHash);
+    const byHash = database.prepare('SELECT entry_id AS id FROM entry_revisions WHERE workspace = ? AND content_hash = ? LIMIT 1').get<{ id: string }>(workspace, entry.contentHash);
     if (byHash) {
       idMap.set(entry.id, byHash.id);
       duplicates += 1;
@@ -290,36 +299,48 @@ export async function importWorkspace(database: SqliteDatabase | undefined, opti
   withImmediateTransaction(db, () => {
     const insertEntry = db.prepare(`
       INSERT INTO entries (
-        id, workspace, kind, status, title, body, summary, scope_json, provenance_json,
-        trust_level, confidence, content_hash, revision, superseded_by, created_by,
-        created_at, updated_at, verified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, workspace, status, trust_level, confidence, current_revision,
+        superseded_by, created_by, created_at, updated_at, verified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const entry of newEntries) {
       insertEntry.run(
         entry.id,
         workspace,
-        entry.kind,
         entry.status,
-        entry.title,
-        entry.body,
-        entry.summary,
-        entry.scopeJson,
-        entry.provenanceJson,
         entry.trustLevel,
         entry.confidence,
-        entry.contentHash,
-        entry.revision,
+        1,
         entry.supersededBy === null ? null : idMap.get(entry.supersededBy) ?? entry.supersededBy,
         entry.createdBy,
         entry.createdAt,
         entry.updatedAt,
         entry.verifiedAt,
       );
+      insertEntryRevisionInTransaction(db, {
+        entryId: entry.id,
+        workspace,
+        revision: 1,
+        kind: entry.kind,
+        title: entry.title,
+        body: entry.body,
+        summary: entry.summary,
+        scope: JSON.parse(entry.scopeJson) as JsonObject,
+        provenance: JSON.parse(entry.provenanceJson) as JsonObject,
+        tags: entry.tags,
+        contentHash: entry.contentHash,
+        createdBy: entry.createdBy,
+        createdAt: entry.createdAt,
+      });
+      syncEntrySearchProjection(db, {
+        entryId: entry.id,
+        title: entry.title,
+        body: entry.body,
+        summary: entry.summary,
+        tags: entry.tags,
+        scope: JSON.parse(entry.scopeJson) as JsonObject,
+      });
     }
-
-    const insertTag = db.prepare('INSERT OR IGNORE INTO tags (entry_id, tag) VALUES (?, ?)');
-    for (const tag of parsed.tags) insertTag.run(idMap.get(String(tag.entry_id)) ?? String(tag.entry_id), String(tag.tag));
 
     const insertLink = db.prepare(`
       INSERT OR IGNORE INTO entry_links (from_entry_id, to_entry_id, relation, created_at, created_by)
