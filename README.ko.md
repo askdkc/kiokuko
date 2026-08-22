@@ -13,7 +13,7 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-Hermes Agent 프로필 또는 `hermes` 실행 파일이 감지되면 인자 없는 `setup`은 유효한 Hermes profile만 설정하고 Kiokuko 데이터베이스를 초기화하며 동봉된 표준 skill을 배치합니다. 가능하면 `hermes config path`로 현재 profile을 확인하고, 그렇지 않으면 유효한 `active_profile` marker 또는 기본 `$HOME/.hermes`를 사용합니다. Hermes가 감지되지 않으면 인자 없는 명령은 계속 지원되는 모든 클라이언트를 설정합니다. `--clients`를 명시하면 항상 해당 선택이 우선됩니다.
+`PATH`에서 `hermes` 실행 파일이 감지되면 인자 없는 `setup`은 유효한 Hermes profile만 설정하고 Kiokuko 데이터베이스를 초기화하며 동봉된 표준 skill을 배치합니다. 가능하면 `hermes config path`로 현재 profile을 확인하고, 그렇지 않으면 유효한 `active_profile` marker 또는 기본 `$HOME/.hermes`를 사용합니다. `hermes` 실행 파일이 없으면 인자 없는 명령은 지원되는 모든 클라이언트를 설정합니다. `--clients`를 명시하면 항상 해당 선택이 우선됩니다.
 
 npm 패키지 이름은 `@askdkc/kiokuko`이지만 설치되는 CLI 명령 이름은 계속 `kiokuko`입니다.
 

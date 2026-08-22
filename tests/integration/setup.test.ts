@@ -40,17 +40,22 @@ async function runCliJson(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, arg
   return JSON.parse(stdout) as { ok: boolean; data: Record<string, unknown> };
 }
 
-test('CLI no-argument setup configures only the detected Hermes profile on Linux and macOS', async () => {
+test('CLI no-argument setup configures only the detected Hermes profile when the executable is present', async () => {
   for (const platform of ['linux', 'darwin'] as const) {
     const temporary = await temporaryEnvironment(`cli-hermes-${platform}`);
     const hermesHome = path.join(temporary.home, '.hermes');
+    const bin = path.join(temporary.root, 'bin');
     await mkdir(hermesHome, { recursive: true });
+    await mkdir(bin, { recursive: true });
     await writeFile(path.join(hermesHome, 'active_profile'), 'default\n');
     await writeFile(
       path.join(hermesHome, 'config.yaml'),
       'model: test\nmcp_servers:\n  other:\n    command: other\n    args: [serve]\n',
     );
-    const env = { ...temporary.env, PATH: '' };
+    const hermes = path.join(bin, 'hermes');
+    await writeFile(hermes, '#!/bin/sh\n');
+    await chmod(hermes, 0o755);
+    const env = { ...temporary.env, PATH: bin };
 
     const dryRun = await runCliJson(platform, env, ['setup', '--dry-run', '--json']);
     assert.equal(dryRun.ok, true);

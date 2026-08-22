@@ -13,7 +13,7 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-Hermes Agentのプロファイルまたは`hermes`実行ファイルが検出された場合、引数なしの`setup`は有効なHermesプロファイルだけを設定し、Kiokukoデータベースを初期化して同梱標準スキルを配置します。利用できる場合は`hermes config path`で現在のプロファイルを取得し、利用できない場合は有効な`active_profile`または既定の`$HOME/.hermes`を使います。Hermesが検出されない場合、引数なしのコマンドは従来どおり対応する全クライアントを設定します。`--clients`を明示した場合は、常にその指定が優先されます。
+`PATH`上に`hermes`実行ファイルが検出された場合、引数なしの`setup`は有効なHermesプロファイルだけを設定し、Kiokukoデータベースを初期化して同梱標準スキルを配置します。利用できる場合は`hermes config path`で現在のプロファイルを取得し、利用できない場合は有効な`active_profile`または既定の`$HOME/.hermes`を使います。`hermes`実行ファイルがない場合、引数なしのコマンドは対応する全クライアントを設定します。`--clients`を明示した場合は、常にその指定が優先されます。
 
 npmパッケージ名は`@askdkc/kiokuko`ですが、インストールされるCLIコマンド名は引き続き`kiokuko`です。
 

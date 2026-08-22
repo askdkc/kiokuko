@@ -13,7 +13,7 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-如果检测到 Hermes Agent 配置文件或 `hermes` 可执行文件，不带参数的 `setup` 会只配置有效的 Hermes profile、初始化 Kiokuko 数据库并放置内置标准技能。可用时，Kiokuko 会通过 `hermes config path` 获取当前 profile；否则使用有效的 `active_profile` 标记或默认的 `$HOME/.hermes`。未检测到 Hermes 时，不带参数的命令仍会配置所有受支持的客户端。显式传入 `--clients` 时始终优先使用该选择。
+如果在 `PATH` 中检测到 `hermes` 可执行文件，不带参数的 `setup` 会只配置有效的 Hermes profile、初始化 Kiokuko 数据库并放置内置标准技能。可用时，Kiokuko 会通过 `hermes config path` 获取当前 profile；否则使用有效的 `active_profile` 标记或默认的 `$HOME/.hermes`。如果没有 `hermes` 可执行文件，不带参数的命令会配置所有受支持的客户端。显式传入 `--clients` 时始终优先使用该选择。
 
 npm 包名是 `@askdkc/kiokuko`，安装后的 CLI 命令名仍然是 `kiokuko`。
 

@@ -20,12 +20,12 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-If an existing Hermes Agent profile or `hermes` executable is detected, the
-no-argument command configures only the effective Hermes profile, initializes
-the Kiokuko database, and installs the bundled standard skill. When available,
-Kiokuko asks Hermes for the active profile with `hermes config path`; otherwise
-it uses the valid `active_profile` marker or the default `$HOME/.hermes` root.
-On machines without Hermes detection, the no-argument command retains the
+If a `hermes` executable is detected in `PATH`, the no-argument command
+configures only the effective Hermes profile, initializes the Kiokuko database,
+and installs the bundled standard skill. When available, Kiokuko asks Hermes
+for the active profile with `hermes config path`; otherwise it uses the valid
+`active_profile` marker or the default `$HOME/.hermes` root. On machines
+without a `hermes` executable, the no-argument command retains the
 all-supported-clients setup. Explicit `--clients` selection always takes
 precedence.
 

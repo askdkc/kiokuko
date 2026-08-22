@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { access, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -105,8 +105,13 @@ test('exposes Claude Code as a global setup client', () => {
 test('plans Hermes-only setup when Hermes Agent is detected and no client is selected', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-hermes-'));
   const hermesHome = path.join(root, '.hermes');
+  const bin = path.join(root, 'bin');
   await mkdir(hermesHome, { recursive: true });
+  await mkdir(bin, { recursive: true });
   await writeFile(path.join(hermesHome, 'active_profile'), 'default\n');
+  const hermes = path.join(bin, 'hermes');
+  await writeFile(hermes, '#!/bin/sh\n');
+  await chmod(hermes, 0o755);
 
   let stdout = '';
   const originalWrite = process.stdout.write;
@@ -115,7 +120,7 @@ test('plans Hermes-only setup when Hermes Agent is detected and no client is sel
     return true;
   }) as typeof process.stdout.write;
   try {
-    await buildCli({ setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: '' } } })
+    await buildCli({ setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: bin } } })
       .parseAsync(['node', 'kiokuko', 'setup', '--dry-run', '--json']);
   } finally {
     process.stdout.write = originalWrite;
@@ -140,8 +145,11 @@ test('plans Hermes-only setup when Hermes Agent is detected and no client is sel
   await assert.rejects(access(response.data.databasePath));
 });
 
-test('no-argument setup still targets every client when Hermes is not detected', async () => {
+test('no-argument setup targets every client when only Hermes profile files exist', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-no-hermes-'));
+  const hermesHome = path.join(root, '.hermes');
+  await mkdir(hermesHome, { recursive: true });
+  await writeFile(path.join(hermesHome, 'config.yaml'), 'mcp_servers: {}\n');
 
   let stdout = '';
   const originalWrite = process.stdout.write;
