@@ -154,6 +154,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   cli.exitOverride();
   cli.configureOutput({ outputError: () => undefined });
 
+  cli.command('version').description('Show the Kiokuko package version').action(() => {
+    process.stdout.write(`${packageVersion}\n`);
+  });
+
   cli.command('init').description('Initialize the global Kiokuko database').option('--json').action(async (options: { json?: boolean }) => {
     const result = await initializeDatabase();
     const backupNotice = result.backupPath === null ? '' : ` Pre-migration backup: ${result.backupPath}`;

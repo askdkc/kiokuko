@@ -8,9 +8,26 @@ test('reports the package version instead of a stale hard-coded CLI version', ()
   assert.equal(buildCli().version(), packageMetadata.version);
 });
 
+test('prints the package version from the version subcommand', async () => {
+  const packageMetadata = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
+  let stdout = '';
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await buildCli().parseAsync(['node', 'kiokuko', 'version']);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.equal(stdout, `${packageMetadata.version}\n`);
+});
+
 test('registers required commands', () => {
   const names = buildCli().commands.map((command) => command.name());
   for (const name of [
+    'version',
     'init',
     'setup',
     'mcp',

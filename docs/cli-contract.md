@@ -2,6 +2,12 @@
 
 Existing memory commands and their JSON envelopes/exit codes remain stable. Machine-readable commands write exactly one JSON object to stdout; diagnostics go to stderr.
 
+```bash
+kiokuko version
+```
+
+`version` prints the installed package version. The existing `--version` option remains available as an equivalent shorthand.
+
 Success:
 
 ```json
