@@ -350,7 +350,9 @@ function inspectReferences(database: SqliteDatabase, workspace: string | undefin
     if (integer(row.entry_revision) === undefined || (row.entry_revision as number) < 1) findings.add('contextDeliveries', 'invalid_entry_revision', 'context_delivery_entries', row.entry_id);
     if (integer(row.rank) === undefined || (row.rank as number) < 1) findings.add('contextDeliveries', 'invalid_rank', 'context_delivery_entries', row.entry_id);
     parseJson(row.score_components_json, ['contextDeliveries', 'storedValues'], 'context_delivery_entries.score_components_json', row.entry_id, findings, 'object');
-    parseJson(row.selection_reason_json, ['contextDeliveries', 'storedValues'], 'context_delivery_entries.selection_reason_json', row.entry_id, findings, 'object');
+    // Context delivery writers store the ordered selection reasons as a JSON
+    // array. Keep the ledger check aligned with context/delivery.ts.
+    parseJson(row.selection_reason_json, ['contextDeliveries', 'storedValues'], 'context_delivery_entries.selection_reason_json', row.entry_id, findings, 'array');
     scanRow(row, 'context_delivery_entries', row.entry_id, findings);
   }
 }

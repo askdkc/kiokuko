@@ -77,6 +77,40 @@ test('reports a healthy run and event chain with deterministic selected counts',
   }
 });
 
+test('accepts context delivery selection reasons as a JSON array', async () => {
+  const database = await setup();
+  try {
+    const { LedgerStore } = await import('../../src/ledger/store.js');
+    const { recordEntry } = await import('../../src/memory/entries.js');
+    const store = new LedgerStore(database, { now: () => '2026-08-20T00:00:00.000Z' });
+    store.createRun(runInput());
+    store.appendBatch('run-1', { events: [{ eventId: 'event-selection-reasons', eventType: 'run.started', actor: 'agent', payload: {} }] });
+    const entry = recordEntry(database, {
+      workspace: 'workspace-a',
+      kind: 'lesson',
+      title: 'Selection reasons',
+      body: 'Selection reasons are stored as an ordered array.',
+      createdBy: 'test',
+      actor: 'test',
+    }, { now: '2026-08-20T00:00:00.000Z', idFactory: () => 'entry-selection-reasons' });
+    database.prepare(`
+      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at)
+      VALUES ('delivery-selection-reasons', 'run-1', 1, NULL, ?, ?, 'v1', '{}', 100, 10, 0, ?)
+    `).run('a'.repeat(64), 'b'.repeat(64), '2026-08-20T00:00:00.000Z');
+    database.prepare(`
+      INSERT INTO context_delivery_entries (delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json)
+      VALUES ('delivery-selection-reasons', ?, 1, 1, '{}', '["project_origin","candidate"]')
+    `).run(entry.id);
+
+    const report = inspectLedger(database, { workspace: 'workspace-a' });
+
+    assert.equal(report.ok, true);
+    assert.equal(report.findingCount, 0);
+  } finally {
+    database.close();
+  }
+});
+
 test('reports tampered sequence, hash, malformed JSON, and secret residue without exposing content', async () => {
   const database = await setup();
   try {

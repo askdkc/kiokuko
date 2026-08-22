@@ -144,7 +144,12 @@ export async function runDoctor(options: { databasePath?: string; runtimeDescrip
     let revisionHashMismatches = 0;
     for (const row of revisionRows) {
       try {
-        const tags = database.prepare('SELECT tag FROM entry_revision_tags WHERE entry_id = ? AND revision = ? ORDER BY tag').all<{ tag: string }>(row.entry_id, row.revision).map((tag) => tag.tag);
+        // Match validateRecordInput/canonicalContentHash, which uses the
+        // JavaScript locale-aware tag ordering rather than SQLite's binary
+        // ORDER BY ordering.
+        const tags = database.prepare('SELECT tag FROM entry_revision_tags WHERE entry_id = ? AND revision = ?').all<{ tag: string }>(row.entry_id, row.revision)
+          .map((tag) => tag.tag)
+          .sort((left, right) => left.localeCompare(right));
         const expected = canonicalContentHash({ kind: row.kind, title: row.title, body: row.body, summary: row.summary, scope: JSON.parse(row.scope_json), provenance: JSON.parse(row.provenance_json), tags });
         if (expected !== row.content_hash) revisionHashMismatches += 1;
       } catch {

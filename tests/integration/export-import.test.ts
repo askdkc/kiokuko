@@ -92,6 +92,26 @@ test('doctor reports integrity, migration, FTS, and permissions checks', async (
   }
 });
 
+test('doctor uses canonical locale-aware tag ordering for revision hashes', async () => {
+  const data = await database('doctor-revision-hash-tags');
+  try {
+    recordEntry(data.db, {
+      workspace: 'project:doctor-hash-tags',
+      kind: 'fact',
+      title: 'Canonical tag ordering',
+      body: 'Mixed-case tags must hash consistently.',
+      tags: ['MCP', 'agent-checkpoint', 'context'],
+    });
+
+    const result = await runDoctorWithDatabase(data.databasePath, path.join(data.directory, 'runtime', 'server.json'));
+
+    assert.equal(result.checks.revisionHashes.ok, true);
+    assert.equal(result.checks.revisionHashes.count, 0);
+  } finally {
+    data.db.close();
+  }
+});
+
 test('doctor adds content-free ledger and stale runtime findings', async () => {
   const data = await database('doctor-ledger-runtime');
   const runtimeHome = path.join(data.directory, 'doctor-runtime');
