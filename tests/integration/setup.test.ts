@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { parse } from 'jsonc-parser';
+import { buildCli } from '../../src/cli.js';
 import { setupGlobalClients } from '../../src/commands/setup.js';
 import { openConnection } from '../../src/db/connection.js';
 import { GLOBAL_REPOSITORY_ID, GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
@@ -23,6 +24,96 @@ async function temporaryEnvironment(prefix: string) {
     databasePath: path.join(data, 'kiokuko', 'kiokuko.sqlite3'),
   };
 }
+
+async function runCliJson(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, args: string[]): Promise<{ ok: boolean; data: Record<string, unknown> }> {
+  let stdout = '';
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await buildCli({ setupEnvironment: { platform, env } }).parseAsync(['node', 'kiokuko', ...args]);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  return JSON.parse(stdout) as { ok: boolean; data: Record<string, unknown> };
+}
+
+test('CLI no-argument setup configures only the detected Hermes profile on Linux and macOS', async () => {
+  for (const platform of ['linux', 'darwin'] as const) {
+    const temporary = await temporaryEnvironment(`cli-hermes-${platform}`);
+    const hermesHome = path.join(temporary.home, '.hermes');
+    await mkdir(hermesHome, { recursive: true });
+    await writeFile(path.join(hermesHome, 'active_profile'), 'default\n');
+    await writeFile(
+      path.join(hermesHome, 'config.yaml'),
+      'model: test\nmcp_servers:\n  other:\n    command: other\n    args: [serve]\n',
+    );
+    const env = { ...temporary.env, PATH: '' };
+
+    const dryRun = await runCliJson(platform, env, ['setup', '--dry-run', '--json']);
+    assert.equal(dryRun.ok, true);
+    assert.deepEqual(dryRun.data.clients, ['hermes']);
+    assert.equal(dryRun.data.databaseAction, 'planned');
+    assert.equal(dryRun.data.dryRun, true);
+    const dryRunFiles = dryRun.data.files as Array<{ path: string; client: string }>;
+    assert.ok(dryRunFiles.every((file) => file.client === 'hermes'));
+    await assert.rejects(access(String(dryRun.data.databasePath)));
+    await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
+
+    const first = await runCliJson(platform, env, ['setup', '--json']);
+    assert.equal(first.ok, true);
+    assert.deepEqual(first.data.clients, ['hermes']);
+    assert.equal(first.data.databaseAction, 'initialized');
+    await access(String(first.data.databasePath));
+    await access(path.join(hermesHome, 'config.yaml'));
+    await access(path.join(hermesHome, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'));
+    assert.match(await readFile(path.join(hermesHome, 'config.yaml'), 'utf8'), /command: kiokuko/);
+    assert.match(await readFile(path.join(hermesHome, 'config.yaml'), 'utf8'), /command: other/);
+    await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
+    await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
+    await assert.rejects(access(path.join(temporary.home, '.claude.json')));
+
+    const migrated = await runCliJson(platform, env, ['setup', '--clients', 'hermes', '--command', '/opt/homebrew/bin/kiokuko', '--json']);
+    const migratedFiles = migrated.data.files as Array<{ path: string; action: string; purpose: string }>;
+    assert.equal(migrated.data.databaseAction, 'initialized');
+    assert.equal(migratedFiles.find((file) => file.purpose === 'mcp-config')?.action, 'updated');
+    assert.ok(migratedFiles.filter((file) => file.purpose === 'standard-skill').every((file) => file.action === 'unchanged'));
+    const migratedConfig = await readFile(path.join(hermesHome, 'config.yaml'), 'utf8');
+    assert.match(migratedConfig, /command: \/opt\/homebrew\/bin\/kiokuko/);
+    assert.match(migratedConfig, /command: other/);
+
+    const second = await runCliJson(platform, env, ['setup', '--clients', 'hermes', '--command', '/opt/homebrew/bin/kiokuko', '--json']);
+    const secondFiles = second.data.files as Array<{ action: string }>;
+    assert.ok(secondFiles.every((file) => file.action === 'unchanged'));
+  }
+});
+
+test('CLI uses hermes config path to select a profile when active_profile is unavailable', async () => {
+  const temporary = await temporaryEnvironment('cli-hermes-config-path');
+  const profileHome = path.join(temporary.home, '.hermes', 'profiles', 'main');
+  const bin = path.join(temporary.root, 'bin');
+  const configPath = path.join(profileHome, 'config.yaml');
+  await mkdir(profileHome, { recursive: true });
+  await mkdir(bin, { recursive: true });
+  const hermes = path.join(bin, 'hermes');
+  await writeFile(hermes, '#!/bin/sh\nprintf "%s\\n" "$HERMES_CONFIG_PATH"\n');
+  await chmod(hermes, 0o755);
+
+  const result = await runCliJson('linux', {
+    ...temporary.env,
+    PATH: bin,
+    HERMES_CONFIG_PATH: configPath,
+  }, ['setup', '--json']);
+
+  assert.deepEqual(result.data.clients, ['hermes']);
+  const files = result.data.files as Array<{ path: string; client: string }>;
+  assert.ok(files.every((file) => file.client === 'hermes'));
+  assert.equal(files[0]?.path, configPath);
+  await access(configPath);
+  await assert.rejects(access(path.join(temporary.home, '.hermes', 'config.yaml')));
+});
 
 test('setup safely merges Codex, OpenCode, and Claude Code global configuration and is idempotent', async () => {
   const temporary = await temporaryEnvironment('merge');

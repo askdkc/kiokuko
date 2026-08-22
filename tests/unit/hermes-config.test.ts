@@ -60,7 +60,43 @@ test('rejects invalid YAML and non-mapping Hermes config shapes with fixed valid
   }
 });
 
-test('rejects an unmanaged or differently managed kiokuko server as a conflict', () => {
+test('updates the command of a canonical managed kiokuko server and remains idempotent', () => {
+  const base = [
+    '# preserve this top-level comment',
+    'model: test',
+    'mcp_servers:',
+    '  other:',
+    '    command: other-server',
+    '    args: [serve]',
+    '',
+  ].join('\n');
+  const managed = renderHermesConfig(base).content;
+
+  const result = renderHermesConfig(managed, '/opt/homebrew/bin/kiokuko');
+  assert.equal(result.action, 'updated');
+  assert.match(result.content, /preserve this top-level comment/);
+  assert.match(result.content, /command: \/opt\/homebrew\/bin\/kiokuko/);
+  assert.match(result.content, /- mcp/);
+  assert.match(result.content, /other-server/);
+  assert.match(result.content, /Managed by `kiokuko setup`\./);
+  assert.doesNotMatch(result.content, /enabled:|env:/);
+
+  const replay = renderHermesConfig(result.content, '/opt/homebrew/bin/kiokuko');
+  assert.equal(replay.action, 'unchanged');
+  assert.equal(replay.content, result.content);
+});
+
+test('preserves CRLF when migrating a managed Hermes command', () => {
+  const managed = renderHermesConfig('model: test\r\n', 'kiokuko').content;
+  const result = renderHermesConfig(managed, '/opt/homebrew/bin/kiokuko');
+
+  assert.equal(result.action, 'updated');
+  assert.match(result.content, /\r\n/);
+  assert.equal(result.content.replaceAll('\r\n', '').includes('\n'), false);
+  assert.match(result.content, /command: \/opt\/homebrew\/bin\/kiokuko/);
+});
+
+test('rejects an unmanaged or non-canonical kiokuko server as a conflict', () => {
   const unmanaged = [
     'mcp_servers:',
     '  kiokuko:',
@@ -72,13 +108,14 @@ test('rejects an unmanaged or differently managed kiokuko server as a conflict',
   assert.equal(unmanagedIdentity.code, 'CONFLICT');
 
   const managed = renderHermesConfig('model: test\n').content;
-  const differentIdentity = errorIdentity(() => renderHermesConfig(managed, 'different-kiokuko'));
-  assert.equal(differentIdentity.code, 'CONFLICT');
-
-  const extendedIdentity = errorIdentity(() => renderHermesConfig(
+  for (const existing of [
     managed.replace('    args:\n      - mcp\n', '    args:\n      - mcp\n    enabled: false\n'),
-  ));
-  assert.equal(extendedIdentity.code, 'CONFLICT');
+    managed.replace('      - mcp\n', '      - something-else\n'),
+    managed.replace('    args:\n      - mcp\n', '    args:\n      - mcp\n    env:\n      PATH: /custom\n'),
+  ]) {
+    const identity = errorIdentity(() => renderHermesConfig(existing, 'different-kiokuko'));
+    assert.equal(identity.code, 'CONFLICT');
+  }
 });
 
 test('preserves CRLF line endings when updating Hermes config', () => {

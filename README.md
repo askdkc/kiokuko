@@ -21,12 +21,10 @@ kiokuko setup
 ```
 
 If an existing Hermes Agent profile or `hermes` executable is detected, the
-no-argument command makes no client or database changes and prints:
-
-```text
-Hermes Agent detected. Run `kiokuko setup --clients hermes` to configure Kiokuko for Hermes Agent.
-```
-
+no-argument command configures only the effective Hermes profile, initializes
+the Kiokuko database, and installs the bundled standard skill. When available,
+Kiokuko asks Hermes for the active profile with `hermes config path`; otherwise
+it uses the valid `active_profile` marker or the default `$HOME/.hermes` root.
 On machines without Hermes detection, the no-argument command retains the
 all-supported-clients setup. Explicit `--clients` selection always takes
 precedence.
@@ -70,6 +68,30 @@ kiokuko setup --command /absolute/path/to/kiokuko
 kiokuko setup --no-standard-skills
 ```
 
+Hermes setup is profile-scoped. A named profile such as
+`$HOME/.hermes/profiles/work/config.yaml` receives the MCP config and standard
+skill; the root and inactive profiles are not modified. A temporary
+`hermes -p <name>` selection in another process is not inferred by setup. To
+target a named profile explicitly, pass its profile directory as
+`HERMES_HOME`:
+
+```bash
+HERMES_HOME="$HOME/.hermes/profiles/work" kiokuko setup --clients hermes
+```
+
+If a desktop process cannot find `kiokuko` through its `PATH`, migrate the
+managed command to an absolute executable path. Do not pass an empty result
+from `command -v`:
+
+```bash
+KIOKUKO_BIN="$(command -v kiokuko)"
+test -n "$KIOKUKO_BIN" && test -x "$KIOKUKO_BIN" || {
+  echo "kiokuko executable not found" >&2
+  exit 1
+}
+kiokuko setup --clients hermes --command "$KIOKUKO_BIN"
+```
+
 The setup targets are:
 
 | Client | MCP config | Global instructions | Runtime guard | Standard skill |
@@ -79,7 +101,7 @@ The setup targets are:
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` or `~/.claude/CLAUDE.md` | — | Claude config `skills/kiokuko-ui-design-soul` |
 | Hermes Agent | effective profile `config.yaml` under `$HERMES_HOME`, `$HOME/.hermes`, or `%LOCALAPPDATA%/hermes` | none | none | effective profile `skills/kiokuko-ui-design-soul` |
 
-Hermes is configured as a profile-scoped native stdio MCP server with `command: kiokuko` and `args: [mcp]`. `setup` follows a valid sticky `active_profile` when `HERMES_HOME` is a root, and never silently falls back from a missing named profile.
+Hermes is configured as a profile-scoped native stdio MCP server with `command: kiokuko` and `args: [mcp]`. A managed canonical entry can have its `command` migrated with `--command`; `args`, comments, and other servers are preserved. Unmanaged entries, extra fields, and non-`mcp` args remain conflicts. `setup` follows `hermes config path` when available, then a valid sticky `active_profile` when `HERMES_HOME` is a root, and never silently falls back from a missing named profile.
 
 If an OpenCode `opencode.jsonc` already exists, Kiokuko updates that file and
 preserves comments. If Codex already has an unmanaged

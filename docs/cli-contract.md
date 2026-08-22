@@ -33,12 +33,56 @@ kiokuko mcp
 Claude Code, and/or Hermes MCP configuration. Codex, OpenCode, and Claude Code
 also use their existing global instruction surfaces; Hermes is profile-scoped
 native stdio MCP only and receives no global instruction file, plugin, or hook.
-When no `--clients` option is supplied and an existing Hermes profile or
-`hermes` executable is detected, setup performs no writes and instead prints
-`Hermes Agent detected. Run \`kiokuko setup --clients hermes\` to configure
-Kiokuko for Hermes Agent.` Explicit `--clients` selection always takes
-precedence. Without Hermes detection, no-argument setup targets all supported
-clients as before.
+Client selection follows this matrix:
+
+| Command | Hermes detected | Selected clients |
+|---|---:|---|
+| `kiokuko setup` | yes | `hermes` only |
+| `kiokuko setup` | no | `codex,opencode,claude,hermes` |
+| `kiokuko setup --clients hermes` | either | `hermes` |
+| `kiokuko setup --clients codex` | either | `codex` |
+| `kiokuko setup --clients codex,hermes` | either | `codex,hermes` |
+| `kiokuko setup --dry-run` | yes/no | the same selection as the corresponding command |
+
+Explicit `--clients` selection always takes precedence. Hermes detection checks
+profile state and the `hermes` executable. When the executable is available,
+setup uses its non-shell `hermes config path` result when it is one absolute,
+single-line `config.yaml` path; invalid or unavailable output falls back to the
+validated `active_profile` marker and then the default `$HOME/.hermes` root.
+No-argument setup therefore performs the regular setup plan and, when Hermes is
+detected, writes only the effective Hermes profile plus the user-global Kiokuko
+database.
+
+Hermes profile resolution is shared by Linux and macOS:
+
+| State | Effective Hermes home |
+|---|---|
+| no `HERMES_HOME`, no active profile | `$HOME/.hermes` |
+| no `HERMES_HOME`, `active_profile=default` | `$HOME/.hermes` |
+| no `HERMES_HOME`, `active_profile=work` | `$HOME/.hermes/profiles/work` |
+| `HERMES_HOME=/custom/hermes`, no marker | `/custom/hermes` |
+| `HERMES_HOME=/custom/hermes`, `active_profile=work` | `/custom/hermes/profiles/work` |
+| `HERMES_HOME=/custom/hermes/profiles/work` | that path itself |
+
+An explicit profile-shaped `HERMES_HOME` takes precedence over the root marker.
+Temporary `hermes -p <name>` selections in another process are not inferred.
+Invalid markers and missing named profile directories fail with
+`VALIDATION_ERROR` without creating the database or files.
+
+Hermes `mcp_servers.kiokuko` is managed only in its canonical shape:
+
+```yaml
+command: <scalar string>
+args:
+  - mcp
+```
+
+An absent entry is created. A managed canonical entry with a different
+`command` updates only that command and reports `updated`; repeating the same
+command reports `unchanged`. The managed marker, comments, line endings, file
+mode, top-level values, and other MCP servers are preserved. An unmanaged entry,
+extra field, or non-`mcp` args remains `CONFLICT`; malformed YAML or a
+non-mapping `mcp_servers` remains `VALIDATION_ERROR`.
 By default it also places the bundled `kiokuko-ui-design-soul` skill in each
 selected client's native user-skill directory. `--no-standard-skills` skips new
 placement and updates without deleting a previously installed copy.
@@ -56,11 +100,12 @@ older files are replaced, byte-identical files are `unchanged`, unrelated siblin
 files are not touched, and `files[].purpose` is `standard-skill`. JSON setup
 results include the effective `standardSkills` boolean.
 
-For Hermes, use `kiokuko setup --clients hermes`, then restart Hermes Agent or
-start a new session. `/reload-mcp` reloads the MCP registry but is not sufficient
-by itself to discover a changed skill. Hermes automatic/model use is best effort from MCP tool
-descriptions; its built-in memory and skills remain separate. Smoke-test
-the effective profile with `hermes mcp test kiokuko`.
+For Hermes, use `kiokuko setup` when Hermes detection is intended, or
+`kiokuko setup --clients hermes` for an explicit selection, then restart Hermes
+Agent or start a new session. `/reload-mcp` reloads the MCP registry but is not
+sufficient by itself to discover a changed skill. Hermes automatic/model use is
+best effort from MCP tool descriptions; its built-in memory and skills remain
+separate. Smoke-test the effective profile with `hermes mcp test kiokuko`.
 
 `mcp` is a foreground stdio MCP server. Protocol output is written only to
 stdout; ordinary CLI diagnostics must not contaminate that stream. It exposes:

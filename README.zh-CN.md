@@ -13,13 +13,7 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-如果检测到 Hermes Agent 配置文件或 `hermes` 可执行文件，不带参数的命令不会修改客户端配置或数据库，而是输出：
-
-```text
-Hermes Agent detected. Run `kiokuko setup --clients hermes` to configure Kiokuko for Hermes Agent.
-```
-
-未检测到 Hermes 时，不带参数的命令仍会配置所有受支持的客户端。显式传入 `--clients` 时始终优先使用该选择。
+如果检测到 Hermes Agent 配置文件或 `hermes` 可执行文件，不带参数的 `setup` 会只配置有效的 Hermes profile、初始化 Kiokuko 数据库并放置内置标准技能。可用时，Kiokuko 会通过 `hermes config path` 获取当前 profile；否则使用有效的 `active_profile` 标记或默认的 `$HOME/.hermes`。未检测到 Hermes 时，不带参数的命令仍会配置所有受支持的客户端。显式传入 `--clients` 时始终优先使用该选择。
 
 npm 包名是 `@askdkc/kiokuko`，安装后的 CLI 命令名仍然是 `kiokuko`。
 
@@ -46,6 +40,20 @@ kiokuko setup --command /absolute/path/to/kiokuko
 kiokuko setup --no-standard-skills
 ```
 
+Hermes 设置按 profile 隔离。像 `$HOME/.hermes/profiles/work/config.yaml` 这样的 named profile 只接收该 profile 的 MCP 配置和标准技能，root 及非活动 profile 不会被修改。另一个进程中临时使用的 `hermes -p <name>` 不会被 setup 自动推断。要明确指定 named profile，请将 profile 目录传给 `HERMES_HOME`：
+
+```bash
+HERMES_HOME="$HOME/.hermes/profiles/work" kiokuko setup --clients hermes
+```
+
+如果桌面进程无法通过 `PATH` 找到 `kiokuko`，不要传入空的 `command -v` 结果，而应迁移到绝对路径：
+
+```bash
+KIOKUKO_BIN="$(command -v kiokuko)"
+test -n "$KIOKUKO_BIN" && test -x "$KIOKUKO_BIN" || { echo "kiokuko executable not found" >&2; exit 1; }
+kiokuko setup --clients hermes --command "$KIOKUKO_BIN"
+```
+
 设置目标如下：
 
 | 客户端 | MCP 配置 | 全局指令 | 运行时防护 | 标准技能 |
@@ -55,7 +63,7 @@ kiokuko setup --no-standard-skills
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 或 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 或 `~/.claude/CLAUDE.md` | — | Claude 配置中的 `skills/kiokuko-ui-design-soul` |
 | Hermes Agent | 有效 profile 的 `config.yaml`（`$HERMES_HOME`、`$HOME/.hermes` 或 `%LOCALAPPDATA%/hermes`） | 无 | 无 | 有效 profile 中的 `skills/kiokuko-ui-design-soul` |
 
-Hermes 配置是 profile 级别的 native stdio MCP，注册 `mcp_servers.kiokuko`，其中 `command: kiokuko`、`args: [mcp]`。Hermes 内置 memory 和 skills 与 Kiokuko 分离；模型是否使用这些 MCP 工具取决于 MCP tool descriptions，属于 best effort。
+Hermes 配置是 profile 级别的 native stdio MCP，注册 `mcp_servers.kiokuko`，其中 `command: kiokuko`、`args: [mcp]`。受管理的 canonical entry 可以通过 `--command` 只迁移 command，同时保留 args、注释和其他 server；未管理 entry、额外 field 或非 `mcp` args 仍然会产生 conflict。Hermes 内置 memory 和 skills 与 Kiokuko 分离；模型是否使用这些 MCP 工具取决于 MCP tool descriptions，属于 best effort。
 
 如果 OpenCode 的 `opencode.jsonc` 已存在，Kiokuko 会保留注释并更新该文件。如果 Codex 中已存在不受 Kiokuko 管理的 `[mcp_servers.kiokuko]` 表，设置程序不会猜测应该覆盖哪项配置，而是直接停止。受管理的 OpenCode 防护会把可见智能体限制为 12 个 step；每个用户请求最多调用一次 `task_prepare` 和一次 `memory_checkpoint`；检查点完成后关闭工具阶段；连续三次出现相同调用或相同的只读检索结果后阻止再次执行。计数器和指纹仅保存在进程内存中。
 

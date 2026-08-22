@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -102,11 +102,11 @@ test('exposes Claude Code as a global setup client', () => {
   assert.match(setup.helpInformation(), /--no-standard-skills/);
 });
 
-test('recommends Hermes-only setup when Hermes Agent is detected and no client is selected', async () => {
+test('plans Hermes-only setup when Hermes Agent is detected and no client is selected', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-hermes-'));
   const hermesHome = path.join(root, '.hermes');
   await mkdir(hermesHome, { recursive: true });
-  await writeFile(path.join(hermesHome, 'config.yaml'), 'mcp_servers: {}\n');
+  await writeFile(path.join(hermesHome, 'active_profile'), 'default\n');
 
   let stdout = '';
   const originalWrite = process.stdout.write;
@@ -116,15 +116,52 @@ test('recommends Hermes-only setup when Hermes Agent is detected and no client i
   }) as typeof process.stdout.write;
   try {
     await buildCli({ setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: '' } } })
-      .parseAsync(['node', 'kiokuko', 'setup']);
+      .parseAsync(['node', 'kiokuko', 'setup', '--dry-run', '--json']);
   } finally {
     process.stdout.write = originalWrite;
   }
 
-  assert.equal(stdout, 'Hermes Agent detected. Run `kiokuko setup --clients hermes` to configure Kiokuko for Hermes Agent.\n');
+  const response = JSON.parse(stdout) as {
+    data: {
+      clients: string[];
+      databaseAction: string;
+      databasePath: string;
+      dryRun: boolean;
+      files: Array<{ client: string; path: string }>;
+    };
+    ok: boolean;
+  };
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.data.clients, ['hermes']);
+  assert.equal(response.data.databaseAction, 'planned');
+  assert.equal(response.data.dryRun, true);
+  assert.ok(response.data.files.every((file) => file.client === 'hermes'));
+  for (const file of response.data.files) await assert.rejects(access(file.path));
+  await assert.rejects(access(response.data.databasePath));
 });
 
-test('explicit client selection bypasses Hermes setup guidance', async () => {
+test('no-argument setup still targets every client when Hermes is not detected', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-no-hermes-'));
+
+  let stdout = '';
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await buildCli({ setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: '' } } })
+      .parseAsync(['node', 'kiokuko', 'setup', '--dry-run', '--json']);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  const response = JSON.parse(stdout) as { data: { clients: string[] }; ok: boolean };
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.data.clients, ['codex', 'opencode', 'claude', 'hermes']);
+});
+
+test('explicit client selection takes precedence over Hermes detection', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-hermes-explicit-'));
   const hermesHome = path.join(root, '.hermes');
   await mkdir(hermesHome, { recursive: true });
@@ -138,14 +175,14 @@ test('explicit client selection bypasses Hermes setup guidance', async () => {
   }) as typeof process.stdout.write;
   try {
     await buildCli({ setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: '' } } })
-      .parseAsync(['node', 'kiokuko', 'setup', '--clients', 'hermes', '--dry-run', '--json']);
+      .parseAsync(['node', 'kiokuko', 'setup', '--clients', 'codex', '--dry-run', '--json']);
   } finally {
     process.stdout.write = originalWrite;
   }
 
   const response = JSON.parse(stdout) as { data: { clients: string[] }; ok: boolean };
   assert.equal(response.ok, true);
-  assert.deepEqual(response.data.clients, ['hermes']);
+  assert.deepEqual(response.data.clients, ['codex']);
 });
 
 test('exposes foreground serve options without capability-token controls', () => {

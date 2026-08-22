@@ -19,16 +19,26 @@ function hasManagedMarker(pair: Pair): boolean {
     || (isNode(pair.value) && pair.value.commentBefore?.includes(HERMES_MANAGED_MARKER) === true);
 }
 
-function hasRequestedState(pair: Pair, command: string): boolean {
+function hasCanonicalManagedShape(pair: Pair): boolean {
   if (!isMap(pair.value)) return false;
   const fields = pair.value.items.map((item) => isPair(item) ? scalarValue(item.key) : undefined);
-  if (fields.length !== 2 || !fields.includes('command') || !fields.includes('args')) return false;
+  if (fields.length !== 2 || fields[0] === fields[1] || !fields.includes('command') || !fields.includes('args')) return false;
   const commandNode = pair.value.get('command', true);
   const argsNode = pair.value.get('args', true);
-  return scalarValue(commandNode) === command
+  return typeof scalarValue(commandNode) === 'string'
     && isSeq(argsNode)
     && argsNode.items.length === 1
     && scalarValue(argsNode.items[0]) === 'mcp';
+}
+
+function currentManagedCommand(pair: Pair): string | undefined {
+  if (!hasCanonicalManagedShape(pair)) return undefined;
+  const command = scalarValue((pair.value as HermesMap).get('command', true));
+  return typeof command === 'string' ? command : undefined;
+}
+
+function hasRequestedState(pair: Pair, command: string): boolean {
+  return currentManagedCommand(pair) === command;
 }
 
 function validation(): never {
@@ -37,6 +47,20 @@ function validation(): never {
 
 function conflict(): never {
   throw new KiokukoError('CONFLICT', 'Hermes config already contains a conflicting kiokuko MCP server');
+}
+
+function serializeHermesDocument(
+  document: ReturnType<typeof parseDocument>,
+  source: string,
+  existing: string | undefined,
+): DelimitedBlockResult {
+  const eol = source.includes('\r\n') ? '\r\n' : '\n';
+  const serialized = document.toString({ lineWidth: 0 }).replaceAll('\r\n', '\n');
+  const content = serialized.replaceAll('\n', eol);
+  return {
+    content,
+    action: existing === undefined ? 'created' : content === existing ? 'unchanged' : 'updated',
+  };
 }
 
 export function renderHermesConfig(existing: string | undefined, command = 'kiokuko'): DelimitedBlockResult {
@@ -63,20 +87,16 @@ export function renderHermesConfig(existing: string | undefined, command = 'kiok
   const serverMap = mcpServers as HermesMap;
   const existingPair = findKeyPair(serverMap, 'kiokuko');
   if (existingPair !== undefined) {
-    if (!hasManagedMarker(existingPair) || !hasRequestedState(existingPair, command)) conflict();
-    return { content: source, action: 'unchanged' };
+    if (!hasManagedMarker(existingPair) || !hasCanonicalManagedShape(existingPair)) conflict();
+    if (hasRequestedState(existingPair, command)) return { content: source, action: 'unchanged' };
+    if (!isMap(existingPair.value)) conflict();
+    existingPair.value.set('command', command);
+    return serializeHermesDocument(document, source, existing);
   }
 
   const pair = document.createPair('kiokuko', { command, args: ['mcp'] }) as unknown as Pair;
   if (!isNode(pair.value)) validation();
   pair.value.commentBefore = ` ${HERMES_MANAGED_MARKER}`;
   serverMap.add(pair);
-
-  const eol = source.includes('\r\n') ? '\r\n' : '\n';
-  const serialized = document.toString({ lineWidth: 0 }).replaceAll('\r\n', '\n');
-  const content = serialized.replaceAll('\n', eol);
-  return {
-    content,
-    action: existing === undefined ? 'created' : content === existing ? 'unchanged' : 'updated',
-  };
+  return serializeHermesDocument(document, source, existing);
 }

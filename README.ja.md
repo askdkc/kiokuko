@@ -13,13 +13,7 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-Hermes Agentのプロファイルまたは`hermes`実行ファイルが検出された場合、引数なしのコマンドはクライアント設定やデータベースを変更せず、次のコマンドを案内します。
-
-```text
-Hermes Agent detected. Run `kiokuko setup --clients hermes` to configure Kiokuko for Hermes Agent.
-```
-
-Hermesが検出されない場合、引数なしのコマンドは従来どおり対応する全クライアントを設定します。`--clients`を明示した場合は、常にその指定が優先されます。
+Hermes Agentのプロファイルまたは`hermes`実行ファイルが検出された場合、引数なしの`setup`は有効なHermesプロファイルだけを設定し、Kiokukoデータベースを初期化して同梱標準スキルを配置します。利用できる場合は`hermes config path`で現在のプロファイルを取得し、利用できない場合は有効な`active_profile`または既定の`$HOME/.hermes`を使います。Hermesが検出されない場合、引数なしのコマンドは従来どおり対応する全クライアントを設定します。`--clients`を明示した場合は、常にその指定が優先されます。
 
 npmパッケージ名は`@askdkc/kiokuko`ですが、インストールされるCLIコマンド名は引き続き`kiokuko`です。
 
@@ -46,6 +40,20 @@ kiokuko setup --command /absolute/path/to/kiokuko
 kiokuko setup --no-standard-skills
 ```
 
+Hermesの設定はプロファイル単位です。`$HOME/.hermes/profiles/work/config.yaml`のようなnamed profileには、そのプロファイルのMCP設定と標準スキルだけを配置し、rootや非アクティブなプロファイルは変更しません。別プロセスで一時的に指定した`hermes -p <name>`は自動推測しません。確実にnamed profileを指定するには、次のように`HERMES_HOME`へプロファイルディレクトリを渡します。
+
+```bash
+HERMES_HOME="$HOME/.hermes/profiles/work" kiokuko setup --clients hermes
+```
+
+Desktopプロセスから`kiokuko`が見つからない場合は、空の`command -v`結果を渡さず、絶対パスへ移行します。
+
+```bash
+KIOKUKO_BIN="$(command -v kiokuko)"
+test -n "$KIOKUKO_BIN" && test -x "$KIOKUKO_BIN" || { echo "kiokuko executable not found" >&2; exit 1; }
+kiokuko setup --clients hermes --command "$KIOKUKO_BIN"
+```
+
 セットアップ対象は次のとおりです。
 
 | クライアント | MCP設定 | グローバル指示 | 実行時ガード | 標準スキル |
@@ -55,7 +63,7 @@ kiokuko setup --no-standard-skills
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` | — | Claude設定内の`skills/kiokuko-ui-design-soul` |
 | Hermes Agent | 有効なプロファイルの`config.yaml`（`$HERMES_HOME`、`$HOME/.hermes`、またはWindowsの`%LOCALAPPDATA%/hermes`） | なし | なし | 有効なプロファイル内の`skills/kiokuko-ui-design-soul` |
 
-Hermesの設定はプロファイル単位です。`mcp_servers.kiokuko`に`command: kiokuko`と`args: [mcp]`を登録します。Hermesの組み込みmemoryとskillsはKiokukoとは別です。モデルがMCP tool descriptionを使うかどうかはbest effortです。
+Hermesの設定はプロファイル単位です。`mcp_servers.kiokuko`に`command: kiokuko`と`args: [mcp]`を登録します。管理対象の正規形であれば`--command`でcommandだけを移行でき、args、コメント、他serverは保持します。未管理entry、余分なfield、`mcp`以外のargsは引き続きconflictです。Hermesの組み込みmemoryとskillsはKiokukoとは別です。モデルがMCP tool descriptionを使うかどうかはbest effortです。
 
 OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。管理対象のOpenCodeガードは、可視エージェントを12 stepに制限し、1ユーザー要求につき`task_prepare`と`memory_checkpoint`を各1回までにし、チェックポイント後のツール利用を閉じ、同一呼び出しまたは読み取り専用の探索結果が3回続いた後の再実行を停止します。カウンターとフィンガープリントはプロセスメモリにだけ保持します。
 

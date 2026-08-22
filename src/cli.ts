@@ -179,19 +179,12 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       if (!['off', 'minimal', 'standard'].includes(options.opencodeCapture)) throw new KiokukoError('VALIDATION_ERROR', 'opencode capture must be off, minimal, or standard');
       if (!['advisory', 'strict'].includes(options.opencodeMode)) throw new KiokukoError('VALIDATION_ERROR', 'opencode mode must be advisory or strict');
       const setupEnvironment = dependencies.setupEnvironment ?? {};
-      if (options.clients === undefined && await isHermesAgentInstalled(setupEnvironment)) {
-        const recommendedCommand = 'kiokuko setup --clients hermes';
-        humanOrJson(
-          options.json,
-          'setup',
-          { detectedClient: 'hermes', recommendedCommand },
-          `Hermes Agent detected. Run \`${recommendedCommand}\` to configure Kiokuko for Hermes Agent.`,
-        );
-        return;
-      }
+      const clients = options.clients !== undefined
+        ? parseSetupClients(options.clients)
+        : parseSetupClients(await isHermesAgentInstalled(setupEnvironment) ? 'hermes' : DEFAULT_SETUP_CLIENTS);
       const data = await setupGlobalClients({
         ...setupEnvironment,
-        clients: parseSetupClients(options.clients ?? DEFAULT_SETUP_CLIENTS),
+        clients,
         command: options.command,
         dryRun: options.dryRun === true,
         standardSkills: options.standardSkills,

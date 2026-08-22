@@ -13,13 +13,7 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-Hermes Agent 프로필 또는 `hermes` 실행 파일이 감지되면 인자 없는 명령은 클라이언트 설정이나 데이터베이스를 변경하지 않고 다음 명령을 안내합니다.
-
-```text
-Hermes Agent detected. Run `kiokuko setup --clients hermes` to configure Kiokuko for Hermes Agent.
-```
-
-Hermes가 감지되지 않으면 인자 없는 명령은 계속 지원되는 모든 클라이언트를 설정합니다. `--clients`를 명시하면 항상 해당 선택이 우선됩니다.
+Hermes Agent 프로필 또는 `hermes` 실행 파일이 감지되면 인자 없는 `setup`은 유효한 Hermes profile만 설정하고 Kiokuko 데이터베이스를 초기화하며 동봉된 표준 skill을 배치합니다. 가능하면 `hermes config path`로 현재 profile을 확인하고, 그렇지 않으면 유효한 `active_profile` marker 또는 기본 `$HOME/.hermes`를 사용합니다. Hermes가 감지되지 않으면 인자 없는 명령은 계속 지원되는 모든 클라이언트를 설정합니다. `--clients`를 명시하면 항상 해당 선택이 우선됩니다.
 
 npm 패키지 이름은 `@askdkc/kiokuko`이지만 설치되는 CLI 명령 이름은 계속 `kiokuko`입니다.
 
@@ -46,6 +40,20 @@ kiokuko setup --command /absolute/path/to/kiokuko
 kiokuko setup --no-standard-skills
 ```
 
+Hermes 설정은 profile 범위입니다. `$HOME/.hermes/profiles/work/config.yaml` 같은 named profile에는 해당 profile의 MCP 설정과 표준 skill만 배치하고 root 및 비활성 profile은 변경하지 않습니다. 다른 프로세스에서 임시로 지정한 `hermes -p <name>`은 자동 추측하지 않습니다. named profile을 확실히 지정하려면 다음처럼 `HERMES_HOME`에 profile 디렉터리를 전달하십시오.
+
+```bash
+HERMES_HOME="$HOME/.hermes/profiles/work" kiokuko setup --clients hermes
+```
+
+Desktop 프로세스가 `PATH`에서 `kiokuko`를 찾지 못하면 빈 `command -v` 결과를 넘기지 말고 절대 경로로 전환하십시오.
+
+```bash
+KIOKUKO_BIN="$(command -v kiokuko)"
+test -n "$KIOKUKO_BIN" && test -x "$KIOKUKO_BIN" || { echo "kiokuko executable not found" >&2; exit 1; }
+kiokuko setup --clients hermes --command "$KIOKUKO_BIN"
+```
+
 설정 대상은 다음과 같습니다.
 
 | 클라이언트 | MCP 설정 | 전역 지침 | 런타임 가드 | 표준 스킬 |
@@ -55,7 +63,7 @@ kiokuko setup --no-standard-skills
 | Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 또는 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 또는 `~/.claude/CLAUDE.md` | — | Claude 설정의 `skills/kiokuko-ui-design-soul` |
 | Hermes Agent | 유효한 profile의 `config.yaml` (`$HERMES_HOME`, `$HOME/.hermes` 또는 `%LOCALAPPDATA%/hermes`) | 없음 | 없음 | 유효한 profile의 `skills/kiokuko-ui-design-soul` |
 
-Hermes 설정은 profile 범위의 native stdio MCP입니다. `mcp_servers.kiokuko`에 `command: kiokuko`, `args: [mcp]`를 등록합니다. Hermes의 내장 memory와 skills는 Kiokuko와 별개이며, 모델이 MCP tool descriptions를 사용할지는 best effort입니다.
+Hermes 설정은 profile 범위의 native stdio MCP입니다. `mcp_servers.kiokuko`에 `command: kiokuko`, `args: [mcp]`를 등록합니다. 관리되는 canonical entry는 `--command`로 command만 변경할 수 있으며 args, 주석, 다른 server는 유지됩니다. 관리되지 않은 entry, 추가 field, `mcp`가 아닌 args는 계속 conflict입니다. Hermes의 내장 memory와 skills는 Kiokuko와 별개이며, 모델이 MCP tool descriptions를 사용할지는 best effort입니다.
 
 OpenCode의 `opencode.jsonc`가 이미 있으면 Kiokuko는 주석을 유지하면서 해당 파일을 수정합니다. Codex에 Kiokuko가 관리하지 않는 `[mcp_servers.kiokuko]` 테이블이 이미 있으면 어떤 설정을 덮어쓸지 추측하지 않고 설정을 중단합니다. 관리되는 OpenCode 가드는 보이는 에이전트를 12 step으로 제한하고, 사용자 요청마다 `task_prepare`와 `memory_checkpoint`를 각각 한 번만 허용하며, 체크포인트 후 도구 단계를 닫고, 동일 호출 또는 읽기 전용 탐색 결과가 세 번 연속 나온 뒤의 재실행을 차단합니다. 카운터와 지문은 프로세스 메모리에만 보관됩니다.
 

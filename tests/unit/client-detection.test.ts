@@ -23,3 +23,24 @@ test('detects Hermes from profile state and executable path without writing', as
   await chmod(executable, 0o755);
   assert.equal(await isHermesAgentInstalled({ platform: 'linux', env: { HOME: path.join(root, 'other-home'), PATH: bin } }), true);
 });
+
+test('detects Hermes profile markers and executables on macOS without writing', async () => {
+  for (const marker of ['config.yaml', 'active_profile', 'profiles']) {
+    const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-hermes-darwin-detection-'));
+    const home = path.join(root, 'home');
+    const hermesHome = path.join(home, '.hermes');
+    await mkdir(hermesHome, { recursive: true });
+    if (marker === 'profiles') await mkdir(path.join(hermesHome, marker));
+    else await writeFile(path.join(hermesHome, marker), marker === 'active_profile' ? 'default\n' : 'mcp_servers: {}\n');
+
+    assert.equal(await isHermesAgentInstalled({ platform: 'darwin', env: { HOME: home, PATH: '' } }), true);
+  }
+
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-hermes-darwin-executable-'));
+  const bin = path.join(root, 'bin');
+  await mkdir(bin, { recursive: true });
+  const executable = path.join(bin, 'hermes');
+  await writeFile(executable, '#!/bin/sh\n');
+  await chmod(executable, 0o755);
+  assert.equal(await isHermesAgentInstalled({ platform: 'darwin', env: { HOME: path.join(root, 'home'), PATH: bin } }), true);
+});

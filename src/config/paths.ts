@@ -1,7 +1,11 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFile as execFileCallback } from 'node:child_process';
 import { mkdir, lstat, readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { KiokukoError } from '../errors.js';
+
+const execFile = promisify(execFileCallback);
 
 export interface PathEnvironment {
   platform?: NodeJS.Platform;
@@ -194,6 +198,26 @@ function isProfileShapedHermesHome(home: string, platform: NodeJS.Platform): boo
     && platformPath.basename(platformPath.dirname(normalized)) === 'profiles';
 }
 
+async function getHermesHomeFromCli(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  if (!env.PATH) return undefined;
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  try {
+    const result = await execFile('hermes', ['config', 'path'], {
+      env,
+      encoding: 'utf8',
+      timeout: 2000,
+      maxBuffer: 64 * 1024,
+      windowsHide: true,
+    });
+    const output = String(result.stdout).trim();
+    if (output.length === 0 || output.includes('\0') || /[\r\n]/u.test(output)) return undefined;
+    if (!platformPath.isAbsolute(output) || platformPath.basename(output) !== 'config.yaml') return undefined;
+    return platformPath.dirname(platformPath.normalize(output));
+  } catch {
+    return undefined;
+  }
+}
+
 /** Resolve the effective Hermes profile home without consulting or mutating the active Hermes profile. */
 export async function getHermesHome(options: PathEnvironment = {}): Promise<string> {
   const { platform, env } = selectedEnvironment(options);
@@ -205,14 +229,16 @@ export async function getHermesHome(options: PathEnvironment = {}): Promise<stri
   try {
     activeProfile = (await readFile(join(root, 'active_profile'), 'utf8')).trim();
   } catch (error) {
-    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') return root;
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return await getHermesHomeFromCli(platform, env) ?? root;
+    }
     throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile marker is unavailable');
   }
 
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(activeProfile)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile marker is invalid');
   }
-  if (activeProfile === 'default') return root;
+  if (activeProfile === 'default') return await getHermesHomeFromCli(platform, env) ?? root;
 
   const profileHome = join(root, 'profiles', activeProfile);
   try {
@@ -220,7 +246,7 @@ export async function getHermesHome(options: PathEnvironment = {}): Promise<stri
   } catch {
     throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile directory is unavailable');
   }
-  return profileHome;
+  return await getHermesHomeFromCli(platform, env) ?? profileHome;
 }
 
 export async function getHermesConfigPath(options: PathEnvironment = {}): Promise<string> {
