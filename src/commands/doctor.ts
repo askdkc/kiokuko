@@ -49,17 +49,22 @@ function balancedMarkers(content: string): boolean {
   return content.split(BEGIN_MARKER).length - 1 === 1 && content.split(END_MARKER).length - 1 === 1;
 }
 
-async function runtimeCheck(databasePath: string): Promise<DoctorCheck> {
+async function runtimeCheck(databasePath: string, descriptorPath = getRuntimeDescriptorPath()): Promise<DoctorCheck> {
   let findings = 0;
   let descriptor: Awaited<ReturnType<typeof readRuntimeDescriptor>>;
   let descriptorPresent = false;
   let lockPresent = false;
   try {
-    descriptor = await readRuntimeDescriptor(getRuntimeDescriptorPath());
-    descriptorPresent = descriptor !== undefined;
+    descriptor = await readRuntimeDescriptor(descriptorPath);
     if (descriptor !== undefined) {
       const expected = `sha256:${createHash('sha256').update(path.resolve(databasePath), 'utf8').digest('hex')}`;
-      if (descriptor.databaseFingerprint !== expected || !(await isPidAlive(descriptor.pid))) findings += 1;
+      // A single runtime descriptor is shared by the normal CLI/server
+      // installation. It may legitimately describe another database when
+      // doctor is run against an explicit backup or test database.
+      if (descriptor.databaseFingerprint === expected) {
+        descriptorPresent = true;
+        if (!(await isPidAlive(descriptor.pid))) findings += 1;
+      }
     }
   } catch {
     findings += 1;
@@ -84,7 +89,7 @@ async function runtimeCheck(databasePath: string): Promise<DoctorCheck> {
   return { ok: findings === 0, count: findings, detail: `findings=${findings}` };
 }
 
-export async function runDoctor(options: { databasePath?: string } = {}): Promise<DoctorResult> {
+export async function runDoctor(options: { databasePath?: string; runtimeDescriptorPath?: string } = {}): Promise<DoctorResult> {
   const initialized = await initializeDatabase(options);
   const database = openConnection(initialized.databasePath);
   try {
@@ -150,7 +155,7 @@ export async function runDoctor(options: { databasePath?: string } = {}): Promis
 
     const ledgerReport = inspectLedger(database);
     const ledgerCheck = { ok: ledgerReport.ok, count: ledgerReport.findingCount, detail: `findings=${ledgerReport.findingCount}` };
-    const runtime = await runtimeCheck(initialized.databasePath);
+    const runtime = await runtimeCheck(initialized.databasePath, options.runtimeDescriptorPath);
     const checks = {
       integrity: { ok: integrity === 'ok', detail: integrity },
       migrations: migrationCheck,

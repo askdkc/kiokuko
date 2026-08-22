@@ -13,7 +13,6 @@ import { createBackup } from '../../src/commands/backup.js';
 import { runDoctor } from '../../src/commands/doctor.js';
 import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { createRuntimeDescriptor, writeRuntimeDescriptor } from '../../src/server/runtime-descriptor.js';
-import { getRuntimeDescriptorPath } from '../../src/config/paths.js';
 
 async function database(prefix: string) {
   const directory = await mkdtemp(path.join(tmpdir(), `kiokuko-${prefix}-`));
@@ -82,7 +81,7 @@ test('import rejects checksum corruption without mutating the database', async (
 test('doctor reports integrity, migration, FTS, and permissions checks', async () => {
   const data = await database('doctor');
   try {
-    const result = await runDoctorWithDatabase(data.databasePath);
+    const result = await runDoctorWithDatabase(data.databasePath, path.join(data.directory, 'runtime', 'server.json'));
     assert.equal(result.ok, true);
     assert.equal(result.checks.integrity.ok, true);
     assert.equal(result.checks.migrations.ok, true);
@@ -95,10 +94,9 @@ test('doctor reports integrity, migration, FTS, and permissions checks', async (
 
 test('doctor adds content-free ledger and stale runtime findings', async () => {
   const data = await database('doctor-ledger-runtime');
-  const previousRuntime = process.env.XDG_RUNTIME_DIR;
   const runtimeHome = path.join(data.directory, 'doctor-runtime');
+  const runtimeDescriptorPath = path.join(runtimeHome, 'server.json');
   const secretToken = 'b'.repeat(64);
-  process.env.XDG_RUNTIME_DIR = runtimeHome;
   try {
     const service = new AgentGatewayService(data.db, { now: () => '2026-08-20T00:00:00.000Z' });
     const opened = service.openRun({
@@ -110,14 +108,14 @@ test('doctor adds content-free ledger and stale runtime findings', async () => {
       },
     });
     data.db.prepare("UPDATE ledger_events SET event_hash = '0' WHERE run_id = ? AND sequence = 1").run(opened.runId);
-    await writeRuntimeDescriptor(getRuntimeDescriptorPath(), createRuntimeDescriptor({
+    await writeRuntimeDescriptor(runtimeDescriptorPath, createRuntimeDescriptor({
       databasePath: data.databasePath,
       baseUrl: 'http://127.0.0.1:1',
       pid: 999999,
       instanceId: '123e4567-e89b-12d3-a456-426614174198',
       capabilityToken: secretToken,
     }));
-    const result = await runDoctor({ databasePath: data.databasePath });
+    const result = await runDoctor({ databasePath: data.databasePath, runtimeDescriptorPath });
     assert.equal(result.ok, false);
     assert.equal(result.checks.ledger.ok, false);
     assert.equal(result.checks.runtime.ok, false);
@@ -126,19 +124,17 @@ test('doctor adds content-free ledger and stale runtime findings', async () => {
     assert.equal(serialized.includes(secretToken), false);
     assert.equal(serialized.includes(runtimeHome), false);
   } finally {
-    if (previousRuntime === undefined) delete process.env.XDG_RUNTIME_DIR;
-    else process.env.XDG_RUNTIME_DIR = previousRuntime;
     await rm(runtimeHome, { recursive: true, force: true });
     data.db.close();
   }
 });
 
 
-async function runDoctorWithDatabase(databasePath: string) {
+async function runDoctorWithDatabase(databasePath: string, runtimeDescriptorPath?: string) {
   const previous = process.env.KIOKUKO_DATABASE;
   process.env.KIOKUKO_DATABASE = databasePath;
   try {
-    return await runDoctor({ databasePath });
+    return await runDoctor({ databasePath, ...(runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath }) });
   } finally {
     if (previous === undefined) delete process.env.KIOKUKO_DATABASE;
     else process.env.KIOKUKO_DATABASE = previous;
