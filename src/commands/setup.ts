@@ -33,6 +33,7 @@ import {
 } from '../setup/standard-skills.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
+export const DEFAULT_SETUP_CLIENTS = SETUP_CLIENTS.join(',');
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
 type SetupAction = 'created' | 'updated' | 'unchanged';
 

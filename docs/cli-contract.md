@@ -33,6 +33,12 @@ kiokuko mcp
 Claude Code, and/or Hermes MCP configuration. Codex, OpenCode, and Claude Code
 also use their existing global instruction surfaces; Hermes is profile-scoped
 native stdio MCP only and receives no global instruction file, plugin, or hook.
+When no `--clients` option is supplied and an existing Hermes profile or
+`hermes` executable is detected, setup performs no writes and instead prints
+`Hermes Agent detected. Run \`kiokuko setup --clients hermes\` to configure
+Kiokuko for Hermes Agent.` Explicit `--clients` selection always takes
+precedence. Without Hermes detection, no-argument setup targets all supported
+clients as before.
 By default it also places the bundled `kiokuko-ui-design-soul` skill in each
 selected client's native user-skill directory. `--no-standard-skills` skips new
 placement and updates without deleting a previously installed copy.

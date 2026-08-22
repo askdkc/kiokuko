@@ -20,10 +20,12 @@ import { registerAgentCommand, type AgentCommandDependencies } from './commands/
 import { registerLedgerCommands } from './commands/ledger.js';
 import type { SqliteDatabase } from './db/adapter.js';
 import { answerAkinator, getAkinatorContext, startAkinator } from './akinator/orchestrator.js';
-import { parseSetupClients, setupGlobalClients } from './commands/setup.js';
+import { DEFAULT_SETUP_CLIENTS, parseSetupClients, setupGlobalClients } from './commands/setup.js';
 import { runMcpServer } from './mcp/server.js';
 import { runCuratorCommand } from './commands/curator.js';
 import { globalizeCuratorCandidate } from './memory/curator.js';
+import { isHermesAgentInstalled } from './setup/client-detection.js';
+import type { PathEnvironment } from './config/paths.js';
 
 const packageMetadata = createRequire(import.meta.url)('../package.json') as { version?: unknown };
 if (typeof packageMetadata.version !== 'string' || packageMetadata.version.length === 0) {
@@ -79,6 +81,7 @@ function addWorkspaceOptions(command: Command): Command {
 export interface CliDependencies {
   readonly server?: ServerCommandDependencies;
   readonly agent?: AgentCommandDependencies;
+  readonly setupEnvironment?: PathEnvironment;
 }
 
 async function dispatchRequest(request: unknown): Promise<unknown> {
@@ -165,18 +168,30 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   });
 
   cli.command('setup').description('Configure global Kiokuko memory for Codex, OpenCode, Claude Code, and Hermes Agent')
-    .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes', 'codex,opencode,claude,hermes')
+    .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes')
     .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
     .option('--dry-run', 'Validate and show planned changes without writing')
     .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
     .option('--opencode-capture <profile>', 'OpenCode evidence capture: off,minimal,standard', 'off')
     .option('--opencode-mode <mode>', 'OpenCode prepare enforcement: advisory,strict', 'advisory')
     .option('--json', 'Emit a JSON response')
-    .action(async (options: { clients: string; command: string; dryRun?: boolean; json?: boolean; opencodeCapture: string; opencodeMode: string; standardSkills: boolean }) => {
+    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; opencodeCapture: string; opencodeMode: string; standardSkills: boolean }) => {
       if (!['off', 'minimal', 'standard'].includes(options.opencodeCapture)) throw new KiokukoError('VALIDATION_ERROR', 'opencode capture must be off, minimal, or standard');
       if (!['advisory', 'strict'].includes(options.opencodeMode)) throw new KiokukoError('VALIDATION_ERROR', 'opencode mode must be advisory or strict');
+      const setupEnvironment = dependencies.setupEnvironment ?? {};
+      if (options.clients === undefined && await isHermesAgentInstalled(setupEnvironment)) {
+        const recommendedCommand = 'kiokuko setup --clients hermes';
+        humanOrJson(
+          options.json,
+          'setup',
+          { detectedClient: 'hermes', recommendedCommand },
+          `Hermes Agent detected. Run \`${recommendedCommand}\` to configure Kiokuko for Hermes Agent.`,
+        );
+        return;
+      }
       const data = await setupGlobalClients({
-        clients: parseSetupClients(options.clients),
+        ...setupEnvironment,
+        clients: parseSetupClients(options.clients ?? DEFAULT_SETUP_CLIENTS),
         command: options.command,
         dryRun: options.dryRun === true,
         standardSkills: options.standardSkills,

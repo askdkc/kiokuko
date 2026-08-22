@@ -13,6 +13,14 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
+Hermes Agent 프로필 또는 `hermes` 실행 파일이 감지되면 인자 없는 명령은 클라이언트 설정이나 데이터베이스를 변경하지 않고 다음 명령을 안내합니다.
+
+```text
+Hermes Agent detected. Run `kiokuko setup --clients hermes` to configure Kiokuko for Hermes Agent.
+```
+
+Hermes가 감지되지 않으면 인자 없는 명령은 계속 지원되는 모든 클라이언트를 설정합니다. `--clients`를 명시하면 항상 해당 선택이 우선됩니다.
+
 npm 패키지 이름은 `@askdkc/kiokuko`이지만 설치되는 CLI 명령 이름은 계속 `kiokuko`입니다.
 
 설정 후 Codex, OpenCode, Claude Code 및 Hermes Agent를 다시 시작하십시오. Hermes의 `/reload-mcp`는 MCP 등록을 다시 불러오지만 업데이트된 표준 스킬을 찾으려면 재시작 또는 새 세션이 필요합니다. `hermes mcp test kiokuko`로 smoke test할 수 있습니다. Hermes는 유효한 profile의 native stdio MCP를 사용하며 전역 지침 파일, Hermes plugin 또는 hook을 만들지 않습니다.

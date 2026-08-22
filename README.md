@@ -20,6 +20,17 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
+If an existing Hermes Agent profile or `hermes` executable is detected, the
+no-argument command makes no client or database changes and prints:
+
+```text
+Hermes Agent detected. Run `kiokuko setup --clients hermes` to configure Kiokuko for Hermes Agent.
+```
+
+On machines without Hermes detection, the no-argument command retains the
+all-supported-clients setup. Explicit `--clients` selection always takes
+precedence.
+
 The npm package name is `@askdkc/kiokuko`; the installed CLI command remains
 `kiokuko`.
 
