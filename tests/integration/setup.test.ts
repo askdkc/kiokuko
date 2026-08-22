@@ -136,6 +136,7 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   await writeFile(path.join(claudeDirectory, 'CLAUDE.md'), '# Human Claude rules\n');
 
   const first = await setupGlobalClients({
+    clients: ['codex', 'opencode', 'claude', 'hermes'],
     platform: 'linux',
     env: temporary.env,
     databasePath: temporary.databasePath,
@@ -201,7 +202,12 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   }
 
   const before = await Promise.all(first.files.map((file) => readFile(file.path, 'utf8')));
-  const second = await setupGlobalClients({ platform: 'linux', env: temporary.env, databasePath: temporary.databasePath });
+  const second = await setupGlobalClients({
+    clients: ['codex', 'opencode', 'claude', 'hermes'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+  });
   assert.ok(second.files.every((file) => file.action === 'unchanged'));
   assert.deepEqual(await Promise.all(second.files.map((file) => readFile(file.path, 'utf8'))), before);
 });
@@ -209,6 +215,7 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
 test('setup dry-run validates but writes no files or database', async () => {
   const temporary = await temporaryEnvironment('dry-run');
   const result = await setupGlobalClients({
+    clients: ['codex', 'opencode', 'claude', 'hermes'],
     platform: 'linux',
     env: temporary.env,
     databasePath: temporary.databasePath,
@@ -218,6 +225,23 @@ test('setup dry-run validates but writes no files or database', async () => {
   assert.ok(result.files.every((file) => file.action === 'created'));
   for (const file of result.files) await assert.rejects(access(file.path));
   await assert.rejects(access(temporary.databasePath));
+});
+
+test('setup without detected clients initializes only the database', async () => {
+  const temporary = await temporaryEnvironment('no-detected-clients');
+  const result = await setupGlobalClients({
+    platform: 'linux',
+    env: { ...temporary.env, PATH: '' },
+    databasePath: temporary.databasePath,
+  });
+
+  assert.deepEqual(result.clients, []);
+  assert.deepEqual(result.files, []);
+  await access(result.databasePath);
+  await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
+  await assert.rejects(access(path.join(temporary.home, '.claude.json')));
+  await assert.rejects(access(path.join(temporary.home, '.hermes', 'config.yaml')));
 });
 
 test('setup resolves a sticky named Hermes profile without crossing into another profile', async () => {

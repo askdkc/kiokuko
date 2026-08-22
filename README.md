@@ -20,19 +20,23 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-If a `hermes` executable is detected in `PATH`, the no-argument command
-configures only the effective Hermes profile, initializes the Kiokuko database,
-and installs the bundled standard skill. When available, Kiokuko asks Hermes
-for the active profile with `hermes config path`; otherwise it uses the valid
-`active_profile` marker or the default `$HOME/.hermes` root. On machines
-without a `hermes` executable, the no-argument command retains the
-all-supported-clients setup. Explicit `--clients` selection always takes
-precedence.
+The no-argument command checks `PATH` for each supported client executable
+(`codex`, `opencode`, `claude`, and `hermes`). In an interactive terminal,
+setup displays a checked-choice list with detected clients preselected;
+pressing Enter accepts that selection. You can enter client names or numbers
+separated by commas to change it, or `none` to configure no clients. In
+`--json` and non-TTY runs, setup remains non-interactive and configures only
+detected clients. When `hermes` is detected, Kiokuko asks it for the active
+profile with `hermes config path`; otherwise it uses the valid `active_profile`
+marker or the default `$HOME/.hermes` root. If no supported client is detected
+and no interactive selection is made, setup initializes the database but writes
+no client configuration. Use `--clients` to configure a client explicitly;
+explicit selection always takes precedence.
 
 The npm package name is `@askdkc/kiokuko`; the installed CLI command remains
 `kiokuko`.
 
-Restart Codex, OpenCode, Claude Code, and Hermes Agent after setup. Hermes can
+Restart the clients reported by setup. Hermes can
 reload the MCP registry with `/reload-mcp`, but a restart or new session is still
 required to discover an updated standard skill; smoke-test the active Hermes
 profile with `hermes mcp test kiokuko`. Codex, OpenCode, and Claude Code use their existing

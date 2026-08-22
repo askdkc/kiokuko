@@ -13,11 +13,11 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-`PATH`上に`hermes`実行ファイルが検出された場合、引数なしの`setup`は有効なHermesプロファイルだけを設定し、Kiokukoデータベースを初期化して同梱標準スキルを配置します。利用できる場合は`hermes config path`で現在のプロファイルを取得し、利用できない場合は有効な`active_profile`または既定の`$HOME/.hermes`を使います。`hermes`実行ファイルがない場合、引数なしのコマンドは対応する全クライアントを設定します。`--clients`を明示した場合は、常にその指定が優先されます。
+引数なしの`setup`は`PATH`上で各対応クライアント（`codex`、`opencode`、`claude`、`hermes`）の実行ファイルを確認します。対話可能な端末では選択画面を表示し、検出できたクライアントをチェック済みで初期選択します。Enterでそのまま確定でき、クライアント名または番号をカンマ区切りで入力して変更できます。`none`でクライアント設定なしを選べます。非対話端末や`--json`ではプロンプトを表示せず、検出できたクライアントだけを設定します。`hermes`が検出された場合は`hermes config path`で現在のプロファイルを取得し、利用できない場合は有効な`active_profile`または既定の`$HOME/.hermes`を使います。対応クライアントを1つも検出できない場合もデータベースは初期化しますが、クライアント設定は書き込みません。クライアントを明示的に設定するには`--clients`を使ってください。`--clients`を明示した場合は、常にその指定が優先されます。
 
 npmパッケージ名は`@askdkc/kiokuko`ですが、インストールされるCLIコマンド名は引き続き`kiokuko`です。
 
-セットアップ後にCodex、OpenCode、Claude Code、Hermes Agentを再起動してください。Hermesの`/reload-mcp`はMCP登録を再読み込みできますが、更新された標準スキルの検出には再起動または新規セッションが必要です。`hermes mcp test kiokuko`でスモークテストできます。Hermesは有効なプロファイルのnative stdio MCPを使い、グローバル指示ファイル、Hermes plugin、hookは作成しません。
+セットアップ後は、setupの結果に表示されたクライアントを再起動してください。Hermesの`/reload-mcp`はMCP登録を再読み込みできますが、更新された標準スキルの検出には再起動または新規セッションが必要です。`hermes mcp test kiokuko`でスモークテストできます。Hermesは有効なプロファイルのnative stdio MCPを使い、グローバル指示ファイル、Hermes plugin、hookは作成しません。
 
 `setup`は明示的に実行する冪等な処理です。npmの`postinstall`がAIクライアントの設定を変更することはありません。既存のTOML/JSON/JSONC/YAML設定、コメント、指示内容、改行コード、ファイルモードを維持し、Kiokukoは管理対象セクションだけを更新します。既定では、固定されたローカルマニフェストから`kiokuko-ui-design-soul`標準スキルも導入します。setup時のダウンロードやHIGページのスクレイピングは行いません。
 

@@ -3,8 +3,10 @@ import { readFileSync } from 'node:fs';
 import { access, chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
+import { promptSetupClients } from '../../src/commands/setup.js';
 
 test('reports the package version instead of a stale hard-coded CLI version', () => {
   const packageMetadata = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
@@ -145,7 +147,7 @@ test('plans Hermes-only setup when Hermes Agent is detected and no client is sel
   await assert.rejects(access(response.data.databasePath));
 });
 
-test('no-argument setup targets every client when only Hermes profile files exist', async () => {
+test('no-argument setup does not configure clients when no client executable is detected', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-no-hermes-'));
   const hermesHome = path.join(root, '.hermes');
   await mkdir(hermesHome, { recursive: true });
@@ -164,9 +166,102 @@ test('no-argument setup targets every client when only Hermes profile files exis
     process.stdout.write = originalWrite;
   }
 
-  const response = JSON.parse(stdout) as { data: { clients: string[] }; ok: boolean };
+  const response = JSON.parse(stdout) as { data: { clients: string[]; files: unknown[] }; ok: boolean };
   assert.equal(response.ok, true);
-  assert.deepEqual(response.data.clients, ['codex', 'opencode', 'claude', 'hermes']);
+  assert.deepEqual(response.data.clients, []);
+  assert.deepEqual(response.data.files, []);
+});
+
+test('no-argument setup configures only client executables detected on PATH', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-detected-clients-'));
+  const bin = path.join(root, 'bin');
+  await mkdir(bin, { recursive: true });
+  for (const client of ['codex', 'claude']) {
+    const executable = path.join(bin, client);
+    await writeFile(executable, '#!/bin/sh\n');
+    await chmod(executable, 0o755);
+  }
+
+  let stdout = '';
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await buildCli({ setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: bin } } })
+      .parseAsync(['node', 'kiokuko', 'setup', '--dry-run', '--json']);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  const response = JSON.parse(stdout) as { data: { clients: string[]; files: Array<{ client: string }> }; ok: boolean };
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.data.clients, ['codex', 'claude']);
+  assert.ok(response.data.files.every((file) => ['codex', 'claude'].includes(file.client)));
+});
+
+test('setup prompt preselects detected clients and accepts names or numbers', async () => {
+  let outputText = '';
+  const output = new Writable({
+    write(chunk, _encoding, callback) {
+      outputText += chunk.toString();
+      callback();
+    },
+  });
+  const selected = await promptSetupClients(['codex', 'claude'], {
+    input: Readable.from(['2,4\n']),
+    output,
+  });
+
+  assert.deepEqual(selected, ['opencode', 'hermes']);
+  assert.match(outputText, /1\. \[x\] Codex \(detected\)/);
+  assert.match(outputText, /2\. \[ \] OpenCode \(not detected\)/);
+  assert.match(outputText, /3\. \[x\] Claude Code \(detected\)/);
+});
+
+test('setup prompt accepts the detected selection on an empty answer', async () => {
+  const output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  const selected = await promptSetupClients(['hermes'], { input: Readable.from(['\n']), output });
+  assert.deepEqual(selected, ['hermes']);
+});
+
+test('interactive setup applies the selection returned by the prompt', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-interactive-'));
+  const bin = path.join(root, 'bin');
+  await mkdir(bin, { recursive: true });
+  const codex = path.join(bin, 'codex');
+  await writeFile(codex, '#!/bin/sh\n');
+  await chmod(codex, 0o755);
+
+  const input = Readable.from(['4\n']) as Readable & { isTTY?: boolean };
+  input.isTTY = true;
+  let promptOutput = '';
+  const output = new Writable({
+    write(chunk, _encoding, callback) {
+      promptOutput += chunk.toString();
+      callback();
+    },
+  }) as Writable & { isTTY?: boolean };
+  output.isTTY = true;
+  let stdout = '';
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await buildCli({
+      setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: bin } },
+      setupInput: input,
+      setupOutput: output,
+    }).parseAsync(['node', 'kiokuko', 'setup', '--dry-run']);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  assert.match(promptOutput, /1\. \[x\] Codex \(detected\)/);
+  assert.match(stdout, /Kiokuko setup plan for hermes:/);
 });
 
 test('explicit client selection takes precedence over Hermes detection', async () => {

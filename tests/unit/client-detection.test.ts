@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { isHermesAgentInstalled } from '../../src/setup/client-detection.js';
+import { detectInstalledClients, isHermesAgentInstalled } from '../../src/setup/client-detection.js';
 
 test('detects Hermes only from an executable path without writing', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-hermes-detection-'));
@@ -43,4 +43,17 @@ test('ignores Hermes profile markers and detects executables on macOS without wr
   await writeFile(executable, '#!/bin/sh\n');
   await chmod(executable, 0o755);
   assert.equal(await isHermesAgentInstalled({ platform: 'darwin', env: { HOME: path.join(root, 'home'), PATH: bin } }), true);
+});
+
+test('detects only supported clients whose executables are on PATH', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-client-detection-'));
+  const bin = path.join(root, 'bin');
+  await mkdir(bin, { recursive: true });
+  for (const client of ['codex', 'claude']) {
+    const executable = path.join(bin, client);
+    await writeFile(executable, '#!/bin/sh\n');
+    await chmod(executable, 0o755);
+  }
+
+  assert.deepEqual(await detectInstalledClients({ platform: 'linux', env: { PATH: bin } }), ['codex', 'claude']);
 });

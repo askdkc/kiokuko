@@ -1,5 +1,7 @@
 import { access, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { stdin, stdout } from 'node:process';
 import { atomicWriteText, readRegularFile } from '../agent-file/atomic-write.js';
 import {
   getClaudeInstructionsPath,
@@ -26,6 +28,7 @@ import { renderOpenCodeLoopGuard, type OpenCodeLoopGuardOptions } from '../setup
 import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
 import { renderClaudeConfig } from '../setup/claude-config.js';
 import { renderHermesConfig } from '../setup/hermes-config.js';
+import { detectInstalledClients } from '../setup/client-detection.js';
 import {
   loadBundledStandardSkillFiles,
   renderStandardSkillFile,
@@ -33,7 +36,6 @@ import {
 } from '../setup/standard-skills.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
-export const DEFAULT_SETUP_CLIENTS = SETUP_CLIENTS.join(',');
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
 type SetupAction = 'created' | 'updated' | 'unchanged';
 
@@ -70,12 +72,64 @@ export interface SetupResult {
   nextStep: string;
 }
 
+export interface SetupPromptOptions {
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+}
+
 export function parseSetupClients(value: string): SetupClient[] {
   const clients = [...new Set(value.split(',').map((client) => client.trim()).filter(Boolean))];
   if (clients.length === 0 || clients.some((client) => !SETUP_CLIENTS.includes(client as SetupClient))) {
     throw new KiokukoError('VALIDATION_ERROR', `clients must be a comma-separated subset of: ${SETUP_CLIENTS.join(', ')}`);
   }
   return clients as SetupClient[];
+}
+
+function setupClientLabel(client: SetupClient): string {
+  if (client === 'codex') return 'Codex';
+  if (client === 'opencode') return 'OpenCode';
+  if (client === 'claude') return 'Claude Code';
+  return 'Hermes Agent';
+}
+
+/** Ask which supported clients should receive configuration in an interactive terminal. */
+export async function promptSetupClients(detected: SetupClient[], options: SetupPromptOptions = {}): Promise<SetupClient[]> {
+  const input = options.input ?? stdin;
+  const output = options.output ?? stdout;
+  const prompt = createInterface({ input, output });
+  const defaultSelection = detected.length === 0 ? 'none' : detected.join(',');
+  try {
+    output.write('Select clients to configure (detected clients are preselected):\n');
+    for (const [index, client] of SETUP_CLIENTS.entries()) {
+      const checked = detected.includes(client) ? 'x' : ' ';
+      const status = detected.includes(client) ? 'detected' : 'not detected';
+      output.write(`  ${index + 1}. [${checked}] ${setupClientLabel(client)} (${status})\n`);
+    }
+    output.write('Enter client names or numbers separated by commas. Press Enter to accept the checked clients; type none to skip all.\n');
+    while (true) {
+      const answer = (await prompt.question(`Clients [${defaultSelection}]: `)).trim();
+      if (answer.length === 0) return detected;
+      if (/^(?:none|なし)$/iu.test(answer)) return [];
+      const selected: string[] = [];
+      let invalid = false;
+      for (const token of answer.split(',').map((value) => value.trim()).filter(Boolean)) {
+        const index = Number(token);
+        const indexedClient = Number.isInteger(index) && index >= 1 && index <= SETUP_CLIENTS.length
+          ? SETUP_CLIENTS[index - 1]
+          : undefined;
+        const client = indexedClient ?? token.toLowerCase();
+        if (!SETUP_CLIENTS.includes(client as SetupClient)) {
+          invalid = true;
+          break;
+        }
+        selected.push(client);
+      }
+      if (!invalid) return [...new Set(selected)] as SetupClient[];
+      output.write(`Invalid selection. Choose names or numbers for: ${SETUP_CLIENTS.join(', ')}.\n`);
+    }
+  } finally {
+    prompt.close();
+  }
 }
 
 async function exists(filePath: string): Promise<boolean> {
@@ -145,16 +199,16 @@ async function standardSkillDirectory(client: SetupClient, options: PathEnvironm
 }
 
 export async function setupGlobalClients(options: SetupOptions = {}): Promise<SetupResult> {
-  const clients = options.clients ?? [...SETUP_CLIENTS];
-  if (clients.length === 0 || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
-    throw new KiokukoError('VALIDATION_ERROR', `clients must be a non-empty subset of: ${SETUP_CLIENTS.join(', ')}`);
-  }
-  const command = options.command ?? 'kiokuko';
-  if (command.trim().length === 0 || command.includes('\0')) throw new KiokukoError('VALIDATION_ERROR', 'command must be a non-empty executable path or name');
   const pathEnvironment: PathEnvironment = {
     ...(options.platform === undefined ? {} : { platform: options.platform }),
     ...(options.env === undefined ? {} : { env: options.env }),
   };
+  const clients = options.clients ?? await detectInstalledClients(pathEnvironment);
+  if (clients.some((client) => !SETUP_CLIENTS.includes(client))) {
+    throw new KiokukoError('VALIDATION_ERROR', `clients must be a subset of: ${SETUP_CLIENTS.join(', ')}`);
+  }
+  const command = options.command ?? 'kiokuko';
+  if (command.trim().length === 0 || command.includes('\0')) throw new KiokukoError('VALIDATION_ERROR', 'command must be a non-empty executable path or name');
   const databasePath = options.databasePath ?? getGlobalDatabasePath(pathEnvironment);
   const standardSkills = options.standardSkills ?? true;
   const files: PlannedFile[] = [];

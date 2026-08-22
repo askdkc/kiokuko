@@ -13,11 +13,11 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-`PATH`에서 `hermes` 실행 파일이 감지되면 인자 없는 `setup`은 유효한 Hermes profile만 설정하고 Kiokuko 데이터베이스를 초기화하며 동봉된 표준 skill을 배치합니다. 가능하면 `hermes config path`로 현재 profile을 확인하고, 그렇지 않으면 유효한 `active_profile` marker 또는 기본 `$HOME/.hermes`를 사용합니다. `hermes` 실행 파일이 없으면 인자 없는 명령은 지원되는 모든 클라이언트를 설정합니다. `--clients`를 명시하면 항상 해당 선택이 우선됩니다.
+인자 없는 `setup`은 `PATH`에서 지원되는 각 클라이언트(`codex`, `opencode`, `claude`, `hermes`)의 실행 파일을 확인합니다. 대화형 터미널에서는 선택 목록을 표시하고 감지된 클라이언트를 미리 체크합니다. Enter를 누르면 현재 선택을 적용하며, 쉼표로 구분한 클라이언트 이름 또는 번호를 입력해 선택을 변경할 수 있고 `none`으로 클라이언트 설정 없음을 선택할 수 있습니다. 비대화형 터미널이나 `--json` 사용 시에는 프롬프트를 표시하지 않고 감지된 클라이언트만 설정합니다. `hermes`가 감지되면 `hermes config path`로 현재 profile을 확인하고, 그렇지 않으면 유효한 `active_profile` marker 또는 기본 `$HOME/.hermes`를 사용합니다. 지원되는 클라이언트를 하나도 감지하지 못해도 데이터베이스는 초기화하지만 클라이언트 설정은 작성하지 않습니다. 클라이언트를 명시적으로 설정하려면 `--clients`를 사용하십시오. `--clients`를 명시하면 항상 해당 선택이 우선됩니다.
 
 npm 패키지 이름은 `@askdkc/kiokuko`이지만 설치되는 CLI 명령 이름은 계속 `kiokuko`입니다.
 
-설정 후 Codex, OpenCode, Claude Code 및 Hermes Agent를 다시 시작하십시오. Hermes의 `/reload-mcp`는 MCP 등록을 다시 불러오지만 업데이트된 표준 스킬을 찾으려면 재시작 또는 새 세션이 필요합니다. `hermes mcp test kiokuko`로 smoke test할 수 있습니다. Hermes는 유효한 profile의 native stdio MCP를 사용하며 전역 지침 파일, Hermes plugin 또는 hook을 만들지 않습니다.
+설정 후 setup 결과에 표시된 클라이언트를 다시 시작하십시오. Hermes의 `/reload-mcp`는 MCP 등록을 다시 불러오지만 업데이트된 표준 스킬을 찾으려면 재시작 또는 새 세션이 필요합니다. `hermes mcp test kiokuko`로 smoke test할 수 있습니다. Hermes는 유효한 profile의 native stdio MCP를 사용하며 전역 지침 파일, Hermes plugin 또는 hook을 만들지 않습니다.
 
 `setup`은 명시적으로 실행하는 멱등 작업입니다. npm `postinstall`은 AI 클라이언트 설정을 수정하지 않습니다. 기존 TOML/JSON/JSONC/YAML 설정, 주석, 지침 내용, 줄바꿈 형식 및 파일 모드는 유지되며 Kiokuko는 관리 구역만 수정합니다. 기본적으로 setup은 고정된 로컬 매니페스트에서 `kiokuko-ui-design-soul` 표준 스킬도 설치하며, setup 중 다운로드나 HIG 페이지 스크래핑은 하지 않습니다.
 

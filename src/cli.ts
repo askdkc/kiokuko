@@ -20,11 +20,11 @@ import { registerAgentCommand, type AgentCommandDependencies } from './commands/
 import { registerLedgerCommands } from './commands/ledger.js';
 import type { SqliteDatabase } from './db/adapter.js';
 import { answerAkinator, getAkinatorContext, startAkinator } from './akinator/orchestrator.js';
-import { DEFAULT_SETUP_CLIENTS, parseSetupClients, setupGlobalClients } from './commands/setup.js';
+import { parseSetupClients, promptSetupClients, setupGlobalClients } from './commands/setup.js';
 import { runMcpServer } from './mcp/server.js';
 import { runCuratorCommand } from './commands/curator.js';
 import { globalizeCuratorCandidate } from './memory/curator.js';
-import { isHermesAgentInstalled } from './setup/client-detection.js';
+import { detectInstalledClients } from './setup/client-detection.js';
 import type { PathEnvironment } from './config/paths.js';
 
 const packageMetadata = createRequire(import.meta.url)('../package.json') as { version?: unknown };
@@ -82,6 +82,8 @@ export interface CliDependencies {
   readonly server?: ServerCommandDependencies;
   readonly agent?: AgentCommandDependencies;
   readonly setupEnvironment?: PathEnvironment;
+  readonly setupInput?: NodeJS.ReadableStream;
+  readonly setupOutput?: NodeJS.WritableStream;
 }
 
 async function dispatchRequest(request: unknown): Promise<unknown> {
@@ -179,9 +181,18 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       if (!['off', 'minimal', 'standard'].includes(options.opencodeCapture)) throw new KiokukoError('VALIDATION_ERROR', 'opencode capture must be off, minimal, or standard');
       if (!['advisory', 'strict'].includes(options.opencodeMode)) throw new KiokukoError('VALIDATION_ERROR', 'opencode mode must be advisory or strict');
       const setupEnvironment = dependencies.setupEnvironment ?? {};
+      const detectedClients = options.clients === undefined ? await detectInstalledClients(setupEnvironment) : [];
+      const setupInput = dependencies.setupInput ?? process.stdin;
+      const setupOutput = dependencies.setupOutput ?? process.stdout;
+      const interactive = options.clients === undefined
+        && options.json !== true
+        && (setupInput as { isTTY?: boolean }).isTTY === true
+        && (setupOutput as { isTTY?: boolean }).isTTY === true;
       const clients = options.clients !== undefined
         ? parseSetupClients(options.clients)
-        : parseSetupClients(await isHermesAgentInstalled(setupEnvironment) ? 'hermes' : DEFAULT_SETUP_CLIENTS);
+        : interactive
+          ? await promptSetupClients(detectedClients, { input: setupInput, output: setupOutput })
+          : detectedClients;
       const data = await setupGlobalClients({
         ...setupEnvironment,
         clients,
@@ -192,9 +203,12 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         opencodeMode: options.opencodeMode as 'advisory' | 'strict',
       });
       const changed = data.files.filter((file) => file.action !== 'unchanged').length;
+      const clientLabel = data.clients.length === 0 ? 'no detected clients' : data.clients.join(', ');
       const message = options.dryRun
-        ? `Kiokuko setup plan for ${data.clients.join(', ')}: ${changed} file${changed === 1 ? '' : 's'} would change.`
-        : `Kiokuko configured for ${data.clients.join(', ')} (${changed} file${changed === 1 ? '' : 's'} changed).${data.databaseBackupPath === null ? '' : ` Pre-migration backup: ${data.databaseBackupPath}.`} ${data.nextStep}`;
+        ? `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.`
+        : data.clients.length === 0
+          ? `Kiokuko database initialized; no supported client executable was detected. Use --clients codex,opencode,claude,hermes to configure clients.`
+          : `Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${data.databaseBackupPath === null ? '' : ` Pre-migration backup: ${data.databaseBackupPath}.`} ${data.nextStep}`;
       humanOrJson(options.json, 'setup', data, message);
     });
 

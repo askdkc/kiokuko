@@ -3,17 +3,21 @@ import { access, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { PathEnvironment } from '../config/paths.js';
 
-async function hasHermesExecutable(
+export const DETECTABLE_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
+export type DetectableClient = (typeof DETECTABLE_CLIENTS)[number];
+
+async function hasExecutable(
   platform: NodeJS.Platform,
   pathModule: typeof path.posix,
   env: NodeJS.ProcessEnv,
+  executableBaseName: string,
 ): Promise<boolean> {
   const pathValue = env.PATH;
   if (!pathValue) return false;
   const pathDelimiter = platform === 'win32' ? ';' : ':';
   const executableNames = platform === 'win32'
-    ? ['hermes.exe', 'hermes.cmd', 'hermes.bat', 'hermes']
-    : ['hermes'];
+    ? [`${executableBaseName}.exe`, `${executableBaseName}.cmd`, `${executableBaseName}.bat`, executableBaseName]
+    : [executableBaseName];
 
   for (const directory of pathValue.split(pathDelimiter).filter(Boolean)) {
     for (const executableName of executableNames) {
@@ -31,9 +35,19 @@ async function hasHermesExecutable(
   return false;
 }
 
-/** Detect an installed Hermes executable without mutating client state. */
-export async function isHermesAgentInstalled(options: PathEnvironment = {}): Promise<boolean> {
+/** Detect supported client executables without mutating client state. */
+export async function detectInstalledClients(options: PathEnvironment = {}): Promise<DetectableClient[]> {
   const platform = options.platform ?? process.platform;
   const pathModule = platform === 'win32' ? path.win32 : path.posix;
-  return hasHermesExecutable(platform, pathModule, options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const installed: DetectableClient[] = [];
+  for (const client of DETECTABLE_CLIENTS) {
+    if (await hasExecutable(platform, pathModule, env, client)) installed.push(client);
+  }
+  return installed;
+}
+
+/** Detect an installed Hermes executable without mutating client state. */
+export async function isHermesAgentInstalled(options: PathEnvironment = {}): Promise<boolean> {
+  return (await detectInstalledClients(options)).includes('hermes');
 }

@@ -13,11 +13,11 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-如果在 `PATH` 中检测到 `hermes` 可执行文件，不带参数的 `setup` 会只配置有效的 Hermes profile、初始化 Kiokuko 数据库并放置内置标准技能。可用时，Kiokuko 会通过 `hermes config path` 获取当前 profile；否则使用有效的 `active_profile` 标记或默认的 `$HOME/.hermes`。如果没有 `hermes` 可执行文件，不带参数的命令会配置所有受支持的客户端。显式传入 `--clients` 时始终优先使用该选择。
+不带参数的 `setup` 会在 `PATH` 中检查每个受支持客户端（`codex`、`opencode`、`claude` 和 `hermes`）的可执行文件。在交互式终端中会显示选择列表，并预先勾选检测到的客户端。直接按 Enter 会接受当前选择；也可以输入以逗号分隔的客户端名称或编号来修改选择，输入 `none` 则不配置客户端。非交互终端或使用 `--json` 时不会显示提示，只配置检测到的客户端。检测到 `hermes` 时，Kiokuko 会通过 `hermes config path` 获取当前 profile；否则使用有效的 `active_profile` 标记或默认的 `$HOME/.hermes`。如果一个受支持的客户端都没有检测到，setup 仍会初始化数据库，但不会写入客户端配置。需要显式配置客户端时请使用 `--clients`；显式传入 `--clients` 时始终优先使用该选择。
 
 npm 包名是 `@askdkc/kiokuko`，安装后的 CLI 命令名仍然是 `kiokuko`。
 
-设置完成后，请重启 Codex、OpenCode、Claude Code 和 Hermes Agent。Hermes 的 `/reload-mcp` 可以重新加载 MCP 注册，但更新后的标准技能仍需要重启或新会话才能发现；可用 `hermes mcp test kiokuko` 做 smoke test。Hermes 使用有效 profile 中的原生 stdio MCP；Kiokuko 不会创建全局指令文件、Hermes plugin 或 hook。
+设置完成后，请重启 setup 结果中显示的客户端。Hermes 的 `/reload-mcp` 可以重新加载 MCP 注册，但更新后的标准技能仍需要重启或新会话才能发现；可用 `hermes mcp test kiokuko` 做 smoke test。Hermes 使用有效 profile 中的原生 stdio MCP；Kiokuko 不会创建全局指令文件、Hermes plugin 或 hook。
 
 `setup` 是显式且幂等的操作。npm 的 `postinstall` 永远不会修改 AI 客户端配置。现有 TOML/JSON/JSONC/YAML 设置、注释、指令内容、换行符和文件权限都会保留；Kiokuko 只管理自己的区块。默认情况下，setup 还会从固定的本地清单安装 `kiokuko-ui-design-soul` 标准技能，不会在 setup 时下载或抓取 HIG 页面。
 
