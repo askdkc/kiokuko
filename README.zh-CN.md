@@ -13,6 +13,14 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
+如果检测到 Hermes Agent 配置文件或 `hermes` 可执行文件，不带参数的命令不会修改客户端配置或数据库，而是输出：
+
+```text
+Hermes Agent detected. Run `kiokuko setup --clients hermes` to configure Kiokuko for Hermes Agent.
+```
+
+未检测到 Hermes 时，不带参数的命令仍会配置所有受支持的客户端。显式传入 `--clients` 时始终优先使用该选择。
+
 npm 包名是 `@askdkc/kiokuko`，安装后的 CLI 命令名仍然是 `kiokuko`。
 
 设置完成后，请重启 Codex、OpenCode、Claude Code 和 Hermes Agent。Hermes 的 `/reload-mcp` 可以重新加载 MCP 注册，但更新后的标准技能仍需要重启或新会话才能发现；可用 `hermes mcp test kiokuko` 做 smoke test。Hermes 使用有效 profile 中的原生 stdio MCP；Kiokuko 不会创建全局指令文件、Hermes plugin 或 hook。
