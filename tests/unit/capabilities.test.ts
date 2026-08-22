@@ -70,3 +70,42 @@ test('enables mattpocock fallback only for an explicit catalog with zero skills'
     reason: 'no_skills_available',
   });
 });
+
+test('recommends the standard UI skill for explicit English and Japanese UI work', () => {
+  const capabilities = [{
+    kind: 'skill' as const,
+    name: 'kiokuko-ui-design-soul',
+    description: 'Apply HIG principles to app and web UI design, implementation, and review.',
+  }];
+  for (const task of [
+    'Review the SwiftUI screen and its asynchronous save button states',
+    '画面の保存ボタンについて処理中・成功・失敗とアクセシビリティを実装する',
+  ]) {
+    const result = resolveCapabilities({
+      task,
+      profile: { ...buildProfile, target: 'app interface' },
+      recommendedTags: ['bot:builder'],
+      capabilities,
+    });
+    assert.ok(result.recommendations.some((item) => item.name === 'kiokuko-ui-design-soul'
+      && item.availability === 'available'
+      && item.source === 'akinator_policy'));
+  }
+});
+
+test('does not recommend the UI skill for generic design, backend-only, or image-only tasks', () => {
+  const capabilities = [{ kind: 'skill' as const, name: 'kiokuko-ui-design-soul' }];
+  for (const task of [
+    'Design the service architecture and database boundaries',
+    'Implement a backend-only API for account records',
+    'Create a landscape image; image generation only',
+  ]) {
+    const result = resolveCapabilities({
+      task,
+      profile: { ...buildProfile, target: 'service architecture' },
+      recommendedTags: [],
+      capabilities,
+    });
+    assert.ok(!result.recommendations.some((item) => item.name === 'kiokuko-ui-design-soul'));
+  }
+});

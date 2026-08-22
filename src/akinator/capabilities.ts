@@ -1,4 +1,5 @@
 import type { TaskProfile } from './types.js';
+import { STANDARD_UI_SKILL_NAME } from '../setup/standard-skills.js';
 
 export const CAPABILITY_KINDS = ['skill', 'mcp_tool'] as const;
 export type CapabilityKind = (typeof CAPABILITY_KINDS)[number];
@@ -45,7 +46,11 @@ const SKILL_REASONS: Record<string, string> = {
   'diagnosing-bugs': 'The debugging task benefits from a reproducible diagnosis workflow.',
   research: 'The research task requires source-grounded findings.',
   'code-review': 'The review task benefits from a structured code-review workflow.',
+  [STANDARD_UI_SKILL_NAME]: 'The task explicitly involves UI implementation, design, or review and benefits from Kiokuko\'s interaction-state and accessibility contract.',
 };
+
+const EXPLICIT_UI_INTENT = /(?:\b(?:ui|ux|frontend|front-end|swiftui|accessibility)\b|\buser[ -]?interface\b|\b(?:app|web)[ -]?(?:screen|interface|view|page)\b|\bscreen(?:s)?\b|ユーザーインターフェース|インターフェース|フロントエンド|アクセシビリティ|画面|操作(?:性|設計|フロー)|ボタン|フォーム|モーダル|ダイアログ|ナビゲーション)/iu;
+const EXCLUDED_UI_SCOPE = /(?:\bbackend[- ]only\b|\bserver[- ]side only\b|\bimage generation only\b|バックエンド(?:だけ|のみ)|画像生成(?:だけ|のみ))/iu;
 
 function normalizedName(value: string): string {
   return value.trim().toLocaleLowerCase().replaceAll('_', '-');
@@ -65,11 +70,14 @@ function tokens(value: string): Set<string> {
   }).filter((token) => token.length > 2));
 }
 
-function desiredSkills(recommendedTags: string[]): string[] {
-  return [...new Set(recommendedTags
+function desiredSkills(input: { task: string; profile: TaskProfile; recommendedTags: string[] }): string[] {
+  const skillNames = input.recommendedTags
     .filter((tag) => tag.startsWith('skill:'))
     .map((tag) => normalizedName(tag.slice('skill:'.length)))
-    .filter(Boolean))];
+    .filter(Boolean);
+  const taskScope = [input.task, input.profile.target ?? '', input.profile.expected ?? '', input.profile.constraints ?? ''].join(' ');
+  if (!EXCLUDED_UI_SCOPE.test(taskScope) && EXPLICIT_UI_INTENT.test(taskScope)) skillNames.push(STANDARD_UI_SKILL_NAME);
+  return [...new Set(skillNames)];
 }
 
 function matchingSkill(catalog: CapabilityDescriptor[], desired: string): CapabilityDescriptor | undefined {
@@ -101,8 +109,12 @@ function relevantCatalogCapabilities(
   const taskTokens = tokens([task, profile.target ?? '', profile.expected ?? '', profile.constraints ?? ''].join(' '));
   const roleTerms = new Set(profile.taskType ? TASK_TOOL_TERMS[profile.taskType] : []);
   return catalog
-    .filter((candidate) => candidate.kind === 'mcp_tool'
-      || ![...nameAliases(candidate.name)].some((alias) => desiredSkillNames.has(alias)))
+    .filter((candidate) => {
+      if (candidate.kind === 'mcp_tool') return true;
+      const aliases = nameAliases(candidate.name);
+      if (aliases.has(STANDARD_UI_SKILL_NAME)) return false;
+      return ![...aliases].some((alias) => desiredSkillNames.has(alias));
+    })
     .map((candidate) => {
       const candidateTokens = tokens(`${candidate.name} ${candidate.description ?? ''}`);
       const matchedTaskTerms = [...taskTokens].filter((token) => candidateTokens.has(token));
@@ -138,7 +150,7 @@ export function resolveCapabilities(input: {
   const catalogProvided = input.capabilities !== undefined;
   const catalog = input.capabilities ?? [];
   const externalSkillFallback = decideExternalSkillFallback(input.capabilities);
-  const desired = desiredSkills(input.recommendedTags);
+  const desired = desiredSkills(input);
   const desiredSkillNames = new Set(desired);
   const skills: CapabilityRecommendation[] = desired.map((desiredName) => {
     const matched = matchingSkill(catalog, desiredName);

@@ -15,9 +15,9 @@ kiokuko setup
 
 npmパッケージ名は`@askdkc/kiokuko`ですが、インストールされるCLIコマンド名は引き続き`kiokuko`です。
 
-セットアップ後にCodex、OpenCode、Claude Code、Hermes Agentを再起動してください。Hermesは`/reload-mcp`でも再読み込みでき、`hermes mcp test kiokuko`でスモークテストできます。Hermesは有効なプロファイルのnative stdio MCPだけを使い、グローバル指示ファイル、Hermes plugin、hookは作成しません。
+セットアップ後にCodex、OpenCode、Claude Code、Hermes Agentを再起動してください。Hermesの`/reload-mcp`はMCP登録を再読み込みできますが、更新された標準スキルの検出には再起動または新規セッションが必要です。`hermes mcp test kiokuko`でスモークテストできます。Hermesは有効なプロファイルのnative stdio MCPを使い、グローバル指示ファイル、Hermes plugin、hookは作成しません。
 
-`setup`は明示的に実行する冪等な処理です。npmの`postinstall`がAIクライアントの設定を変更することはありません。既存のTOML/JSON/JSONC/YAML設定、コメント、指示内容、改行コード、ファイルモードを維持し、Kiokukoは管理対象セクションだけを更新します。
+`setup`は明示的に実行する冪等な処理です。npmの`postinstall`がAIクライアントの設定を変更することはありません。既存のTOML/JSON/JSONC/YAML設定、コメント、指示内容、改行コード、ファイルモードを維持し、Kiokukoは管理対象セクションだけを更新します。既定では、固定されたローカルマニフェストから`kiokuko-ui-design-soul`標準スキルも導入します。setup時のダウンロードやHIGページのスクレイピングは行いません。
 
 既存データベースに未適用のマイグレーションがある場合、setupは先に現在のユーザー用データディレクトリ内の`backups/`へバックアップを作成し、整合性を検査します。現在のKiokukoより新しいバージョンで更新されたデータベースは変更せず拒否します。
 
@@ -33,20 +33,25 @@ kiokuko setup --clients hermes
 
 # クライアントプロセスがnpmのPATHを継承しない場合は絶対パスを指定
 kiokuko setup --command /absolute/path/to/kiokuko
+
+# 標準スキルの新規配置を省略（既存の管理済みコピーは削除しない）
+kiokuko setup --no-standard-skills
 ```
 
 セットアップ対象は次のとおりです。
 
-| クライアント | MCP設定 | グローバル指示 | 実行時ガード |
-|---|---|---|---|
-| Codex | `$CODEX_HOME/config.toml`または`~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md`または`~/.codex/AGENTS.md` | — |
-| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`または`~/.config/opencode/opencode.json` | 同じディレクトリの`AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
-| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` | — |
-| Hermes Agent | 有効なプロファイルの`config.yaml`（`$HERMES_HOME`、`$HOME/.hermes`、またはWindowsの`%LOCALAPPDATA%/hermes`） | なし | なし |
+| クライアント | MCP設定 | グローバル指示 | 実行時ガード | 標準スキル |
+|---|---|---|---|---|
+| Codex | `$CODEX_HOME/config.toml`または`~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md`または`~/.codex/AGENTS.md` | — | `~/.agents/skills/kiokuko-ui-design-soul` |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`または`~/.config/opencode/opencode.json` | 同じディレクトリの`AGENTS.md` | `plugins/kiokuko-loop-guard.js` | グローバル設定内の`skills/kiokuko-ui-design-soul` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` | — | Claude設定内の`skills/kiokuko-ui-design-soul` |
+| Hermes Agent | 有効なプロファイルの`config.yaml`（`$HERMES_HOME`、`$HOME/.hermes`、またはWindowsの`%LOCALAPPDATA%/hermes`） | なし | なし | 有効なプロファイル内の`skills/kiokuko-ui-design-soul` |
 
 Hermesの設定はプロファイル単位です。`mcp_servers.kiokuko`に`command: kiokuko`と`args: [mcp]`を登録します。Hermesの組み込みmemoryとskillsはKiokukoとは別です。モデルがMCP tool descriptionを使うかどうかはbest effortです。
 
 OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。管理対象のOpenCodeガードは、可視エージェントを12 stepに制限し、1ユーザー要求につき`task_prepare`と`memory_checkpoint`を各1回までにし、チェックポイント後のツール利用を閉じ、同一呼び出しまたは読み取り専用の探索結果が3回続いた後の再実行を停止します。カウンターとフィンガープリントはプロセスメモリにだけ保持します。
+
+標準スキルの各ファイルにはKiokuko管理マーカーがあります。setupは固定された既知ファイルだけを更新し、完全一致は`unchanged`とし、無関係な兄弟ファイルは変更しません。同名ファイルに管理マーカーがなければ、ファイルやデータベースへ書き込む前に`CONFLICT`で停止します。
 
 ## 記憶のスコープ
 
@@ -77,9 +82,9 @@ kiokuko curator --skill-ready-only
 kiokuko curator --entry-id <entry-id>
 ```
 
-Web UIの`Curator`ボタンでも再生成ドラフトを確認でき、候補ごとの`ドラフトをGlobalに追加`ボタンで追加できます。Globalには元のプロジェクト固有本文ではなく再生成ドラフトを保存します。外部LLMやAPIキーは使いません。追加後もGlobalエントリは`candidate`かつ`untrusted`のままで、元のworkspace・revision・provenanceを保持します。
+Web UIの`Curator`ボタンでは、全プロジェクトworkspaceの汎用化候補を一覧表示します。候補ごとのチェックボックスで追加・見送りを選択し、選択した候補を1回の明示操作でGlobalへ追加できます。Globalには元のプロジェクト固有本文ではなく再生成ドラフトを保存します。外部LLMやAPIキーは使いません。追加後もGlobalエントリは`candidate`かつ`untrusted`のままで、元のworkspace・revision・provenanceを保持します。
 
-これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Code、Hermes Agentが特定のターンでツールを呼ばない可能性は残ります。Hermesでの自動利用・モデル利用はMCP tool descriptionによるbest effortです。Hermesの組み込みmemoryとskillsは分離されたままです。KiokukoはHermes用のグローバル指示ファイル、plugin、hookを作成せず、会話全文を取得せず、取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。OpenCodeセットアップは上記の限定的なローカルループガードだけをインストールします。
+これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Code、Hermes Agentが特定のターンでツールを呼ばない可能性は残ります。Hermesでの自動利用・モデル利用はMCP tool descriptionによるbest effortです。Hermesの組み込みmemoryとskillsは分離されたままです。KiokukoはHermes用のグローバル指示ファイル、plugin、hookを作成せず、会話全文を取得せず、外部から取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。OpenCodeへ導入するpluginは上記の限定的なローカルループガードだけであり、同梱標準スキルはpluginではなくクライアントnativeのskillです。
 
 ## 開発
 
@@ -103,6 +108,8 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 ## Akinator形式の知識取り込み
 
 重要な作業では、セットアップ済みのエージェント指示が`task_prepare`を呼び出します。Akinatorは人気投票や固定フォームではなく、抽象的な意図から複数の行動系列を候補にし、質問ごとに候補を除外・具体化して、選択行動、検証方法、停止条件まで収束させる推論ガイドです。返却する抽象→具体サイロは、意図、行動系列、対象、成功状態、選択行動、検証の各層と充足度を持ちます。タスク種別、対象、観測可能な成功条件など、不足している価値の高い項目だけを質問し、その後にクエリと役割・用途タグからローカル記憶を選択します。クライアントが現在利用可能なSKILLとMCPツールの名前を渡した場合は、必要な機能を照合し、`available`、`missing`、`unknown`を区別して返します。この一覧は一時的にだけ使用され、保存されません。CLIの`guide`コマンドでも同じ取り込みを手動実行できます。
+
+UI、UX、frontend、screen、SwiftUI、画面、アクセシビリティなどの具体的なUI語彙を含む依頼では、クライアントのcapability一覧に存在する`kiokuko-ui-design-soul`を`task_prepare`が明示的に推薦します。`design`単独、backend-only作業、画像生成だけの依頼では発火しません。
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \

@@ -4,13 +4,17 @@ import { atomicWriteText, readRegularFile } from '../agent-file/atomic-write.js'
 import {
   getClaudeInstructionsPath,
   getClaudeMcpConfigPath,
+  getClaudeSkillsDirectory,
   getCodexConfigPath,
   getCodexInstructionsPath,
+  getCodexSkillsDirectory,
   getGlobalDatabasePath,
   getHermesConfigPath,
+  getHermesSkillsDirectory,
   getOpenCodeConfigDirectory,
   getOpenCodeInstructionsPath,
   getOpenCodeLoopGuardPath,
+  getOpenCodeSkillsDirectory,
   type PathEnvironment,
 } from '../config/paths.js';
 import { initializeDatabase } from './init.js';
@@ -22,6 +26,11 @@ import { renderOpenCodeLoopGuard, type OpenCodeLoopGuardOptions } from '../setup
 import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
 import { renderClaudeConfig } from '../setup/claude-config.js';
 import { renderHermesConfig } from '../setup/hermes-config.js';
+import {
+  loadBundledStandardSkillFiles,
+  renderStandardSkillFile,
+  STANDARD_UI_SKILL_NAME,
+} from '../setup/standard-skills.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
@@ -33,7 +42,7 @@ interface PlannedFile {
   mode: number;
   original: string | undefined;
   action: SetupAction;
-  purpose: 'mcp-config' | 'instructions' | 'runtime-guard';
+  purpose: 'mcp-config' | 'instructions' | 'runtime-guard' | 'standard-skill';
   client: SetupClient;
 }
 
@@ -45,6 +54,7 @@ export interface SetupOptions extends PathEnvironment {
   migrationsDirectory?: string;
   opencodeCapture?: OpenCodeLoopGuardOptions['captureProfile'];
   opencodeMode?: OpenCodeLoopGuardOptions['mode'];
+  standardSkills?: boolean;
 }
 
 export interface SetupResult {
@@ -54,6 +64,7 @@ export interface SetupResult {
   databaseBackupPath: string | null;
   appliedMigrations: number[];
   files: Array<Pick<PlannedFile, 'path' | 'action' | 'purpose' | 'client'>>;
+  standardSkills: boolean;
   dryRun: boolean;
   nextStep: string;
 }
@@ -113,12 +124,23 @@ async function restoreFiles(files: PlannedFile[]): Promise<void> {
   }
 }
 
-function setupNextStep(clients: SetupClient[]): string {
+function setupNextStep(clients: SetupClient[], standardSkills: boolean): string {
   return clients.map((client) => {
-    if (client === 'hermes') return 'Restart Hermes Agent or use /reload-mcp to reload its profile-scoped MCP configuration.';
+    if (client === 'hermes') {
+      return standardSkills
+        ? 'Restart Hermes Agent, or use /reload-mcp and start a new session, so it reloads its profile-scoped MCP configuration and standard skills.'
+        : 'Restart Hermes Agent or use /reload-mcp to reload its profile-scoped MCP configuration.';
+    }
     const label = client === 'codex' ? 'Codex' : client === 'opencode' ? 'OpenCode' : 'Claude Code';
-    return `Restart ${label} so it reloads global MCP and instruction configuration.`;
+    return `Restart ${label} so it reloads global MCP and instruction configuration${standardSkills ? ' and standard skills' : ''}.`;
   }).join(' ');
+}
+
+async function standardSkillDirectory(client: SetupClient, options: PathEnvironment): Promise<string> {
+  if (client === 'codex') return getCodexSkillsDirectory(options);
+  if (client === 'opencode') return getOpenCodeSkillsDirectory(options);
+  if (client === 'claude') return getClaudeSkillsDirectory(options);
+  return getHermesSkillsDirectory(options);
 }
 
 export async function setupGlobalClients(options: SetupOptions = {}): Promise<SetupResult> {
@@ -133,6 +155,7 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
     ...(options.env === undefined ? {} : { env: options.env }),
   };
   const databasePath = options.databasePath ?? getGlobalDatabasePath(pathEnvironment);
+  const standardSkills = options.standardSkills ?? true;
   const files: PlannedFile[] = [];
 
   if (clients.includes('codex')) {
@@ -155,6 +178,16 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
     files.push(await planFile(await getHermesConfigPath(pathEnvironment), 'hermes', 'mcp-config', (existing) => renderHermesConfig(existing, command)));
   }
 
+  if (standardSkills) {
+    const bundledFiles = await loadBundledStandardSkillFiles();
+    for (const client of clients) {
+      const destination = path.join(await standardSkillDirectory(client, pathEnvironment), STANDARD_UI_SKILL_NAME);
+      for (const bundled of bundledFiles) {
+        files.push(await planFile(path.join(destination, bundled.relativePath), client, 'standard-skill', (existing) => renderStandardSkillFile(existing, bundled)));
+      }
+    }
+  }
+
   const result: SetupResult = {
     clients,
     databasePath,
@@ -162,8 +195,9 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
     databaseBackupPath: null,
     appliedMigrations: [],
     files: files.map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
+    standardSkills,
     dryRun: options.dryRun ?? false,
-    nextStep: setupNextStep(clients),
+    nextStep: setupNextStep(clients, standardSkills),
   };
   if (options.dryRun) return result;
 

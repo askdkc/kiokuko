@@ -66,6 +66,7 @@ export interface CuratorCandidatesInput {
   cwd?: string;
   limit?: number;
   skillReadyOnly?: boolean;
+  allWorkspaces?: boolean;
 }
 
 export interface CuratorCandidatesResult {
@@ -346,40 +347,55 @@ function validateLimit(value: number | undefined): number {
   return limit;
 }
 
-function listCuratorCandidates(database: SqliteDatabase, workspace: string, limit: number, skillReadyOnly: boolean): { candidates: CuratorCandidate[]; truncated: boolean } {
+function listCuratorCandidates(database: SqliteDatabase, workspace: string | null, limit: number, skillReadyOnly: boolean): { candidates: CuratorCandidate[]; truncated: boolean } {
   if (workspace === GLOBAL_WORKSPACE) return { candidates: [], truncated: false };
-  const rows = database.prepare(`
-    SELECT id
-      FROM entries
-     WHERE workspace = ? AND status = 'candidate'
-     ORDER BY updated_at DESC, id ASC
-     LIMIT ?
-  `).all<{ id: string }>(workspace, (MAX_LIMIT * 10) + 1);
+  const rowLimit = workspace === null ? MAX_LIMIT * 100 : MAX_LIMIT * 10;
+  const rows = workspace === null
+    ? database.prepare(`
+        SELECT workspace, id
+          FROM entries
+         WHERE workspace <> ? AND status = 'candidate'
+         ORDER BY updated_at DESC, workspace ASC, id ASC
+         LIMIT ?
+      `).all<{ workspace: string; id: string }>(GLOBAL_WORKSPACE, rowLimit)
+    : database.prepare(`
+        SELECT workspace, id
+          FROM entries
+         WHERE workspace = ? AND status = 'candidate'
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ?
+      `).all<{ workspace: string; id: string }>(workspace, rowLimit);
   const candidates = rows
     .map((row) => {
-      const entry = readEntry(database, { workspace, entryId: row.id });
+      const entry = readEntry(database, { workspace: row.workspace, entryId: row.id });
       const candidate = candidateFromEntry(database, entry);
       if (candidate !== null && existingGlobalEntry(database, curatedReference(entry)) !== undefined) return null;
       return candidate;
     })
     .filter((candidate): candidate is CuratorCandidate => candidate !== null)
     .filter((candidate) => !skillReadyOnly || candidate.knowledge.skillReady)
-    .sort((left, right) => Number(right.knowledge.skillReady) - Number(left.knowledge.skillReady) || right.score - left.score || left.entryId.localeCompare(right.entryId));
+    .sort((left, right) => Number(right.knowledge.skillReady) - Number(left.knowledge.skillReady)
+      || right.score - left.score
+      || left.workspace.localeCompare(right.workspace)
+      || left.entryId.localeCompare(right.entryId));
   const concepts = new Set<string>();
   const deduplicated = candidates.filter((candidate) => {
     if (concepts.has(candidate.knowledge.conceptKey)) return false;
     concepts.add(candidate.knowledge.conceptKey);
     return true;
   });
-  return { candidates: deduplicated.slice(0, limit), truncated: deduplicated.length > limit || rows.length > MAX_LIMIT * 10 };
+  return { candidates: deduplicated.slice(0, limit), truncated: deduplicated.length > limit || rows.length >= rowLimit };
 }
 
 export async function curateMemoryCandidates(database: SqliteDatabase, input: CuratorCandidatesInput = {}): Promise<CuratorCandidatesResult> {
   const limit = validateLimit(input.limit);
   ensureGlobalWorkspace(database);
-  const resolved = input.workspace === undefined ? await resolveProjectWorkspace(database, input.cwd) : undefined;
-  const workspace = input.workspace === undefined ? resolved?.workspace ?? null : requireWorkspace(input.workspace);
-  if (workspace === null) {
+  const allWorkspaces = input.allWorkspaces === true;
+  const resolved = !allWorkspaces && input.workspace === undefined ? await resolveProjectWorkspace(database, input.cwd) : undefined;
+  const workspace = allWorkspaces
+    ? null
+    : input.workspace === undefined ? resolved?.workspace ?? null : requireWorkspace(input.workspace);
+  if (!allWorkspaces && workspace === null) {
     throw new KiokukoError('NOT_FOUND', 'No Git repository or .kiokuko.json binding was found for curator candidates');
   }
   const result = listCuratorCandidates(database, workspace, limit, input.skillReadyOnly ?? false);

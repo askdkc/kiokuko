@@ -49,6 +49,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     .button { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); padding:10px 14px; font-weight:700; }
     .button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
     .button:disabled { cursor:not-allowed; opacity:.45; }
+    .button:focus-visible,.curator-close:focus-visible { outline:3px solid rgba(37,99,235,.25); outline-offset:2px; }
     .layout { display:grid; grid-template-columns:220px minmax(300px,1fr) minmax(360px,1.15fr); gap:16px; align-items:start; }
     .panel { background:rgba(255,255,255,.88); border:1px solid rgba(226,232,240,.9); border-radius:20px; box-shadow:0 14px 44px rgba(15,23,42,.08); overflow:hidden; }
     .panel-head { padding:18px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; }
@@ -92,9 +93,27 @@ export const WEB_HTML = String.raw`<!doctype html>
     .detail-block { border-top:1px solid var(--line); padding-top:12px; margin-top:12px; }
     .detail-block h3 { margin:0 0 8px; font-size:14px; }
     .detail-text { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted); font-size:13px; }
-    .curator-panel { margin-top:16px; }
+    .curator-modal { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:24px; background:rgba(15,23,42,.42); backdrop-filter:blur(6px); animation:curator-backdrop-in .18s ease-out both; }
+    .curator-modal.is-closing { animation:curator-backdrop-out .18s ease-in both; }
+    .curator-dialog { width:min(880px,calc(100vw - 32px)); max-height:min(860px,calc(100vh - 48px)); display:flex; flex-direction:column; min-height:0; background:rgba(255,255,255,.96); box-shadow:0 28px 90px rgba(15,23,42,.28); animation:curator-dialog-in .22s cubic-bezier(.2,.8,.2,1) both; }
+    .curator-modal.is-closing .curator-dialog { animation:curator-dialog-out .18s ease-in both; }
+    .curator-dialog .panel-body { min-height:0; overflow-y:auto; }
+    .curator-dialog-head { align-items:flex-start; }
+    .curator-heading { display:flex; align-items:center; gap:10px; min-width:0; flex-wrap:wrap; }
+    .curator-header-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0; margin-left:auto; }
+    .curator-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .curator-actions .button { padding:8px 10px; border-radius:10px; font-size:13px; white-space:nowrap; }
+    .curator-selection-count { color:var(--muted); font-size:12px; font-weight:700; white-space:nowrap; }
+    .curator-selection-summary { display:block; margin:0 0 10px; }
+    .curator-close { display:grid; place-items:center; flex:0 0 auto; width:44px; height:44px; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--muted); font-size:26px; line-height:1; }
+    .curator-close:hover { border-color:#93c5fd; background:var(--accent-soft); color:var(--accent); }
+    .curator-status { margin:0 0 12px; }
     .curator-list { display:grid; gap:12px; }
     .curator-card { border:1px solid var(--line); border-radius:14px; padding:16px; background:var(--panel); }
+    .curator-card.selected { border-color:#93c5fd; box-shadow:0 8px 20px rgba(37,99,235,.10); }
+    .curator-select { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:13px; font-weight:700; }
+    .curator-select input { width:17px; height:17px; accent-color:#2563eb; }
+    .curator-workspace { overflow-wrap:anywhere; }
     .curator-card h3 { margin:8px 0; font-size:17px; }
     .curator-overview { margin:8px 0 12px; color:var(--muted); white-space:pre-wrap; line-height:1.55; }
     .curator-draft { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
@@ -102,13 +121,20 @@ export const WEB_HTML = String.raw`<!doctype html>
     .curator-draft-label { margin:10px 0 4px; color:var(--muted); font-size:12px; font-weight:700; }
     .curator-draft-value { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.5; }
     .curator-reasons { color:var(--muted); font-size:12px; white-space:pre-wrap; }
+    @keyframes curator-backdrop-in { from { opacity:0; } to { opacity:1; } }
+    @keyframes curator-backdrop-out { from { opacity:1; } to { opacity:0; } }
+    @keyframes curator-dialog-in { from { opacity:0; transform:translateY(10px) scale(.98); } to { opacity:1; transform:translateY(0) scale(1); } }
+    @keyframes curator-dialog-out { from { opacity:1; transform:translateY(0) scale(1); } to { opacity:0; transform:translateY(6px) scale(.985); } }
+    @media (prefers-reduced-motion: reduce) {
+      .curator-modal,.curator-modal .curator-dialog,.curator-modal.is-closing,.curator-modal.is-closing .curator-dialog { animation-duration:.01ms; }
+    }
     @media (max-width:680px) { .operator-grid { grid-template-columns:1fr; } }
     @media (max-width:1050px) { .layout { grid-template-columns:180px minmax(280px,1fr); } .editor-panel { grid-column:1 / -1; } }
-    @media (max-width:680px) { .shell { padding:16px; } .topbar { display:block; position:relative; } .brand { padding-right:56px; } .topbar-side { margin-top:16px; align-self:auto; } .language-picker { position:absolute; top:0; right:0; } .toolbar { justify-content:stretch; margin-top:0; } .topbar-side .control,.topbar-side .search { flex:1 1 100%; width:100%; } .search { min-width:0; } .layout { grid-template-columns:1fr; } .genres-panel { order:0; } .list-panel { order:1; } .editor-panel { order:2; } .entry-list { max-height:none; } }
+    @media (max-width:680px) { .shell { padding:16px; } .topbar { display:block; position:relative; } .brand { padding-right:56px; } .topbar-side { margin-top:16px; align-self:auto; } .language-picker { position:absolute; top:0; right:0; } .toolbar { justify-content:stretch; margin-top:0; } .topbar-side .control,.topbar-side .search { flex:1 1 100%; width:100%; } .search { min-width:0; } .layout { grid-template-columns:1fr; } .genres-panel { order:0; } .list-panel { order:1; } .editor-panel { order:2; } .entry-list { max-height:none; } .curator-dialog-head { flex-wrap:wrap; } .curator-header-actions { flex:1 1 100%; width:100%; margin-left:0; } .curator-actions { justify-content:flex-end; } }
   </style>
 </head>
 <body>
-  <main class="shell">
+  <main id="app-main" class="shell">
     <header class="topbar">
       <div class="brand">
         <div class="eyebrow" data-i18n="eyebrow">Local memory console</div>
@@ -145,13 +171,6 @@ export const WEB_HTML = String.raw`<!doctype html>
         <div class="panel-body"><div id="editor"></div></div>
       </section>
     </section>
-    <section id="curator-panel" class="panel curator-panel" hidden>
-      <div class="panel-head"><h2 data-i18n="curatorTitle">Curator</h2><span class="badge" data-i18n="curatorBadge">user confirmation required</span></div>
-      <div class="panel-body">
-        <p class="subtitle" data-i18n="curatorDescription">Review reusable knowledge candidates and add them to global memory.</p>
-        <div id="curator-list" class="curator-list"></div>
-      </div>
-    </section>
     <section class="panel operator-panel">
       <div class="panel-head"><h2 data-i18n="operatorTitle">Agent run operator view</h2><span class="badge" data-i18n="trustBadge">stored data is untrusted / non-actionable</span></div>
       <div class="panel-body operator-grid">
@@ -160,6 +179,23 @@ export const WEB_HTML = String.raw`<!doctype html>
       </div>
     </section>
   </main>
+  <div id="curator-modal" class="curator-modal" hidden>
+    <section id="curator-panel" class="panel curator-dialog" role="dialog" aria-modal="true" aria-labelledby="curator-title" aria-describedby="curator-description">
+      <div class="panel-head curator-dialog-head">
+        <div class="curator-heading"><h2 id="curator-title" data-i18n="curatorTitle">Curator</h2><span class="badge" data-i18n="curatorBadge">user confirmation required</span></div>
+        <div class="curator-header-actions">
+          <div id="curator-actions" class="curator-actions"></div>
+          <button id="curator-close" class="curator-close" type="button" aria-label="Close Curator" data-i18n-aria-label="curatorClose"><span aria-hidden="true">×</span></button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <p id="curator-description" class="subtitle" data-i18n="curatorDescription">Review reusable knowledge candidates and add them to global memory.</p>
+        <div id="curator-selection-count" class="curator-selection-count curator-selection-summary">0 selected</div>
+        <div id="curator-status" class="status" role="status" aria-live="polite"></div>
+        <div id="curator-list" class="curator-list"></div>
+      </div>
+    </section>
+  </div>
   <script>
     const i18n = ${WEB_I18N_CONFIG};
     const localeStorageKey = 'kiokuko.web.locale';
@@ -183,7 +219,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     const botModes = [
       ['bot:common', 'bot.common'], ['bot:researcher', 'bot.researcher'], ['bot:builder', 'bot.builder'], ['bot:reviewer', 'bot.reviewer'], ['bot:devops', 'bot.devops'], ['bot:writer', 'bot.writer'], ['bot:analyst', 'bot.analyst']
     ];
-    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], tags: [], selected: null, runs: [], selectedRun: null, curatorCandidates: [], curatorGlobalized: new Set(), curatorOpen: false, localizedStatus: null };
+    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], tags: [], selected: null, runs: [], selectedRun: null, curatorCandidates: [], curatorSelected: new Set(), curatorGlobalized: new Set(), curatorOpen: false, curatorPreviousFocus: null, localizedStatus: null };
     const $ = (id) => document.getElementById(id);
     const t = (key, parameters = {}) => {
       const template = i18n.messages[state.locale]?.[key] ?? i18n.messages[i18n.defaultLocale]?.[key] ?? key;
@@ -253,6 +289,58 @@ export const WEB_HTML = String.raw`<!doctype html>
       return value;
     };
     const escapeTags = (value) => value.split(',').map((item) => item.trim()).filter(Boolean);
+    const setCuratorStatus = (message, error = false) => {
+      const element = $('curator-status');
+      element.textContent = message;
+      element.className = error ? 'status notice error curator-status' : 'status curator-status';
+    };
+    const setCuratorBackgroundBlocked = (blocked) => {
+      const appMain = $('app-main');
+      appMain.inert = blocked;
+      if (blocked) appMain.setAttribute('aria-hidden', 'true');
+      else appMain.removeAttribute('aria-hidden');
+    };
+    function openCurator() {
+      if (state.curatorOpen) { $('curator-close')?.focus(); return; }
+      state.curatorPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      state.curatorOpen = true;
+      const modal = $('curator-modal');
+      modal.classList.remove('is-closing');
+      setCuratorBackgroundBlocked(true);
+      renderCurator();
+      requestAnimationFrame(() => $('curator-close')?.focus());
+    }
+    function closeCurator() {
+      const modal = $('curator-modal');
+      if (modal.hidden) return;
+      state.curatorOpen = false;
+      modal.classList.add('is-closing');
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        modal.hidden = true;
+        modal.classList.remove('is-closing');
+        setCuratorBackgroundBlocked(false);
+        const previousFocus = state.curatorPreviousFocus;
+        state.curatorPreviousFocus = null;
+        if (previousFocus?.isConnected) previousFocus.focus();
+        else $('curator-button')?.focus();
+      };
+      modal.addEventListener('animationend', (event) => { if (event.target === modal) finish(); }, { once: true });
+      window.setTimeout(finish, 220);
+    }
+    function handleCuratorKeydown(event) {
+      if (event.key === 'Escape') { event.preventDefault(); closeCurator(); return; }
+      if (event.key !== 'Tab') return;
+      const modal = $('curator-modal');
+      const focusable = [...modal.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) { event.preventDefault(); return; }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
 
     function filterButton(key, label, count, active, onClick) {
         const button = document.createElement('button');
@@ -334,18 +422,63 @@ export const WEB_HTML = String.raw`<!doctype html>
 
     async function selectEntry(id) { try { const result = await api('/api/entries/' + encodeURIComponent(id) + '?workspace=' + encodeURIComponent(state.workspace)); state.selected = result.entry; renderEntries(); renderEditor(); } catch (error) { setStatus(error.message, true); } }
 
+    const curatorCandidateKey = (candidate) => candidate.workspace + '\u0000' + candidate.entryId;
+
+    async function applySelectedCurator() {
+      const selected = state.curatorCandidates.filter((candidate) => state.curatorSelected.has(curatorCandidateKey(candidate)) && !state.curatorGlobalized.has(curatorCandidateKey(candidate)));
+      if (!selected.length) return;
+      let added = 0;
+      let failed = 0;
+      for (const candidate of selected) {
+        try {
+          await api('/api/curator/globalize?workspace=' + encodeURIComponent(candidate.workspace), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ workspace: candidate.workspace, entryId: candidate.entryId, expectedRevision: candidate.revision }),
+          });
+          state.curatorGlobalized.add(curatorCandidateKey(candidate));
+          added += 1;
+        } catch (error) {
+          failed += 1;
+          setStatus(error.message, true);
+        }
+      }
+      state.curatorSelected.clear();
+      await loadCurator();
+      await loadEntries();
+      if (added > 0 && failed === 0) { setLocalizedStatus('curatorBatchAdded', { count: added }); setCuratorStatus(t('curatorBatchAdded', { count: added })); }
+      else if (added > 0) { setLocalizedStatus('curatorBatchPartial', { added, failed }, true); setCuratorStatus(t('curatorBatchPartial', { added, failed }), true); }
+    }
+
     function renderCurator() {
-      const panel = $('curator-panel');
-      panel.hidden = !state.curatorOpen;
       if (!state.curatorOpen) return;
+      const modal = $('curator-modal');
+      modal.hidden = false;
       const root = $('curator-list');
+      const selectable = state.curatorCandidates.filter((candidate) => !state.curatorGlobalized.has(curatorCandidateKey(candidate)));
+      $('curator-selection-count').textContent = t('curatorSelected', { count: state.curatorSelected.size });
+      const actionRoot = $('curator-actions'); actionRoot.replaceChildren();
+      const selectAll = document.createElement('button'); selectAll.type = 'button'; selectAll.className = 'button'; setI18nText(selectAll, 'curatorSelectAll'); selectAll.disabled = selectable.length === 0;
+      selectAll.addEventListener('click', () => { selectable.forEach((candidate) => state.curatorSelected.add(curatorCandidateKey(candidate))); renderCurator(); });
+      const clearSelection = document.createElement('button'); clearSelection.type = 'button'; clearSelection.className = 'button'; setI18nText(clearSelection, 'curatorClearSelection'); clearSelection.disabled = state.curatorSelected.size === 0;
+      clearSelection.addEventListener('click', () => { state.curatorSelected.clear(); renderCurator(); });
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'button primary'; setI18nText(apply, 'curatorApplySelected'); apply.disabled = state.curatorSelected.size === 0;
+      apply.addEventListener('click', () => applySelectedCurator());
+      actionRoot.append(selectAll, clearSelection, apply);
       if (!state.curatorCandidates.length) { const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'noCuratorCandidates'); root.replaceChildren(empty); return; }
-      root.replaceChildren(...state.curatorCandidates.map((candidate) => {
+      const cards = state.curatorCandidates.map((candidate) => {
         const card = document.createElement('article'); card.className = 'curator-card';
+        const candidateKey = curatorCandidateKey(candidate);
+        const done = state.curatorGlobalized.has(candidateKey);
+        const selectLabel = document.createElement('label'); selectLabel.className = 'curator-select';
+        const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = state.curatorSelected.has(candidateKey); checkbox.disabled = done;
+        checkbox.addEventListener('change', () => { if (checkbox.checked) state.curatorSelected.add(candidateKey); else state.curatorSelected.delete(candidateKey); renderCurator(); });
+        const selectText = document.createElement('span'); selectText.textContent = done ? t('globalized') : t('curatorSelectSkill'); selectLabel.append(checkbox, selectText);
         const meta = document.createElement('div'); meta.className = 'entry-meta';
         const kind = document.createElement('span'); kind.className = 'badge'; kind.textContent = labelForKind(candidate.kind);
         const score = document.createElement('span'); score.className = 'badge'; score.textContent = t('curatorScore', { score: candidate.score });
-        meta.append(kind, score);
+        const workspace = document.createElement('span'); workspace.className = 'badge curator-workspace'; workspace.textContent = t('curatorWorkspace', { workspace: candidate.workspace });
+        meta.append(kind, score, workspace);
         if (candidate.knowledge && candidate.knowledge.skillReady) { const ready = document.createElement('span'); ready.className = 'badge'; setI18nText(ready, 'curatorSkillReady'); meta.append(ready); }
         const heading = document.createElement('h3'); heading.textContent = candidate.skillName;
         const overview = document.createElement('div'); overview.className = 'curator-overview'; overview.textContent = candidate.overview.join('\n');
@@ -375,24 +508,27 @@ export const WEB_HTML = String.raw`<!doctype html>
           draft.append(label, content);
         }
         const reasons = document.createElement('div'); reasons.className = 'curator-reasons'; reasons.textContent = [...(candidate.reasons || []), ...(candidate.warnings || []).map((warning) => t('curatorWarning', { warning }))].join('\n');
-        const action = document.createElement('button'); action.type = 'button'; action.className = 'button primary';
-        const done = state.curatorGlobalized.has(candidate.entryId); action.disabled = done; setI18nText(action, done ? 'globalized' : 'globalize');
-        action.addEventListener('click', async () => {
-          action.disabled = true;
-          try {
-            await api('/api/curator/globalize?workspace=' + encodeURIComponent(state.workspace), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entryId: candidate.entryId, expectedRevision: candidate.revision }) });
-            state.curatorGlobalized.add(candidate.entryId); setLocalizedStatus('curatorAdded'); renderCurator(); await loadEntries();
-          } catch (error) { action.disabled = false; setStatus(error.message, true); }
-        });
-        card.append(meta, heading, overview, knowledge, draft, reasons, action); return card;
-      }));
+        card.classList.toggle('selected', checkbox.checked);
+        card.append(selectLabel, meta, heading, overview, knowledge, draft, reasons); return card;
+      });
+      root.replaceChildren(toolbar, ...cards);
     }
 
     async function loadCurator() {
-      if (!state.workspace) return;
-      state.curatorOpen = true; renderCurator();
-      try { const result = await api('/api/curator/candidates?workspace=' + encodeURIComponent(state.workspace) + '&limit=50'); state.curatorCandidates = result.candidates || []; renderCurator(); }
-      catch (error) { setStatus(error.message, true); }
+      openCurator();
+      const panel = $('curator-panel');
+      panel.setAttribute('aria-busy', 'true');
+      setCuratorStatus(t('curatorLoading'));
+      try {
+        const result = await api('/api/curator/candidates?limit=50');
+        state.curatorCandidates = result.candidates || [];
+        const available = new Set(state.curatorCandidates.map((candidate) => curatorCandidateKey(candidate)));
+        state.curatorSelected = new Set([...state.curatorSelected].filter((key) => available.has(key)));
+        setCuratorStatus('');
+        renderCurator();
+      }
+      catch (error) { setCuratorStatus(error.message, true); }
+      finally { panel.removeAttribute('aria-busy'); }
     }
 
     async function loadRunDetail(runId) {
@@ -450,7 +586,7 @@ export const WEB_HTML = String.raw`<!doctype html>
 
     async function loadEntries() { if (!state.workspace) return; try { const params = new URLSearchParams({ workspace: state.workspace }); if (state.kind !== 'all') params.set('kind', state.kind); if (state.tag) params.set('tag', state.tag); if (state.query) params.set('q', state.query); const result = await api('/api/entries?' + params); state.entries = result.entries; if (state.selected && !state.entries.some((entry) => entry.id === state.selected.id)) state.selected = null; renderEntries(); renderFilters(); if (!state.selected && state.entries[0]) await selectEntry(state.entries[0].id); else renderEditor(); setLocalizedCountStatus('displayedCount', result.entries.length); } catch (error) { setStatus(error.message, true); } }
     async function loadTags() { if (!state.workspace) return; try { const result = await api('/api/tags?workspace=' + encodeURIComponent(state.workspace)); state.tags = result.tags; renderFilters(); } catch (error) { setStatus(error.message, true); } }
-    async function loadWorkspaces() { try { const result = await api('/api/workspaces'); const select = $('workspace'); select.replaceChildren(...result.workspaces.map((item) => { const option = document.createElement('option'); option.value = item.workspace; option.textContent = (item.displayName || item.workspace) + ' (' + item.count + ')'; return option; })); if (!state.workspace && result.workspaces[0]) state.workspace = result.workspaces[0].workspace; select.value = state.workspace; if (state.workspace) { await loadTags(); await loadEntries(); await loadRuns(); if (state.curatorOpen) await loadCurator(); } else setLocalizedStatus('noWorkspace', {}, true); } catch (error) { setStatus(error.message, true); } }
+    async function loadWorkspaces() { try { const result = await api('/api/workspaces'); const select = $('workspace'); select.replaceChildren(...result.workspaces.map((item) => { const option = document.createElement('option'); option.value = item.workspace; option.textContent = (item.displayName || item.workspace) + ' (' + item.count + ')'; return option; })); if (!state.workspace && result.workspaces[0]) state.workspace = result.workspaces[0].workspace; select.value = state.workspace; if (state.workspace) { await loadTags(); await loadEntries(); await loadRuns(); } if (state.curatorOpen) await loadCurator(); else if (!state.workspace) setLocalizedStatus('noWorkspace', {}, true); } catch (error) { setStatus(error.message, true); } }
     $('language-toggle').addEventListener('click', () => {
       setLanguageMenuOpen($('language-toggle').getAttribute('aria-expanded') !== 'true');
     });
@@ -472,8 +608,10 @@ export const WEB_HTML = String.raw`<!doctype html>
     });
     document.addEventListener('click', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
     document.addEventListener('focusin', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
-    $('workspace').addEventListener('change', (event) => { state.workspace = event.target.value; state.selected = null; state.selectedRun = null; state.runs = []; state.tag = ''; state.curatorCandidates = []; state.curatorGlobalized = new Set(); state.curatorOpen = false; renderCurator(); loadTags().then(loadEntries).then(loadRuns); });
+    $('workspace').addEventListener('change', (event) => { if (state.curatorOpen) closeCurator(); state.workspace = event.target.value; state.selected = null; state.selectedRun = null; state.runs = []; state.tag = ''; state.curatorCandidates = []; state.curatorSelected = new Set(); state.curatorGlobalized = new Set(); state.curatorOpen = false; loadTags().then(loadEntries).then(loadRuns); });
     $('curator-button').addEventListener('click', () => loadCurator());
+    $('curator-close').addEventListener('click', () => closeCurator());
+    $('curator-modal').addEventListener('keydown', handleCuratorKeydown);
     $('refresh').addEventListener('click', () => loadWorkspaces());
     let searchTimer; $('search').addEventListener('input', (event) => { clearTimeout(searchTimer); state.query = event.target.value.trim(); searchTimer = setTimeout(() => loadEntries(), 180); });
     applyTranslations();

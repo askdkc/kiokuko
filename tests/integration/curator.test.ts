@@ -156,3 +156,41 @@ test('web exposes curator candidates and a revision-checked globalize action', a
     data.database.close();
   }
 });
+
+test('web curator lists candidates across projects and globalizes the selected source workspace', async () => {
+  const data = await fixture();
+  const other = recordEntry(data.database, {
+    workspace: 'project:other-curator-test',
+    kind: 'lesson',
+    title: 'Portable retry workflow',
+    body: 'A reusable workflow: when an operation fails, retry with a bounded delay and verify the result before continuing.',
+    summary: 'A reusable workflow for bounded retries.',
+    tags: ['workflow', 'reusable'],
+  });
+  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0 });
+  try {
+    const sessionResponse = await fetch(web.url);
+    const cookie = sessionResponse.headers.get('set-cookie')?.split(';', 1)[0];
+    assert.ok(cookie);
+    const headers = { cookie: cookie as string };
+    const listedResponse = await fetch(`${web.url}/api/curator/candidates?limit=50`, { headers });
+    assert.equal(listedResponse.status, 200);
+    const listed = await listedResponse.json() as { workspace: string | null; candidates: Array<{ entryId: string; workspace: string }> };
+    assert.equal(listed.workspace, null);
+    assert.deepEqual(new Set(listed.candidates.map((candidate) => candidate.workspace)), new Set(['project:curator-test', 'project:other-curator-test']));
+    assert.ok(listed.candidates.some((candidate) => candidate.entryId === other.id && candidate.workspace === 'project:other-curator-test'));
+
+    const globalizedResponse = await fetch(`${web.url}/api/curator/globalize`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace: 'project:other-curator-test', entryId: other.id, expectedRevision: other.revision }),
+    });
+    assert.equal(globalizedResponse.status, 200);
+    const globalized = await globalizedResponse.json() as { global: { workspace: string; provenance: { sourceWorkspace: string } } };
+    assert.equal(globalized.global.workspace, 'global');
+    assert.equal(globalized.global.provenance.sourceWorkspace, 'project:other-curator-test');
+  } finally {
+    await web.close();
+    data.database.close();
+  }
+});

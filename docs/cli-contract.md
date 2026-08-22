@@ -25,7 +25,7 @@ Exit codes remain: 0 success, 2 usage, 3 validation, 4 not found, 5 conflict, 6 
 ## Global client setup and MCP
 
 ```bash
-kiokuko setup [--clients codex,opencode,claude,hermes] [--command kiokuko] [--dry-run] [--opencode-capture off|minimal|standard] [--opencode-mode advisory|strict] [--json]
+kiokuko setup [--clients codex,opencode,claude,hermes] [--command kiokuko] [--dry-run] [--no-standard-skills] [--opencode-capture off|minimal|standard] [--opencode-mode advisory|strict] [--json]
 kiokuko mcp
 ```
 
@@ -33,6 +33,9 @@ kiokuko mcp
 Claude Code, and/or Hermes MCP configuration. Codex, OpenCode, and Claude Code
 also use their existing global instruction surfaces; Hermes is profile-scoped
 native stdio MCP only and receives no global instruction file, plugin, or hook.
+By default it also places the bundled `kiokuko-ui-design-soul` skill in each
+selected client's native user-skill directory. `--no-standard-skills` skips new
+placement and updates without deleting a previously installed copy.
 It computes and validates all file edits before writing, uses per-file atomic
 replacement, rolls back already written client files if a later write fails,
 rejects symlinks, and is idempotent. Before an existing database is migrated,
@@ -40,8 +43,16 @@ rejects symlinks, and is idempotent. Before an existing database is migrated,
 `databaseBackupPath` in JSON. It rejects databases created by a newer Kiokuko
 schema before opening them for writes. `--dry-run` performs no writes.
 
+Standard-skill input is the package's fixed two-file manifest; setup performs no
+network fetch or HIG scraping. Each managed destination file contains a Kiokuko
+marker. A same-name unmarked file causes `CONFLICT` before all writes. Managed
+older files are replaced, byte-identical files are `unchanged`, unrelated sibling
+files are not touched, and `files[].purpose` is `standard-skill`. JSON setup
+results include the effective `standardSkills` boolean.
+
 For Hermes, use `kiokuko setup --clients hermes`, then restart Hermes Agent or
-run `/reload-mcp`. Hermes automatic/model use is best effort from MCP tool
+start a new session. `/reload-mcp` reloads the MCP registry but is not sufficient
+by itself to discover a changed skill. Hermes automatic/model use is best effort from MCP tool
 descriptions; its built-in memory and skills remain separate. Smoke-test
 the effective profile with `hermes mcp test kiokuko`.
 
@@ -125,4 +136,4 @@ enable the allowlisted `mattpocock/skills` reference fallback.
 
 ## Web API compatibility
 
-Legacy `/api/health`, `/api/workspaces`, `/api/tags`, and `/api/entries` remain mounted. The UI Curator flow uses `GET /api/curator/candidates?workspace=...` to return the regenerated draft and revision-checked `POST /api/curator/globalize?workspace=...` to store that server-regenerated draft. Agent gateway endpoints use the v1 authenticated contract documented in `agent-gateway.md`. List operations use cursor pagination and hard limits; stored event/memory content is marked untrusted.
+Legacy `/api/health`, `/api/workspaces`, `/api/tags`, and `/api/entries` remain mounted. The UI Curator flow uses `GET /api/curator/candidates?limit=...` to return curation candidates across all project workspaces; the optional `workspace=...` filter remains available for compatibility. Each candidate carries its source workspace. The UI sends a revision-checked `POST /api/curator/globalize?workspace=...` for each explicitly selected candidate. Agent gateway endpoints use the v1 authenticated contract documented in `agent-gateway.md`. List operations use cursor pagination and hard limits; stored event/memory content is marked untrusted.

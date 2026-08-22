@@ -96,6 +96,7 @@ test('exposes Claude Code as a global setup client', () => {
   assert.match(setup.helpInformation(), /codex,opencode,claude,hermes/);
   assert.match(setup.description(), /Claude Code/);
   assert.match(setup.description(), /Hermes Agent/);
+  assert.match(setup.helpInformation(), /--no-standard-skills/);
 });
 
 test('exposes foreground serve options without capability-token controls', () => {

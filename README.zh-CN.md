@@ -15,9 +15,9 @@ kiokuko setup
 
 npm 包名是 `@askdkc/kiokuko`，安装后的 CLI 命令名仍然是 `kiokuko`。
 
-设置完成后，请重启 Codex、OpenCode、Claude Code 和 Hermes Agent。Hermes 也可以使用 `/reload-mcp` 重新加载，并用 `hermes mcp test kiokuko` 做 smoke test。Hermes 只使用有效 profile 中的原生 stdio MCP；Kiokuko 不会创建全局指令文件、Hermes plugin 或 hook。
+设置完成后，请重启 Codex、OpenCode、Claude Code 和 Hermes Agent。Hermes 的 `/reload-mcp` 可以重新加载 MCP 注册，但更新后的标准技能仍需要重启或新会话才能发现；可用 `hermes mcp test kiokuko` 做 smoke test。Hermes 使用有效 profile 中的原生 stdio MCP；Kiokuko 不会创建全局指令文件、Hermes plugin 或 hook。
 
-`setup` 是显式且幂等的操作。npm 的 `postinstall` 永远不会修改 AI 客户端配置。现有 TOML/JSON/JSONC/YAML 设置、注释、指令内容、换行符和文件权限都会保留；Kiokuko 只管理自己的区块。
+`setup` 是显式且幂等的操作。npm 的 `postinstall` 永远不会修改 AI 客户端配置。现有 TOML/JSON/JSONC/YAML 设置、注释、指令内容、换行符和文件权限都会保留；Kiokuko 只管理自己的区块。默认情况下，setup 还会从固定的本地清单安装 `kiokuko-ui-design-soul` 标准技能，不会在 setup 时下载或抓取 HIG 页面。
 
 如果现有数据库存在尚未应用的迁移，setup 会先在当前用户数据目录下的 `backups/` 中创建备份并执行完整性检查。由更新版本 Kiokuko 写入的数据库会被拒绝，且不会受到修改。
 
@@ -33,20 +33,25 @@ kiokuko setup --clients hermes
 
 # 如果客户端进程未继承 npm 的 PATH，请使用可执行文件绝对路径
 kiokuko setup --command /absolute/path/to/kiokuko
+
+# 跳过新的标准技能放置；不会删除已安装的副本
+kiokuko setup --no-standard-skills
 ```
 
 设置目标如下：
 
-| 客户端 | MCP 配置 | 全局指令 | 运行时防护 |
-|---|---|---|---|
-| Codex | `$CODEX_HOME/config.toml` 或 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 或 `~/.codex/AGENTS.md` | — |
-| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 或 `~/.config/opencode/opencode.json` | 同目录下的 `AGENTS.md` | `plugins/kiokuko-loop-guard.js` |
-| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 或 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 或 `~/.claude/CLAUDE.md` | — |
-| Hermes Agent | 有效 profile 的 `config.yaml`（`$HERMES_HOME`、`$HOME/.hermes` 或 `%LOCALAPPDATA%/hermes`） | 无 | 无 |
+| 客户端 | MCP 配置 | 全局指令 | 运行时防护 | 标准技能 |
+|---|---|---|---|---|
+| Codex | `$CODEX_HOME/config.toml` 或 `~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md` 或 `~/.codex/AGENTS.md` | — | `~/.agents/skills/kiokuko-ui-design-soul` |
+| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json` 或 `~/.config/opencode/opencode.json` | 同目录下的 `AGENTS.md` | `plugins/kiokuko-loop-guard.js` | 全局配置中的 `skills/kiokuko-ui-design-soul` |
+| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json` 或 `~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md` 或 `~/.claude/CLAUDE.md` | — | Claude 配置中的 `skills/kiokuko-ui-design-soul` |
+| Hermes Agent | 有效 profile 的 `config.yaml`（`$HERMES_HOME`、`$HOME/.hermes` 或 `%LOCALAPPDATA%/hermes`） | 无 | 无 | 有效 profile 中的 `skills/kiokuko-ui-design-soul` |
 
 Hermes 配置是 profile 级别的 native stdio MCP，注册 `mcp_servers.kiokuko`，其中 `command: kiokuko`、`args: [mcp]`。Hermes 内置 memory 和 skills 与 Kiokuko 分离；模型是否使用这些 MCP 工具取决于 MCP tool descriptions，属于 best effort。
 
 如果 OpenCode 的 `opencode.jsonc` 已存在，Kiokuko 会保留注释并更新该文件。如果 Codex 中已存在不受 Kiokuko 管理的 `[mcp_servers.kiokuko]` 表，设置程序不会猜测应该覆盖哪项配置，而是直接停止。受管理的 OpenCode 防护会把可见智能体限制为 12 个 step；每个用户请求最多调用一次 `task_prepare` 和一次 `memory_checkpoint`；检查点完成后关闭工具阶段；连续三次出现相同调用或相同的只读检索结果后阻止再次执行。计数器和指纹仅保存在进程内存中。
+
+每个标准技能文件都带有 Kiokuko 管理标记。setup 只更新固定的已知文件，完全相同时报告 `unchanged`，并保留无关的同级文件。如果同名文件没有管理标记，setup 会在任何文件或数据库写入前以 `CONFLICT` 停止。
 
 ## 记忆作用域
 
@@ -64,7 +69,7 @@ MCP 接口被有意保持为最小范围：
 - `memory_recall`：读取有界的 project/global 上下文，并始终标记为 untrusted。
 - `memory_checkpoint`：在用户请求结束时仅执行一次，将有界的持久性条目保存为 `candidate` 和 `untrusted`；疑似密钥的内容会被拒绝。
 
-这种自动使用由指令驱动，并不会拦截提示词。Codex、OpenCode、Claude Code 和 Hermes Agent 仍可能决定在某个回合不调用工具；Hermes 的自动/模型使用是基于 MCP tool descriptions 的 best effort。Hermes 内置 memory 和 skills 保持独立。Kiokuko 不会创建 Hermes 全局指令文件、plugin 或 hook，不会捕获完整对话、自动安装获取到的技能，也不会静默地将记忆提升为 verified 状态。OpenCode 设置只会安装上述受限的本地循环防护。
+这种自动使用由指令驱动，并不会拦截提示词。Codex、OpenCode、Claude Code 和 Hermes Agent 仍可能决定在某个回合不调用工具；Hermes 的自动/模型使用是基于 MCP tool descriptions 的 best effort。Hermes 内置 memory 和 skills 保持独立。Kiokuko 不会创建 Hermes 全局指令文件、plugin 或 hook，不会捕获完整对话、自动安装外部获取的技能，也不会静默地将记忆提升为 verified 状态。OpenCode 唯一安装的 plugin 是上述受限的本地循环防护；同捆标准技能是客户端原生 skill，不是 plugin。
 
 ## 开发
 
@@ -88,6 +93,8 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 ## Akinator 式知识采集
 
 对于重要工作，设置好的智能体指令会调用 `task_prepare`。该工具只询问任务类型、目标和成功条件等缺失的高价值字段，再根据查询和角色与用途标签选择本地记忆。如果客户端提供当前可用的技能和 MCP 工具名称，结果还会匹配所需能力，并区分 `available`、`missing` 和 `unknown`；该目录仅临时使用，不会存储。CLI 的 `guide` 命令可手动执行同一流程：
+
+当任务包含 UI、UX、frontend、screen、SwiftUI、画面或 accessibility 等具体界面词汇时，`task_prepare` 会明确推荐客户端 capability 目录中的 `kiokuko-ui-design-soul`。仅有通用 `design`、backend-only 工作或纯图像生成不会触发该规则。
 
 ```bash
 kiokuko guide start "Implement the API change and add tests" \

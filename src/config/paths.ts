@@ -97,6 +97,12 @@ export function getCodexInstructionsPath(options: PathEnvironment = {}): string 
   return join(getCodexHome(options), 'AGENTS.md');
 }
 
+/** Codex discovers personal skills from ~/.agents/skills, independently of CODEX_HOME. */
+export function getCodexSkillsDirectory(options: PathEnvironment = {}): string {
+  const { home, join } = requireHome(options);
+  return join(home, '.agents', 'skills');
+}
+
 /** Claude Code's documented personal configuration directory. */
 export function getClaudeConfigDirectory(options: PathEnvironment = {}): string {
   const { env } = selectedEnvironment(options);
@@ -126,6 +132,12 @@ export function getClaudeInstructionsPath(options: PathEnvironment = {}): string
   return join(getClaudeConfigDirectory(options), 'CLAUDE.md');
 }
 
+export function getClaudeSkillsDirectory(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getClaudeConfigDirectory(options), 'skills');
+}
+
 /** OpenCode's documented global configuration directory. */
 export function getOpenCodeConfigDirectory(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);
@@ -149,6 +161,12 @@ export function getOpenCodeLoopGuardPath(options: PathEnvironment = {}): string 
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-loop-guard.js');
+}
+
+export function getOpenCodeSkillsDirectory(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getOpenCodeConfigDirectory(options), 'skills');
 }
 
 function getHermesRoot(options: PathEnvironment): string {
@@ -209,6 +227,12 @@ export async function getHermesConfigPath(options: PathEnvironment = {}): Promis
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(await getHermesHome(options), 'config.yaml');
+}
+
+export async function getHermesSkillsDirectory(options: PathEnvironment = {}): Promise<string> {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(await getHermesHome(options), 'skills');
 }
 
 export async function ensurePlatformDataDirectory(options: PathEnvironment = {}): Promise<string> {
