@@ -18,6 +18,10 @@ import { LedgerStore } from '../../src/ledger/store.js';
 import { finalizeRunIntakeLink, insertAkinatorAnswer, insertAkinatorSession, insertRunIntakeLink } from '../../src/akinator/store.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { canonicalJson } from '../../src/serialization/validate.js';
+import { recordContextFeedback } from '../../src/context/feedback.js';
+import { readContextDelivery, recordContextDelivery } from '../../src/context/delivery.js';
+import { inspectLedger } from '../../src/ledger/maintenance.js';
+import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 
 async function setup() {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-ledger-archive-'));
@@ -79,7 +83,7 @@ function seedCompleteGraph(database: ReturnType<typeof openConnection>, workspac
   database.prepare(`INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(deliveryId, runId, 1, sessionId, 'c'.repeat(64), 'd'.repeat(64), 'policy-v1', '{"result":"none","source":"local"}', 1000, 100, 0, fixedNow);
   database.prepare(`INSERT INTO context_delivery_entries (delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(deliveryId, entryId, 1, 1, '{"semantic":0.9,"trust":0.8}', '{"reason":"matching task"}');
+    .run(deliveryId, entryId, 1, 1, '{"semantic":0.9,"trust":0.8}', '["matching_task"]');
   database.prepare(`INSERT INTO context_feedback (feedback_id, delivery_id, entry_id, run_id, verdict, comment, actor, idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(`${workspace}-context-feedback`, deliveryId, entryId, runId, 'helpful', 'useful', 'user', digest('context-key'), fixedNow);
   database.prepare(`INSERT INTO run_feedback (feedback_id, run_id, outcome, recommendation_code, recommendation_verdict, rating, comment, actor, idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -262,7 +266,7 @@ test('archives the complete linked ledger graph without curated memory bodies or
     assert.ok(deliveryEntry);
     assert.deepEqual(Object.keys(deliveryEntry).sort(), ['delivery_id', 'entry_id', 'entry_revision', 'origin_scope', 'rank', 'score_components_json', 'selection_reason_json', 'type'].sort());
     assert.equal((deliveryEntry.score_components_json as string), '{"semantic":0.9,"trust":0.8}');
-    assert.equal((deliveryEntry.selection_reason_json as string), '{"reason":"matching task"}');
+    assert.equal((deliveryEntry.selection_reason_json as string), '["matching_task"]');
 
     recordEntry(target, {
       workspace,
@@ -280,6 +284,190 @@ test('archives the complete linked ledger graph without curated memory bodies or
   } finally {
     source.close();
     target.close();
+  }
+});
+
+test('round-trips ecosystem delivery feedback without rewriting the source workspace or revision', async () => {
+  const source = await setup();
+  const target = await setup();
+  const invalidTarget = await setup();
+  const runWorkspace = 'workspace:ecosystem-run';
+  const sourceWorkspace = 'workspace:ecosystem-source';
+  const entryId = 'entry-ecosystem-archive';
+  try {
+    const seedEntry = (database: ReturnType<typeof openConnection>) => recordEntry(database, {
+      workspace: sourceWorkspace,
+      kind: 'lesson',
+      title: 'Portable ecosystem archive lesson',
+      body: 'Use the portable archive contract.',
+      scope: buildStructuredScope({
+        visibility: 'project',
+        retrievalScope: 'ecosystem',
+        applicability: { languages: ['TypeScript'] },
+      }),
+    }, { idFactory: () => entryId, now: fixedNow });
+    seedEntry(source);
+    seedEntry(target);
+    seedEntry(invalidTarget);
+    const store = new LedgerStore(source, { now: () => fixedNow });
+    store.createRun({
+      runId: 'run-ecosystem-archive', workspace: runWorkspace, protocolVersion: '1',
+      client: { kind: 'generic' }, captureProfile: 'minimal',
+      coverage: { run: 'declared', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      task: { title: 'Ecosystem archive', query: 'Round trip ecosystem context', profileHints: { taskType: 'build', target: null, expected: null, constraints: null } },
+      startedAt: fixedNow,
+    });
+    recordContextDelivery(source, {
+      workspace: runWorkspace,
+      deliveryId: 'delivery-ecosystem-archive',
+      runId: 'run-ecosystem-archive',
+      throughSequence: 0,
+      intakeSessionId: null,
+      taskProfileHash: 'a'.repeat(64),
+      queryHash: 'b'.repeat(64),
+      policyVersion: 'context-ranking-v3',
+      externalSyncSummary: { attempted: false, imported: 0, sources: [] },
+      charBudget: 1000,
+      charCount: 100,
+      truncated: false,
+      createdAt: fixedNow,
+      items: [{
+        entryId,
+        entryRevision: 1,
+        rank: 1,
+        scoreComponents: {
+          status: 40,
+          trust: 0,
+          confidence: 14,
+          taskAffinity: 0,
+          recommendedTags: 0,
+          pathOverlap: 0,
+          errorSignature: 0,
+          feedback: 0,
+          recency: 0,
+          contradiction: 0,
+        },
+        selectionReasons: ['ecosystem_origin', 'candidate'],
+        origin: 'ecosystem',
+      }],
+    });
+    assert.throws(
+      () => recordContextFeedback(source, {
+        workspace: runWorkspace,
+        feedbackId: 'feedback-ecosystem-wrong-revision',
+        deliveryId: 'delivery-ecosystem-archive',
+        entryId,
+        entryRevision: 2,
+        runId: 'run-ecosystem-archive',
+        verdict: 'helpful',
+        actor: 'user',
+        idempotencyKey: 'ecosystem-wrong-revision-key',
+        createdAt: fixedNow,
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
+    );
+    recordContextFeedback(source, {
+      workspace: runWorkspace,
+      feedbackId: 'feedback-ecosystem-archive',
+      deliveryId: 'delivery-ecosystem-archive',
+      entryId,
+      entryRevision: 1,
+      runId: 'run-ecosystem-archive',
+      verdict: 'helpful',
+      actor: 'user',
+      idempotencyKey: 'ecosystem-archive-feedback-key',
+      createdAt: fixedNow,
+    });
+
+    const archive = exportLedgerArchive(source, { workspace: runWorkspace });
+    const imported = importLedgerArchive(target, { content: archive.content });
+    assert.equal(imported.imported.deliveryEntries, 1);
+    assert.equal(imported.imported.contextFeedback, 1);
+    assert.equal(target.prepare('SELECT workspace FROM entries WHERE id = ?').get<{ workspace: string }>(entryId)?.workspace, sourceWorkspace);
+    assert.equal(target.prepare('SELECT entry_revision FROM context_delivery_entries WHERE entry_id = ?').get<{ entry_revision: number }>(entryId)?.entry_revision, 1);
+    assert.deepEqual(
+      readContextDelivery(target, { workspace: runWorkspace, deliveryId: 'delivery-ecosystem-archive' }).items.map((item) => ({
+        entryId: item.entryId,
+        entryRevision: item.entryRevision,
+        origin: item.origin,
+      })),
+      [{ entryId, entryRevision: 1, origin: 'ecosystem' }],
+    );
+    assert.equal(inspectLedger(target, { workspace: runWorkspace }).findingCount, 0);
+    assert.equal(exportLedgerArchive(target, { workspace: runWorkspace }).content, archive.content);
+    const replay = importLedgerArchive(target, { content: archive.content });
+    assert.equal(replay.duplicates.deliveryEntries, 1);
+    assert.equal(replay.duplicates.contextFeedback, 1);
+
+    const wrongOrigin = rebuildArchive(archive.content, (lines) => {
+      lines.find((line) => line.type === 'delivery_entry')!.origin_scope = 'project';
+    });
+    assert.throws(
+      () => importLedgerArchive(invalidTarget, { content: wrongOrigin }),
+      (error: unknown) => (error as { code?: string }).code === 'CONFLICT',
+    );
+    assert.equal(invalidTarget.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{ count: number }>()?.count, 0);
+
+    const missingRevision = rebuildArchive(archive.content, (lines) => {
+      lines.find((line) => line.type === 'delivery_entry')!.entry_revision = 2;
+    });
+    assert.throws(
+      () => importLedgerArchive(invalidTarget, { content: missingRevision }),
+      (error: unknown) => (error as { code?: string }).code === 'NOT_FOUND',
+    );
+    assert.equal(invalidTarget.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{ count: number }>()?.count, 0);
+
+    const assertRejectedTuple = async (input: {
+      entryWorkspace: string;
+      origin: string;
+      revisionWorkspace?: string;
+      expectedCode: 'CONFLICT' | 'VALIDATION_ERROR';
+    }): Promise<void> => {
+      const tupleTarget = await setup();
+      try {
+        recordEntry(tupleTarget, {
+          workspace: input.revisionWorkspace ?? input.entryWorkspace,
+          kind: 'lesson',
+          title: 'Portable ecosystem archive lesson',
+          body: 'Use the portable archive contract.',
+          scope: buildStructuredScope({
+            visibility: 'project',
+            retrievalScope: 'ecosystem',
+            applicability: { languages: ['TypeScript'] },
+          }),
+        }, { idFactory: () => entryId, now: fixedNow });
+        if (input.revisionWorkspace !== undefined) {
+          tupleTarget.exec('PRAGMA foreign_keys = OFF');
+          tupleTarget.prepare('UPDATE entries SET workspace = ? WHERE id = ?').run(input.entryWorkspace, entryId);
+          tupleTarget.exec('PRAGMA foreign_keys = ON');
+        }
+        const invalidArchive = rebuildArchive(archive.content, (lines) => {
+          lines.find((line) => line.type === 'delivery_entry')!.origin_scope = input.origin;
+        });
+        assert.throws(
+          () => importLedgerArchive(tupleTarget, { content: invalidArchive }),
+          (error: unknown) => (error as { code?: string }).code === input.expectedCode,
+        );
+        assert.equal(tupleTarget.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{ count: number }>()?.count, 0);
+      } finally {
+        tupleTarget.close();
+      }
+    };
+
+    await assertRejectedTuple({ entryWorkspace: runWorkspace, origin: 'ecosystem', expectedCode: 'CONFLICT' });
+    await assertRejectedTuple({ entryWorkspace: 'global', origin: 'ecosystem', expectedCode: 'CONFLICT' });
+    await assertRejectedTuple({ entryWorkspace: sourceWorkspace, origin: 'global', expectedCode: 'CONFLICT' });
+    await assertRejectedTuple({
+      entryWorkspace: sourceWorkspace,
+      revisionWorkspace: 'workspace:revision-mismatch',
+      origin: 'ecosystem',
+      expectedCode: 'CONFLICT',
+    });
+    await assertRejectedTuple({ entryWorkspace: sourceWorkspace, origin: 'unknown', expectedCode: 'VALIDATION_ERROR' });
+  } finally {
+    source.close();
+    target.close();
+    invalidTarget.close();
   }
 });
 
@@ -348,6 +536,7 @@ test('validates hash chain, run cursor, delivery cursor, dry-run, missing memory
 test('rejects persisted hash-chain and secret residue on export without echoing sentinel values', async () => {
   const corrupted = await setup();
   const secretDatabase = await setup();
+  const missingRevisionDatabase = await setup();
   try {
     seedSingleRun(corrupted);
     corrupted.prepare('UPDATE ledger_events SET event_hash = ?').run('f'.repeat(64));
@@ -363,6 +552,21 @@ test('rejects persisted hash-chain and secret residue on export without echoing 
       assert.equal(JSON.stringify(typed.details).includes(sentinel), false);
       return true;
     });
+
+    const missingEntry = recordEntry(missingRevisionDatabase, {
+      workspace: 'workspace:missing-export-revision',
+      kind: 'lesson',
+      title: 'Missing export revision',
+      body: 'A delivery must never disappear from an archive when its exact revision is missing.',
+    }, { idFactory: () => 'entry-missing-export-revision', now: fixedNow });
+    seedCompleteGraph(missingRevisionDatabase, 'workspace:missing-export-revision', missingEntry.id);
+    missingRevisionDatabase.exec('PRAGMA foreign_keys = OFF');
+    missingRevisionDatabase.prepare('DELETE FROM entry_revisions WHERE entry_id = ? AND revision = 1').run(missingEntry.id);
+    missingRevisionDatabase.exec('PRAGMA foreign_keys = ON');
+    assert.throws(
+      () => exportLedgerArchive(missingRevisionDatabase, { workspace: 'workspace:missing-export-revision' }),
+      (error: unknown) => (error as { code?: string }).code === 'NOT_FOUND',
+    );
 
     const malformed = await setup();
     try {
@@ -381,6 +585,7 @@ test('rejects persisted hash-chain and secret residue on export without echoing 
   } finally {
     corrupted.close();
     secretDatabase.close();
+    missingRevisionDatabase.close();
   }
 });
 

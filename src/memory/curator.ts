@@ -1,4 +1,4 @@
-import type { SqliteDatabase } from '../db/adapter.js';
+import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { requireWorkspace, type EntryKind, type JsonObject } from '../serialization/validate.js';
@@ -13,7 +13,8 @@ import {
   type MemorySignals,
 } from './structured-memory.js';
 import { ensureGlobalWorkspace, GLOBAL_WORKSPACE, resolveProjectWorkspace } from './workspaces.js';
-import { readKnowledgeEvidence, type KnowledgeEvidence } from '../akinator/knowledge-path.js';
+import { readKnowledgeEvidence, type KnowledgeEvidence, type KnowledgeEvidenceTier } from '../akinator/knowledge-path.js';
+import { analyzePortability, containsProjectSpecificData as containsPortableProjectSpecificData } from './portability.js';
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
@@ -48,7 +49,11 @@ export interface CuratorCandidate {
   entryId: string;
   workspace: string;
   revision: number;
+  updatedAt: string;
   kind: EntryKind;
+  tags: string[];
+  memoryClass?: MemoryClass;
+  applicability?: Applicability;
   skillName: string;
   overview: [string, string, string];
   draft: CuratorDraft;
@@ -64,9 +69,19 @@ export interface CuratorCandidate {
 export interface CuratorCandidatesInput {
   workspace?: string;
   cwd?: string;
+  workspaces?: string[];
+  tags?: string[];
+  tagMode?: 'any' | 'all';
+  frameworks?: string[];
+  languages?: string[];
+  memoryClasses?: MemoryClass[];
+  tiers?: KnowledgeEvidenceTier[];
+  search?: string;
   limit?: number;
+  cursor?: string;
   skillReadyOnly?: boolean;
   allWorkspaces?: boolean;
+  includeGlobalized?: boolean;
 }
 
 export interface CuratorCandidatesResult {
@@ -74,7 +89,17 @@ export interface CuratorCandidatesResult {
   candidates: CuratorCandidate[];
   count: number;
   truncated: boolean;
+  nextCursor: string | null;
+  totalApproximate: number;
   securityNotice: string;
+}
+
+export interface CuratorFacetResult {
+  projects: Array<{ workspace: string; name: string; count: number }>;
+  tags: Array<{ value: string; count: number }>;
+  frameworks: Array<{ value: string; count: number }>;
+  languages: Array<{ value: string; count: number }>;
+  memoryClasses: Array<{ value: MemoryClass; count: number }>;
 }
 
 export interface GlobalizeCuratorInput {
@@ -102,6 +127,12 @@ interface CuratorScore {
   reasons: string[];
   warnings: string[];
   metadata: StructuredMetadata;
+}
+
+interface CuratorRow extends SqliteRow {
+  workspace: string;
+  id: string;
+  updatedAt: string;
 }
 
 function hasValues(value: object | undefined): boolean {
@@ -164,11 +195,7 @@ function knownProjectValues(entry: EntryRecord): string[] {
 }
 
 function containsProjectSpecificData(value: string, entry: EntryRecord): boolean {
-  const normalized = value.normalize('NFKC');
-  return knownProjectValues(entry).some((known) => normalized.includes(known.normalize('NFKC')))
-    || LOCAL_LANGUAGE.test(normalized)
-    || ABSOLUTE_PATH.test(normalized)
-    || PROJECT_RELATIVE_PATH_PRESENT.test(normalized);
+  return containsPortableProjectSpecificData(value, entry);
 }
 
 function portableText(value: string, entry: EntryRecord, title = false): string {
@@ -301,6 +328,10 @@ function scoreEntry(entry: EntryRecord): CuratorScore {
     score -= 1;
     warnings.push('元プロジェクトのパス由来です');
   }
+  const portability = analyzePortability(entry);
+  if (portability.projectSpecific && !warnings.some((warning) => warning.includes('プロジェクト固有'))) {
+    warnings.push('プロジェクト固有情報が含まれています');
+  }
   return { score, reasons: [...new Set(reasons)], warnings: [...new Set(warnings)], metadata };
 }
 
@@ -330,7 +361,11 @@ function candidateFromEntry(database: SqliteDatabase, entry: EntryRecord): Curat
     entryId: entry.id,
     workspace: entry.workspace,
     revision: entry.revision,
+    updatedAt: entry.updatedAt,
     kind: entry.kind,
+    tags: [...entry.tags],
+    ...(scored.metadata.memoryClass === undefined ? {} : { memoryClass: scored.metadata.memoryClass }),
+    ...(scored.metadata.applicability === undefined ? {} : { applicability: scored.metadata.applicability }),
     skillName: draft.title,
     overview: overviewLines(draft, scored.metadata),
     draft,
@@ -347,50 +382,156 @@ function validateLimit(value: number | undefined): number {
   return limit;
 }
 
-function listCuratorCandidates(database: SqliteDatabase, workspace: string | null, limit: number, skillReadyOnly: boolean): { candidates: CuratorCandidate[]; truncated: boolean } {
-  if (workspace === GLOBAL_WORKSPACE) return { candidates: [], truncated: false };
-  const rowLimit = workspace === null ? MAX_LIMIT * 100 : MAX_LIMIT * 10;
-  const rows = workspace === null
-    ? database.prepare(`
-        SELECT workspace, id
-          FROM entries
-         WHERE workspace <> ? AND status = 'candidate'
-         ORDER BY updated_at DESC, workspace ASC, id ASC
-         LIMIT ?
-      `).all<{ workspace: string; id: string }>(GLOBAL_WORKSPACE, rowLimit)
-    : database.prepare(`
-        SELECT workspace, id
-          FROM entries
-         WHERE workspace = ? AND status = 'candidate'
-         ORDER BY updated_at DESC, id ASC
-         LIMIT ?
-      `).all<{ workspace: string; id: string }>(workspace, rowLimit);
+function encodeCuratorCursor(candidate: CuratorCandidate): string {
+  return Buffer.from(JSON.stringify({
+    ready: candidate.knowledge.skillReady ? 1 : 0,
+    score: candidate.score,
+    updatedAt: candidate.updatedAt,
+    workspace: candidate.workspace,
+    entryId: candidate.entryId,
+  }), 'utf8').toString('base64url');
+}
+
+function decodeCuratorCursor(value: string | undefined): { ready: number; score: number; updatedAt: string; workspace: string; entryId: string } | undefined {
+  if (value === undefined || value.length === 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('cursor');
+    const cursor = parsed as Record<string, unknown>;
+    if ((cursor.ready !== 0 && cursor.ready !== 1) || typeof cursor.score !== 'number' || !Number.isFinite(cursor.score)
+      || typeof cursor.updatedAt !== 'string' || typeof cursor.workspace !== 'string' || typeof cursor.entryId !== 'string') throw new Error('cursor');
+    return { ready: cursor.ready, score: cursor.score, updatedAt: cursor.updatedAt, workspace: cursor.workspace, entryId: cursor.entryId };
+  } catch {
+    throw new KiokukoError('VALIDATION_ERROR', 'Curator cursor is invalid');
+  }
+}
+
+function compareCuratorCandidates(left: CuratorCandidate, right: CuratorCandidate): number {
+  return Number(right.knowledge.skillReady) - Number(left.knowledge.skillReady)
+    || right.score - left.score
+    || right.updatedAt.localeCompare(left.updatedAt)
+    || left.workspace.localeCompare(right.workspace)
+    || left.entryId.localeCompare(right.entryId);
+}
+
+function candidateAfterCursor(candidate: CuratorCandidate, cursor: ReturnType<typeof decodeCuratorCursor>): boolean {
+  if (cursor === undefined) return true;
+  return Number(candidate.knowledge.skillReady) < cursor.ready
+    || (Number(candidate.knowledge.skillReady) === cursor.ready && (candidate.score < cursor.score
+      || (candidate.score === cursor.score && (candidate.updatedAt < cursor.updatedAt
+        || (candidate.updatedAt === cursor.updatedAt && (candidate.workspace > cursor.workspace
+          || (candidate.workspace === cursor.workspace && candidate.entryId > cursor.entryId)))))));
+}
+
+function scanCuratorRows(
+  database: SqliteDatabase,
+  clauses: string[],
+  parameters: Array<string | number>,
+): CuratorRow[] {
+  const rows: CuratorRow[] = [];
+  let cursor: CuratorRow | undefined;
+  const batchSize = 500;
+  while (true) {
+    const cursorClause = cursor === undefined
+      ? ''
+      : `AND (
+          e.updated_at < ?
+          OR (e.updated_at = ? AND e.workspace > ?)
+          OR (e.updated_at = ? AND e.workspace = ? AND e.id > ?)
+        )`;
+    const cursorParameters = cursor === undefined
+      ? []
+      : [cursor.updatedAt, cursor.updatedAt, cursor.workspace, cursor.updatedAt, cursor.workspace, cursor.id];
+    const batch = database.prepare(`
+      SELECT e.workspace, e.id, e.updated_at AS updatedAt
+        FROM entries AS e
+        JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+       WHERE ${clauses.join(' AND ')}
+         ${cursorClause}
+       ORDER BY e.updated_at DESC, e.workspace ASC, e.id ASC
+       LIMIT ?
+    `).all<CuratorRow>(...parameters, ...cursorParameters, batchSize);
+    rows.push(...batch);
+    if (batch.length < batchSize) break;
+    cursor = batch.at(-1);
+  }
+  return rows;
+}
+
+function listCuratorCandidates(
+  database: SqliteDatabase,
+  workspace: string | null,
+  input: CuratorCandidatesInput,
+  limit: number,
+): { candidates: CuratorCandidate[]; truncated: boolean; nextCursor: string | null; totalApproximate: number } {
+  if (workspace === GLOBAL_WORKSPACE) return { candidates: [], truncated: false, nextCursor: null, totalApproximate: 0 };
+  const workspaces = input.workspaces?.length ? [...new Set(input.workspaces)] : workspace === null ? undefined : [workspace];
+  const parameters: Array<string | number> = [GLOBAL_WORKSPACE];
+  const clauses = ["e.workspace <> ?", "e.status = 'candidate'"];
+  if (workspaces !== undefined) {
+    clauses.push(`e.workspace IN (${workspaces.map(() => '?').join(', ')})`);
+    parameters.push(...workspaces);
+  }
+  if (input.search !== undefined && input.search.trim().length > 0) {
+    const pattern = `%${input.search.trim()}%`;
+    clauses.push("(r.title LIKE ? OR COALESCE(r.summary, '') LIKE ? OR r.body LIKE ? OR EXISTS (SELECT 1 FROM entry_revision_tags search_tags WHERE search_tags.entry_id = e.id AND search_tags.revision = e.current_revision AND search_tags.tag LIKE ?))");
+    parameters.push(pattern, pattern, pattern, pattern);
+  }
+  const tags = [...new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean))];
+  if (tags.length > 0) {
+    const exists = tags.map(() => 'EXISTS (SELECT 1 FROM entry_revision_tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.revision = e.current_revision AND filter_tags.tag = ?)');
+    clauses.push(input.tagMode === 'all' ? exists.join(' AND ') : `(${exists.join(' OR ')})`);
+    parameters.push(...tags);
+  }
+  const scopeNeedles = [
+    ...(input.frameworks ?? []).map((value) => `"name":"${value.replaceAll('"', '')}"`),
+    ...(input.languages ?? []).map((value) => `"${value.replaceAll('"', '')}"`),
+    ...(input.memoryClasses ?? []).map((value) => `"memoryClass":"${value}"`),
+  ];
+  for (const needle of scopeNeedles) {
+    clauses.push('r.scope_json LIKE ?');
+    parameters.push(`%${needle}%`);
+  }
+  if (input.includeGlobalized !== true) {
+    clauses.push("NOT EXISTS (SELECT 1 FROM entries AS g JOIN entry_revisions AS gr ON gr.entry_id = g.id AND gr.revision = g.current_revision WHERE g.workspace = 'global' AND gr.provenance_json LIKE '%' || e.id || '@' || e.current_revision || '#deterministic-v1%')");
+  }
+  const rows = scanCuratorRows(database, clauses, parameters);
   const candidates = rows
     .map((row) => {
       const entry = readEntry(database, { workspace: row.workspace, entryId: row.id });
+      const metadata = readStructuredMetadata(entry);
+      if (input.frameworks?.length && !(metadata.applicability?.frameworks ?? []).some((item) => input.frameworks!.some((framework) => item.name.toLocaleLowerCase() === framework.toLocaleLowerCase()))) return null;
+      if (input.languages?.length && !(metadata.applicability?.languages ?? []).some((language) => input.languages!.some((expected) => language.toLocaleLowerCase() === expected.toLocaleLowerCase()))) return null;
+      if (input.memoryClasses?.length && (metadata.memoryClass === undefined || !input.memoryClasses.includes(metadata.memoryClass))) return null;
       const candidate = candidateFromEntry(database, entry);
-      if (candidate !== null && existingGlobalEntry(database, curatedReference(entry)) !== undefined) return null;
+      if (candidate !== null && input.includeGlobalized !== true && existingGlobalEntry(database, curatedReference(entry)) !== undefined) return null;
       return candidate;
     })
     .filter((candidate): candidate is CuratorCandidate => candidate !== null)
-    .filter((candidate) => !skillReadyOnly || candidate.knowledge.skillReady)
-    .sort((left, right) => Number(right.knowledge.skillReady) - Number(left.knowledge.skillReady)
-      || right.score - left.score
-      || left.workspace.localeCompare(right.workspace)
-      || left.entryId.localeCompare(right.entryId));
+    .filter((candidate) => !input.skillReadyOnly || candidate.knowledge.skillReady)
+    .filter((candidate) => input.tiers === undefined || input.tiers.includes(candidate.knowledge.tier))
+    .sort(compareCuratorCandidates);
   const concepts = new Set<string>();
   const deduplicated = candidates.filter((candidate) => {
     if (concepts.has(candidate.knowledge.conceptKey)) return false;
     concepts.add(candidate.knowledge.conceptKey);
     return true;
   });
-  return { candidates: deduplicated.slice(0, limit), truncated: deduplicated.length > limit || rows.length >= rowLimit };
+  const cursor = decodeCuratorCursor(input.cursor);
+  const visible = deduplicated.filter((candidate) => candidateAfterCursor(candidate, cursor));
+  const page = visible.slice(0, limit);
+  return {
+    candidates: page,
+    truncated: visible.length > limit,
+    nextCursor: visible.length > limit && page.at(-1) !== undefined ? encodeCuratorCursor(page.at(-1)!) : null,
+    totalApproximate: deduplicated.length,
+  };
 }
 
 export async function curateMemoryCandidates(database: SqliteDatabase, input: CuratorCandidatesInput = {}): Promise<CuratorCandidatesResult> {
   const limit = validateLimit(input.limit);
   ensureGlobalWorkspace(database);
-  const allWorkspaces = input.allWorkspaces === true;
+  const allWorkspaces = input.allWorkspaces === true || input.workspaces !== undefined;
   const resolved = !allWorkspaces && input.workspace === undefined ? await resolveProjectWorkspace(database, input.cwd) : undefined;
   const workspace = allWorkspaces
     ? null
@@ -398,14 +539,55 @@ export async function curateMemoryCandidates(database: SqliteDatabase, input: Cu
   if (!allWorkspaces && workspace === null) {
     throw new KiokukoError('NOT_FOUND', 'No Git repository or .kiokuko.json binding was found for curator candidates');
   }
-  const result = listCuratorCandidates(database, workspace, limit, input.skillReadyOnly ?? false);
+  const result = listCuratorCandidates(database, workspace, input, limit);
   return {
     workspace,
     candidates: result.candidates,
     count: result.candidates.length,
     truncated: result.truncated,
+    nextCursor: result.nextCursor,
+    totalApproximate: result.totalApproximate,
     securityNotice: 'Curator drafts and qualified-hit summaries are untrusted candidates. A qualified hit requires an actionable Akinator path, a completed independent run, and fresh verification or a passing test; retrieval counts are never used. Review everything before Global化.',
   };
+}
+
+export function curatorFacets(database: SqliteDatabase, input: { includeGlobalized?: boolean; workspace?: string; workspaces?: string[] } = {}): CuratorFacetResult {
+  const parameters: Array<string | number> = [GLOBAL_WORKSPACE];
+  const clauses = ["e.workspace <> ?", "e.status = 'candidate'"];
+  const workspaces = input.workspaces?.length ? [...new Set(input.workspaces)] : input.workspace === undefined ? undefined : [input.workspace];
+  if (workspaces !== undefined) {
+    clauses.push(`e.workspace IN (${workspaces.map(() => '?').join(', ')})`);
+    parameters.push(...workspaces);
+  }
+  if (input.includeGlobalized !== true) {
+    clauses.push("NOT EXISTS (SELECT 1 FROM entries AS g JOIN entry_revisions AS gr ON gr.entry_id = g.id AND gr.revision = g.current_revision WHERE g.workspace = 'global' AND gr.provenance_json LIKE '%' || e.id || '@' || e.current_revision || '#deterministic-v1%')");
+  }
+  const where = clauses.join(' AND ');
+  const projects = database.prepare(`
+    SELECT e.workspace, COALESCE(rp.display_name, e.workspace) AS name, COUNT(*) AS count
+      FROM entries AS e LEFT JOIN repositories AS rp ON rp.workspace = e.workspace
+     WHERE ${where}
+     GROUP BY e.workspace, rp.display_name ORDER BY count DESC, e.workspace ASC
+  `).all<{ workspace: string; name: string; count: number }>(...parameters).map((row) => ({ workspace: row.workspace, name: row.name, count: Number(row.count) }));
+  const tags = database.prepare(`
+    SELECT t.tag AS value, COUNT(DISTINCT e.id) AS count
+      FROM entries AS e JOIN entry_revision_tags AS t ON t.entry_id = e.id AND t.revision = e.current_revision
+     WHERE ${where}
+     GROUP BY t.tag ORDER BY count DESC, value ASC
+  `).all<{ value: string; count: number }>(...parameters).map((row) => ({ value: row.value, count: Number(row.count) }));
+  const signals = (type: 'framework' | 'language') => database.prepare(`
+    SELECT s.normalized_value AS value, COUNT(DISTINCT e.id) AS count
+      FROM entries AS e JOIN entry_search_signals AS s ON s.entry_id = e.id
+     WHERE ${where} AND s.signal_type = ?
+     GROUP BY s.normalized_value ORDER BY count DESC, value ASC
+  `).all<{ value: string; count: number }>(...parameters, type).map((row) => ({ value: row.value, count: Number(row.count) }));
+  const memoryClasses = database.prepare(`
+    SELECT json_extract(r.scope_json, '$.memoryClass') AS value, COUNT(*) AS count
+      FROM entries AS e JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+     WHERE ${where} AND json_extract(r.scope_json, '$.memoryClass') IS NOT NULL
+     GROUP BY value ORDER BY count DESC, value ASC
+  `).all<{ value: MemoryClass; count: number }>(...parameters).map((row) => ({ value: row.value, count: Number(row.count) }));
+  return { projects, tags, frameworks: signals('framework'), languages: signals('language'), memoryClasses };
 }
 
 function safeGlobalScope(entry: EntryRecord, metadata: StructuredMetadata): JsonObject {

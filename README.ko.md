@@ -108,7 +108,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator 방식 지식 수집
 
-중요한 작업에서는 설정된 에이전트 지침이 `task_prepare`를 호출합니다. 이 도구는 작업 유형, 대상 및 성공 조건과 같이 누락된 고가치 필드만 질문한 뒤 쿼리와 역할과 용도 태그를 사용하여 로컬 메모리를 선택합니다. 클라이언트가 현재 사용 가능한 스킬과 MCP 도구 이름을 제공하면 필요한 기능을 매칭하고 `available`, `missing`, `unknown`을 구분해 반환합니다. 이 목록은 일시적으로만 사용되며 저장되지 않습니다. CLI의 `guide` 명령으로 같은 수집을 수동 실행할 수 있습니다.
+중요한 작업에서는 설정된 에이전트 지침이 `task_prepare`를 호출합니다. 이 도구는 작업 유형, 대상 및 성공 조건과 같이 누락된 고가치 필드만 질문한 뒤 쿼리와 역할과 용도 태그를 사용하여 로컬 메모리를 선택합니다. 클라이언트가 현재 사용 가능한 스킬과 MCP 도구의 전체 이름 및 짧은 설명을 제공하면 필요한 기능을 매칭하고 `available`, `missing`, `unknown`을 구분해 반환합니다. 설명은 항목별로 축약 또는 제외되며 이 목록은 일시적으로만 사용되고 저장되지 않습니다. CLI의 `guide` 명령으로 같은 수집을 수동 실행할 수 있습니다.
 
 작업에 UI, UX, frontend, screen, SwiftUI, 화면 또는 accessibility 같은 구체적인 인터페이스 용어가 있으면 `task_prepare`는 클라이언트 capability 목록의 `kiokuko-ui-design-soul`을 명시적으로 추천합니다. 일반적인 `design`, backend-only 작업 또는 이미지 생성만 있는 요청에서는 발동하지 않습니다.
 
@@ -126,7 +126,7 @@ kiokuko guide context <session-id> --workspace <workspace> --json
 
 - https://github.com/mattpocock/skills
 
-capability 목록 생략은 0개가 아니라 "알 수 없음"으로 처리되어 폴백을 비활성화합니다. 스킬이 하나라도 있어도 비활성화됩니다. 수동 CLI 사용은 `guide context ... --no-client-skills`로 같은 조건을 명시해야 합니다. `disable-model-invocation: true`로 표시된 스킬은 자동 선택에서 제외됩니다.
+capability 목록을 생략하거나, 손상되었거나, 비어 있지 않으면 폴백을 비활성화합니다. 수동 CLI 사용은 `guide context ... --no-client-skills`로 같은 조건을 명시해야 합니다. `disable-model-invocation: true`로 표시된 스킬은 자동 선택에서 제외됩니다.
 
 가져온 각 항목에는 저장소, commit SHA 및 소스 경로가 기록됩니다. 신뢰되지 않은 참조 자료이므로 자동으로 `verified`로 승격되거나 명령으로 실행되지 않습니다. 반복 동기화는 콘텐츠 해시를 통해 멱등성을 유지합니다.
 

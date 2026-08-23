@@ -38,6 +38,7 @@ test('registers required commands', () => {
     'mcp',
     'use',
     'recall',
+    'memory',
     'search',
     'read',
     'record',
@@ -57,6 +58,21 @@ test('registers required commands', () => {
   ]) {
     assert.ok(names.includes(name), `missing ${name}`);
   }
+});
+
+test('exposes scoped recall through the documented memory recall command', () => {
+  const memory = buildCli().commands.find((command) => command.name() === 'memory');
+  assert.ok(memory);
+  assert.deepEqual(memory.commands.map((command) => command.name()), ['recall']);
+  const recall = memory.commands[0];
+  assert.ok(recall);
+  assert.match(recall.helpInformation(), /<query>/);
+  assert.match(recall.helpInformation(), /--scope <scope>/);
+  assert.match(recall.helpInformation(), /--cwd <path>/);
+  assert.match(recall.helpInformation(), /--limit <number>/);
+  assert.match(recall.helpInformation(), /--max-chars <number>/);
+  assert.match(recall.helpInformation(), /--workspace <name>/);
+  assert.match(recall.helpInformation(), /--json/);
 });
 
 test('exposes the curator review and confirmation options', () => {

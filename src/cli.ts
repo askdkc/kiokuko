@@ -5,6 +5,9 @@ import { initializeDatabase } from './commands/init.js';
 import { useRepository } from './commands/use.js';
 import { searchEntries, recallEntries } from './memory/retrieval.js';
 import { readEntry, recordEntry } from './memory/entries.js';
+import { recallScopedMemory } from './memory/scoped-memory.js';
+import type { MemoryScope, ScopedRecallResult } from './memory/scoped-memory.js';
+import type { RecallResult } from './memory/retrieval.js';
 import { promoteEntry, supersedeEntry, linkEntries } from './memory/lifecycle.js';
 import { purgeEntry } from './commands/purge.js';
 import { createBackup } from './commands/backup.js';
@@ -78,6 +81,31 @@ function addWorkspaceOptions(command: Command): Command {
   return command.option('--workspace <name>', 'Workspace name').option('--json', 'Emit a JSON response');
 }
 
+function configureRecallCommand(command: Command): Command {
+  const recall = addWorkspaceOptions(command.description('Recall relevant memory entries').argument('<query>'))
+    .option('--limit <number>', 'Maximum entries', '5').option('--max-chars <number>', 'Context character budget', '8000')
+    .option('--scope <scope>', 'auto, project, ecosystem, or global', 'auto').option('--cwd <path>', 'Repository path used for scoped recall');
+  recall.action(async (query: string, options: Record<string, unknown>) => {
+    let data: RecallResult | ScopedRecallResult;
+    if (options.workspace !== undefined) {
+      data = await withDatabase((database) => recallEntries(database, { workspace: String(options.workspace), query, limit: Number(options.limit), maxChars: Number(options.maxChars) }));
+    } else {
+      data = await withDatabase((database) => recallScopedMemory(database, {
+        query,
+        scope: String(options.scope ?? 'auto') as never,
+        limit: Number(options.limit),
+        maxChars: Number(options.maxChars),
+        ...(typeof options.cwd === 'string' ? { cwd: options.cwd } : {}),
+      }));
+    }
+    const items = 'items' in data ? data.items : data.combined?.items ?? data.ecosystem?.items ?? data.global?.items ?? data.project?.memory.items ?? [];
+    const count = 'count' in data ? data.count : items.length;
+    const truncated = 'truncated' in data ? data.truncated : data.combined?.truncated ?? data.ecosystem?.truncated ?? false;
+    humanOrJson(options.json === true, 'recall', data, `${items.length} memory entries recalled`, { count, truncated });
+  });
+  return recall;
+}
+
 export interface CliDependencies {
   readonly server?: ServerCommandDependencies;
   readonly agent?: AgentCommandDependencies;
@@ -98,7 +126,18 @@ async function dispatchRequest(request: unknown): Promise<unknown> {
   if (operation === 'record') return withDatabase((database) => recordEntry(database, args as never));
   if (operation === 'read') return withDatabase((database) => readEntry(database, { workspace: String(args.workspace ?? ''), entryId: String(args.entryId ?? '') }));
   if (operation === 'search') return withDatabase((database) => searchEntries(database, args as never));
-  if (operation === 'recall') return withDatabase((database) => recallEntries(database, args as never));
+  if (operation === 'recall') {
+    if (typeof args.scope === 'string' || typeof args.cwd === 'string' || args.workspace === undefined) {
+      return withDatabase((database) => recallScopedMemory(database, {
+        query: String(args.query ?? ''),
+        scope: String(args.scope ?? 'auto') as MemoryScope,
+        ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+        ...(typeof args.maxChars === 'number' ? { maxChars: args.maxChars } : {}),
+        ...(typeof args.cwd === 'string' ? { cwd: args.cwd } : {}),
+      }));
+    }
+    return withDatabase((database) => recallEntries(database, args as never));
+  }
   if (operation === 'curator') return withDatabase((database) => runCuratorCommand(database, {
     ...(typeof args.workspace === 'string' ? { workspace: args.workspace } : {}),
     ...(typeof args.cwd === 'string' ? { cwd: args.cwd } : {}),
@@ -232,14 +271,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       humanOrJson(options.json === true, 'use', result, `Kiokuko enabled for ${result.repositoryRoot}`);
     });
 
-  const recall = addWorkspaceOptions(cli.command('recall').description('Recall relevant memory entries').argument('<query>'))
-    .option('--limit <number>', 'Maximum entries', '5').option('--max-chars <number>', 'Context character budget', '8000');
-  recall.action(async (query: string, options: Record<string, unknown>) => {
-    const data = await withDatabase((database) => recallEntries(database, {
-      workspace: String(options.workspace ?? ''), query, limit: Number(options.limit), maxChars: Number(options.maxChars),
-    }));
-    humanOrJson(options.json === true, 'recall', data, `${data.items.length} memory entries recalled`, { count: data.count, truncated: data.truncated });
-  });
+  configureRecallCommand(cli.command('recall'));
+  const memory = cli.command('memory').description('Memory operations');
+  configureRecallCommand(memory.command('recall'));
 
   const guide = cli.command('guide').description('Run the Akinator-style knowledge and skill intake');
   guide.command('start').description('Start an intake session').argument('<task>').requiredOption('--workspace <name>').option('--json').action(async (task: string, options: { workspace: string; json?: boolean }) => {

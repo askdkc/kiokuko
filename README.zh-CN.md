@@ -80,7 +80,7 @@ Hermes 配置是 profile 级别的 native stdio MCP，注册 `mcp_servers.kiokuk
 
 MCP 接口被有意保持为最小范围：
 
-- `task_prepare`：每个用户请求仅执行一次 Akinator 式采集、有界记忆/参考检索，并与当前客户端提供的技能和 MCP 工具名称进行匹配。
+- `task_prepare`：每个用户请求仅执行一次 Akinator 式采集、有界记忆/参考检索，并与当前客户端提供的技能和 MCP 工具完整名称及简短说明进行匹配。
 - `task_answer`：仅使用用户请求或已验证仓库证据支持的答案继续采集。
 - `memory_recall`：读取有界的 project/global 上下文，并始终标记为 untrusted。
 - `memory_checkpoint`：在用户请求结束时仅执行一次，将有界的持久性条目保存为 `candidate` 和 `untrusted`；疑似密钥的内容会被拒绝。
@@ -108,7 +108,7 @@ npm exec -- tsx src/bin/kiokuko.ts mcp
 
 ## Akinator 式知识采集
 
-对于重要工作，设置好的智能体指令会调用 `task_prepare`。该工具只询问任务类型、目标和成功条件等缺失的高价值字段，再根据查询和角色与用途标签选择本地记忆。如果客户端提供当前可用的技能和 MCP 工具名称，结果还会匹配所需能力，并区分 `available`、`missing` 和 `unknown`；该目录仅临时使用，不会存储。CLI 的 `guide` 命令可手动执行同一流程：
+对于重要工作，设置好的智能体指令会调用 `task_prepare`。该工具只询问任务类型、目标和成功条件等缺失的高价值字段，再根据查询和角色与用途标签选择本地记忆。如果客户端提供当前可用能力的完整名称和简短说明，结果还会匹配所需能力，并区分 `available`、`missing` 和 `unknown`；说明会逐项压缩或删除，该目录仅临时使用，不会存储。CLI 的 `guide` 命令可手动执行同一流程：
 
 当任务包含 UI、UX、frontend、screen、SwiftUI、画面或 accessibility 等具体界面词汇时，`task_prepare` 会明确推荐客户端 capability 目录中的 `kiokuko-ui-design-soul`。仅有通用 `design`、backend-only 工作或纯图像生成不会触发该规则。
 
@@ -126,7 +126,7 @@ kiokuko guide context <session-id> --workspace <workspace> --json
 
 - https://github.com/mattpocock/skills
 
-省略 capability 目录表示“未知”而不是零，并会禁用该回退；存在任何技能也会禁用它。手动 CLI 使用必须通过 `guide context ... --no-client-skills` 明确声明同一条件。标记为 `disable-model-invocation: true` 的技能不会被自动选择。
+省略、损坏或非空的 capability 目录都会禁用该回退。手动 CLI 使用必须通过 `guide context ... --no-client-skills` 明确声明同一条件。标记为 `disable-model-invocation: true` 的技能不会被自动选择。
 
 每个导入条目都会记录其仓库、commit SHA 和源路径。这些内容是不受信任的参考资料，永远不会自动提升为 `verified`，也不会作为命令执行。重复同步通过内容哈希保持幂等。
 

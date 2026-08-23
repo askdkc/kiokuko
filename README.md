@@ -232,10 +232,11 @@ intent, action family, target, success state, selected action, verification, and
 stop conditions. It asks only for missing high-value fields such as the task
 type, target, and observable success condition, then selects local memory by
 query and role and purpose tags.
-If the client supplies its currently available skill and MCP-tool names, the
+If the client supplies complete capability names with short descriptions, the
 result also identifies matching capabilities and clearly distinguishes
-available, missing, and unknown skills. The catalog is ephemeral and is not
-stored. The CLI `guide` commands expose the same intake for manual use:
+available, missing, and unknown skills. The catalog is compacted per item,
+ephemeral, and is not stored. The CLI `guide` commands expose the same intake
+for manual use:
 
 For tasks containing concrete UI vocabulary such as UI, UX, frontend, screen,
 SwiftUI, or accessibility, `task_prepare` explicitly recommends
@@ -253,14 +254,15 @@ kiokuko guide context <session-id> --workspace <workspace> --json
 ```
 
 If local retrieval produces no relevant entries and the client explicitly
-reports zero available skills, `task_prepare` can fetch the current `main` tree
+supplies an empty capability catalog, `task_prepare` can fetch the current
+`main` tree
 from the single allowlisted fallback repository:
 
 - https://github.com/mattpocock/skills
 
-An omitted capability catalog means “unknown,” not zero, and disables this
-fallback. A catalog containing any skill also disables it. Manual CLI use must
-state the same condition explicitly with `guide context ... --no-client-skills`.
+An omitted, malformed, or non-empty capability catalog means this fallback is
+disabled. Manual CLI use must state the same condition explicitly with
+`guide context ... --no-client-skills`.
 Skills marked `disable-model-invocation: true` are excluded from automatic
 selection.
 

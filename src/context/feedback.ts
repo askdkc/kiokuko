@@ -4,6 +4,7 @@ import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { sanitizeJson } from '../security/sanitize.js';
 import { canonicalContentHash } from '../serialization/validate.js';
+import { entryOriginMatchesWorkspace, isContextEntryOrigin } from './origin.js';
 
 export const MAX_FEEDBACK_COMMENT_BYTES = 4 * 1024;
 export const MAX_FEEDBACK_IDENTIFIER_LENGTH = 256;
@@ -92,6 +93,7 @@ interface ContextFeedbackRow extends SqliteRow {
   linked_entry_id: unknown;
   entry_revision: unknown;
   entry_workspace: unknown;
+  revision_workspace: unknown;
   origin_scope: unknown;
 }
 
@@ -393,18 +395,24 @@ function validateRunFeedbackInput(value: unknown): ValidatedRunFeedbackInput {
 
 function assertContextTarget(database: SqliteDatabase, input: ValidatedContextFeedbackInput): void {
   const target = database.prepare(`
-    SELECT cde.entry_revision AS entry_revision
+    SELECT cde.entry_revision AS entry_revision, cde.origin_scope AS origin_scope,
+           e.workspace AS entry_workspace, er.workspace AS revision_workspace
     FROM context_deliveries AS cd
     JOIN ledger_runs AS lr ON lr.run_id = cd.run_id
     JOIN context_delivery_entries AS cde
       ON cde.delivery_id = cd.delivery_id AND cde.entry_id = ?
     JOIN entries AS e ON e.id = cde.entry_id
+    JOIN entry_revisions AS er
+      ON er.entry_id = cde.entry_id AND er.revision = cde.entry_revision
     WHERE cd.delivery_id = ?
       AND cd.run_id = ?
       AND lr.workspace = ?
-      AND ((cde.origin_scope = 'global' AND e.workspace = 'global') OR (cde.origin_scope = 'project' AND e.workspace = ?))
-  `).get<{ entry_revision: number }>(input.entryId, input.deliveryId, input.runId, input.workspace, input.workspace);
+  `).get<{ entry_revision: number; origin_scope: unknown; entry_workspace: unknown; revision_workspace: unknown }>(input.entryId, input.deliveryId, input.runId, input.workspace);
   if (!target) notFound();
+  if (!isContextEntryOrigin(target.origin_scope)
+    || typeof target.entry_workspace !== 'string'
+    || target.revision_workspace !== target.entry_workspace
+    || !entryOriginMatchesWorkspace({ origin: target.origin_scope, runWorkspace: input.workspace, entryWorkspace: target.entry_workspace })) notFound();
   if (input.entryRevision !== undefined && target.entry_revision !== input.entryRevision) conflict();
 }
 
@@ -420,6 +428,7 @@ function selectContextByKey(database: SqliteDatabase, input: ValidatedContextFee
       cde.entry_id AS linked_entry_id,
       cde.entry_revision AS entry_revision,
       e.workspace AS entry_workspace,
+      er.workspace AS revision_workspace,
       cde.origin_scope AS origin_scope
     FROM context_feedback AS cf
     LEFT JOIN ledger_runs AS lr ON lr.run_id = cf.run_id
@@ -427,6 +436,8 @@ function selectContextByKey(database: SqliteDatabase, input: ValidatedContextFee
     LEFT JOIN context_delivery_entries AS cde
       ON cde.delivery_id = cf.delivery_id AND cde.entry_id = cf.entry_id
     LEFT JOIN entries AS e ON e.id = cf.entry_id
+    LEFT JOIN entry_revisions AS er
+      ON er.entry_id = cde.entry_id AND er.revision = cde.entry_revision
     WHERE cf.run_id = ? AND cf.actor = ? AND cf.idempotency_key = ?
   `).get<ContextFeedbackRow>(input.runId, input.actor, input.idempotencyKeyHash);
 }
@@ -466,9 +477,10 @@ function rowToContextFeedback(row: ContextFeedbackRow, workspace: string): Conte
   if (storedString(row.joined_delivery_id) !== deliveryId) integrity();
   if (storedString(row.linked_delivery_id) !== deliveryId) integrity();
   if (storedString(row.linked_entry_id) !== entryId) integrity();
-  const origin = row.origin_scope === 'global' ? 'global' : row.origin_scope === 'project' ? 'project' : integrity();
-  if (origin === 'project' && storedString(row.entry_workspace) !== workspace) integrity();
-  if (origin === 'global' && storedString(row.entry_workspace) !== 'global') integrity();
+  const origin = isContextEntryOrigin(row.origin_scope) ? row.origin_scope : integrity();
+  const entryWorkspace = storedString(row.entry_workspace);
+  if (storedString(row.revision_workspace) !== entryWorkspace
+    || !entryOriginMatchesWorkspace({ origin, runWorkspace: workspace, entryWorkspace })) integrity();
   if (typeof row.verdict !== 'string' || !CONTEXT_FEEDBACK_VERDICTS.includes(row.verdict as ContextFeedbackVerdict)) integrity();
   const verdict = row.verdict as ContextFeedbackVerdict;
   let comment: string | null;
@@ -735,6 +747,7 @@ export function listContextFeedback(database: SqliteDatabase, input: unknown): F
         cde.entry_id AS linked_entry_id,
         cde.entry_revision AS entry_revision,
         e.workspace AS entry_workspace,
+        er.workspace AS revision_workspace,
         cde.origin_scope AS origin_scope
       FROM context_feedback AS cf
       LEFT JOIN ledger_runs AS lr ON lr.run_id = cf.run_id
@@ -742,6 +755,8 @@ export function listContextFeedback(database: SqliteDatabase, input: unknown): F
       LEFT JOIN context_delivery_entries AS cde
         ON cde.delivery_id = cf.delivery_id AND cde.entry_id = cf.entry_id
       LEFT JOIN entries AS e ON e.id = cf.entry_id
+      LEFT JOIN entry_revisions AS er
+        ON er.entry_id = cde.entry_id AND er.revision = cde.entry_revision
       WHERE ${conditions.join(' AND ')}
       ORDER BY cf.created_at ASC, cf.feedback_id ASC
       LIMIT ?

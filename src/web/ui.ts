@@ -67,11 +67,18 @@ export const WEB_HTML = String.raw`<!doctype html>
     .entry-card:hover,.entry-card.selected { border-color:#93c5fd; box-shadow:0 8px 20px rgba(37,99,235,.10); }
     .entry-meta { display:flex; gap:7px; align-items:center; flex-wrap:wrap; color:var(--muted); font-size:12px; }
     .badge { border-radius:999px; padding:3px 8px; background:#f1f5f9; color:#475569; font-weight:700; }
+    .badge.origin-project { background:#dbeafe; color:#1d4ed8; }
+    .badge.origin-ecosystem { background:#dcfce7; color:#166534; }
+    .badge.origin-global { background:#fef3c7; color:#92400e; }
     .badge.verified { background:#dcfce7; color:#166534; }
     .badge.candidate { background:#fef3c7; color:#92400e; }
     .badge.superseded { background:#fee2e2; color:#991b1b; }
     .entry-card h3 { margin:9px 0 6px; font-size:16px; }
     .snippet { margin:0; color:var(--muted); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; white-space:pre-wrap; }
+    .federated-card { border-left:4px solid #22c55e; }
+    .federated-card.global { border-left-color:#f59e0b; }
+    .federated-source,.selection-reasons { margin-top:8px; color:var(--muted); font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .federated-detail { display:grid; gap:12px; }
     .tags { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
     .tag { border:0; background:transparent; color:var(--accent); font-size:12px; padding:0; }
     .tag:hover { text-decoration:underline; }
@@ -108,19 +115,33 @@ export const WEB_HTML = String.raw`<!doctype html>
     .curator-close { display:grid; place-items:center; flex:0 0 auto; width:44px; height:44px; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--muted); font-size:26px; line-height:1; }
     .curator-close:hover { border-color:#93c5fd; background:var(--accent-soft); color:var(--accent); }
     .curator-status { margin:0 0 12px; }
+    .curator-filters { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin:0 0 14px; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
+    .curator-filter { display:grid; gap:4px; color:var(--muted); font-size:11px; font-weight:800; }
+    .curator-filter-check { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; font-weight:700; }
+    .curator-filter-check input { width:16px; height:16px; }
+    .curator-filter-tags { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:7px; padding-top:4px; }
+    .curator-filter-tags .tag.active { font-weight:800; text-decoration:underline; }
     .curator-list { display:grid; gap:12px; }
     .curator-card { border:1px solid var(--line); border-radius:14px; padding:16px; background:var(--panel); }
-    .curator-card.selected { border-color:#93c5fd; box-shadow:0 8px 20px rgba(37,99,235,.10); }
-    .curator-select { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:13px; font-weight:700; }
-    .curator-select input { width:17px; height:17px; accent-color:#2563eb; }
     .curator-workspace { overflow-wrap:anywhere; }
     .curator-card h3 { margin:8px 0; font-size:17px; }
     .curator-overview { margin:8px 0 12px; color:var(--muted); white-space:pre-wrap; line-height:1.55; }
+    .curator-card-actions { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0 0; }
+    .curator-review-details { margin-top:12px; }
     .curator-draft { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
     .curator-draft h4 { margin:0 0 10px; font-size:14px; }
     .curator-draft-label { margin:10px 0 4px; color:var(--muted); font-size:12px; font-weight:700; }
     .curator-draft-value { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.5; }
     .curator-reasons { color:var(--muted); font-size:12px; white-space:pre-wrap; }
+    .curator-confirm-modal { position:absolute; inset:0; z-index:2; display:grid; place-items:center; padding:24px; background:rgba(15,23,42,.58); }
+    .curator-confirm-dialog { width:min(680px,calc(100vw - 32px)); max-height:min(760px,calc(100vh - 48px)); display:flex; flex-direction:column; min-height:0; background:var(--panel); box-shadow:0 28px 90px rgba(15,23,42,.34); }
+    .curator-confirm-dialog .panel-body { min-height:0; overflow-y:auto; }
+    .curator-confirm-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:0 0 14px; }
+    .curator-confirm-field { min-width:0; padding:11px 12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
+    .curator-confirm-field dt { margin:0 0 5px; color:var(--muted); font-size:12px; font-weight:800; }
+    .curator-confirm-field dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; }
+    .curator-confirm-draft { max-height:280px; overflow:auto; margin:0; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.5; }
+    .curator-confirm-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
     @keyframes curator-backdrop-in { from { opacity:0; } to { opacity:1; } }
     @keyframes curator-backdrop-out { from { opacity:1; } to { opacity:0; } }
     @keyframes curator-dialog-in { from { opacity:0; transform:translateY(10px) scale(.98); } to { opacity:1; transform:translateY(0) scale(1); } }
@@ -130,7 +151,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     }
     @media (max-width:680px) { .operator-grid { grid-template-columns:1fr; } }
     @media (max-width:1050px) { .layout { grid-template-columns:180px minmax(280px,1fr); } .editor-panel { grid-column:1 / -1; } }
-    @media (max-width:680px) { .shell { padding:16px; } .topbar { display:block; position:relative; } .brand { padding-right:56px; } .topbar-side { margin-top:16px; align-self:auto; } .language-picker { position:absolute; top:0; right:0; } .toolbar { justify-content:stretch; margin-top:0; } .topbar-side .control,.topbar-side .search { flex:1 1 100%; width:100%; } .search { min-width:0; } .layout { grid-template-columns:1fr; } .genres-panel { order:0; } .list-panel { order:1; } .editor-panel { order:2; } .entry-list { max-height:none; } .curator-dialog-head { flex-wrap:wrap; } .curator-header-actions { flex:1 1 100%; width:100%; margin-left:0; } .curator-actions { justify-content:flex-end; } }
+    @media (max-width:680px) { .shell { padding:16px; } .topbar { display:block; position:relative; } .brand { padding-right:56px; } .topbar-side { margin-top:16px; align-self:auto; } .language-picker { position:absolute; top:0; right:0; } .toolbar { justify-content:stretch; margin-top:0; } .topbar-side .control,.topbar-side .search { flex:1 1 100%; width:100%; } .search { min-width:0; } .layout { grid-template-columns:1fr; } .genres-panel { order:0; } .list-panel { order:1; } .editor-panel { order:2; } .entry-list { max-height:none; } .curator-dialog-head { flex-wrap:wrap; } .curator-header-actions { flex:1 1 100%; width:100%; margin-left:0; } .curator-actions { justify-content:flex-end; } .curator-confirm-grid { grid-template-columns:1fr; } .curator-confirm-actions { flex-direction:column-reverse; } .curator-confirm-actions .button { width:100%; } }
   </style>
 </head>
 <body>
@@ -190,11 +211,34 @@ export const WEB_HTML = String.raw`<!doctype html>
       </div>
       <div class="panel-body">
         <p id="curator-description" class="subtitle" data-i18n="curatorDescription">Review reusable knowledge candidates and add them to global memory.</p>
-        <div id="curator-selection-count" class="curator-selection-count curator-selection-summary">0 selected</div>
+        <div id="curator-filters" class="curator-filters" aria-label="Curator filters"></div>
+        <div class="curator-selection-summary"><span id="curator-result-count" class="curator-selection-count">0 candidates</span></div>
         <div id="curator-status" class="status" role="status" aria-live="polite"></div>
         <div id="curator-list" class="curator-list"></div>
       </div>
     </section>
+    <div id="curator-confirm-modal" class="curator-confirm-modal" hidden>
+      <section id="curator-confirm-panel" class="panel curator-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="curator-confirm-title" aria-describedby="curator-confirm-description">
+        <div class="panel-head">
+          <h2 id="curator-confirm-title" data-i18n="curatorConfirmTitle">Confirm Global memory addition</h2>
+        </div>
+        <div class="panel-body">
+          <p id="curator-confirm-description" class="subtitle" data-i18n="curatorConfirmDescription">Verify the source, applicability, and complete regenerated draft.</p>
+          <dl class="curator-confirm-grid">
+            <div class="curator-confirm-field"><dt data-i18n="curatorConfirmSource">Source project</dt><dd id="curator-confirm-source"></dd></div>
+            <div class="curator-confirm-field"><dt data-i18n="curatorConfirmSkill">Skill</dt><dd id="curator-confirm-skill"></dd></div>
+            <div class="curator-confirm-field"><dt data-i18n="curatorConfirmApplicability">Applicability</dt><dd id="curator-confirm-applicability"></dd></div>
+          </dl>
+          <h3 data-i18n="curatorConfirmDraft">Draft to add</h3>
+          <pre id="curator-confirm-draft" class="curator-confirm-draft"></pre>
+          <div id="curator-confirm-status" class="status curator-status" role="status" aria-live="polite"></div>
+          <div class="curator-confirm-actions">
+            <button id="curator-confirm-cancel" class="button" type="button" data-i18n="curatorCancel">Cancel</button>
+            <button id="curator-confirm-submit" class="button primary" type="button" data-i18n="curatorConfirmAction">Add this draft to Global</button>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
   <script>
     const i18n = ${WEB_I18N_CONFIG};
@@ -219,7 +263,8 @@ export const WEB_HTML = String.raw`<!doctype html>
     const botModes = [
       ['bot:common', 'bot.common'], ['bot:researcher', 'bot.researcher'], ['bot:builder', 'bot.builder'], ['bot:reviewer', 'bot.reviewer'], ['bot:devops', 'bot.devops'], ['bot:writer', 'bot.writer'], ['bot:analyst', 'bot.analyst']
     ];
-    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], tags: [], selected: null, runs: [], selectedRun: null, curatorCandidates: [], curatorSelected: new Set(), curatorGlobalized: new Set(), curatorOpen: false, curatorPreviousFocus: null, localizedStatus: null };
+    const curatorUrl = new URLSearchParams(location.search);
+    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], recallItems: [], tags: [], selected: null, selectedRecall: null, runs: [], selectedRun: null, curatorCandidates: [], curatorGlobalized: new Set(), curatorNextCursor: null, curatorTotalApproximate: 0, curatorOpen: false, curatorPreviousFocus: null, curatorPendingCandidate: null, curatorConfirmationTrigger: null, curatorGlobalizeBusy: false, localizedStatus: null, curatorSearch: curatorUrl.get('search') || '', curatorProject: curatorUrl.get('project') || '', curatorTags: new Set(curatorUrl.getAll('tag')), curatorFramework: curatorUrl.get('framework') || '', curatorLanguage: curatorUrl.get('language') || '', curatorMemoryClass: curatorUrl.get('memoryClass') || '', curatorTier: curatorUrl.get('tier') || '', curatorReady: curatorUrl.get('ready') === 'true', curatorIncludeGlobalized: curatorUrl.get('includeGlobalized') === 'true', curatorFacets: null };
     const $ = (id) => document.getElementById(id);
     const t = (key, parameters = {}) => {
       const template = i18n.messages[state.locale]?.[key] ?? i18n.messages[i18n.defaultLocale]?.[key] ?? key;
@@ -232,6 +277,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     const setI18nText = (element, key) => { element.dataset.i18n = key; element.textContent = t(key); return element; };
     const labelForKind = (kind) => { const item = kinds.find(([value]) => value === kind); return item ? t(item[1]) : kind; };
     const labelForStatus = (status) => i18n.messages[state.locale]?.['status.' + status] ?? status;
+    const labelForOrigin = (origin) => t(origin === 'ecosystem' ? 'originEcosystem' : origin === 'global' ? 'originGlobal' : 'originProject');
     const updateEditorState = () => {
       const element = $('editor-state');
       if (state.selected) { delete element.dataset.i18n; element.dataset.i18nStatus = state.selected.status; element.textContent = labelForStatus(state.selected.status); }
@@ -300,6 +346,55 @@ export const WEB_HTML = String.raw`<!doctype html>
       if (blocked) appMain.setAttribute('aria-hidden', 'true');
       else appMain.removeAttribute('aria-hidden');
     };
+    function restoreCuratorUrl() {
+      const params = new URLSearchParams(location.search);
+      state.curatorSearch = params.get('search') || '';
+      state.curatorProject = params.get('project') || '';
+      state.curatorTags = new Set(params.getAll('tag'));
+      state.curatorFramework = params.get('framework') || '';
+      state.curatorLanguage = params.get('language') || '';
+      state.curatorMemoryClass = params.get('memoryClass') || '';
+      state.curatorTier = params.get('tier') || '';
+      state.curatorReady = params.get('ready') === 'true';
+      state.curatorIncludeGlobalized = params.get('includeGlobalized') === 'true';
+    }
+    function syncCuratorUrl(push = false) {
+      const params = new URLSearchParams(location.search);
+      for (const key of ['search', 'project', 'framework', 'language', 'memoryClass', 'tier', 'ready', 'includeGlobalized', 'tag']) params.delete(key);
+      if (state.curatorSearch) params.set('search', state.curatorSearch);
+      if (state.curatorProject) params.set('project', state.curatorProject);
+      if (state.curatorFramework) params.set('framework', state.curatorFramework);
+      if (state.curatorLanguage) params.set('language', state.curatorLanguage);
+      if (state.curatorMemoryClass) params.set('memoryClass', state.curatorMemoryClass);
+      if (state.curatorTier) params.set('tier', state.curatorTier);
+      if (state.curatorReady) params.set('ready', 'true');
+      if (state.curatorIncludeGlobalized) params.set('includeGlobalized', 'true');
+      for (const tag of state.curatorTags) params.append('tag', tag);
+      const nextUrl = location.pathname + (params.toString() ? '?' + params.toString() : '');
+      if (push) history.pushState(null, '', nextUrl); else history.replaceState(null, '', nextUrl);
+    }
+    function curatorFilterSelect(label, values, value, onChange) {
+      const wrapper = document.createElement('label'); wrapper.className = 'curator-filter';
+      const text = document.createElement('span'); text.textContent = label;
+      const select = document.createElement('select');
+      const all = document.createElement('option'); all.value = ''; all.textContent = 'All'; select.append(all);
+      for (const item of values || []) { const option = document.createElement('option'); option.value = item.value || item.workspace; option.textContent = item.name || item.value || item.workspace; select.append(option); }
+      select.value = value || ''; select.addEventListener('change', () => onChange(select.value)); wrapper.append(text, select); return wrapper;
+    }
+    function renderCuratorFilters() {
+      const root = $('curator-filters'); if (!root) return;
+      const facets = state.curatorFacets || {};
+      const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search candidates'; search.value = state.curatorSearch; search.addEventListener('input', () => { state.curatorSearch = search.value.trim(); clearTimeout(state.curatorSearchTimer); state.curatorSearchTimer = setTimeout(() => { syncCuratorUrl(true); loadCurator(); }, 180); });
+      const project = curatorFilterSelect('Project', facets.projects, state.curatorProject, (value) => { state.curatorProject = value; syncCuratorUrl(true); loadCurator(); });
+      const framework = curatorFilterSelect('Framework', facets.frameworks, state.curatorFramework, (value) => { state.curatorFramework = value; syncCuratorUrl(true); loadCurator(); });
+      const language = curatorFilterSelect('Language', facets.languages, state.curatorLanguage, (value) => { state.curatorLanguage = value; syncCuratorUrl(true); loadCurator(); });
+      const memoryClass = curatorFilterSelect('Memory class', facets.memoryClasses, state.curatorMemoryClass, (value) => { state.curatorMemoryClass = value; syncCuratorUrl(true); loadCurator(); });
+      const readiness = curatorFilterSelect('Readiness', [{ value: 'portable', name: 'Portable' }, { value: 'repeated', name: 'Repeated' }, { value: 'observed', name: 'Observed' }], state.curatorTier, (value) => { state.curatorTier = value; syncCuratorUrl(true); loadCurator(); });
+      const ready = document.createElement('label'); ready.className = 'curator-filter-check'; const readyInput = document.createElement('input'); readyInput.type = 'checkbox'; readyInput.checked = state.curatorReady; readyInput.addEventListener('change', () => { state.curatorReady = readyInput.checked; syncCuratorUrl(true); loadCurator(); }); ready.append(readyInput, document.createTextNode('Skill-ready'));
+      const globalized = document.createElement('label'); globalized.className = 'curator-filter-check'; const globalizedInput = document.createElement('input'); globalizedInput.type = 'checkbox'; globalizedInput.checked = state.curatorIncludeGlobalized; globalizedInput.addEventListener('change', () => { state.curatorIncludeGlobalized = globalizedInput.checked; syncCuratorUrl(true); loadCurator(); }); globalized.append(globalizedInput, document.createTextNode('Show already globalized'));
+      const tags = document.createElement('div'); tags.className = 'curator-filter-tags'; for (const facet of facets.tags || []) { const button = document.createElement('button'); button.type = 'button'; button.className = 'tag' + (state.curatorTags.has(facet.value) ? ' active' : ''); button.textContent = '#' + facet.value + ' (' + facet.count + ')'; button.addEventListener('click', () => { if (state.curatorTags.has(facet.value)) state.curatorTags.delete(facet.value); else state.curatorTags.add(facet.value); syncCuratorUrl(true); loadCurator(); }); tags.append(button); }
+      root.replaceChildren(search, project, framework, language, memoryClass, readiness, ready, globalized, tags);
+    }
     function openCurator() {
       if (state.curatorOpen) { $('curator-close')?.focus(); return; }
       state.curatorPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -311,6 +406,8 @@ export const WEB_HTML = String.raw`<!doctype html>
       requestAnimationFrame(() => $('curator-close')?.focus());
     }
     function closeCurator() {
+      if (state.curatorGlobalizeBusy) return;
+      if (state.curatorPendingCandidate) closeCuratorConfirmation(false);
       const modal = $('curator-modal');
       if (modal.hidden) return;
       state.curatorOpen = false;
@@ -371,10 +468,34 @@ export const WEB_HTML = String.raw`<!doctype html>
       if (tagButtons.length > 0) root.append(filterGroup(t('crossTagFilterTitle'), tagButtons));
     }
 
-    function renderEntries() {
-      $('result-count').textContent = tp('entryCount', state.entries.length);
-      $('list-title').textContent = state.tag ? '#' + state.tag : (state.kind === 'all' ? t('entriesTitle') : labelForKind(state.kind));
+    function renderFederatedItems() {
       const list = $('entry-list');
+      list.replaceChildren(...state.recallItems.map((item) => {
+        const card = document.createElement('article'); card.className = 'entry-card federated-card ' + (item.origin === 'global' ? 'global' : '');
+        const meta = document.createElement('div'); meta.className = 'entry-meta';
+        const origin = document.createElement('span'); origin.className = 'badge origin-' + item.origin; origin.textContent = labelForOrigin(item.origin);
+        const kind = document.createElement('span'); kind.className = 'badge'; kind.textContent = labelForKind(item.kind);
+        const status = document.createElement('span'); status.className = 'badge ' + item.status; status.textContent = labelForStatus(item.status);
+        meta.append(origin, kind, status);
+        const title = document.createElement('h3'); title.textContent = item.title;
+        const snippet = document.createElement('p'); snippet.className = 'snippet'; snippet.textContent = item.snippet;
+        const source = document.createElement('div'); source.className = 'federated-source';
+        const sourceLines = [];
+        if (item.sourceWorkspace) sourceLines.push(t('sourceWorkspace', { workspace: item.sourceWorkspace }));
+        if (item.sourceProject) sourceLines.push(t('sourceProject', { project: item.sourceProject }));
+        source.textContent = sourceLines.join('\n');
+        const tags = document.createElement('div'); tags.className = 'tags'; item.tags.forEach((tag) => { const tagItem = document.createElement('span'); tagItem.className = 'tag'; tagItem.textContent = '#' + tag; tags.append(tagItem); });
+        const reasons = document.createElement('div'); reasons.className = 'selection-reasons'; reasons.textContent = [t('selectionReasons'), ...item.selectionReasons.map((reason) => '• ' + reason)].join('\n');
+        card.append(meta, title, snippet, source, tags, reasons); card.addEventListener('click', () => { state.selected = null; state.selectedRecall = item; renderEntries(); renderEditor(); }); return card;
+      }));
+    }
+
+    function renderEntries() {
+      const displayed = state.recallItems.length > 0 ? state.recallItems.length : state.entries.length;
+      $('result-count').textContent = tp('entryCount', displayed);
+      $('list-title').textContent = state.recallItems.length > 0 ? t('entriesTitle') : (state.tag ? '#' + state.tag : (state.kind === 'all' ? t('entriesTitle') : labelForKind(state.kind)));
+      const list = $('entry-list');
+      if (state.recallItems.length > 0) { renderFederatedItems(); return; }
       if (!state.entries.length) {
         const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'noEntries'); list.replaceChildren(empty); return;
       }
@@ -392,7 +513,26 @@ export const WEB_HTML = String.raw`<!doctype html>
       }));
     }
 
+    function renderFederatedDetail() {
+      const editor = $('editor'); const item = state.selectedRecall;
+      if (!item) return;
+      const origin = document.createElement('span'); origin.className = 'badge origin-' + item.origin; origin.textContent = labelForOrigin(item.origin);
+      const heading = document.createElement('h3'); heading.textContent = item.title;
+      const meta = document.createElement('div'); meta.className = 'entry-meta'; meta.append(origin);
+      if (item.sourceWorkspace) { const source = document.createElement('span'); source.className = 'badge'; source.textContent = t('sourceWorkspace', { workspace: item.sourceWorkspace }); meta.append(source); }
+      if (item.sourceProject) { const source = document.createElement('span'); source.className = 'badge'; source.textContent = t('sourceProject', { project: item.sourceProject }); meta.append(source); }
+      const notice = document.createElement('div'); notice.className = 'notice'; notice.textContent = t('federatedReadOnly');
+      const detail = document.createElement('div'); detail.className = 'federated-detail';
+      const snippet = document.createElement('div'); snippet.className = 'detail-text'; snippet.textContent = item.snippet;
+      const reasons = detailBlock('selectionReasons', item.selectionReasons.join('\n'));
+      const tags = detailBlock('commaSeparatedTags', item.tags.map((tag) => '#' + tag).join(' '));
+      detail.append(snippet, reasons, tags);
+      const stateBadge = $('editor-state'); delete stateBadge.dataset.i18n; delete stateBadge.dataset.i18nStatus; stateBadge.textContent = labelForOrigin(item.origin);
+      editor.replaceChildren(meta, heading, notice, detail);
+    }
+
     function renderEditor() {
+      if (state.selectedRecall) { renderFederatedDetail(); return; }
       const editor = $('editor');
       const entry = state.selected;
       updateEditorState();
@@ -420,34 +560,106 @@ export const WEB_HTML = String.raw`<!doctype html>
       }); editor.replaceChildren(form);
     }
 
-    async function selectEntry(id) { try { const result = await api('/api/entries/' + encodeURIComponent(id) + '?workspace=' + encodeURIComponent(state.workspace)); state.selected = result.entry; renderEntries(); renderEditor(); } catch (error) { setStatus(error.message, true); } }
+    async function selectEntry(id) { try { const result = await api('/api/entries/' + encodeURIComponent(id) + '?workspace=' + encodeURIComponent(state.workspace)); state.selectedRecall = null; state.selected = result.entry; renderEntries(); renderEditor(); } catch (error) { setStatus(error.message, true); } }
 
     const curatorCandidateKey = (candidate) => candidate.workspace + '\u0000' + candidate.entryId;
 
-    async function applySelectedCurator() {
-      const selected = state.curatorCandidates.filter((candidate) => state.curatorSelected.has(curatorCandidateKey(candidate)) && !state.curatorGlobalized.has(curatorCandidateKey(candidate)));
-      if (!selected.length) return;
-      let added = 0;
-      let failed = 0;
-      for (const candidate of selected) {
-        try {
-          await api('/api/curator/globalize?workspace=' + encodeURIComponent(candidate.workspace), {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ workspace: candidate.workspace, entryId: candidate.entryId, expectedRevision: candidate.revision }),
-          });
-          state.curatorGlobalized.add(curatorCandidateKey(candidate));
-          added += 1;
-        } catch (error) {
-          failed += 1;
-          setStatus(error.message, true);
-        }
+    function setCuratorConfirmationStatus(message, error = false) {
+      const element = $('curator-confirm-status');
+      element.textContent = message;
+      element.className = error ? 'status notice error curator-status' : 'status curator-status';
+    }
+
+    function openCuratorConfirmation(candidate, trigger) {
+      if (state.curatorGlobalizeBusy || state.curatorGlobalized.has(curatorCandidateKey(candidate))) return;
+      state.curatorPendingCandidate = candidate;
+      state.curatorConfirmationTrigger = trigger instanceof HTMLElement ? trigger : null;
+      $('curator-confirm-source').textContent = candidate.projectName || candidate.workspace;
+      $('curator-confirm-skill').textContent = candidate.skillName;
+      $('curator-confirm-applicability').textContent = candidate.applicability ? JSON.stringify(candidate.applicability, null, 2) : t('curatorApplicabilityNone');
+      $('curator-confirm-draft').textContent = [
+        t('curatorDraftTitle') + '\n' + candidate.draft.title,
+        t('curatorDraftSummary') + '\n' + candidate.draft.summary,
+        t('curatorDraftBody') + '\n' + candidate.draft.body,
+        t('curatorDraftVersion') + '\n' + candidate.draft.version,
+      ].join('\n\n');
+      setCuratorConfirmationStatus('');
+      const panel = $('curator-panel');
+      panel.inert = true;
+      panel.setAttribute('aria-hidden', 'true');
+      const submit = $('curator-confirm-submit');
+      submit.disabled = false;
+      setI18nText(submit, 'curatorConfirmAction');
+      $('curator-confirm-cancel').disabled = false;
+      $('curator-confirm-modal').hidden = false;
+      requestAnimationFrame(() => submit.focus());
+    }
+
+    function closeCuratorConfirmation(restoreFocus = true) {
+      if (state.curatorGlobalizeBusy) return;
+      $('curator-confirm-modal').hidden = true;
+      const panel = $('curator-panel');
+      panel.inert = false;
+      panel.removeAttribute('aria-hidden');
+      const trigger = state.curatorConfirmationTrigger;
+      state.curatorPendingCandidate = null;
+      state.curatorConfirmationTrigger = null;
+      setCuratorConfirmationStatus('');
+      if (restoreFocus) requestAnimationFrame(() => {
+        if (trigger?.isConnected) trigger.focus();
+        else $('curator-close')?.focus();
+      });
+    }
+
+    function handleCuratorConfirmationKeydown(event) {
+      event.stopPropagation();
+      if (event.key === 'Escape') { event.preventDefault(); closeCuratorConfirmation(); return; }
+      if (event.key !== 'Tab') return;
+      const panel = $('curator-confirm-panel');
+      const focusable = [...panel.querySelectorAll('button:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) { event.preventDefault(); return; }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+
+    async function globalizePendingCurator() {
+      const candidate = state.curatorPendingCandidate;
+      if (!candidate || state.curatorGlobalizeBusy) return;
+      state.curatorGlobalizeBusy = true;
+      const panel = $('curator-confirm-panel');
+      const cancel = $('curator-confirm-cancel');
+      const submit = $('curator-confirm-submit');
+      panel.setAttribute('aria-busy', 'true');
+      cancel.disabled = true;
+      submit.disabled = true;
+      setI18nText(submit, 'curatorGlobalizing');
+      setCuratorConfirmationStatus(t('curatorGlobalizing'));
+      try {
+        await api('/api/curator/globalize?workspace=' + encodeURIComponent(candidate.workspace), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspace: candidate.workspace, entryId: candidate.entryId, expectedRevision: candidate.revision }),
+        });
+        state.curatorGlobalized.add(curatorCandidateKey(candidate));
+        state.curatorGlobalizeBusy = false;
+        closeCuratorConfirmation(false);
+        await loadCurator();
+        await loadEntries();
+        setLocalizedStatus('curatorAdded');
+        setCuratorStatus(t('curatorAdded'));
+        requestAnimationFrame(() => $('curator-close')?.focus());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('curatorGlobalizeFailed');
+        setCuratorConfirmationStatus(t('curatorGlobalizeFailed') + ' ' + message, true);
+      } finally {
+        state.curatorGlobalizeBusy = false;
+        panel.removeAttribute('aria-busy');
+        cancel.disabled = false;
+        submit.disabled = false;
+        setI18nText(submit, 'curatorConfirmAction');
       }
-      state.curatorSelected.clear();
-      await loadCurator();
-      await loadEntries();
-      if (added > 0 && failed === 0) { setLocalizedStatus('curatorBatchAdded', { count: added }); setCuratorStatus(t('curatorBatchAdded', { count: added })); }
-      else if (added > 0) { setLocalizedStatus('curatorBatchPartial', { added, failed }, true); setCuratorStatus(t('curatorBatchPartial', { added, failed }), true); }
     }
 
     function renderCurator() {
@@ -455,25 +667,16 @@ export const WEB_HTML = String.raw`<!doctype html>
       const modal = $('curator-modal');
       modal.hidden = false;
       const root = $('curator-list');
-      const selectable = state.curatorCandidates.filter((candidate) => !state.curatorGlobalized.has(curatorCandidateKey(candidate)));
-      $('curator-selection-count').textContent = t('curatorSelected', { count: state.curatorSelected.size });
+      $('curator-result-count').textContent = t('curatorResultCount', { count: state.curatorTotalApproximate || state.curatorCandidates.length });
       const actionRoot = $('curator-actions'); actionRoot.replaceChildren();
-      const selectAll = document.createElement('button'); selectAll.type = 'button'; selectAll.className = 'button'; setI18nText(selectAll, 'curatorSelectAll'); selectAll.disabled = selectable.length === 0;
-      selectAll.addEventListener('click', () => { selectable.forEach((candidate) => state.curatorSelected.add(curatorCandidateKey(candidate))); renderCurator(); });
-      const clearSelection = document.createElement('button'); clearSelection.type = 'button'; clearSelection.className = 'button'; setI18nText(clearSelection, 'curatorClearSelection'); clearSelection.disabled = state.curatorSelected.size === 0;
-      clearSelection.addEventListener('click', () => { state.curatorSelected.clear(); renderCurator(); });
-      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'button primary'; setI18nText(apply, 'curatorApplySelected'); apply.disabled = state.curatorSelected.size === 0;
-      apply.addEventListener('click', () => applySelectedCurator());
-      actionRoot.append(selectAll, clearSelection, apply);
+      if (state.curatorNextCursor) {
+        const more = document.createElement('button'); more.type = 'button'; more.className = 'button'; setI18nText(more, 'curatorLoadMore'); more.addEventListener('click', () => loadCurator(true)); actionRoot.append(more);
+      }
       if (!state.curatorCandidates.length) { const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'noCuratorCandidates'); root.replaceChildren(empty); return; }
-      const cards = state.curatorCandidates.map((candidate) => {
+      const cards = state.curatorCandidates.map((candidate, index) => {
         const card = document.createElement('article'); card.className = 'curator-card';
         const candidateKey = curatorCandidateKey(candidate);
         const done = state.curatorGlobalized.has(candidateKey);
-        const selectLabel = document.createElement('label'); selectLabel.className = 'curator-select';
-        const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = state.curatorSelected.has(candidateKey); checkbox.disabled = done;
-        checkbox.addEventListener('change', () => { if (checkbox.checked) state.curatorSelected.add(candidateKey); else state.curatorSelected.delete(candidateKey); renderCurator(); });
-        const selectText = document.createElement('span'); selectText.textContent = done ? t('globalized') : t('curatorSelectSkill'); selectLabel.append(checkbox, selectText);
         const meta = document.createElement('div'); meta.className = 'entry-meta';
         const kind = document.createElement('span'); kind.className = 'badge'; kind.textContent = labelForKind(candidate.kind);
         const score = document.createElement('span'); score.className = 'badge'; score.textContent = t('curatorScore', { score: candidate.score });
@@ -482,6 +685,7 @@ export const WEB_HTML = String.raw`<!doctype html>
         if (candidate.knowledge && candidate.knowledge.skillReady) { const ready = document.createElement('span'); ready.className = 'badge'; setI18nText(ready, 'curatorSkillReady'); meta.append(ready); }
         const heading = document.createElement('h3'); heading.textContent = candidate.skillName;
         const overview = document.createElement('div'); overview.className = 'curator-overview'; overview.textContent = candidate.overview.join('\n');
+        const tags = document.createElement('div'); tags.className = 'tags'; (candidate.tags || []).forEach((tag) => { const tagItem = document.createElement('span'); tagItem.className = 'tag'; tagItem.textContent = '#' + tag; tags.append(tagItem); });
         const knowledge = document.createElement('div'); knowledge.className = 'curator-reasons'; knowledge.textContent = candidate.knowledge ? [
           t('curatorEvidence', { hits: candidate.knowledge.qualifiedHits, runs: candidate.knowledge.independentRuns, workspaces: candidate.knowledge.independentWorkspaces }),
           t('curatorSilo', { value: candidate.knowledge.averageCompleteness }),
@@ -508,22 +712,52 @@ export const WEB_HTML = String.raw`<!doctype html>
           draft.append(label, content);
         }
         const reasons = document.createElement('div'); reasons.className = 'curator-reasons'; reasons.textContent = [...(candidate.reasons || []), ...(candidate.warnings || []).map((warning) => t('curatorWarning', { warning }))].join('\n');
-        card.classList.toggle('selected', checkbox.checked);
-        card.append(selectLabel, meta, heading, overview, knowledge, draft, reasons); return card;
+        const details = document.createElement('div'); details.id = 'curator-review-' + index; details.className = 'curator-review-details'; details.hidden = true; details.append(knowledge, draft, reasons);
+        const actions = document.createElement('div'); actions.className = 'curator-card-actions';
+        const review = document.createElement('button'); review.type = 'button'; review.className = 'button'; review.setAttribute('aria-controls', details.id); review.setAttribute('aria-expanded', 'false'); setI18nText(review, 'curatorReview');
+        review.addEventListener('click', () => { details.hidden = !details.hidden; review.setAttribute('aria-expanded', String(!details.hidden)); setI18nText(review, details.hidden ? 'curatorReview' : 'curatorHideReview'); });
+        const globalize = document.createElement('button'); globalize.type = 'button'; globalize.className = 'button primary'; globalize.disabled = done; setI18nText(globalize, done ? 'globalized' : 'curatorGlobalizeCandidate');
+        globalize.addEventListener('click', () => openCuratorConfirmation(candidate, globalize));
+        actions.append(review, globalize);
+        card.append(meta, heading, overview, tags, actions, details); return card;
       });
-      root.replaceChildren(toolbar, ...cards);
+      root.replaceChildren(...cards);
     }
 
-    async function loadCurator() {
-      openCurator();
+    async function loadCurator(append = false) {
+      // Keep the documented legacy URL shape recognizable for clients: /api/curator/candidates?limit=50
+      if (!append) {
+        openCurator();
+        state.curatorCandidates = [];
+        state.curatorNextCursor = null;
+        state.curatorTotalApproximate = 0;
+      } else if (!state.curatorNextCursor) return;
       const panel = $('curator-panel');
       panel.setAttribute('aria-busy', 'true');
       setCuratorStatus(t('curatorLoading'));
       try {
-        const result = await api('/api/curator/candidates?limit=50');
-        state.curatorCandidates = result.candidates || [];
-        const available = new Set(state.curatorCandidates.map((candidate) => curatorCandidateKey(candidate)));
-        state.curatorSelected = new Set([...state.curatorSelected].filter((key) => available.has(key)));
+        if (!append) {
+          const facetParams = new URLSearchParams({ workspace: 'all' });
+          if (state.curatorIncludeGlobalized) facetParams.set('includeGlobalized', 'true');
+          const facetResult = await api('/api/curator/facets?' + facetParams);
+          state.curatorFacets = facetResult.facets || {};
+          renderCuratorFilters();
+        }
+        const params = new URLSearchParams({ workspace: 'all', limit: '50' });
+        if (state.curatorProject) params.set('project', state.curatorProject);
+        if (state.curatorSearch) params.set('search', state.curatorSearch);
+        if (state.curatorFramework) params.set('framework', state.curatorFramework);
+        if (state.curatorLanguage) params.set('language', state.curatorLanguage);
+        if (state.curatorMemoryClass) params.set('memoryClass', state.curatorMemoryClass);
+        if (state.curatorTier) params.set('tier', state.curatorTier);
+        if (state.curatorReady) params.set('skillReadyOnly', 'true');
+        if (state.curatorIncludeGlobalized) params.set('includeGlobalized', 'true');
+        for (const tag of state.curatorTags) params.append('tag', tag);
+        if (append && state.curatorNextCursor) params.set('cursor', state.curatorNextCursor);
+        const result = await api('/api/curator/candidates?' + params);
+        state.curatorCandidates = append ? [...state.curatorCandidates, ...(result.candidates || [])] : (result.candidates || []);
+        state.curatorNextCursor = result.nextCursor || null;
+        state.curatorTotalApproximate = Number(result.totalApproximate || state.curatorCandidates.length);
         setCuratorStatus('');
         renderCurator();
       }
@@ -584,7 +818,29 @@ export const WEB_HTML = String.raw`<!doctype html>
       } catch (error) { setStatus(error.message, true); }
     }
 
-    async function loadEntries() { if (!state.workspace) return; try { const params = new URLSearchParams({ workspace: state.workspace }); if (state.kind !== 'all') params.set('kind', state.kind); if (state.tag) params.set('tag', state.tag); if (state.query) params.set('q', state.query); const result = await api('/api/entries?' + params); state.entries = result.entries; if (state.selected && !state.entries.some((entry) => entry.id === state.selected.id)) state.selected = null; renderEntries(); renderFilters(); if (!state.selected && state.entries[0]) await selectEntry(state.entries[0].id); else renderEditor(); setLocalizedCountStatus('displayedCount', result.entries.length); } catch (error) { setStatus(error.message, true); } }
+    async function loadEntries() {
+      if (!state.workspace) return;
+      try {
+        const params = new URLSearchParams({ workspace: state.workspace });
+        if (state.kind !== 'all') params.set('kind', state.kind);
+        if (state.tag) params.set('tag', state.tag);
+        if (state.query) params.set('q', state.query);
+        const result = await api('/api/entries?' + params);
+        state.entries = result.entries;
+        state.recallItems = [];
+        state.selectedRecall = null;
+        if (state.query && state.kind === 'all' && !state.tag) {
+          const recallParams = new URLSearchParams({ workspace: state.workspace, q: state.query, limit: '100' });
+          const recalled = await api('/api/memory/recall?' + recallParams);
+          state.recallItems = recalled.combined?.items || [];
+          state.selected = null;
+        } else if (state.selected && !state.entries.some((entry) => entry.id === state.selected.id)) state.selected = null;
+        renderEntries(); renderFilters();
+        if (!state.recallItems.length && !state.selected && state.entries[0]) await selectEntry(state.entries[0].id);
+        else renderEditor();
+        setLocalizedCountStatus('displayedCount', state.recallItems.length || result.entries.length);
+      } catch (error) { setStatus(error.message, true); }
+    }
     async function loadTags() { if (!state.workspace) return; try { const result = await api('/api/tags?workspace=' + encodeURIComponent(state.workspace)); state.tags = result.tags; renderFilters(); } catch (error) { setStatus(error.message, true); } }
     async function loadWorkspaces() { try { const result = await api('/api/workspaces'); const select = $('workspace'); select.replaceChildren(...result.workspaces.map((item) => { const option = document.createElement('option'); option.value = item.workspace; option.textContent = (item.displayName || item.workspace) + ' (' + item.count + ')'; return option; })); if (!state.workspace && result.workspaces[0]) state.workspace = result.workspaces[0].workspace; select.value = state.workspace; if (state.workspace) { await loadTags(); await loadEntries(); await loadRuns(); } if (state.curatorOpen) await loadCurator(); else if (!state.workspace) setLocalizedStatus('noWorkspace', {}, true); } catch (error) { setStatus(error.message, true); } }
     $('language-toggle').addEventListener('click', () => {
@@ -608,10 +864,14 @@ export const WEB_HTML = String.raw`<!doctype html>
     });
     document.addEventListener('click', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
     document.addEventListener('focusin', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
-    $('workspace').addEventListener('change', (event) => { if (state.curatorOpen) closeCurator(); state.workspace = event.target.value; state.selected = null; state.selectedRun = null; state.runs = []; state.tag = ''; state.curatorCandidates = []; state.curatorSelected = new Set(); state.curatorGlobalized = new Set(); state.curatorOpen = false; loadTags().then(loadEntries).then(loadRuns); });
+    $('workspace').addEventListener('change', (event) => { if (state.curatorOpen) closeCurator(); state.workspace = event.target.value; state.selected = null; state.selectedRecall = null; state.selectedRun = null; state.runs = []; state.tag = ''; state.curatorCandidates = []; state.curatorGlobalized = new Set(); state.curatorNextCursor = null; state.curatorTotalApproximate = 0; state.curatorOpen = false; loadTags().then(loadEntries).then(loadRuns); });
     $('curator-button').addEventListener('click', () => loadCurator());
     $('curator-close').addEventListener('click', () => closeCurator());
+    $('curator-confirm-cancel').addEventListener('click', () => closeCuratorConfirmation());
+    $('curator-confirm-submit').addEventListener('click', () => globalizePendingCurator());
+    $('curator-confirm-modal').addEventListener('keydown', handleCuratorConfirmationKeydown);
     $('curator-modal').addEventListener('keydown', handleCuratorKeydown);
+    window.addEventListener('popstate', () => { restoreCuratorUrl(); if (state.curatorOpen) loadCurator(); });
     $('refresh').addEventListener('click', () => loadWorkspaces());
     let searchTimer; $('search').addEventListener('input', (event) => { clearTimeout(searchTimer); state.query = event.target.value.trim(); searchTimer = setTimeout(() => loadEntries(), 180); });
     applyTranslations();

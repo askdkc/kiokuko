@@ -1,14 +1,14 @@
 import type { SqliteDatabase } from '../db/adapter.js';
 import { canonicalContentHash, type JsonObject } from '../serialization/validate.js';
-import { hybridSearch } from '../memory/hybrid-retrieval.js';
 import { readEntry, type EntryRecord } from '../memory/entries.js';
 import { ensureGlobalWorkspace, GLOBAL_WORKSPACE, resolveProjectWorkspace, type ResolvedProjectWorkspace } from '../memory/workspaces.js';
+import { federatedEntries, type FederatedOrigin } from '../memory/federated-retrieval.js';
 import type { TaskProfile } from '../akinator/types.js';
 import { recordContextDelivery } from './delivery.js';
 import { readRunIntakeLink } from '../akinator/store.js';
 import { CONTEXT_SELECTION_REASON_ORDER } from './ranking.js';
 
-export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v2' as const;
+export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v3' as const;
 
 export interface ScopedContextQuery {
   cwd?: string;
@@ -26,7 +26,7 @@ export interface ScopedContextQuery {
 export interface ScopedContextItem {
   entryId: string;
   revision: number;
-  origin: 'project' | 'global';
+  origin: FederatedOrigin;
   title: string;
   summary: string | null;
   bodyPreview: string;
@@ -94,13 +94,13 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').map(normalize) : [];
 }
 
-function applicabilityScore(entry: EntryRecord, queryText: string): { score: number; reasons: string[]; conflict: boolean } {
-  if (entry.workspace !== GLOBAL_WORKSPACE) return { score: 0, reasons: [], conflict: false };
+function applicabilityScore(entry: EntryRecord, queryText: string, origin: FederatedOrigin): { score: number; reasons: string[]; conflict: boolean } {
+  if (origin === 'project') return { score: 0, reasons: [], conflict: false };
   const scope = scopeObject(entry);
   const applicability = typeof scope.applicability === 'object' && scope.applicability !== null && !Array.isArray(scope.applicability)
     ? scope.applicability as Record<string, unknown>
     : undefined;
-  if (applicability === undefined) return { score: -4, reasons: ['unscoped_global_prior'], conflict: false };
+  if (applicability === undefined) return origin === 'global' ? { score: -4, reasons: ['unscoped_global_prior'], conflict: false } : { score: -8, reasons: ['applicability_unknown'], conflict: false };
   const haystack = normalize(queryText);
   const values = [
     ...stringList(applicability.languages),
@@ -110,7 +110,7 @@ function applicabilityScore(entry: EntryRecord, queryText: string): { score: num
     ...stringList(applicability.platforms),
     ...(Array.isArray(applicability.frameworks) ? applicability.frameworks.flatMap((item) => typeof item === 'object' && item !== null && typeof (item as { name?: unknown }).name === 'string' ? [normalize((item as { name: string }).name)] : []) : []),
   ];
-  if (values.length === 0) return { score: -2, reasons: ['unscoped_global_prior'], conflict: false };
+  if (values.length === 0) return origin === 'global' ? { score: -2, reasons: ['unscoped_global_prior'], conflict: false } : { score: -8, reasons: ['applicability_unknown'], conflict: false };
   const matches = values.filter((value) => haystack.includes(value)).length;
   const likelyUnrelated = /\b(?:swiftui|ios|android|kotlin|rust|django|rails|laravel|postgres(?:ql)?|mysql|react|vue)\b/giu;
   const queryEcosystems = [...haystack.matchAll(likelyUnrelated)].map((match) => match[0].toLowerCase());
@@ -123,16 +123,16 @@ function applicabilityScore(entry: EntryRecord, queryText: string): { score: num
   };
 }
 
-function entryScore(entry: EntryRecord, retrieval: number, exact: boolean, query: ScopedContextQuery, queryText: string): ScopedContextItem {
-  const scope = entry.workspace === GLOBAL_WORKSPACE ? 'global' : 'project';
+function entryScore(entry: EntryRecord, origin: FederatedOrigin, retrieval: number, exact: boolean, query: ScopedContextQuery, queryText: string): ScopedContextItem {
+  const scope = origin;
   const status = entry.status === 'verified' ? 100 : entry.status === 'candidate' ? 40 : 0;
   const trust = entry.trustLevel === 'system_verified' ? 30 : entry.trustLevel === 'source_verified' ? 25 : entry.trustLevel === 'user_asserted' ? 15 : 0;
   const confidence = Math.round(entry.confidence * 20);
-  const scopeAffinity = scope === 'project' ? 9 : 4;
-  const applicability = applicabilityScore(entry, queryText);
+  const scopeAffinity = scope === 'project' ? 9 : scope === 'ecosystem' ? 6 : 4;
+  const applicability = applicabilityScore(entry, queryText, origin);
   const exactSignal = exact ? 24 : 0;
   const score = status + trust + confidence + retrieval + scopeAffinity + applicability.score + exactSignal;
-  const reasons = [scope === 'project' ? 'project_origin' : 'global_origin', ...(entry.status === 'verified' ? ['verified'] : ['candidate']), ...applicability.reasons, ...(exact ? ['exact_signal_match'] : [])];
+  const reasons = [scope === 'project' ? 'project_origin' : scope === 'ecosystem' ? 'ecosystem_origin' : 'global_origin', ...(entry.status === 'verified' ? ['verified'] : ['candidate']), ...applicability.reasons, ...(exact ? ['exact_signal_match'] : [])];
   return {
     entryId: entry.id,
     revision: entry.revision,
@@ -193,17 +193,12 @@ export async function queryScopedContext(database: SqliteDatabase, raw: ScopedCo
   const taskProfileHash = canonicalContentHash(raw.taskProfile);
   const queryHash = canonicalContentHash({ task: raw.task, taskProfile: raw.taskProfile, recommendedTags: raw.recommendedTags ?? [], changedPaths: raw.changedPaths ?? [], errorSignatures: raw.errorSignatures ?? [] });
   const candidates = new Map<string, ScopedContextItem>();
-  const targets = project === undefined ? [GLOBAL_WORKSPACE] : [project.workspace, GLOBAL_WORKSPACE];
-  for (const workspace of targets) {
-    const retrieval = hybridSearch(database, {
-      workspace,
-      query: queryText,
-      limit: 200,
-      includeSuperseded: false,
-    });
-    for (const hit of retrieval) {
-      const entry = readEntry(database, { workspace, entryId: hit.entryId });
-      const item = entryScore(entry, hit.fusedScore * 100, hit.laneRanks['exact-signal'] !== undefined, raw, queryText);
+  const federated = project === undefined ? [] : await federatedEntries(database, { project, query: queryText, limit: 200 });
+  for (const hit of federated) {
+      const entry = hit.entry;
+      const item = entryScore(entry, hit.origin, hit.score, hit.selectionReasons.includes('exact_signal_match'), raw, queryText);
+      item.selectionReasons.push(...hit.selectionReasons);
+      item.selectionReasons = [...new Set(item.selectionReasons)];
       const feedback = feedbackScore(database, entry.id);
       item.score += feedback.score;
       item.scoreComponents.feedback = feedback.score;
@@ -211,7 +206,6 @@ export async function queryScopedContext(database: SqliteDatabase, raw: ScopedCo
       if (item.score <= -50) continue;
       const previous = candidates.get(item.entryId);
       if (previous === undefined || item.score > previous.score) candidates.set(item.entryId, item);
-    }
   }
   const ordered = [...candidates.values()].sort((left, right) => right.score - left.score || left.entryId.localeCompare(right.entryId));
   const items: ScopedContextItem[] = [];
@@ -256,7 +250,7 @@ export async function queryScopedContext(database: SqliteDatabase, raw: ScopedCo
       },
       selectionReasons: [...new Set([...item.selectionReasons.filter((reason) => allowedReasons.has(reason)), item.scoreComponents.status >= 100 ? 'verified' : 'candidate'])]
         .sort((left, right) => CONTEXT_SELECTION_REASON_ORDER.findIndex((reason) => reason === left) - CONTEXT_SELECTION_REASON_ORDER.findIndex((reason) => reason === right)),
-      ...(item.origin === 'global' ? { origin: 'global' as const } : {}),
+      ...(item.origin === 'project' ? {} : { origin: item.origin }),
     }));
     recordContextDelivery(database, {
       workspace: run.workspace,
@@ -288,7 +282,7 @@ export async function queryScopedContext(database: SqliteDatabase, raw: ScopedCo
   };
 }
 
-export function entryOrigin(entry: EntryRecord): 'project' | 'global' {
+export function entryOrigin(entry: EntryRecord): FederatedOrigin {
   return entry.workspace === GLOBAL_WORKSPACE ? 'global' : 'project';
 }
 

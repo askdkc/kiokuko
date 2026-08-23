@@ -6,6 +6,7 @@ import { KiokukoError } from '../errors.js';
 import { findSecret } from '../memory/secrets.js';
 import { canonicalJson, requireWorkspace } from '../serialization/validate.js';
 import { hashLedgerEvent, GENESIS_HASH } from './hash.js';
+import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
 import {
   CAPTURE_PROFILES,
   COVERAGE_LEVELS,
@@ -505,8 +506,8 @@ function normalizeRecord(type: ArchiveRecordType, source: Row, workspace: string
       normalized.entry_revision = integerValue(raw.entry_revision, 1);
       normalized.rank = integerValue(raw.rank, 1);
       normalized.score_components_json = parsedJson(raw.score_components_json, scoreJson);
-      normalized.selection_reason_json = parsedJson(raw.selection_reason_json, scoreJson);
-      normalized.origin_scope = enumValue(raw.origin_scope ?? 'project', new Set(['project', 'global']));
+      normalized.selection_reason_json = parsedJson(raw.selection_reason_json, tagsJson);
+      normalized.origin_scope = enumValue(raw.origin_scope ?? 'project', new Set(['project', 'ecosystem', 'global']));
       break;
     case 'contextFeedback':
       normalized.feedback_id = stringValue(raw.feedback_id, true, IDENTIFIER_MAX_LENGTH);
@@ -582,10 +583,10 @@ function queryRows(database: SqliteDatabase, type: ArchiveRecordType, workspace:
     events: { sql: `SELECT e.${TABLE_FIELDS.events.join(', e.')} FROM ledger_events AS e JOIN ledger_runs AS lr ON lr.run_id = e.run_id WHERE lr.workspace = ? ORDER BY e.run_id ASC, e.sequence ASC`, parameters: [workspace] },
     evidence: { sql: `SELECT e.${TABLE_FIELDS.evidence.join(', e.')} FROM ledger_evidence AS e JOIN ledger_runs AS lr ON lr.run_id = e.run_id WHERE lr.workspace = ? ORDER BY e.run_id ASC, e.evidence_id ASC`, parameters: [workspace] },
     deliveries: { sql: `SELECT d.${TABLE_FIELDS.deliveries.join(', d.')} FROM context_deliveries AS d JOIN ledger_runs AS lr ON lr.run_id = d.run_id WHERE lr.workspace = ? ORDER BY d.run_id ASC, d.delivery_id ASC`, parameters: [workspace] },
-    deliveryEntries: { sql: `SELECT c.${TABLE_FIELDS.deliveryEntries.join(', c.')} FROM context_delivery_entries AS c JOIN context_deliveries AS d ON d.delivery_id = c.delivery_id JOIN ledger_runs AS lr ON lr.run_id = d.run_id JOIN entry_revisions AS er ON er.entry_id = c.entry_id AND er.revision = c.entry_revision JOIN entries AS e ON e.id = c.entry_id WHERE lr.workspace = ? ORDER BY c.delivery_id ASC, c.entry_id ASC`, parameters: [workspace] },
-    contextFeedback: { sql: `SELECT f.${TABLE_FIELDS.contextFeedback.join(', f.')} FROM context_feedback AS f JOIN ledger_runs AS lr ON lr.run_id = f.run_id JOIN context_deliveries AS d ON d.delivery_id = f.delivery_id AND d.run_id = f.run_id JOIN context_delivery_entries AS c ON c.delivery_id = f.delivery_id AND c.entry_id = f.entry_id JOIN entries AS e ON e.id = f.entry_id WHERE lr.workspace = ? ORDER BY f.feedback_id ASC`, parameters: [workspace] },
+    deliveryEntries: { sql: `SELECT c.${TABLE_FIELDS.deliveryEntries.join(', c.')} FROM context_delivery_entries AS c JOIN context_deliveries AS d ON d.delivery_id = c.delivery_id JOIN ledger_runs AS lr ON lr.run_id = d.run_id WHERE lr.workspace = ? ORDER BY c.delivery_id ASC, c.entry_id ASC`, parameters: [workspace] },
+    contextFeedback: { sql: `SELECT f.${TABLE_FIELDS.contextFeedback.join(', f.')} FROM context_feedback AS f JOIN ledger_runs AS lr ON lr.run_id = f.run_id WHERE lr.workspace = ? ORDER BY f.feedback_id ASC`, parameters: [workspace] },
     runFeedback: { sql: `SELECT f.${TABLE_FIELDS.runFeedback.join(', f.')} FROM run_feedback AS f JOIN ledger_runs AS lr ON lr.run_id = f.run_id WHERE lr.workspace = ? ORDER BY f.feedback_id ASC`, parameters: [workspace] },
-    memoryLinks: { sql: `SELECT l.${TABLE_FIELDS.memoryLinks.join(', l.')} FROM ledger_memory_links AS l JOIN ledger_runs AS lr ON lr.run_id = l.run_id JOIN entries AS e ON e.id = l.entry_id WHERE lr.workspace = ? ORDER BY l.link_id ASC`, parameters: [workspace] },
+    memoryLinks: { sql: `SELECT l.${TABLE_FIELDS.memoryLinks.join(', l.')} FROM ledger_memory_links AS l JOIN ledger_runs AS lr ON lr.run_id = l.run_id WHERE lr.workspace = ? ORDER BY l.link_id ASC`, parameters: [workspace] },
     purgeAudit: { sql: `SELECT p.${TABLE_FIELDS.purgeAudit.join(', p.')} FROM ledger_purge_audit AS p WHERE EXISTS (SELECT 1 FROM ledger_runs AS r WHERE r.run_id = p.run_id AND r.workspace = ?) OR EXISTS (SELECT 1 FROM ledger_events AS e JOIN ledger_runs AS r ON r.run_id = e.run_id WHERE e.event_id = p.event_id AND r.workspace = ?) OR EXISTS (SELECT 1 FROM context_deliveries AS d JOIN ledger_runs AS r ON r.run_id = d.run_id WHERE d.delivery_id = p.delivery_id AND r.workspace = ?) OR EXISTS (SELECT 1 FROM entries AS e WHERE e.id = p.entry_id AND e.workspace = ?) ORDER BY p.purge_id ASC`, parameters: [workspace, workspace, workspace, workspace] },
   };
   const selected = scoped[type];
@@ -635,6 +636,7 @@ export function exportLedgerArchive(database: SqliteDatabase, options: ExportLed
   const records = new Map<ArchiveRecordType, ArchiveRecord[]>();
   for (const type of Object.keys(EMPTY_COUNTS) as ArchiveRecordType[]) records.set(type, queryRows(database, type, workspace));
   validateGraph(records, workspace);
+  validateMemoryReferences(database, records, workspace);
   return buildArchive(workspace, records);
 }
 
@@ -867,6 +869,55 @@ function validateGraph(records: Map<ArchiveRecordType, ArchiveRecord[]>, workspa
   }
 }
 
+function exactEntryReference(database: SqliteDatabase, entryId: string, revision: number): Row | undefined {
+  return rows(database, `
+    SELECT e.id, e.workspace AS entry_workspace, er.revision,
+           er.workspace AS revision_workspace
+      FROM entries AS e
+      JOIN entry_revisions AS er
+        ON er.entry_id = e.id AND er.revision = ?
+     WHERE e.id = ?
+  `, revision, entryId)[0];
+}
+
+function validateMemoryReferences(
+  database: SqliteDatabase,
+  records: Map<ArchiveRecordType, ArchiveRecord[]>,
+  workspace: string,
+): void {
+  const deliveryEntries = new Map<string, ArchiveRecord>();
+  for (const record of records.get('deliveryEntries') ?? []) {
+    const origin = isContextEntryOrigin(record.origin_scope) ? record.origin_scope : integrity();
+    const entryId = String(record.entry_id);
+    const entryRevision = Number(record.entry_revision);
+    const entry = exactEntryReference(database, entryId, entryRevision);
+    if (!entry) notFound();
+    if (typeof entry.entry_workspace !== 'string'
+      || entry.revision_workspace !== entry.entry_workspace
+      || !entryOriginMatchesWorkspace({ origin, runWorkspace: workspace, entryWorkspace: entry.entry_workspace })) conflict();
+    deliveryEntries.set(`${record.delivery_id}\u0000${entryId}`, record);
+  }
+
+  for (const feedback of records.get('contextFeedback') ?? []) {
+    const deliveryEntry = deliveryEntries.get(`${feedback.delivery_id}\u0000${feedback.entry_id}`);
+    if (!deliveryEntry) integrity();
+    const entry = exactEntryReference(database, String(feedback.entry_id), Number(deliveryEntry.entry_revision));
+    const origin = isContextEntryOrigin(deliveryEntry.origin_scope) ? deliveryEntry.origin_scope : integrity();
+    if (!entry) notFound();
+    if (typeof entry.entry_workspace !== 'string'
+      || entry.revision_workspace !== entry.entry_workspace
+      || !entryOriginMatchesWorkspace({ origin, runWorkspace: workspace, entryWorkspace: entry.entry_workspace })) conflict();
+  }
+
+  // Memory links are intentionally narrower than delivery provenance: they may
+  // reference only the run project or Global, never an arbitrary foreign project.
+  for (const link of records.get('memoryLinks') ?? []) {
+    const entry = rows(database, 'SELECT id, workspace FROM entries WHERE id = ?', String(link.entry_id))[0];
+    if (!entry) notFound();
+    if (entry.workspace !== workspace && entry.workspace !== 'global') conflict();
+  }
+}
+
 function selectExisting(database: SqliteDatabase, type: ArchiveRecordType, record: ArchiveRecord): Row | undefined {
   const fields = TABLE_FIELDS[type].join(', ');
   const table = TABLE_NAMES[type];
@@ -915,19 +966,11 @@ function hasUniqueConflict(database: SqliteDatabase, type: ArchiveRecordType, re
 }
 
 function ensureMemoryReference(database: SqliteDatabase, record: ArchiveRecord, workspace: string): void {
-  if (record.type !== 'deliveryEntries' && record.type !== 'contextFeedback' && record.type !== 'memoryLinks') return;
+  if (record.type !== 'memoryLinks') return;
   const entryId = String(record.entry_id);
-  const entry = record.type === 'deliveryEntries'
-    ? rows(database, `
-        SELECT e.id, e.workspace, er.revision
-          FROM entries AS e
-          JOIN entry_revisions AS er ON er.entry_id = e.id AND er.revision = ?
-         WHERE e.id = ?
-      `, Number(record.entry_revision), entryId)[0]
-    : rows(database, 'SELECT id, workspace FROM entries WHERE id = ?', entryId)[0];
+  const entry = rows(database, 'SELECT id, workspace FROM entries WHERE id = ?', entryId)[0];
   if (!entry) notFound();
   if (entry.workspace !== workspace && entry.workspace !== 'global') conflict();
-  if (record.type === 'deliveryEntries' && Number(entry.revision) !== Number(record.entry_revision)) conflict();
 }
 
 function compareExisting(database: SqliteDatabase, type: ArchiveRecordType, record: ArchiveRecord, workspace: string): 'new' | 'duplicate' {
@@ -992,6 +1035,7 @@ export function importLedgerArchive(database: SqliteDatabase | undefined, option
   }
   const db = database;
   try {
+    validateMemoryReferences(db, parsed.records, parsed.workspace);
     for (const record of ordered) {
       const type = record.type as ArchiveRecordType;
       try {

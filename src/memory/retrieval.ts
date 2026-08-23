@@ -2,7 +2,7 @@ import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry, type EntryRecord } from './entries.js';
 import { requireWorkspace, type EntryKind, type EntryStatus } from '../serialization/validate.js';
-import { hybridSearchRows } from './hybrid-retrieval.js';
+import { hybridSearch } from './hybrid-retrieval.js';
 
 export interface SearchEntriesInput {
   workspace: string;
@@ -44,6 +44,18 @@ export interface RecallResult {
   items: RecallItem[];
   count: number;
   characterCount: number;
+  truncated: boolean;
+}
+
+export interface RankedRecallHit {
+  entryId: string;
+  retrievalScore: number;
+  rank: number;
+  reasons: string[];
+}
+
+export interface RankedRecallResult {
+  hits: RankedRecallHit[];
   truncated: boolean;
 }
 
@@ -169,13 +181,23 @@ function searchWithLike(database: SqliteDatabase, input: SearchEntriesInput, lim
     .all<SearchRow>(...parameters);
 }
 
-function selectRows(database: SqliteDatabase, input: SearchEntriesInput, limit: number): { rows: SearchRow[]; truncated: boolean } {
+export function rankedEntryHits(database: SqliteDatabase, input: SearchEntriesInput): RankedRecallResult {
+  const limit = normalizedLimit(input.limit, DEFAULT_SEARCH_LIMIT);
   const workspace = requireWorkspace(input.workspace);
   const normalizedInput = { ...input, workspace };
-  if (normalizedInput.query.trim().length === 0) return { rows: [], truncated: false };
+  if (normalizedInput.query.trim().length === 0) return { hits: [], truncated: false };
 
   try {
-    return hybridSearchRows(database, { ...normalizedInput, limit });
+    const candidates = hybridSearch(database, { ...normalizedInput, limit });
+    return {
+      hits: candidates.slice(0, limit).map((candidate, index) => ({
+        entryId: candidate.entryId,
+        retrievalScore: Number((candidate.fusedScore * 100).toFixed(6)),
+        rank: index + 1,
+        reasons: [...candidate.reasons],
+      })),
+      truncated: candidates.length > limit,
+    };
   } catch (error) {
     if (!(error instanceof KiokukoError) || error.code !== 'VALIDATION_ERROR') throw error;
   }
@@ -184,13 +206,24 @@ function selectRows(database: SqliteDatabase, input: SearchEntriesInput, limit: 
   if (match && hasTable(database, 'entries_fts')) {
     try {
       const rows = searchWithFts(database, normalizedInput, limit + 1, match);
-      return { rows: rows.slice(0, limit), truncated: rows.length > limit };
+      return {
+        hits: rows.slice(0, limit).map((row, index) => ({ entryId: row.id, retrievalScore: rows.length - index, rank: index + 1, reasons: ['lexical_match'] })),
+        truncated: rows.length > limit,
+      };
     } catch (error) {
       if (!(error instanceof Error) || !/fts|match|syntax/i.test(error.message)) throw error;
     }
   }
   const rows = searchWithLike(database, normalizedInput, limit + 1);
-  return { rows: rows.slice(0, limit), truncated: rows.length > limit };
+  return {
+    hits: rows.slice(0, limit).map((row, index) => ({ entryId: row.id, retrievalScore: rows.length - index, rank: index + 1, reasons: ['literal_fallback_match'] })),
+    truncated: rows.length > limit,
+  };
+}
+
+function selectRows(database: SqliteDatabase, input: SearchEntriesInput, limit: number): { rows: SearchRow[]; truncated: boolean } {
+  const ranked = rankedEntryHits(database, { ...input, limit });
+  return { rows: ranked.hits.map((hit) => ({ id: hit.entryId, score: hit.retrievalScore })), truncated: ranked.truncated };
 }
 
 export function searchEntries(database: SqliteDatabase, input: SearchEntriesInput): SearchResult {
@@ -209,14 +242,14 @@ function recallSnippet(entry: EntryRecord, remaining: number): string {
 export function recallEntries(database: SqliteDatabase, input: RecallEntriesInput): RecallResult {
   const limit = normalizedLimit(input.limit, DEFAULT_RECALL_LIMIT);
   const maxChars = normalizedMaxChars(input.maxChars);
-  const selected = selectRows(database, input, limit);
-  const rows = selected.rows;
+  const selected = rankedEntryHits(database, { ...input, limit });
+  const rows = selected.hits;
   const items: RecallItem[] = [];
   let characterCount = 0;
   let truncated = false;
 
   for (const row of rows) {
-    const entry = readEntry(database, { workspace: input.workspace, entryId: row.id });
+    const entry = readEntry(database, { workspace: input.workspace, entryId: row.entryId });
     const fullSource = entry.summary ?? entry.body;
     const titleCost = entry.title.length + 1;
     const remaining = maxChars - characterCount - titleCost;

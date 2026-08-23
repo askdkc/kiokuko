@@ -57,6 +57,7 @@ export const CONTEXT_RANKING_COMPONENTS_V2 = [
 
 export const CONTEXT_SELECTION_REASON_ORDER = [
   'project_origin',
+  'ecosystem_origin',
   'global_origin',
   'scope_affinity',
   'applicability_match',
@@ -65,6 +66,7 @@ export const CONTEXT_SELECTION_REASON_ORDER = [
   'unscoped_global_prior',
   'exact_signal_match',
   'word_match',
+  'lexical_match',
   'substring_match',
   'literal_fallback_match',
   'tag_match',
@@ -107,6 +109,7 @@ export interface ContextCandidateSnapshot {
   scope: Record<string, unknown>;
   updatedAt: string;
   contradiction?: boolean;
+  origin?: 'project' | 'ecosystem' | 'global';
 }
 
 export interface PriorDeliveredEntry {
@@ -166,6 +169,7 @@ export interface RankedCandidate {
   scoreComponents: RankedScoreComponents;
   selectionReasons: string[];
   content: RankedCandidateContent;
+  origin?: 'project' | 'ecosystem' | 'global';
 }
 
 const MAX_CANDIDATES = 500;
@@ -370,7 +374,7 @@ function parseTaskProfile(value: unknown): TaskProfile {
 function parseCandidate(value: unknown): ContextCandidateSnapshot {
   if (!isRecord(value)) invalid();
   knownFields(value, [
-    'id', 'revision', 'kind', 'status', 'trustLevel', 'confidence', 'title', 'summary', 'body', 'tags', 'scope', 'updatedAt', 'contradiction',
+    'id', 'revision', 'kind', 'status', 'trustLevel', 'confidence', 'title', 'summary', 'body', 'tags', 'scope', 'updatedAt', 'contradiction', 'origin',
   ]);
   requiredFields(value, [
     'id', 'revision', 'kind', 'status', 'trustLevel', 'confidence', 'title', 'summary', 'body', 'tags', 'scope', 'updatedAt',
@@ -392,6 +396,7 @@ function parseCandidate(value: unknown): ContextCandidateSnapshot {
     scope: cloneScope(value.scope),
     updatedAt: canonicalTimestamp(value.updatedAt),
     ...(contradiction ? { contradiction: true } : {}),
+    ...(value.origin === undefined ? {} : { origin: enumValue(value.origin, ['project', 'ecosystem', 'global'] as const) }),
   };
 }
 
@@ -457,6 +462,7 @@ function trustScore(trustLevel: TrustLevel): number {
 }
 
 function scoreCandidate(candidate: ContextCandidateSnapshot, context: RankingContext): RankedCandidate {
+  const origin = candidate.origin;
   const candidateTags = new Set(candidate.tags.map(normalizeLiteral));
   const taskAffinity = context.taskProfile.taskType === null ? null : TASK_AFFINITY[context.taskProfile.taskType];
   const taskTagMatch = taskAffinity?.tags.some((tag) => candidateTags.has(normalizeLiteral(tag))) ?? false;
@@ -493,6 +499,7 @@ function scoreCandidate(candidate: ContextCandidateSnapshot, context: RankingCon
     contradiction: 0,
   };
   const selectionReasons: string[] = [];
+  if (origin !== undefined) selectionReasons.push(origin === 'project' ? 'project_origin' : origin === 'ecosystem' ? 'ecosystem_origin' : 'global_origin');
   if (candidate.status === 'verified') selectionReasons.push('verified');
   else selectionReasons.push('candidate');
   if (candidate.trustLevel !== 'untrusted') selectionReasons.push(`${candidate.trustLevel}_trust`);
@@ -522,7 +529,7 @@ function scoreCandidate(candidate: ContextCandidateSnapshot, context: RankingCon
     tags: [...candidate.tags].sort(compareStrings),
     scope: cloneScope(candidate.scope),
     updatedAt: candidate.updatedAt,
-    totalScore: Object.values(scoreComponents).reduce((sum, component) => sum + component, 0),
+    totalScore: Object.values(scoreComponents).reduce((sum, component) => sum + component, 0) + (origin === undefined ? 0 : origin === 'project' ? 100 : origin === 'ecosystem' ? 45 : 35),
     scoreComponents,
     selectionReasons,
     content: {
@@ -532,6 +539,7 @@ function scoreCandidate(candidate: ContextCandidateSnapshot, context: RankingCon
       characterCount: candidate.title.length + (candidate.summary?.length ?? 0) + candidate.body.length,
       truncated: false,
     },
+    ...(candidate.origin === undefined ? {} : { origin }),
   };
 }
 

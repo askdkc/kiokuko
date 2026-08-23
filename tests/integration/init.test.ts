@@ -11,7 +11,7 @@ import { initializeDatabase } from '../../src/commands/init.js';
   const result = await initializeDatabase({ databasePath });
   assert.equal(result.databasePath, databasePath);
   await access(databasePath);
-  assert.equal(result.currentVersion, 7);
+  assert.equal(result.currentVersion, 8);
   assert.equal(result.backupPath, null);
   assert.equal(result.capabilities.driver, 'node:sqlite');
   assert.equal(result.capabilities.foreignKeys, true);

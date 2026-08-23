@@ -4,10 +4,38 @@ import { STANDARD_UI_SKILL_NAME } from '../setup/standard-skills.js';
 export const CAPABILITY_KINDS = ['skill', 'mcp_tool'] as const;
 export type CapabilityKind = (typeof CAPABILITY_KINDS)[number];
 
+export const MAX_CAPABILITY_DESCRIPTION_CHARS = 2_000;
+export const MAX_RAW_CAPABILITY_DESCRIPTION_CHARS = 64_000;
+export const MAX_CAPABILITY_NAME_CHARS = 300;
+export const MAX_CAPABILITY_ITEMS = 200;
+export const MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS = 512_000;
+
 export interface CapabilityDescriptor {
   kind: CapabilityKind;
   name: string;
   description?: string;
+}
+
+export type CapabilityCatalogAvailability = 'known-empty' | 'known-nonempty' | 'unknown';
+
+export interface CapabilityCatalogDiagnostics {
+  received: number;
+  accepted: number;
+  truncated: number;
+  dropped: number;
+}
+
+export interface NormalizedCapabilityCatalog {
+  availability: CapabilityCatalogAvailability;
+  skills: CapabilityDescriptor[];
+  tools: CapabilityDescriptor[];
+  diagnostics: CapabilityCatalogDiagnostics;
+  budgetExceeded: boolean;
+}
+
+export interface CapabilityWarning {
+  code: 'CAPABILITY_CATALOG_COMPACTED' | 'CAPABILITY_CATALOG_ITEMS_DROPPED' | 'CAPABILITY_CATALOG_BUDGET_EXCEEDED' | 'CAPABILITY_CATALOG_UNAVAILABLE';
+  message: string;
 }
 
 export interface CapabilityRecommendation {
@@ -19,8 +47,11 @@ export interface CapabilityRecommendation {
 }
 
 export interface CapabilityResolution {
+  availability: CapabilityCatalogAvailability;
   catalogProvided: boolean;
   availableSkillCount: number | null;
+  diagnostics: CapabilityCatalogDiagnostics;
+  warnings: CapabilityWarning[];
   externalSkillFallback: ExternalSkillFallbackDecision;
   recommendations: CapabilityRecommendation[];
 }
@@ -28,7 +59,155 @@ export interface CapabilityResolution {
 export interface ExternalSkillFallbackDecision {
   eligible: boolean;
   source: 'https://github.com/mattpocock/skills';
-  reason: 'no_skills_available' | 'skills_available' | 'capability_catalog_unknown';
+  reason: 'no_skills_available' | 'skills_available' | 'capability_catalog_nonempty' | 'capability_catalog_unknown';
+}
+
+export function boundedCodePointLength(value: string, limit: number): number {
+  if (limit < 0) return 0;
+  let length = 0;
+  for (const _point of value) {
+    length += 1;
+    if (length > limit) return length;
+  }
+  return length;
+}
+
+export function truncateCodePoints(value: string, max: number): string {
+  if (max <= 0) return '';
+  const points = Array.from(value);
+  if (points.length <= max) return value;
+  return `${points.slice(0, max - 1).join('')}…`;
+}
+
+export function compactCapabilityDescription(value: string): { description: string; truncated: boolean } {
+  const normalized = value
+    .normalize('NFKC')
+    .replace(/[\p{Cc}\p{Cf}]/gu, (character) => /\s/u.test(character) ? ' ' : '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  const description = truncateCodePoints(normalized, MAX_CAPABILITY_DESCRIPTION_CHARS);
+  return { description, truncated: description !== normalized };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isCapabilityKind(value: unknown): value is CapabilityKind {
+  return typeof value === 'string' && CAPABILITY_KINDS.includes(value as CapabilityKind);
+}
+
+function normalizedCatalogWarningList(
+  availability: CapabilityCatalogAvailability,
+  diagnostics: CapabilityCatalogDiagnostics,
+  catalogWasSupplied: boolean,
+  budgetExceeded: boolean,
+): CapabilityWarning[] {
+  const warnings: CapabilityWarning[] = [];
+  if (diagnostics.truncated > 0) {
+    warnings.push({
+      code: 'CAPABILITY_CATALOG_COMPACTED',
+      message: 'Some capability descriptions were shortened or omitted.',
+    });
+  }
+  if (diagnostics.dropped > 0) {
+    warnings.push({
+      code: 'CAPABILITY_CATALOG_ITEMS_DROPPED',
+      message: 'Some capability catalog items were ignored.',
+    });
+  }
+  if (budgetExceeded) {
+    warnings.push({
+      code: 'CAPABILITY_CATALOG_BUDGET_EXCEEDED',
+      message: 'Some capability catalog data was omitted because the catalog exceeded its processing budget.',
+    });
+  }
+  if (catalogWasSupplied && availability === 'unknown') {
+    warnings.push({
+      code: 'CAPABILITY_CATALOG_UNAVAILABLE',
+      message: 'The capability catalog could not be safely classified.',
+    });
+  }
+  return warnings;
+}
+
+function validateCapabilityHeader(value: unknown): Pick<CapabilityDescriptor, 'kind' | 'name'> | null {
+  if (!isPlainRecord(value) || !isCapabilityKind(value.kind) || typeof value.name !== 'string') return null;
+  if (boundedCodePointLength(value.name, MAX_CAPABILITY_NAME_CHARS) > MAX_CAPABILITY_NAME_CHARS
+    || value.name.trim().length === 0
+    || /[\p{Cc}\p{Cf}]/u.test(value.name)) return null;
+  return { kind: value.kind, name: value.name };
+}
+
+export function normalizeCapabilityCatalog(input: unknown): NormalizedCapabilityCatalog {
+  const emptyDiagnostics = { received: 0, accepted: 0, truncated: 0, dropped: 0 };
+  if (input === undefined) {
+    return { availability: 'unknown', skills: [], tools: [], diagnostics: emptyDiagnostics, budgetExceeded: false };
+  }
+  if (!Array.isArray(input)) {
+    return { availability: 'unknown', skills: [], tools: [], diagnostics: emptyDiagnostics, budgetExceeded: false };
+  }
+
+  const diagnostics: CapabilityCatalogDiagnostics = {
+    received: input.length,
+    accepted: 0,
+    truncated: 0,
+    dropped: Math.max(0, input.length - MAX_CAPABILITY_ITEMS),
+  };
+  const skills: CapabilityDescriptor[] = [];
+  const tools: CapabilityDescriptor[] = [];
+  const processCount = Math.min(input.length, MAX_CAPABILITY_ITEMS);
+  let remaining = MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS;
+  let budgetExceeded = false;
+  const accept = (descriptor: CapabilityDescriptor, truncated: boolean): void => {
+    diagnostics.accepted += 1;
+    if (truncated) diagnostics.truncated += 1;
+    (descriptor.kind === 'skill' ? skills : tools).push(descriptor);
+  };
+  for (let index = 0; index < processCount; index += 1) {
+    const item = input[index];
+    const header = validateCapabilityHeader(item);
+    if (header === null) {
+      diagnostics.dropped += 1;
+      continue;
+    }
+    const nameCost = boundedCodePointLength(header.name, remaining);
+    if (nameCost > remaining) {
+      diagnostics.dropped += processCount - index;
+      budgetExceeded = true;
+      break;
+    }
+    remaining -= nameCost;
+    const descriptor: CapabilityDescriptor = { ...header };
+    if (!isPlainRecord(item) || item.description === undefined) {
+      accept(descriptor, false);
+      continue;
+    }
+    if (typeof item.description !== 'string') {
+      accept(descriptor, true);
+      continue;
+    }
+    const scanLimit = Math.min(remaining, MAX_RAW_CAPABILITY_DESCRIPTION_CHARS);
+    const descriptionCost = boundedCodePointLength(item.description, scanLimit);
+    if (descriptionCost > scanLimit) {
+      accept(descriptor, true);
+      if (remaining <= MAX_RAW_CAPABILITY_DESCRIPTION_CHARS) {
+        diagnostics.dropped += processCount - index - 1;
+        budgetExceeded = true;
+        break;
+      }
+      remaining -= descriptionCost;
+      continue;
+    }
+    remaining -= descriptionCost;
+    const compacted = compactCapabilityDescription(item.description);
+    if (compacted.description.length > 0) descriptor.description = compacted.description;
+    accept(descriptor, compacted.truncated || (item.description.length > 0 && compacted.description.length === 0));
+  }
+  const availability: CapabilityCatalogAvailability = input.length === 0 ? 'known-empty' : 'known-nonempty';
+  return { availability, skills, tools, diagnostics, budgetExceeded };
 }
 
 const TASK_TOOL_TERMS: Record<NonNullable<TaskProfile['taskType']>, string[]> = {
@@ -84,20 +263,30 @@ function matchingSkill(catalog: CapabilityDescriptor[], desired: string): Capabi
   return catalog.find((candidate) => candidate.kind === 'skill' && nameAliases(candidate.name).has(desired));
 }
 
-export function decideExternalSkillFallback(capabilities?: CapabilityDescriptor[]): ExternalSkillFallbackDecision {
-  const availableSkillCount = capabilities?.filter((capability) => capability.kind === 'skill').length;
-  if (availableSkillCount === undefined) {
+function externalSkillFallbackForCatalog(catalog: NormalizedCapabilityCatalog): ExternalSkillFallbackDecision {
+  if (catalog.availability === 'unknown') {
     return {
       eligible: false,
       source: 'https://github.com/mattpocock/skills',
       reason: 'capability_catalog_unknown',
     };
   }
+  if (catalog.availability === 'known-empty') {
+    return {
+      eligible: true,
+      source: 'https://github.com/mattpocock/skills',
+      reason: 'no_skills_available',
+    };
+  }
   return {
-    eligible: availableSkillCount === 0,
+    eligible: false,
     source: 'https://github.com/mattpocock/skills',
-    reason: availableSkillCount === 0 ? 'no_skills_available' : 'skills_available',
+    reason: catalog.skills.length > 0 ? 'skills_available' : 'capability_catalog_nonempty',
   };
+}
+
+export function decideExternalSkillFallback(input?: unknown): ExternalSkillFallbackDecision {
+  return externalSkillFallbackForCatalog(normalizeCapabilityCatalog(input));
 }
 
 function relevantCatalogCapabilities(
@@ -145,11 +334,12 @@ export function resolveCapabilities(input: {
   task: string;
   profile: TaskProfile;
   recommendedTags: string[];
-  capabilities?: CapabilityDescriptor[];
+  capabilities?: unknown;
 }): CapabilityResolution {
-  const catalogProvided = input.capabilities !== undefined;
-  const catalog = input.capabilities ?? [];
-  const externalSkillFallback = decideExternalSkillFallback(input.capabilities);
+  const normalized = normalizeCapabilityCatalog(input.capabilities);
+  const catalogProvided = normalized.availability !== 'unknown';
+  const catalog = [...normalized.skills, ...normalized.tools];
+  const externalSkillFallback = externalSkillFallbackForCatalog(normalized);
   const desired = desiredSkills(input);
   const desiredSkillNames = new Set(desired);
   const skills: CapabilityRecommendation[] = desired.map((desiredName) => {
@@ -157,14 +347,17 @@ export function resolveCapabilities(input: {
     return {
       kind: 'skill',
       name: matched?.name ?? desiredName,
-      availability: matched ? 'available' : catalogProvided ? 'missing' : 'unknown',
+      availability: matched ? 'available' : normalized.availability === 'unknown' ? 'unknown' : 'missing',
       reason: SKILL_REASONS[desiredName] ?? 'The Akinator task policy recommends this workflow.',
       source: 'akinator_policy',
     };
   });
   return {
+    availability: normalized.availability,
     catalogProvided,
-    availableSkillCount: catalogProvided ? catalog.filter((capability) => capability.kind === 'skill').length : null,
+    availableSkillCount: normalized.availability === 'unknown' ? null : normalized.skills.length,
+    diagnostics: normalized.diagnostics,
+    warnings: normalizedCatalogWarningList(normalized.availability, normalized.diagnostics, input.capabilities !== undefined, normalized.budgetExceeded),
     externalSkillFallback,
     recommendations: [...skills, ...relevantCatalogCapabilities(input.task, input.profile, catalog, desiredSkillNames)],
   };

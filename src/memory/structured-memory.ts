@@ -10,6 +10,9 @@ export const MEMORY_CLASSES = [
 ] as const;
 export type MemoryClass = (typeof MEMORY_CLASSES)[number];
 
+export const RETRIEVAL_SCOPES = ['project-only', 'ecosystem', 'global'] as const;
+export type RetrievalScope = (typeof RETRIEVAL_SCOPES)[number];
+
 export interface Applicability {
   languages?: string[];
   frameworks?: Array<{ name: string; version?: string }>;
@@ -29,11 +32,26 @@ export interface MemorySignals {
 
 export interface StructuredMemoryOptions {
   visibility: 'project' | 'global';
+  retrievalScope?: RetrievalScope;
   repositoryId?: string;
   memoryClass?: MemoryClass;
   applicability?: Applicability;
   signals?: MemorySignals;
   portableReason?: string;
+}
+
+/** Resolve the retrieval policy of legacy and current structured scopes. */
+export function effectiveRetrievalScope(scope: Record<string, unknown>): RetrievalScope {
+  if (scope.retrievalScope !== undefined && RETRIEVAL_SCOPES.includes(scope.retrievalScope as RetrievalScope)) {
+    return scope.retrievalScope as RetrievalScope;
+  }
+  return scope.visibility === 'global' ? 'global' : 'project-only';
+}
+
+export function hasExplicitApplicability(scope: Record<string, unknown>): boolean {
+  const applicability = scope.applicability;
+  if (typeof applicability !== 'object' || applicability === null || Array.isArray(applicability)) return false;
+  return Object.values(applicability as Record<string, unknown>).some((value) => Array.isArray(value) && value.length > 0);
 }
 
 const SIGNAL_TYPES = {
@@ -119,15 +137,19 @@ export function validateSignals(value: unknown): MemorySignals {
 
 export function buildStructuredScope(options: StructuredMemoryOptions): JsonObject {
   if (options.visibility !== 'project' && options.visibility !== 'global') invalid();
+  if (options.retrievalScope !== undefined && !RETRIEVAL_SCOPES.includes(options.retrievalScope)) invalid();
+  if (options.visibility === 'global' && options.retrievalScope !== undefined && options.retrievalScope !== 'global') invalid();
+  if (options.visibility === 'project' && options.retrievalScope === 'global') invalid();
   const validatedApplicability = options.applicability === undefined ? undefined : validateApplicability(options.applicability);
   const hasApplicability = validatedApplicability !== undefined && Object.values(validatedApplicability).some((value) => Array.isArray(value) && value.length > 0);
   if (options.visibility === 'global' && !hasApplicability && options.portableReason === undefined) invalid();
   if (options.visibility === 'global' && options.portableReason !== undefined) cleanString(options.portableReason, 2_000);
   if (options.memoryClass !== undefined && !MEMORY_CLASSES.includes(options.memoryClass)) invalid();
   const result: Record<string, unknown> = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     visibility: options.visibility,
   };
+  if (options.retrievalScope !== undefined) result.retrievalScope = options.retrievalScope;
   if (options.repositoryId !== undefined) result.repositoryId = cleanString(options.repositoryId, 256);
   if (options.memoryClass !== undefined) result.memoryClass = options.memoryClass;
   if (validatedApplicability !== undefined) result.applicability = validatedApplicability;

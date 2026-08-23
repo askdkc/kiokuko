@@ -111,6 +111,40 @@ test('accepts context delivery selection reasons as a JSON array', async () => {
   }
 });
 
+test('reports an unknown delivery origin as corruption instead of treating it as project scope', async () => {
+  const database = await setup();
+  try {
+    const { LedgerStore } = await import('../../src/ledger/store.js');
+    const { recordEntry } = await import('../../src/memory/entries.js');
+    new LedgerStore(database, { now: () => '2026-08-20T00:00:00.000Z' }).createRun(runInput());
+    const entry = recordEntry(database, {
+      workspace: 'workspace-a', kind: 'lesson', title: 'Origin corruption', body: 'Detect unknown origin values.',
+    }, { now: '2026-08-20T00:00:00.000Z', idFactory: () => 'entry-origin-corruption' });
+    database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash,
+        query_hash, policy_version, external_sync_summary_json, char_budget,
+        char_count, truncated, created_at
+      ) VALUES ('delivery-origin-corruption', 'run-1', 0, NULL, ?, ?, 'v3', '{}', 100, 0, 0, ?)
+    `).run('a'.repeat(64), 'b'.repeat(64), '2026-08-20T00:00:00.000Z');
+    database.prepare(`
+      INSERT INTO context_delivery_entries (
+        delivery_id, entry_id, entry_revision, rank, score_components_json,
+        selection_reason_json, origin_scope
+      ) VALUES ('delivery-origin-corruption', ?, 1, 1, '{}', '[]', 'project')
+    `).run(entry.id);
+    database.exec('PRAGMA ignore_check_constraints = ON');
+    database.prepare('UPDATE context_delivery_entries SET origin_scope = ? WHERE delivery_id = ?').run('unknown-origin', 'delivery-origin-corruption');
+    database.exec('PRAGMA ignore_check_constraints = OFF');
+
+    const report = inspectLedger(database, { workspace: 'workspace-a' });
+    assert.ok(report.findings.some((finding) => finding.kind === 'invalid_enum'));
+    assert.ok(report.findings.some((finding) => finding.kind === 'orphan_delivery_entry_reference'));
+  } finally {
+    database.close();
+  }
+});
+
 test('reports tampered sequence, hash, malformed JSON, and secret residue without exposing content', async () => {
   const database = await setup();
   try {

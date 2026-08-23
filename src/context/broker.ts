@@ -9,6 +9,7 @@ import { buildRecommendations, RECOMMENDATION_POLICY_VERSION, type Recommendatio
 import { CONTEXT_RANKING_VERSION, rankContextCandidates, type RankedCandidate } from './ranking.js';
 import { searchEntries } from '../memory/retrieval.js';
 import type { EntryRecord } from '../memory/entries.js';
+import { federatedEntries, type FederatedOrigin } from '../memory/federated-retrieval.js';
 import { projectLedger, type LedgerEventSnapshot, type LedgerProjection } from '../ledger/projection.js';
 import { LedgerStore } from '../ledger/store.js';
 import type { RunRecord } from '../ledger/types.js';
@@ -41,6 +42,7 @@ export interface ContextBrokerContextItem {
   selectionReasons: string[];
   content: RankedCandidate['content'];
   untrusted: true;
+  origin?: FederatedOrigin;
 }
 
 export interface ContextBrokerContext {
@@ -252,9 +254,10 @@ function preparedQuery(database: SqliteDatabase, input: ContextBrokerQueryInput)
   };
 }
 
-function entrySnapshot(entry: EntryRecord): Parameters<typeof rankContextCandidates>[0] extends infer _ ? {
+function entrySnapshot(entry: EntryRecord, origin?: FederatedOrigin): Parameters<typeof rankContextCandidates>[0] extends infer _ ? {
   id: string; revision: number; kind: EntryRecord['kind']; status: EntryRecord['status']; trustLevel: EntryRecord['trustLevel']; confidence: number;
   title: string; summary: string | null; body: string; tags: string[]; scope: JsonObject; updatedAt: string;
+  origin?: FederatedOrigin;
 } : never {
   return {
     id: entry.id,
@@ -269,6 +272,7 @@ function entrySnapshot(entry: EntryRecord): Parameters<typeof rankContextCandida
     tags: [...entry.tags],
     scope: entry.scope,
     updatedAt: entry.updatedAt,
+    ...(origin === undefined ? {} : { origin }),
   };
 }
 
@@ -279,18 +283,50 @@ function retrievalQuery(query: PreparedQuery): string {
   return values.join(' ').slice(0, 16_384) || 'kiokuko';
 }
 
-function retrieveEntries(database: SqliteDatabase, query: PreparedQuery): EntryRecord[] {
+interface RetrievedEntry {
+  entry: EntryRecord;
+  origin: FederatedOrigin;
+}
+
+function projectForWorkspace(database: SqliteDatabase, workspace: string): { repositoryRoot: string; repositoryId: string; workspace: string; source: 'location' } | undefined {
+  const row = database.prepare(`
+    SELECT r.repository_id AS repositoryId, r.workspace, l.canonical_root AS repositoryRoot
+      FROM repositories AS r JOIN repository_locations AS l ON l.repository_id = r.repository_id
+     WHERE r.workspace = ? ORDER BY l.last_seen_at DESC LIMIT 1
+  `).get<{ repositoryId: string; workspace: string; repositoryRoot: string }>(workspace);
+  return row === undefined ? undefined : { repositoryRoot: row.repositoryRoot, repositoryId: row.repositoryId, workspace: row.workspace, source: 'location' };
+}
+
+async function retrieveEntries(database: SqliteDatabase, query: PreparedQuery): Promise<RetrievedEntry[]> {
   const terms = [query.task, query.taskProfile.target, query.taskProfile.expected, ...query.recommendedTags]
     .filter((value): value is string => value !== null && value.length > 0)
     .map((value) => value.slice(0, 2_000));
   const queries = [retrievalQuery(query), ...terms];
-  const entries = new Map<string, EntryRecord>();
+  const entries = new Map<string, RetrievedEntry>();
+  const project = projectForWorkspace(database, query.workspace);
   for (const value of queries) {
-    for (const entry of searchEntries(database, { workspace: query.workspace, query: value, limit: 500, includeSuperseded: false }).items) {
-      entries.set(entry.id, entry);
+    if (project !== undefined) {
+      for (const hit of await federatedEntries(database, { project, query: value, limit: 500 })) entries.set(hit.entry.id, { entry: hit.entry, origin: hit.origin });
+    } else {
+      for (const entry of searchEntries(database, { workspace: query.workspace, query: value, limit: 500, includeSuperseded: false }).items) entries.set(entry.id, { entry, origin: 'project' });
     }
   }
   return [...entries.values()];
+}
+
+async function rank(database: SqliteDatabase, query: PreparedQuery, prior: ReturnType<typeof priorData>): Promise<RankedCandidate[]> {
+  const entries = await retrieveEntries(database, query);
+  return rankContextCandidates({
+    taskProfile: query.taskProfile,
+    recommendedTags: query.recommendedTags,
+    changedPaths: query.changedPaths,
+    errorSignatures: query.errorSignatures,
+    priorDelivered: prior.delivered,
+    feedback: prior.feedback,
+    candidates: entries.map(({ entry, origin }) => entrySnapshot(entry, origin)),
+    limit: query.limit,
+    characterBudget: query.characterBudget,
+  });
 }
 
 function priorData(database: SqliteDatabase, query: PreparedQuery): { delivered: Array<{ entryId: string; revision: number }>; feedback: Array<{ entryId: string; verdict: 'helpful' | 'irrelevant' | 'stale' | 'conflicting' }>; stale: Array<{ entryId: string; deliveredRevision: number; currentRevision: number; stale: true }> } {
@@ -313,21 +349,6 @@ function priorData(database: SqliteDatabase, query: PreparedQuery): { delivered:
   return { delivered, feedback, stale };
 }
 
-function rank(database: SqliteDatabase, query: PreparedQuery, prior: ReturnType<typeof priorData>): RankedCandidate[] {
-  const entries = retrieveEntries(database, query);
-  return rankContextCandidates({
-    taskProfile: query.taskProfile,
-    recommendedTags: query.recommendedTags,
-    changedPaths: query.changedPaths,
-    errorSignatures: query.errorSignatures,
-    priorDelivered: prior.delivered,
-    feedback: prior.feedback,
-    candidates: entries.map(entrySnapshot),
-    limit: query.limit,
-    characterBudget: query.characterBudget,
-  });
-}
-
 function outputContext(query: PreparedQuery, items: RankedCandidate[], delivery: ContextDeliveryView | null): ContextBrokerContext {
   const sourceItems = items.map((item, index) => ({
     entryId: item.entryId,
@@ -337,6 +358,7 @@ function outputContext(query: PreparedQuery, items: RankedCandidate[], delivery:
     selectionReasons: [...item.selectionReasons],
     content: item.content,
     untrusted: true as const,
+    ...(item.origin === undefined ? {} : { origin: item.origin }),
   }));
   return {
     deliveryId: delivery?.deliveryId ?? query.deliveryId,
@@ -357,6 +379,7 @@ function deliveryInput(query: PreparedQuery, ranked: RankedCandidate[], summary:
     rank: index + 1,
     scoreComponents: item.scoreComponents,
     selectionReasons: [...item.selectionReasons],
+    ...(item.origin === undefined ? {} : { origin: item.origin }),
   }));
   const charCount = ranked.reduce((sum, item) => sum + item.content.characterCount, 0);
   const truncated = ranked.some((item) => item.content.truncated);
@@ -413,6 +436,7 @@ function storedContext(database: SqliteDatabase, query: PreparedQuery, delivery:
         truncated: title.length < entry.title.length || (entry.summary !== null && summary?.length !== entry.summary.length) || bodyPreview.length < entry.body.length,
       },
       untrusted: true as const,
+      ...(item.origin === undefined ? {} : { origin: item.origin }),
     };
   });
   return {
@@ -492,7 +516,7 @@ export class ContextBroker {
       };
     }
 
-    let ranked = rank(this.database, query, prior);
+    let ranked = await rank(this.database, query, prior);
     let externalSyncSummary = emptyExternalSummary();
     if (ranked.length < query.limit && query.taskProfile !== undefined && this.options.allowExternalSkillFallback === true) {
       const prepared = await prepareOfficialSourceSync({
@@ -506,7 +530,7 @@ export class ContextBroker {
         ? persistOfficialSourceSync(this.database, { workspace: query.workspace, prepared })
         : await persistence.persistSources(query.workspace, prepared);
       externalSyncSummary = { attempted: result.attempted, imported: result.imported, sources: result.sources };
-      ranked = rank(this.database, query, priorData(this.database, query));
+      ranked = await rank(this.database, query, priorData(this.database, query));
     }
 
     const recommendations = query.projection === null

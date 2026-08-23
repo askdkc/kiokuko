@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, stat } from 'node:fs/promises';
 import { createConnection, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -78,6 +78,7 @@ async function fixture() {
   await initializeDatabase({ databasePath });
   const database = openConnection(databasePath);
   const repositoryRoot = path.join(directory, 'repo');
+  await mkdir(repositoryRoot, { recursive: true });
   registerRepositoryAndLocation(database, {
     repositoryId: 'repo_web_test',
     workspace: 'project:web-test',
@@ -176,6 +177,23 @@ test('web filters by workspace, type, and cross-genre tags and supports candidat
     assert.equal(updated.entry.body, 'Web UIで更新済み');
     assert.equal(updated.entry.revision, 2);
     assert.deepEqual(updated.entry.tags, ['edited']);
+  } finally {
+    await web.close();
+  }
+});
+
+test('web memory recall returns federated origin and selection metadata', async () => {
+  const data = await fixture();
+  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0, httpOptions: { runtimeDirectory: path.join(data.directory, 'runtime') } });
+  try {
+    const response = await webFetch(web.url, '/api/memory/recall?workspace=project%3Aweb-test&q=web');
+    const raw = await response.text();
+    assert.equal(response.status, 200, raw);
+    const body = JSON.parse(raw) as { combined?: { items: Array<{ id: string; origin: string; selectionReasons: string[] }> } };
+    assert.ok(body.combined, raw);
+    assert.equal(body.combined.items[0]?.id, data.candidate.id, raw);
+    assert.equal(body.combined?.items[0]?.origin, 'project');
+    assert.ok(body.combined?.items[0]?.selectionReasons.includes('project_origin'));
   } finally {
     await web.close();
   }

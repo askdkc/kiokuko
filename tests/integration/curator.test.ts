@@ -194,3 +194,29 @@ test('web curator lists candidates across projects and globalizes the selected s
     data.database.close();
   }
 });
+
+test('web curator applies SQL-backed filters and exposes facets', async () => {
+  const data = await fixture();
+  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0 });
+  try {
+    const sessionResponse = await fetch(web.url);
+    const cookie = sessionResponse.headers.get('set-cookie')?.split(';', 1)[0];
+    assert.ok(cookie);
+    const headers = { cookie: cookie as string };
+    const facetsResponse = await fetch(`${web.url}/api/curator/facets?workspace=all`, { headers });
+    assert.equal(facetsResponse.status, 200);
+    const facets = await facetsResponse.json() as { facets: { projects: Array<{ workspace: string }>; tags: Array<{ value: string }>; memoryClasses: Array<{ value: string }> } };
+    assert.ok(facets.facets.projects.some((facet) => facet.workspace === 'project:curator-test'));
+    assert.ok(facets.facets.tags.some((facet) => facet.value === 'skill:database'));
+    assert.ok(facets.facets.memoryClasses.some((facet) => facet.value === 'troubleshooting'));
+
+    const filteredResponse = await fetch(`${web.url}/api/curator/candidates?workspace=all&tag=skill%3Adatabase&memoryClass=troubleshooting&search=SQLite`, { headers });
+    assert.equal(filteredResponse.status, 200);
+    const filtered = await filteredResponse.json() as { candidates: Array<{ entryId: string; workspace: string }> };
+    assert.deepEqual(filtered.candidates.map((candidate) => candidate.entryId), [data.reusable.id]);
+    assert.equal(filtered.candidates[0]?.workspace, 'project:curator-test');
+  } finally {
+    await web.close();
+    data.database.close();
+  }
+});

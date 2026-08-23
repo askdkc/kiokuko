@@ -36,11 +36,13 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "commander": "^14.0.1",
     "jsonc-parser": "^3.3.1",
+    "semver": "^7.8.5",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/semver": "^7.8.0",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2"
   }

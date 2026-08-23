@@ -13,7 +13,12 @@ import { readAkinatorSession, readRunIntakeLink } from '../akinator/store.js';
 import { startHttpServer, type HttpApplicationContext, type HttpServerOptions } from '../server/http.js';
 import { createAgentV1Handler } from '../server/agent-application.js';
 import { WEB_HTML } from './ui.js';
-import { curateMemoryCandidates, globalizeCuratorCandidate } from '../memory/curator.js';
+import { curateMemoryCandidates, curatorFacets, globalizeCuratorCandidate } from '../memory/curator.js';
+import { MEMORY_CLASSES } from '../memory/structured-memory.js';
+import type { KnowledgeEvidenceTier } from '../akinator/knowledge-path.js';
+import { GLOBAL_WORKSPACE } from '../memory/workspaces.js';
+import { recallScopedMemory } from '../memory/scoped-memory.js';
+import type { ResolvedProjectWorkspace } from '../memory/workspaces.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 4173;
@@ -147,6 +152,12 @@ function limitQuery(value: string | null): number {
   return limit;
 }
 
+function listQuery(url: URL, name: string, max = 50): string[] {
+  const values = url.searchParams.getAll(name).map((value) => value.trim()).filter(Boolean);
+  if (values.length > max || values.some((value) => value.length > 300)) throw new KiokukoError('VALIDATION_ERROR', `${name} contains too many or too-large values`);
+  return [...new Set(values)];
+}
+
 async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -191,6 +202,12 @@ function workspaceTags(database: SqliteDatabase, workspace: string): Array<{ tag
     .prepare("SELECT t.tag, COUNT(*) AS count FROM entry_revision_tags t JOIN entries e ON e.id = t.entry_id AND e.current_revision = t.revision WHERE e.workspace = ? AND e.status <> 'superseded' GROUP BY t.tag ORDER BY t.tag ASC")
     .all<{ tag: string; count: number }>(workspace)
     .map((row) => ({ tag: row.tag, count: Number(row.count) }));
+}
+
+function workspaceProject(database: SqliteDatabase, workspace: string): ResolvedProjectWorkspace | undefined {
+  const row = database.prepare('SELECT r.repository_id, r.workspace, l.canonical_root FROM repository_locations AS l JOIN repositories AS r ON r.repository_id = l.repository_id WHERE r.workspace = ? ORDER BY l.last_seen_at DESC, l.canonical_root ASC LIMIT 1').get<{ repository_id: string; workspace: string; canonical_root: string }>(workspace);
+  if (!row) return undefined;
+  return { repositoryId: row.repository_id, workspace: row.workspace, repositoryRoot: row.canonical_root, source: 'location' };
 }
 
 function listEntries(
@@ -368,13 +385,64 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     jsonResponse(response, 200, { workspace, tags });
     return;
   }
+  if (request.method === 'GET' && url.pathname === '/api/memory/recall') {
+    const workspace = requireWorkspace(url.searchParams.get('workspace') ?? '');
+    const query = url.searchParams.get('q')?.trim() ?? '';
+    if (query.length === 0) throw new KiokukoError('VALIDATION_ERROR', 'q must be a non-empty search query');
+    const scope = enumQuery(url.searchParams.get('scope'), ['auto', 'project', 'ecosystem', 'global'] as const, 'scope') ?? 'auto';
+    const project = workspace === GLOBAL_WORKSPACE ? undefined : workspaceProject(context.database, workspace);
+    if (scope !== 'global' && workspace !== GLOBAL_WORKSPACE && project === undefined) throw new KiokukoError('NOT_FOUND', 'The selected workspace has no repository root for scoped recall');
+    const result = await recallScopedMemory(context.database, {
+      query,
+      scope,
+      ...(project === undefined ? {} : { project }),
+      limit: Math.min(limitQuery(url.searchParams.get('limit')), 100),
+      maxChars: 50_000,
+    });
+    jsonResponse(response, 200, { workspace, ...result });
+    return;
+  }
   if (request.method === 'GET' && url.pathname === '/api/curator/candidates') {
     const workspaceParam = url.searchParams.get('workspace');
     const skillReadyOnly = booleanQuery(url.searchParams.get('skillReadyOnly'), 'skillReadyOnly') ?? false;
-    const result = workspaceParam === null || workspaceParam === 'all'
-      ? await curateMemoryCandidates(context.database, { allWorkspaces: true, limit: Math.min(limitQuery(url.searchParams.get('limit')), 50), skillReadyOnly })
-      : await curateMemoryCandidates(context.database, { workspace: requireWorkspace(workspaceParam), limit: Math.min(limitQuery(url.searchParams.get('limit')), 50), skillReadyOnly });
+    const workspaces = listQuery(url, 'project');
+    const tags = listQuery(url, 'tag');
+    const frameworks = listQuery(url, 'framework');
+    const languages = listQuery(url, 'language');
+    const memoryClasses = listQuery(url, 'memoryClass').map((value) => enumQuery(value, MEMORY_CLASSES, 'memoryClass') as typeof MEMORY_CLASSES[number]);
+    const tiers = listQuery(url, 'tier').map((value) => enumQuery(value, ['unobserved', 'observed', 'repeated', 'portable'] as const, 'tier') as KnowledgeEvidenceTier);
+    const tagMode = enumQuery(url.searchParams.get('tagMode'), ['any', 'all'] as const, 'tagMode');
+    const includeGlobalized = booleanQuery(url.searchParams.get('includeGlobalized'), 'includeGlobalized') ?? false;
+    const cursor = url.searchParams.get('cursor');
+    const input = {
+      ...(workspaceParam !== null && workspaceParam !== 'all' ? { workspace: requireWorkspace(workspaceParam) } : {}),
+      ...(workspaces.length > 0 ? { workspaces } : {}),
+      ...(tags.length > 0 ? { tags } : {}),
+      ...(tagMode === undefined ? {} : { tagMode }),
+      ...(frameworks.length > 0 ? { frameworks } : {}),
+      ...(languages.length > 0 ? { languages } : {}),
+      ...(memoryClasses.length > 0 ? { memoryClasses } : {}),
+      ...(tiers.length > 0 ? { tiers } : {}),
+      ...(url.searchParams.get('search') === null ? {} : { search: url.searchParams.get('search') ?? '' }),
+      ...(cursor === null ? {} : { cursor }),
+      allWorkspaces: workspaceParam === null || workspaceParam === 'all' || workspaces.length > 0,
+      skillReadyOnly,
+      includeGlobalized,
+      limit: Math.min(limitQuery(url.searchParams.get('limit')), 50),
+    } as Parameters<typeof curateMemoryCandidates>[1];
+    const result = await curateMemoryCandidates(context.database, input);
     jsonResponse(response, 200, result);
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/curator/facets') {
+    const workspaceParam = url.searchParams.get('workspace');
+    const projects = listQuery(url, 'project');
+    const includeGlobalized = booleanQuery(url.searchParams.get('includeGlobalized'), 'includeGlobalized') ?? false;
+    jsonResponse(response, 200, { facets: curatorFacets(context.database, {
+      ...(workspaceParam !== null && workspaceParam !== 'all' ? { workspace: requireWorkspace(workspaceParam) } : {}),
+      ...(projects.length > 0 ? { workspaces: projects } : {}),
+      includeGlobalized,
+    }) });
     return;
   }
   if (request.method === 'POST' && url.pathname === '/api/curator/globalize') {

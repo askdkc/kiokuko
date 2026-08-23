@@ -10,6 +10,7 @@ import {
 } from './ranking.js';
 import { sanitizeJson } from '../security/sanitize.js';
 import { canonicalJson } from '../serialization/validate.js';
+import { entryOriginMatchesWorkspace, isContextEntryOrigin, type ContextEntryOrigin } from './origin.js';
 
 const MAX_IDENTIFIER_BYTES = 256;
 const MAX_ITEMS = 100;
@@ -39,7 +40,7 @@ export interface ContextDeliveryItemInput {
   scoreComponents: ContextDeliveryScoreComponentsAny;
   selectionReasons: string[];
   /** Set only for v2 cross-scope deliveries; project remains the v1 default. */
-  origin?: 'project' | 'global';
+  origin?: ContextEntryOrigin;
 }
 
 export interface ExternalSyncSourceSummary {
@@ -375,7 +376,7 @@ function validateDeliveryItems(value: unknown, scoreSchemaVersion: number): Cont
     const entryRevision = positiveSafeInteger(readField(object, 'entryRevision'));
     const rank = positiveSafeInteger(readField(object, 'rank'));
     if (rank !== index + 1) validation();
-    const origin = object.origin === undefined ? undefined : object.origin === 'project' || object.origin === 'global' ? object.origin : validation();
+    const origin = object.origin === undefined ? undefined : isContextEntryOrigin(object.origin) ? object.origin : validation();
     return {
       entryId,
       entryRevision,
@@ -597,15 +598,18 @@ function assertRunForWrite(database: SqliteDatabase, input: ValidatedContextDeli
   }
   for (const item of input.items) {
     const entry = database.prepare(`
-      SELECT e.id, e.workspace, r.scope_json
+      SELECT e.id, e.workspace, r.workspace AS revision_workspace, r.scope_json
         FROM entry_revisions AS r
         JOIN entries AS e ON e.id = r.entry_id
        WHERE r.entry_id = ? AND r.revision = ?
-    `).get<{ id: unknown; workspace: unknown; scope_json: unknown }>(item.entryId, item.entryRevision);
+    `).get<{ id: unknown; workspace: unknown; revision_workspace: unknown; scope_json: unknown }>(item.entryId, item.entryRevision);
     if (!entry || entry.id !== item.entryId) notFound();
-    if (item.origin === 'global') {
+    const entryWorkspace = typeof entry.workspace === 'string' ? entry.workspace : notFound();
+    const origin = item.origin ?? 'project';
+    if (entry.revision_workspace !== entryWorkspace || !entryOriginMatchesWorkspace({ origin, runWorkspace: input.workspace, entryWorkspace })) notFound();
+    if (origin === 'global') {
       if (entry.workspace !== 'global' || typeof entry.scope_json !== 'string' || !/"visibility"\s*:\s*"global"/u.test(entry.scope_json)) notFound();
-    } else if (entry.workspace !== input.workspace) notFound();
+    } else if (origin === 'ecosystem' && (typeof entry.scope_json !== 'string' || (!/"retrievalScope"\s*:\s*"ecosystem"/u.test(entry.scope_json) && !/"applicability"\s*:/u.test(entry.scope_json)))) notFound();
   }
 }
 
@@ -702,9 +706,8 @@ function validateStoredEntries(database: SqliteDatabase, header: ContextDelivery
     if (deliveryId !== header.deliveryId || entryIds.has(entryId)) integrity();
     entryIds.add(entryId);
     const entryWorkspace = boundedStoredIdentifier(row.entry_workspace);
-    const origin = row.origin_scope === 'global' ? 'global' : row.origin_scope === 'project' ? 'project' : integrity();
-    if (origin === 'project' && entryWorkspace !== header.workspace) integrity();
-    if (origin === 'global' && entryWorkspace !== 'global') integrity();
+    const origin = isContextEntryOrigin(row.origin_scope) ? row.origin_scope : integrity();
+    if (!entryOriginMatchesWorkspace({ origin, runWorkspace: header.workspace, entryWorkspace })) integrity();
     const entryRevision = storedPositiveSafeInteger(row.entry_revision);
     const revisionWorkspace = boundedStoredIdentifier(row.revision_workspace);
     if (revisionWorkspace !== entryWorkspace) integrity();
@@ -716,7 +719,7 @@ function validateStoredEntries(database: SqliteDatabase, header: ContextDelivery
     const score = storedScoreComponents(scoreValue, header.scoreSchemaVersion ?? 1);
     const reasons = storedSelectionReasons(reasonValue);
     if (canonicalJson(score) !== row.score_components_json || canonicalJson(reasons) !== row.selection_reason_json) integrity();
-    return { entryId, entryRevision, rank, scoreComponents: score, selectionReasons: reasons, ...(origin === 'global' ? { origin } : {}) };
+    return { entryId, entryRevision, rank, scoreComponents: score, selectionReasons: reasons, ...(origin === 'project' ? {} : { origin }) };
   });
 }
 
