@@ -1,162 +1,111 @@
-# Kiokuko
+# Kiokuko（記憶庫）
 
 [English](README.md) | 日本語 | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
 
-Kiokukoは、AIコーディングエージェント向けのモデル非依存な外部記憶です。npmでグローバルインストールした後に`Kikuko setup`を実行すると、実行したユーザーのAI利用時に構造化された記憶を保存するためのSQLite DBを自動生成してくれます。その後、native stdio MCP経由でCodex、OpenCode、Claude Code、Hermes Agent向けにタスク準備とrecall/checkpointツールを提供します。
+**MCPでつなぎ、RAGで思い出し、作業後に記憶する。**
 
-要するに、コマンド2つで良い感じに全部自動でやってくれます。
+Kiokukoは、AIコーディングエージェント向けの外部記憶です。
 
-## グローバルへのインストールと有効化
+過去の作業から得た知識をローカルのSQLiteへ保存し、次の依頼で関連する記憶だけを検索してAIへ渡します。
 
-> 注意： Node.js 24以上が必要です。
+ユーザーが毎回プロンプトに過去の経緯を貼ったり、記憶を手作業で探したりする必要はありません。普段どおりAIを使うだけで、プロジェクト固有の知識が少しずつ蓄積され、次の作業へ再利用されます。
 
-なんということでしょう、下記の簡単なインストールとセットアップで利用出来ます。
+## すぐ使う
+
+Node.js 24以上が必要です。
+以下の2コマンドで楽々スタートです💕
 
 ```bash
 npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-細かなインストールオプションもあります：
+`setup`は、インストール済みの対応クライアントを検出し、SQLiteデータベースとMCP接続を自動設定します。
 
-```bash
-# 書き込まずに変更対象ファイルと予定内容を確認
-kiokuko setup --dry-run --json
+設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。
 
-# 一方のクライアントだけを設定
-kiokuko setup --clients codex
-kiokuko setup --clients opencode
-kiokuko setup --clients claude
-kiokuko setup --clients hermes
+対応クライアント：
 
-# クライアントプロセスがnpmのPATHを継承しない場合は絶対パスを指定
-kiokuko setup --command /absolute/path/to/kiokuko
+- Codex
+- OpenCode
+- Claude Code
+- Hermes Agent
 
-# 標準スキルの新規配置を省略（既存の管理済みコピーは削除しない）
-kiokuko setup --no-standard-skills
+## 使うほど賢くなる仕組み
+
+```text
+ユーザーの依頼
+      ↓
+関連する過去の記憶を検索
+      ↓
+AIが記憶を参照して作業
+      ↓
+再利用できる成果や教訓を保存
+      ↓
+次の依頼で再び検索
 ```
 
-### インストールとセットアップの細かい話
+Kiokukoは、次の流れを繰り返します。
 
-Hermesの設定はプロファイル単位です。`$HOME/.hermes/profiles/work/config.yaml`のようなnamed profileには、そのプロファイルのMCP設定と標準スキルだけを配置し、rootや非アクティブなプロファイルは変更しません。別プロセスで一時的に指定した`hermes -p <name>`は自動推測しません。確実にnamed profileを指定するには、次のように`HERMES_HOME`へプロファイルディレクトリを渡します。
+1. 作業前に、現在のプロジェクトとGlobal記憶を検索する
+2. 関連性の高い記憶だけをAIへ渡す
+3. AIが作業を実行する
+4. 作業後に、再利用できる知識を記憶する
+5. 次の作業で、その記憶を再利用する
 
-```bash
-HERMES_HOME="$HOME/.hermes/profiles/work" kiokuko setup --clients hermes
-```
+つまりKiokukoは、**永続的な記憶を蓄積していくRAGシステム**です。
 
-Desktopプロセスから`kiokuko`が見つからない場合は、空の`command -v`結果を渡さず、絶対パスへ移行します。
+MCPはAIクライアントとKiokukoを接続し、RAGは必要な記憶を検索してAIへ渡します。
 
-```bash
-KIOKUKO_BIN="$(command -v kiokuko)"
-test -n "$KIOKUKO_BIN" && test -x "$KIOKUKO_BIN" || { echo "kiokuko executable not found" >&2; exit 1; }
-kiokuko setup --clients hermes --command "$KIOKUKO_BIN"
-```
+## 記憶はプロジェクトごとに分離
 
-セットアップ対象は次のとおりです。
+通常の検索では、無関係なプロジェクトの記憶を混ぜません。
 
-| クライアント | MCP設定 | グローバル指示 | 実行時ガード | 標準スキル |
-|---|---|---|---|---|
-| Codex | `$CODEX_HOME/config.toml`または`~/.codex/config.toml` | `$CODEX_HOME/AGENTS.md`または`~/.codex/AGENTS.md` | — | `~/.agents/skills/kiokuko-ui-design-soul` |
-| OpenCode | `$XDG_CONFIG_HOME/opencode/opencode.json`または`~/.config/opencode/opencode.json` | 同じディレクトリの`AGENTS.md` | `plugins/kiokuko-loop-guard.js` | グローバル設定内の`skills/kiokuko-ui-design-soul` |
-| Claude Code | `$CLAUDE_CONFIG_DIR/.claude.json`または`~/.claude.json` | `$CLAUDE_CONFIG_DIR/CLAUDE.md`または`~/.claude/CLAUDE.md` | — | Claude設定内の`skills/kiokuko-ui-design-soul` |
-| Hermes Agent | 有効なプロファイルの`config.yaml`（`$HERMES_HOME`、`$HOME/.hermes`、またはWindowsの`%LOCALAPPDATA%/hermes`） | なし | なし | 有効なプロファイル内の`skills/kiokuko-ui-design-soul` |
+- **Project記憶**  
+  現在のリポジトリだけで使う知識
 
-Hermesの設定はプロファイル単位です。`mcp_servers.kiokuko`に`command: kiokuko`と`args: [mcp]`を登録します。管理対象の正規形であれば`--command`でcommandだけを移行でき、args、コメント、他serverは保持します。未管理entry、余分なfield、`mcp`以外のargsは引き続きconflictです。Hermesの組み込みmemoryとskillsはKiokukoとは別です。モデルがMCP tool descriptionを使うかどうかはbest effortです。
+- **Global記憶**  
+  言語、フレームワーク、データベース、ツールなど、複数プロジェクトで再利用する知識
 
-OpenCodeの`opencode.jsonc`がすでに存在する場合、Kiokukoはコメントを維持したままそのファイルを更新します。CodexにKiokuko管理外の`[mcp_servers.kiokuko]`テーブルが存在する場合、上書き対象を推測せずセットアップを停止します。管理対象のOpenCodeガードは、可視エージェントを12 stepに制限し、1ユーザー要求につき`task_prepare`と`memory_checkpoint`を各1回までにし、チェックポイント後のツール利用を閉じ、同一呼び出しまたは読み取り専用の探索結果が3回続いた後の再実行を停止します。カウンターとフィンガープリントはプロセスメモリにだけ保持します。
+プロジェクトはGitリモートやパスから自動判定されます。
 
-標準スキルの各ファイルにはKiokuko管理マーカーがあります。setupは固定された既知ファイルだけを更新し、完全一致は`unchanged`とし、無関係な兄弟ファイルは変更しません。同名ファイルに管理マーカーがなければ、ファイルやデータベースへ書き込む前に`CONFLICT`で停止します。
-
-## 記憶のスコープ
-
-Kiokukoの通常のrecallがデータベース全体を無条件に検索することはありません。
-
-- `project`記憶は、`.kiokuko.json`、既知の正規パス、またはGit remoteから自動解決されます。他のプロジェクトの記憶は除外されます。
-- `global`記憶は、本当にプロジェクト横断で利用する設定や教訓のために予約されています。
-- デフォルトの`auto` recallは、現在のプロジェクトとglobal記憶だけを返します。
-- remoteのないリポジトリには、パスから導出した安定した識別子を使用します。自動解決時にKiokukoがリポジトリ内へファイルを書き込むことはありません。
-
-MCPの公開インターフェースは意図的に小さくしています。
-
-- `task_prepare`: 1ユーザー要求につき1回だけ、Akinator的なAIへの対話による記憶の絞り込み、上限付きの記憶・参照検索、現在のクライアントから渡されたSKILL/MCPツール名との照合を行います。
-- `task_answer`: ユーザーの依頼または確認済みのリポジトリ情報に根拠がある回答だけで、取り込みを続行します。
-- `memory_recall`: 上限付きのproject/globalコンテキストを読み取ります。結果には常にuntrustedマークが付きます。
-- `curator_check`: 最終checkpointの前に、原則としてスキル化可能な候補だけを返します。qualified hitは「実行可能なAkinator経路を独立runで完了し、freshな検証または成功テストがある」場合だけです。検索・recall回数は数えません。
-- `curator_globalize`: 表示されたスキル名と3行概要をユーザーが明示的に承認した後だけ、revision確認済みの再生成ドラフトをGlobalへ保存します。
-- `memory_checkpoint`: ユーザー要求の最後に1回だけ、上限付きの永続的な記憶を`candidate`かつ`untrusted`として保存します。同時に、提案記憶ごとのAkinator絞り込み経路をrunと検証証拠に結び付けます。シークレットに見える内容は拒否されます。
-
-## ローカルWeb UI
-
-ループバック専用HTTPサーバーを起動すると、役割・用途、記憶タイプ、横断タグで記憶エントリを閲覧し、ブラウザからcandidateエントリを編集できます。
-
-```bash
-kiokuko web
-# http://127.0.0.1:4173 を開く
-```
-
-UIは英語、日本語、簡体字中国語、韓国語に対応します。初回はブラウザの言語を使用し、明示的に選択した言語はブラウザに保存されます。`?lang=en`、`?lang=ja`、`?lang=zh-CN`、`?lang=ko`で上書きできます。
-
-`--port 0`で空いているポートを自動選択でき、`--json`で選択されたURLをJSONとして出力できます。Web UIが非ループバックインターフェースへサーバーを公開することはありません。verifiedおよびsupersededエントリは読み取り専用です。candidateの編集には楽観的リビジョン検査が使われ、監査履歴が維持されます。
-
-`bot:researcher`、`bot:builder`、`bot:reviewer`などのタグは、種類をまたいだフィルターとして使用できます。エントリまたはサイドバーのタグをクリックすると、記憶タイプに関係なく一致するすべてのエントリが表示されます。
-
-記憶エントリは信頼されていない保存データです。過去のエントリを利用する前に、現在のファイルとランタイム状態を確認してください。パスワード、APIキー、トークン、秘密鍵、セッションCookieを保存しないでください。
-
-## Curator （記憶一覧からGlobal化したい記憶を手動選択）
-
-`kiokuko curator`は、プロジェクト内のcandidate記憶から、他のプロジェクトでも再利用できそうな知識を判定します。プロジェクト識別子やパスを中立化し、「目的・手順・適用条件・検証」の構造を持つ汎用ドラフトをローカルで決定論的に再生成します。スキル名、3行程度の概要、再生成した本文に加え、qualified hit数、独立run数、workspace数、抽象→具体サイロ充足度を表示してから、対話的にGlobalへの追加を確認します。`--skill-ready-only`は定期確認に使う高根拠候補だけへ絞り込みます。
+Project記憶をGlobal記憶へ移す場合は、Curatorで候補を確認して明示的に承認します。
 
 ```bash
 kiokuko curator
-kiokuko curator --json
-kiokuko curator --skill-ready-only
-kiokuko curator --entry-id <entry-id>
 ```
 
-Web UIの`Curator`ボタンでは、全プロジェクトworkspaceの汎用化候補を一覧表示します。候補ごとのチェックボックスで追加・見送りを選択し、選択した候補を1回の明示操作でGlobalへ追加できます。Globalには元のプロジェクト固有本文ではなく再生成ドラフトを保存します。外部LLMやAPIキーは使いません。追加後もGlobalエントリは`candidate`かつ`untrusted`のままで、元のworkspace・revision・provenanceを保持します。
+## 記憶を確認する
 
-これは指示による自動利用であり、プロンプトの横取りではありません。Codex、OpenCode、Claude Code、Hermes Agentが特定のターンでツールを呼ばない可能性は残ります。Hermesでの自動利用・モデル利用はMCP tool descriptionによるbest effortです。Hermesの組み込みmemoryとskillsは分離されたままです。KiokukoはHermes用のグローバル指示ファイル、plugin、hookを作成せず、会話全文を取得せず、外部から取得したSKILLを自動インストールせず、記憶を暗黙にverifiedへ昇格させません。OpenCodeへ導入するpluginは上記の限定的なローカルループガードだけであり、同梱標準スキルはpluginではなくクライアントnativeのskillです。
-
-## Akinator形式の知識取り込み
-
-重要な作業では、セットアップ済みのエージェント指示が`task_prepare`を呼び出します。Akinatorは人気投票や固定フォームではなく、抽象的な意図から複数の行動系列を候補にし、質問ごとに候補を除外・具体化して、選択行動、検証方法、停止条件まで収束させる推論ガイドです。返却する抽象→具体サイロは、意図、行動系列、対象、成功状態、選択行動、検証の各層と充足度を持ちます。タスク種別、対象、観測可能な成功条件など、不足している価値の高い項目だけを質問し、その後にクエリと役割・用途タグからローカル記憶を選択します。クライアントが現在利用可能なSKILLとMCPツールの完全な名前と短い説明を渡した場合は、必要な機能を照合し、`available`、`missing`、`unknown`を区別して返します。説明は項目単位で短縮・除外され、この一覧は一時的にだけ使用され、保存されません。CLIの`guide`コマンドでも同じ取り込みを手動実行できます。
-
-UI、UX、frontend、screen、SwiftUI、画面、アクセシビリティなどの具体的なUI語彙を含む依頼では、クライアントのcapability一覧に存在する`kiokuko-ui-design-soul`を`task_prepare`が明示的に推薦します。`design`単独、backend-only作業、画像生成だけの依頼では発火しません。
+ローカルWeb UIから、保存された記憶の検索、確認、編集ができます。
 
 ```bash
-kiokuko guide start "Implement the API change and add tests" \
-  --workspace <workspace> --json
-kiokuko guide answer <session-id> --workspace <workspace> \
-  --question-id target --value src/api.ts --json
-kiokuko guide answer <session-id> --workspace <workspace> \
-  --question-id expected --value "All tests pass" --json
-kiokuko guide context <session-id> --workspace <workspace> --json
+kiokuko web
 ```
 
-ローカル検索で関連エントリが見つからず、クライアントが能力カタログとして空配列を明示した場合に限り、何も無い状態から始めるよりも少しはマシになるように `task_prepare`は次の人気の高いAI公開スキルリポジトリから最新の`main`ツリーを取得し利用します。
+ブラウザで次を開きます。
 
-- https://github.com/mattpocock/skills
+```text
+http://127.0.0.1:4173
+```
 
-capability一覧の省略・破損・非空はフォールバックを無効にします。CLIで手動利用する場合は、`guide context ... --no-client-skills`で同じ条件を明示します。`disable-model-invocation: true`のSKILLは自動選択から除外します。
+Web UIはローカル環境だけで動作し、外部ネットワークへ公開されません。
 
-インポートされた各エントリには、リポジトリ、commit SHA、ソースパスが記録されます。これらは信頼されていない参照資料であり、自動的に`verified`へ昇格したり、コマンドとして実行されたりすることはありません。同期の再実行はコンテンツハッシュにより冪等です。
+## 安全性
 
-## 開発時のお作法
+Kiokukoは会話全文を保存しません。
+
+パスワード、APIキー、トークン、秘密鍵など、シークレットに見える内容は保存を拒否します。
+
+保存された記憶は常に参考情報として扱われます。過去の記憶より、現在のコード、設定、実行結果が優先されます。
+
+## 注意
+
+Kiokukoはプロンプトを横取りする仕組みではありません。自動利用は各AIクライアントとモデルのMCP呼び出しに依存するため、すべてのターンで必ず呼び出される保証はありません。
+
+詳細なコマンドは次から確認できます。
 
 ```bash
-npm install
-npm run typecheck
-npm test
-npm run build
-npm pack --dry-run
+kiokuko --help
+kiokuko setup --help
 ```
-
-## 開発環境での実行
-
-```bash
-npm exec -- tsx src/bin/kiokuko.ts setup --dry-run --json
-npm exec -- tsx src/bin/kiokuko.ts mcp
-```
-
-`kiokuko use`は、移植可能な明示的バインディングが必要な場合の任意機能として残っています。`.kiokuko.json`と`AGENTS.md`内の管理ブロックを作成しますが、通常のMCP利用では不要です。
-
