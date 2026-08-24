@@ -213,10 +213,11 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
     .option('--dry-run', 'Validate and show planned changes without writing')
     .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
+    .option('--no-claude-prompt-hook', 'Skip installing the Claude UserPromptSubmit memory hook')
     .option('--opencode-capture <profile>', 'OpenCode evidence capture: off,minimal,standard', 'off')
     .option('--opencode-mode <mode>', 'OpenCode prepare enforcement: advisory,strict', 'advisory')
     .option('--json', 'Emit a JSON response')
-    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; opencodeCapture: string; opencodeMode: string; standardSkills: boolean }) => {
+    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; opencodeCapture: string; opencodeMode: string; standardSkills: boolean; claudePromptHook: boolean }) => {
       if (!['off', 'minimal', 'standard'].includes(options.opencodeCapture)) throw new KiokukoError('VALIDATION_ERROR', 'opencode capture must be off, minimal, or standard');
       if (!['advisory', 'strict'].includes(options.opencodeMode)) throw new KiokukoError('VALIDATION_ERROR', 'opencode mode must be advisory or strict');
       const setupEnvironment = dependencies.setupEnvironment ?? {};
@@ -238,6 +239,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         command: options.command,
         dryRun: options.dryRun === true,
         standardSkills: options.standardSkills,
+        claudePromptHook: options.claudePromptHook,
         opencodeCapture: options.opencodeCapture as 'off' | 'minimal' | 'standard',
         opencodeMode: options.opencodeMode as 'advisory' | 'strict',
       });

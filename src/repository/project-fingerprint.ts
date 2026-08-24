@@ -128,7 +128,7 @@ export function computeProjectFingerprint(repositoryId: string, repositoryRoot: 
   return rawFingerprint(repositoryId, manifests);
 }
 
-export function projectFingerprint(database: SqliteDatabase, project: ResolvedProjectWorkspace): ProjectFingerprint {
+export function projectFingerprint(database: SqliteDatabase, project: ResolvedProjectWorkspace, options: { readOnly?: boolean } = {}): ProjectFingerprint {
   const current = computeProjectFingerprint(project.repositoryId, project.repositoryRoot);
   const cached = database.prepare('SELECT fingerprint_json, manifest_digest FROM repository_fingerprints WHERE repository_id = ?').get<{ fingerprint_json: string; manifest_digest: string }>(project.repositoryId);
   if (cached?.manifest_digest === current.manifestDigest) {
@@ -139,6 +139,7 @@ export function projectFingerprint(database: SqliteDatabase, project: ResolvedPr
       // Recompute and repair an invalid cache row.
     }
   }
+  if (options.readOnly === true) return current;
   database.prepare(`
     INSERT INTO repository_fingerprints (repository_id, fingerprint_json, manifest_digest, updated_at)
     VALUES (?, ?, ?, ?)

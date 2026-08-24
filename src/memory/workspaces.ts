@@ -118,3 +118,76 @@ export async function resolveProjectWorkspace(
   const identity = createRepositoryIdentity({ repositoryRoot, repositoryId });
   return registerResolved(database, repositoryRoot, identity.repositoryId, identity.workspace, null, 'local-path');
 }
+
+/**
+ * Resolve a repository for a read-only lookup without registering its path,
+ * updating last-used timestamps, or creating a repository row.
+ *
+ * The normal resolver intentionally persists this mapping so later commands
+ * can reuse the same project identity. Hook pre-recall is different: it must
+ * not turn untrusted cwd input into database state.
+ */
+export async function resolveProjectWorkspaceReadOnly(
+  database: SqliteDatabase,
+  cwd = process.cwd(),
+): Promise<ResolvedProjectWorkspace | undefined> {
+  let detected: ReturnType<typeof detectRepositoryRoot>;
+  try {
+    detected = detectRepositoryRoot({ cwd });
+  } catch (error) {
+    if (error instanceof KiokukoError && error.code === 'NOT_FOUND') return undefined;
+    throw error;
+  }
+  const repositoryRoot = detected.root;
+
+  if (detected.source === 'binding') {
+    const binding = await readProjectConfig(path.join(repositoryRoot, '.kiokuko.json'));
+    return {
+      repositoryRoot,
+      repositoryId: binding.repositoryId,
+      workspace: binding.workspace,
+      source: 'binding',
+    };
+  }
+
+  const location = database.prepare(`
+    SELECT r.repository_id AS repositoryId, r.workspace AS workspace
+    FROM repository_locations l
+    JOIN repositories r ON r.repository_id = l.repository_id
+    WHERE l.canonical_root = ?
+  `).get<RepositoryRow>(repositoryRoot);
+  if (location) {
+    return { repositoryRoot, repositoryId: location.repositoryId, workspace: location.workspace, source: 'location' };
+  }
+
+  const remote = readGitOrigin(repositoryRoot);
+  if (remote) {
+    const remoteFingerprint = fingerprintRemoteUrl(remote);
+    const remoteOwner = database.prepare(`
+      SELECT repository_id AS repositoryId, workspace
+      FROM repositories
+      WHERE remote_fingerprint = ?
+      ORDER BY last_used_at DESC, repository_id ASC
+      LIMIT 1
+    `).get<RepositoryRow>(remoteFingerprint);
+    if (remoteOwner) {
+      return { repositoryRoot, repositoryId: remoteOwner.repositoryId, workspace: remoteOwner.workspace, source: 'remote' };
+    }
+    const identity = createRepositoryIdentity({ repositoryRoot, remoteUrl: remote });
+    return {
+      repositoryRoot,
+      repositoryId: identity.repositoryId,
+      workspace: identity.workspace,
+      source: 'remote',
+    };
+  }
+
+  const repositoryId = `repo_local_${shortHash(repositoryRoot)}`;
+  const identity = createRepositoryIdentity({ repositoryRoot, repositoryId });
+  return {
+    repositoryRoot,
+    repositoryId: identity.repositoryId,
+    workspace: identity.workspace,
+    source: 'local-path',
+  };
+}

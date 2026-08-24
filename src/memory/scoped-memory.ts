@@ -24,6 +24,7 @@ export interface ScopedRecallInput {
   scope?: MemoryScope;
   limit?: number;
   maxChars?: number;
+  readOnly?: boolean;
 }
 
 export type ScopedRecallResult = FederatedRecallResult;
@@ -134,6 +135,7 @@ export async function recallScopedMemory(database: SqliteDatabase, input: Scoped
     ...(input.scope === undefined ? {} : { scope: input.scope }),
     ...(input.limit === undefined ? {} : { limit: input.limit }),
     ...(input.maxChars === undefined ? {} : { maxChars: input.maxChars }),
+    ...(input.readOnly === undefined ? {} : { readOnly: input.readOnly }),
   });
 }
 

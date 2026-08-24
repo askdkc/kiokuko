@@ -120,6 +120,17 @@ test('CLI uses hermes config path to select a profile when active_profile is una
   await assert.rejects(access(path.join(temporary.home, '.hermes', 'config.yaml')));
 });
 
+test('CLI --no-claude-prompt-hook does not create Claude settings.json', async () => {
+  const temporary = await temporaryEnvironment('cli-no-claude-prompt-hook');
+  const result = await runCliJson('linux', temporary.env, [
+    'setup', '--clients', 'claude', '--no-claude-prompt-hook', '--no-standard-skills', '--json',
+  ]);
+  assert.equal(result.ok, true);
+  const files = result.data.files as Array<{ purpose: string }>;
+  assert.equal(files.some((file) => file.purpose === 'hook-config'), false);
+  await assert.rejects(access(path.join(temporary.home, '.claude', 'settings.json')));
+});
+
 test('setup safely merges Codex, OpenCode, and Claude Code global configuration and is idempotent', async () => {
   const temporary = await temporaryEnvironment('merge');
   const codexDirectory = path.join(temporary.home, '.codex');
@@ -142,10 +153,11 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     databasePath: temporary.databasePath,
   });
   assert.equal(first.standardSkills, true);
-  assert.equal(first.files.length, 16);
+  assert.equal(first.files.length, 17);
   assert.equal(first.files.filter((file) => file.action === 'updated').length, 6);
-  assert.equal(first.files.filter((file) => file.action === 'created').length, 10);
+  assert.equal(first.files.filter((file) => file.action === 'created').length, 11);
   assert.equal(first.files.filter((file) => file.purpose === 'standard-skill').length, 8);
+  assert.equal(first.files.filter((file) => file.purpose === 'hook-config').length, 1);
 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
   assert.match(codexConfig, /^model = "gpt-test"/);
@@ -162,6 +174,8 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   const claude = JSON.parse(await readFile(path.join(temporary.home, '.claude.json'), 'utf8')) as { theme: string; mcpServers: { kiokuko: { type: string; command: string; args: string[]; env: object } } };
   assert.equal(claude.theme, 'dark');
   assert.deepEqual(claude.mcpServers.kiokuko, { type: 'stdio', command: 'kiokuko', args: ['mcp'], env: {} });
+  const claudeSettings = JSON.parse(await readFile(path.join(claudeDirectory, 'settings.json'), 'utf8')) as { hooks: { UserPromptSubmit: Array<{ hooks: Array<{ type: string; server?: string; tool?: string }> }> } };
+  assert.equal(claudeSettings.hooks.UserPromptSubmit.flatMap((group) => group.hooks).filter((hook) => hook.type === 'mcp_tool' && hook.server === 'kiokuko' && hook.tool === 'claude_prompt_context').length, 1);
   const hermesConfig = await readFile(path.join(temporary.home, '.hermes', 'config.yaml'), 'utf8');
   assert.match(hermesConfig, /Managed by `kiokuko setup`\./);
   assert.match(hermesConfig, /command: kiokuko/);
@@ -212,6 +226,43 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   assert.deepEqual(await Promise.all(second.files.map((file) => readFile(file.path, 'utf8'))), before);
 });
 
+test('setup preserves existing Claude settings while adding one managed prompt hook', async () => {
+  const temporary = await temporaryEnvironment('claude-settings-preserved');
+  const claudeDirectory = path.join(temporary.home, '.claude');
+  const settingsPath = path.join(claudeDirectory, 'settings.json');
+  const settings = {
+    permissions: { allow: ['Bash(git status)'] },
+    customSetting: { keep: true },
+    hooks: {
+      UserPromptSubmit: [{
+        matcher: 'keep-this-group',
+        hooks: [{ type: 'command', command: 'echo keep' }],
+      }],
+    },
+  };
+  await mkdir(claudeDirectory, { recursive: true });
+  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+
+  const result = await setupGlobalClients({
+    clients: ['claude'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+
+  assert.equal(result.files.filter((file) => file.purpose === 'hook-config').length, 1);
+  const updated = JSON.parse(await readFile(settingsPath, 'utf8')) as {
+    permissions: { allow: string[] };
+    customSetting: { keep: boolean };
+    hooks: { UserPromptSubmit: Array<{ matcher?: string; hooks: Array<{ type: string; command?: string; server?: string; tool?: string }> }> };
+  };
+  assert.deepEqual(updated.permissions, settings.permissions);
+  assert.deepEqual(updated.customSetting, settings.customSetting);
+  assert.equal(updated.hooks.UserPromptSubmit.some((group) => group.matcher === 'keep-this-group' && group.hooks[0]?.command === 'echo keep'), true);
+  assert.equal(updated.hooks.UserPromptSubmit.flatMap((group) => group.hooks).filter((hook) => hook.type === 'mcp_tool' && hook.server === 'kiokuko' && hook.tool === 'claude_prompt_context').length, 1);
+});
+
 test('setup dry-run validates but writes no files or database', async () => {
   const temporary = await temporaryEnvironment('dry-run');
   const result = await setupGlobalClients({
@@ -241,6 +292,7 @@ test('setup without detected clients initializes only the database', async () =>
   await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
   await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
   await assert.rejects(access(path.join(temporary.home, '.claude.json')));
+  await assert.rejects(access(path.join(temporary.home, '.claude', 'settings.json')));
   await assert.rejects(access(path.join(temporary.home, '.hermes', 'config.yaml')));
 });
 
@@ -300,6 +352,61 @@ test('setup can skip new standard-skill installation without deleting an existin
   assert.equal(await readFile(skillPath, 'utf8'), 'human-owned skill\n');
 });
 
+test('setup can skip installing the new Claude prompt hook without creating settings.json', async () => {
+  const temporary = await temporaryEnvironment('no-claude-prompt-hook');
+  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
+
+  const result = await setupGlobalClients({
+    clients: ['claude'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    claudePromptHook: false,
+    standardSkills: false,
+  });
+
+  assert.equal(result.files.some((file) => file.purpose === 'hook-config'), false);
+  await assert.rejects(access(settingsPath));
+});
+
+test('setup preserves an existing Claude settings file when the prompt hook is disabled', async () => {
+  const temporary = await temporaryEnvironment('no-claude-prompt-hook-existing');
+  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
+  const settings = '{"permissions":{"allow":["Bash(git status)"]},"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo keep"}]}]}}\n';
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+  await writeFile(settingsPath, settings);
+
+  const result = await setupGlobalClients({
+    clients: ['claude'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    claudePromptHook: false,
+    standardSkills: false,
+  });
+
+  assert.equal(result.files.some((file) => file.purpose === 'hook-config'), false);
+  assert.equal(await readFile(settingsPath, 'utf8'), settings);
+});
+
+test('setup for another client does not change an existing Claude prompt hook', async () => {
+  const temporary = await temporaryEnvironment('non-claude-preserves-hook');
+  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
+  const settings = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"kiokuko","tool":"claude_prompt_context"}]}]}}\n';
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+  await writeFile(settingsPath, settings);
+
+  await setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+
+  assert.equal(await readFile(settingsPath, 'utf8'), settings);
+});
+
 test('setup upgrades an older managed standard skill and then reports it unchanged', async () => {
   const temporary = await temporaryEnvironment('managed-skill-upgrade');
   const skillDirectory = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul');
@@ -317,7 +424,7 @@ test('setup upgrades an older managed standard skill and then reports it unchang
     databasePath: temporary.databasePath,
   });
   assert.deepEqual(first.files.filter((file) => file.purpose === 'standard-skill').map((file) => file.action), ['updated', 'updated']);
-  assert.match(await readFile(skillPath, 'utf8'), /description: Apply HIG principles/);
+  assert.match(await readFile(skillPath, 'utf8'), /description: Prevent common UI\/UX failures/);
   assert.match(await readFile(checklistPath, 'utf8'), /Eight-principle map/);
 
   const second = await setupGlobalClients({
@@ -382,6 +489,33 @@ test('setup rolls back earlier client and skill files when a later standard-skil
   await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
   await assert.rejects(access(path.join(temporary.home, '.codex', 'AGENTS.md')));
   await assert.rejects(access(path.join(skillDirectory, 'SKILL.md')));
+  await assert.rejects(access(path.join(referencesDirectory, 'ui-checklist.md')));
+});
+
+test('setup rolls back a Claude hook when a later standard-skill write fails', { skip: process.platform === 'win32' }, async () => {
+  const temporary = await temporaryEnvironment('claude-hook-rollback');
+  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
+  const settings = '{"permissions":{"allow":["Bash(git status)"]}}\n';
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+  await writeFile(settingsPath, settings);
+  const referencesDirectory = path.join(temporary.home, '.claude', 'skills', 'kiokuko-ui-design-soul', 'references');
+  await mkdir(referencesDirectory, { recursive: true });
+  await chmod(referencesDirectory, 0o500);
+  try {
+    await assert.rejects(setupGlobalClients({
+      clients: ['claude'],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+    }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'PARTIAL_FAILURE');
+  } finally {
+    await chmod(referencesDirectory, 0o700);
+  }
+
+  assert.equal(await readFile(settingsPath, 'utf8'), settings);
+  await assert.rejects(access(path.join(temporary.home, '.claude.json')));
+  await assert.rejects(access(path.join(temporary.home, '.claude', 'CLAUDE.md')));
+  await assert.rejects(access(path.join(temporary.home, '.claude', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
   await assert.rejects(access(path.join(referencesDirectory, 'ui-checklist.md')));
 });
 

@@ -1,19 +1,19 @@
 # Client compatibility policy
 
-Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-scoped Hermes Agent; lifecycle hooks remain disabled.
+Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-scoped Hermes Agent; Claude Code also receives a managed UserPromptSubmit pre-recall hook.
 
 | Client | Global MCP registration | Global instructions | Managed standard skill | Hooks/plugins |
 |---|---|---|---|---|
 | Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/kiokuko-ui-design-soul` | not installed |
 | OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/kiokuko-ui-design-soul` | managed `plugins/kiokuko-loop-guard.js` |
-| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/kiokuko-ui-design-soul` | not installed |
+| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/kiokuko-ui-design-soul` | `UserPromptSubmit`: managed MCP-tool pre-recall hook in `settings.json` |
 | Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/kiokuko-ui-design-soul` | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | not installed | none |
 
 Codex's current official documentation supports stdio MCP servers and global
 configuration. OpenCode's current official documentation supports local MCP
 commands and global rules. Claude Code supports user-scoped stdio MCP servers,
-global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
+global `CLAUDE.md`, auto-discovered skills, and `UserPromptSubmit` hooks. `kiokuko setup` uses the MCP and
 instruction surfaces and installs the bundled `kiokuko-ui-design-soul` skill in
 the selected supported clients by default. The skill is copied from a fixed
 package manifest and never downloaded during setup. `--no-standard-skills`
@@ -50,7 +50,7 @@ session; `/reload-mcp` only reloads MCP registration. Smoke-test with
 
 ## Guarantees and non-guarantees
 
-Setup guarantees safe, repeatable configuration merging and makes the four MCP
+Setup guarantees safe, repeatable configuration merging and makes the Kiokuko MCP
 tools available in each configured client scope after that client reloads its
 configuration and makes the bundled standard skill discoverable after a client
 restart or new session. For
@@ -76,8 +76,10 @@ accessibility, and equivalent Japanese-language tasks. `task_prepare` treats it
 as a first-party recommendation only for such concrete terms; generic `design`,
 backend-only work, and image-only generation do not trigger it.
 
-Kiokuko does not install Codex or Claude hooks, or any Hermes plugin/hook. The
-OpenCode loop guard is the only installed plugin; it observes tool names, arguments, and results only long
+Kiokuko does not install Codex hooks or any Hermes plugin/hook. For Claude Code,
+the managed hook performs only bounded related-memory pre-recall; it does not parse
+transcripts or persist hook input, and a hook failure leaves prompt processing to Claude.
+The OpenCode loop guard is the only installed plugin; it observes tool names, arguments, and results only long
 enough to fingerprint them in memory and never logs or persists those values.
 Broader lifecycle capture remains out of scope because it would add versioned
 event-shape dependencies and transcript/privacy risk.

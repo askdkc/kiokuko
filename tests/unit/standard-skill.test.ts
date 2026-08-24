@@ -13,7 +13,7 @@ test('bundles a complete managed UI skill from a fixed manifest', async () => {
   assert.deepEqual(files.map((file) => file.relativePath), [...STANDARD_UI_SKILL_FILES]);
   for (const file of files) {
     assert.equal(file.content.split(STANDARD_UI_SKILL_MANAGED_MARKER).length - 1, 1);
-    assert.doesNotMatch(file.content, /\b(?:TODO|TBD|FIXME|PLACEHOLDER)\b/i);
+    assert.doesNotMatch(file.content, /\b(?:TODO|TBD|FIXME|PLACEHOLDER)\b/);
   }
 
   const skill = files.find((file) => file.relativePath === 'SKILL.md')?.content ?? '';

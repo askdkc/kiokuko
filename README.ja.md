@@ -21,6 +21,8 @@ kiokuko setup
 ```
 
 `setup`は、インストール済みの対応クライアントを検出し、SQLiteデータベースとMCP接続を自動設定します。
+Claude Codeでは、ユーザーの依頼時に関連記憶を自動で事前取得するHookもセットアップされます。詳細は[クライアント互換性ポリシー](docs/client-compatibility.md)を参照してください。
+Claude Codeの`/hooks`画面を開き、`UserPromptSubmit`の`kiokuko` / `claude_prompt_context` Hookが有効になっていることを確認できます。
 
 設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。
 

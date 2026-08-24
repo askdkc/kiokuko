@@ -130,6 +130,12 @@ export function getClaudeMcpConfigPath(options: PathEnvironment = {}): string {
   return join(home, '.claude.json');
 }
 
+export function getClaudeSettingsPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getClaudeConfigDirectory(options), 'settings.json');
+}
+
 export function getClaudeInstructionsPath(options: PathEnvironment = {}): string {
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;

@@ -4,7 +4,7 @@ import { readEntry, type EntryRecord } from './entries.js';
 import { rankedEntryHits, recallEntries, type RankedRecallHit, type RecallItem, type RecallResult } from './retrieval.js';
 import { effectiveRetrievalScope, hasExplicitApplicability } from './structured-memory.js';
 import { analyzePortability } from './portability.js';
-import { ensureGlobalWorkspace, GLOBAL_WORKSPACE, resolveProjectWorkspace, type ResolvedProjectWorkspace } from './workspaces.js';
+import { ensureGlobalWorkspace, GLOBAL_WORKSPACE, resolveProjectWorkspace, resolveProjectWorkspaceReadOnly, type ResolvedProjectWorkspace } from './workspaces.js';
 import { normalizeSearchSignal, parseRetrievalQuery } from './retrieval-query.js';
 import { projectFingerprint, type ProjectFingerprint } from '../repository/project-fingerprint.js';
 import { satisfies, valid, validRange } from 'semver';
@@ -218,8 +218,8 @@ function recallItem(entry: EntryRecord, maxChars: number, origin: FederatedOrigi
   };
 }
 
-function ecosystemEntries(database: SqliteDatabase, project: ResolvedProjectWorkspace, query: string, policy: FederatedRetrievalPolicy): { entries: FederatedEntry[]; fingerprint: ProjectFingerprint } {
-  const fingerprint = projectFingerprint(database, project);
+function ecosystemEntries(database: SqliteDatabase, project: ResolvedProjectWorkspace, query: string, policy: FederatedRetrievalPolicy, readOnly: boolean): { entries: FederatedEntry[]; fingerprint: ProjectFingerprint } {
+  const fingerprint = projectFingerprint(database, project, { readOnly });
   const targets = signalTargets(fingerprint, query).filter((item) => item.value.length > 0);
   if (targets.length === 0) return { entries: [], fingerprint };
   const pairSql = targets.map(() => '(s.signal_type = ? AND s.normalized_value = ?)').join(' OR ');
@@ -280,11 +280,14 @@ function combinedResult(items: Array<{ item: FederatedRecallItem; score: number;
   return { items: selected, count: selected.length, characterCount: characters, truncated: truncated || selected.length < items.length };
 }
 
-export async function retrieveFederatedMemory(database: SqliteDatabase, input: { query: string; cwd?: string; project?: ResolvedProjectWorkspace; scope?: FederatedScope; limit?: number; maxChars?: number; policy?: Partial<FederatedRetrievalPolicy> }): Promise<FederatedRecallResult> {
+export async function retrieveFederatedMemory(database: SqliteDatabase, input: { query: string; cwd?: string; project?: ResolvedProjectWorkspace; scope?: FederatedScope; limit?: number; maxChars?: number; policy?: Partial<FederatedRetrievalPolicy>; readOnly?: boolean }): Promise<FederatedRecallResult> {
   const scope = input.scope ?? 'auto';
   if (!FEDERATED_SCOPES.includes(scope as (typeof FEDERATED_SCOPES)[number])) throw new KiokukoError('VALIDATION_ERROR', 'Federated retrieval scope is invalid');
-  ensureGlobalWorkspace(database);
-  const project = scope === 'global' ? undefined : input.project ?? await resolveProjectWorkspace(database, input.cwd);
+  const readOnly = input.readOnly === true;
+  if (!readOnly) ensureGlobalWorkspace(database);
+  const project = scope === 'global'
+    ? undefined
+    : input.project ?? await (readOnly ? resolveProjectWorkspaceReadOnly(database, input.cwd) : resolveProjectWorkspace(database, input.cwd));
   if ((scope === 'project' || scope === 'ecosystem') && project === undefined) throw new KiokukoError('NOT_FOUND', 'No Git repository or binding was found for the requested memory scope');
   const policy: FederatedRetrievalPolicy = {
     project: { ...DEFAULT_FEDERATED_POLICY.project, ...(input.policy?.project ?? {}) },
@@ -298,7 +301,7 @@ export async function retrieveFederatedMemory(database: SqliteDatabase, input: {
   const projectHits = project && scope !== 'ecosystem' && scope !== 'global' && policy.project.enabled
     ? rankedEntryHits(database, { workspace: project.workspace, query: input.query, limit: Math.min(limit, policy.project.limit) }).hits : [];
   const ecosystem = project && scope !== 'project' && scope !== 'global' && policy.ecosystem.enabled
-    ? ecosystemEntries(database, project, input.query, policy) : { entries: [], fingerprint: undefined };
+    ? ecosystemEntries(database, project, input.query, policy, readOnly) : { entries: [], fingerprint: undefined };
   const ecosystemMemory: FederatedRecallMemory | null = ecosystem.entries.length === 0 ? null : combinedResult(ecosystem.entries.map((item) => ({
     item: recallItem(item.entry, maxChars, 'ecosystem', item.sourceWorkspace, item.sourceProject, item.selectionReasons),
     score: item.score,
@@ -351,7 +354,7 @@ export async function federatedEntries(database: SqliteDatabase, input: { projec
     score: hit.retrievalScore,
     selectionReasons: ['project_origin', ...hit.reasons],
   }));
-  const ecosystem = ecosystemEntries(database, input.project, input.query, { ...DEFAULT_FEDERATED_POLICY, project: { enabled: true, limit: input.limit }, ecosystem: { ...DEFAULT_FEDERATED_POLICY.ecosystem, limit: input.limit }, global: { enabled: false, limit: 0 } }).entries;
+  const ecosystem = ecosystemEntries(database, input.project, input.query, { ...DEFAULT_FEDERATED_POLICY, project: { enabled: true, limit: input.limit }, ecosystem: { ...DEFAULT_FEDERATED_POLICY.ecosystem, limit: input.limit }, global: { enabled: false, limit: 0 } }, false).entries;
   const global = ranked(GLOBAL_WORKSPACE).map((hit) => ({
     entry: readEntry(database, { workspace: GLOBAL_WORKSPACE, entryId: hit.entryId }),
     origin: 'global' as const,

@@ -21,6 +21,8 @@ kiokuko setup
 ```
 
 `setup` detects supported clients that are installed and automatically configures the SQLite database and MCP connection.
+For Claude Code, setup also installs a hook that automatically performs a small related-memory pre-recall; see the [client compatibility policy](docs/client-compatibility.md) for details.
+To verify that Claude accepted it, open Claude Code's `/hooks` screen and confirm that the `UserPromptSubmit` `kiokuko` / `claude_prompt_context` hook is enabled.
 
 After setup, launch the target AI client and use it as usual. If it is already running, quit it once and restart it.
 

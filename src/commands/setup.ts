@@ -6,6 +6,7 @@ import { atomicWriteText, readRegularFile } from '../agent-file/atomic-write.js'
 import {
   getClaudeInstructionsPath,
   getClaudeMcpConfigPath,
+  getClaudeSettingsPath,
   getClaudeSkillsDirectory,
   getCodexConfigPath,
   getCodexInstructionsPath,
@@ -27,6 +28,7 @@ import { renderOpenCodeConfig } from '../setup/opencode-config.js';
 import { renderOpenCodeLoopGuard, type OpenCodeLoopGuardOptions } from '../setup/opencode-loop-guard.js';
 import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
 import { renderClaudeConfig } from '../setup/claude-config.js';
+import { renderClaudePromptHookConfig } from '../setup/claude-hook-config.js';
 import { renderHermesConfig } from '../setup/hermes-config.js';
 import { detectInstalledClients } from '../setup/client-detection.js';
 import {
@@ -45,7 +47,7 @@ interface PlannedFile {
   mode: number;
   original: string | undefined;
   action: SetupAction;
-  purpose: 'mcp-config' | 'instructions' | 'runtime-guard' | 'standard-skill';
+  purpose: 'mcp-config' | 'instructions' | 'runtime-guard' | 'hook-config' | 'standard-skill';
   client: SetupClient;
 }
 
@@ -58,6 +60,7 @@ export interface SetupOptions extends PathEnvironment {
   opencodeCapture?: OpenCodeLoopGuardOptions['captureProfile'];
   opencodeMode?: OpenCodeLoopGuardOptions['mode'];
   standardSkills?: boolean;
+  claudePromptHook?: boolean;
 }
 
 export interface SetupResult {
@@ -211,6 +214,7 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
   if (command.trim().length === 0 || command.includes('\0')) throw new KiokukoError('VALIDATION_ERROR', 'command must be a non-empty executable path or name');
   const databasePath = options.databasePath ?? getGlobalDatabasePath(pathEnvironment);
   const standardSkills = options.standardSkills ?? true;
+  const claudePromptHook = options.claudePromptHook ?? true;
   const files: PlannedFile[] = [];
 
   if (clients.includes('codex')) {
@@ -228,6 +232,9 @@ export async function setupGlobalClients(options: SetupOptions = {}): Promise<Se
   if (clients.includes('claude')) {
     files.push(await planFile(getClaudeMcpConfigPath(pathEnvironment), 'claude', 'mcp-config', (existing) => renderClaudeConfig(existing, command)));
     files.push(await planFile(getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
+    if (claudePromptHook) {
+      files.push(await planFile(getClaudeSettingsPath(pathEnvironment), 'claude', 'hook-config', (existing) => renderClaudePromptHookConfig(existing)));
+    }
   }
   if (clients.includes('hermes')) {
     files.push(await planFile(await getHermesConfigPath(pathEnvironment), 'hermes', 'mcp-config', (existing) => renderHermesConfig(existing, command)));

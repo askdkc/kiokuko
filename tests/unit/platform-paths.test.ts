@@ -8,6 +8,7 @@ import {
   getClaudeConfigDirectory,
   getClaudeInstructionsPath,
   getClaudeMcpConfigPath,
+  getClaudeSettingsPath,
   getClaudeSkillsDirectory,
   getCodexConfigPath,
   getCodexInstructionsPath,
@@ -130,10 +131,12 @@ test('derives documented global Codex, OpenCode, and Claude paths without touchi
   assert.equal(getOpenCodeSkillsDirectory(options), '/tmp/fake-config/opencode/skills');
   assert.equal(getClaudeConfigDirectory(options), '/tmp/fake-home/.claude');
   assert.equal(getClaudeMcpConfigPath(options), '/tmp/fake-home/.claude.json');
+  assert.equal(getClaudeSettingsPath(options), '/tmp/fake-home/.claude/settings.json');
   assert.equal(getClaudeInstructionsPath(options), '/tmp/fake-home/.claude/CLAUDE.md');
   assert.equal(getClaudeSkillsDirectory(options), '/tmp/fake-home/.claude/skills');
   assert.equal(getCodexConfigPath({ ...options, env: { ...options.env, CODEX_HOME: '/tmp/custom-codex' } }), '/tmp/custom-codex/config.toml');
   assert.equal(getClaudeMcpConfigPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/.claude.json');
+  assert.equal(getClaudeSettingsPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/settings.json');
   assert.equal(getClaudeInstructionsPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/CLAUDE.md');
   assert.equal(getClaudeSkillsDirectory({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/skills');
 });

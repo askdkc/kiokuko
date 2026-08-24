@@ -24,7 +24,11 @@ test('MCP exposes high-level recall/checkpoint tools and persists candidate memo
   await client.connect(clientTransport);
   try {
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['curator_check', 'curator_globalize', 'memory_checkpoint', 'memory_recall', 'task_answer', 'task_prepare']);
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['claude_prompt_context', 'curator_check', 'curator_globalize', 'memory_checkpoint', 'memory_recall', 'task_answer', 'task_prepare']);
+    assert.equal(tools.tools.find((tool) => tool.name === 'claude_prompt_context')?.annotations?.readOnlyHint, true);
+    assert.equal(tools.tools.find((tool) => tool.name === 'claude_prompt_context')?.annotations?.idempotentHint, true);
+    const claudeHookSchema = tools.tools.find((tool) => tool.name === 'claude_prompt_context')?.inputSchema as { properties?: Record<string, unknown> };
+    assert.deepEqual(Object.keys(claudeHookSchema.properties ?? {}).sort(), ['cwd', 'prompt', 'sessionId']);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_recall')?.annotations?.readOnlyHint, true);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.readOnlyHint, true);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
@@ -53,6 +57,16 @@ test('MCP exposes high-level recall/checkpoint tools and persists candidate memo
     const recallContent = recalled.structuredContent as { project: { memory: { items: Array<{ title: string; metadata: { untrusted: boolean } }> } } };
     assert.equal(recallContent.project.memory.items[0]?.title, 'Implement the durable beacon and add tests');
     assert.equal(recallContent.project.memory.items[0]?.metadata.untrusted, true);
+
+    const hook = await client.callTool({
+      name: 'claude_prompt_context',
+      arguments: { prompt: 'durable beacon', cwd: root, sessionId: 'mcp-hook-session' },
+    });
+    assert.equal(hook.isError, undefined);
+    const hookText = ((hook.content as Array<{ text?: unknown }> | undefined)?.[0])?.text;
+    assert.equal(typeof hookText, 'string');
+    assert.equal((hook.structuredContent as { hookSpecificOutput: { hookEventName: string } }).hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+    assert.match(typeof hookText === 'string' ? hookText : '', /UserPromptSubmit/u);
 
     const prepared = await client.callTool({
       name: 'task_prepare',
