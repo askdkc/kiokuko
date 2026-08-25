@@ -10,7 +10,6 @@ import {
   RUN_STATUSES,
   TASK_TYPES,
   type AnswerInput,
-  type AppendBatchInput,
   type ClientInput,
   type CreateRunInput,
   type Coverage,
@@ -47,11 +46,6 @@ function nonEmptyString(value: unknown, label: string, max = MAX_TEXT_LENGTH): s
     validation(`${label} must be a non-empty bounded string`);
   }
   return value;
-}
-
-function optionalString(value: unknown, label: string, max = MAX_TEXT_LENGTH): string | undefined {
-  if (value === undefined) return undefined;
-  return nonEmptyString(value, label, max);
 }
 
 function nullableString(value: unknown, label: string, max = MAX_TEXT_LENGTH): string | null {

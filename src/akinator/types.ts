@@ -65,18 +65,6 @@ export interface AkinatorSessionView {
   updatedAt: string;
 }
 
-export interface ExternalSyncSummary {
-  attempted: boolean;
-  imported: number;
-  sources: Array<{
-    sourceId: string;
-    commit: string | null;
-    documents: number;
-    imported: number;
-    error?: string;
-  }>;
-}
-
 export interface AkinatorResult {
   status: 'needs_answer' | 'ready' | 'exhausted';
   session: AkinatorSessionView;
@@ -88,5 +76,4 @@ export interface AkinatorResult {
 export interface AkinatorContext extends AkinatorResult {
   entries: EntryRecord[];
   instructions: string[];
-  externalSync: ExternalSyncSummary;
 }

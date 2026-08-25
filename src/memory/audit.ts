@@ -28,5 +28,3 @@ export function recordAuditEvent(database: SqliteDatabase, input: AuditEventInpu
     .run(eventId, input.entryId, workspace, input.operation, input.actor, detailsJson, createdAt);
   return eventId;
 }
-
-export const appendAuditEvent = recordAuditEvent;

@@ -9,8 +9,6 @@ import { validateEventBatch, validateRunInput, validateRunStatus, validateTimest
 import {
   TERMINAL_RUN_STATUSES,
   type AppendAck,
-  type AppendBatchInput,
-  type CreateRunInput,
   type JsonObject,
   type LedgerEventInput,
   type LedgerStoreOptions,
@@ -78,10 +76,6 @@ function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
 }
 
-function sameOptional(left: string | number | null | undefined, right: string | number | null | undefined): boolean {
-  return (left ?? null) === (right ?? null);
-}
-
 function withBatchSavepoint<T>(database: SqliteDatabase, operation: () => T): T {
   const savepoint = `kiokuko_ledger_batch_${randomUUID().replaceAll('-', '')}`;
   database.exec(`SAVEPOINT ${savepoint}`);
@@ -90,11 +84,22 @@ function withBatchSavepoint<T>(database: SqliteDatabase, operation: () => T): T 
     database.exec(`RELEASE SAVEPOINT ${savepoint}`);
     return result;
   } catch (error) {
+    const cleanupFailures: unknown[] = [];
     try {
       database.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+    } catch (rollbackError) {
+      cleanupFailures.push(rollbackError);
+    }
+    try {
       database.exec(`RELEASE SAVEPOINT ${savepoint}`);
-    } catch {
-      // Preserve the original batch failure.
+    } catch (releaseError) {
+      cleanupFailures.push(releaseError);
+    }
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupFailures],
+        'Ledger batch failed and savepoint cleanup also failed',
+      );
     }
     throw error;
   }
@@ -428,8 +433,4 @@ export class LedgerStore {
 
 function hashText(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
-}
-
-export function withLedgerTransaction<T>(database: SqliteDatabase, operation: () => T): T {
-  return withImmediateTransaction(database, operation);
 }

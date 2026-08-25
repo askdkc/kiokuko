@@ -39,6 +39,11 @@ import {
 import type { AkinatorQuestion, AkinatorResult, TaskProfile } from '../akinator/types.js';
 import type { LedgerEventsPage, LedgerRunView, LedgerRunsPage } from '../ledger/query.js';
 import type { RunRecord } from '../ledger/types.js';
+import {
+  assertCapabilityCatalogBinding,
+  bindCapabilityCatalog,
+  capabilityCatalogDigest,
+} from '../akinator/capability-binding.js';
 
 const PROFILE_FIELDS = ['taskType', 'target', 'expected', 'constraints'] as const;
 const INTAKE_EVENT_TYPES = new Set<LedgerEventType>([
@@ -57,6 +62,7 @@ type GatewayOpenRequest = {
   captureProfile: CaptureProfile;
   coverage: Coverage;
   metadata: JsonObject;
+  capabilities?: JsonValue;
   parentRunId?: string;
   startedAt?: string;
 };
@@ -98,6 +104,10 @@ export interface AgentGatewayServiceOptions {
   readonly runIdFactory?: () => string;
   readonly sessionIdFactory?: () => string;
   readonly eventIdFactory?: () => string;
+}
+
+interface AgentGatewayAnswerOptions {
+  readonly assertBeforeAnswer?: () => void;
 }
 
 function validation(): never {
@@ -227,7 +237,7 @@ function profileHints(value: unknown): TaskInput['profileHints'] {
 function normalizeOpenRequest(value: unknown): GatewayOpenRequest {
   assertJsonValue(value);
   const input = object(value);
-  knownFields(input, ['apiVersion', 'workspace', 'client', 'task', 'captureProfile', 'coverage', 'metadata', 'parentRunId', 'startedAt']);
+  knownFields(input, ['apiVersion', 'workspace', 'client', 'task', 'captureProfile', 'coverage', 'metadata', 'capabilities', 'parentRunId', 'startedAt']);
   if (input.apiVersion !== '1') validation();
   const workspace = boundedString(input.workspace, 16 * 1024);
 
@@ -266,6 +276,7 @@ function normalizeOpenRequest(value: unknown): GatewayOpenRequest {
     captureProfile: enumValue(input.captureProfile, CAPTURE_PROFILES),
     coverage,
     metadata,
+    ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities as JsonValue }),
     ...(input.parentRunId === undefined ? {} : { parentRunId: boundedString(input.parentRunId, MAX_ID_LENGTH) }),
     ...(startedAt === undefined ? {} : { startedAt }),
   };
@@ -299,10 +310,14 @@ function readRunInput(value: unknown): { runId: string } {
   return { runId: boundedString(input.runId, MAX_ID_LENGTH) };
 }
 
-function answerRequest(value: unknown, workspace: string): { value: { apiVersion: '1'; questionId: string; value: string }; hashRequest: JsonObject } {
+function answerRequest(value: unknown, workspace: string): {
+  value: { apiVersion: '1'; questionId: string; value: string };
+  capabilities?: JsonValue;
+  hashRequest: JsonObject;
+} {
   assertJsonValue(value);
   const input = object(value);
-  knownFields(input, ['apiVersion', 'questionId', 'value']);
+  knownFields(input, ['apiVersion', 'questionId', 'value', 'capabilities']);
   if (input.apiVersion !== '1') validation();
   const questionId = boundedString(input.questionId, MAX_ID_LENGTH);
   if (typeof input.value !== 'string') validation();
@@ -310,7 +325,15 @@ function answerRequest(value: unknown, workspace: string): { value: { apiVersion
   if (typeof sanitized.value.value !== 'string') validation();
   const normalized = sanitized.value;
   const answer = { apiVersion: '1' as const, questionId: normalized.questionId, value: normalized.value as string };
-  return { value: answer, hashRequest: jsonObject(answer) };
+  const capabilities = input.capabilities as JsonValue | undefined;
+  return {
+    value: answer,
+    ...(capabilities === undefined ? {} : { capabilities }),
+    hashRequest: jsonObject({
+      ...answer,
+      capabilityCatalogDigest: capabilityCatalogDigest(capabilities),
+    }),
+  };
 }
 
 function sanitizeEventArray(value: unknown, workspace: string): LedgerEventInput[] {
@@ -379,7 +402,10 @@ export class AgentGatewayService {
     const envelope = operationEnvelope(input);
     const request = normalizeOpenRequest(envelope.request);
     const task = sanitizeTask(request.task, { workspace: request.workspace, ...(this.options.home === undefined ? {} : { home: this.options.home }) }).value;
-    const metadata = sanitizeRunMetadata(request.metadata, { workspace: request.workspace, ...(this.options.home === undefined ? {} : { home: this.options.home }) }).value as JsonObject;
+    const metadata = sanitizeRunMetadata(
+      bindCapabilityCatalog(request.metadata, request.capabilities),
+      { workspace: request.workspace, ...(this.options.home === undefined ? {} : { home: this.options.home }) },
+    ).value as JsonObject;
     const client = request.client;
     const hashRequest = jsonObject({
       apiVersion: '1',
@@ -466,66 +492,70 @@ export class AgentGatewayService {
     ));
   }
 
-  answerIntake(input: unknown): GatewayIntakeResponse {
+  answerIntake(input: unknown, options: AgentGatewayAnswerOptions = {}): GatewayIntakeResponse {
     const envelope = runEnvelope(input);
     const initialRun = this.requireRun(envelope.runId);
     const request = answerRequest(envelope.request, initialRun.workspace);
+    assertCapabilityCatalogBinding(initialRun.metadata, request.capabilities);
     const now = this.currentTime();
-    return withImmediateTransaction(this.database, () => executeGateway(
-      this.database,
-      { scope: this.scopedOperation('answer', envelope.runId), key: envelope.idempotencyKey, request: request.hashRequest, createdAt: now },
-      () => {
-        const run = this.requireRun(envelope.runId);
-        const link = readRunIntakeLink(this.database, { workspace: run.workspace, runId: run.runId });
-        const mutation = answerAkinatorInTransaction(this.database, {
-          workspace: run.workspace,
-          sessionId: link.sessionId,
-          questionId: request.value.questionId as keyof TaskProfile,
-          value: request.value.value,
-          now,
-        });
-        if (mutation.replayed) {
-          const currentRun = this.requireRun(run.runId);
-          return this.intakeResponse(run.runId, currentRun.status, mutation.result);
-        }
-        if (run.status !== 'intake') conflict('Run is not waiting for intake');
-        markRunIntakeProfileSource(this.database, {
-          workspace: run.workspace,
-          runId: run.runId,
-          field: request.value.questionId as keyof TaskProfile,
-        });
-        const events: LedgerEventInput[] = [this.lifecycleEvent('intake.answered', {
-          questionId: request.value.questionId,
-          value: request.value.value,
-        }, now)];
-        if (mutation.result.status === 'ready' || mutation.result.status === 'exhausted') {
-          events.push(this.lifecycleEvent(mutation.result.status === 'ready' ? 'intake.ready' : 'intake.exhausted', {
-            profile: mutation.result.session.profile,
-            profileHash: profileHash(mutation.result.session.profile),
-            recommendedTags: mutation.result.recommendedTags,
-            missingFields: mutation.result.missingFields,
-          }, now));
-          events.push(this.lifecycleEvent('run.started', {
-            intakeStatus: mutation.result.status,
-            profileHash: profileHash(mutation.result.session.profile),
-            recommendedTags: mutation.result.recommendedTags,
-          }, now));
-        }
-        this.ledgerStore(run.workspace).appendBatchInTransaction(run.runId, { events });
-        let finalRun = this.requireRun(run.runId);
-        if (mutation.result.status === 'ready' || mutation.result.status === 'exhausted') {
-          finalizeRunIntakeLink(this.database, {
+    return withImmediateTransaction(this.database, () => {
+      options.assertBeforeAnswer?.();
+      return executeGateway(
+        this.database,
+        { scope: this.scopedOperation('answer', envelope.runId), key: envelope.idempotencyKey, request: request.hashRequest, createdAt: now },
+        () => {
+          const run = this.requireRun(envelope.runId);
+          const link = readRunIntakeLink(this.database, { workspace: run.workspace, runId: run.runId });
+          const mutation = answerAkinatorInTransaction(this.database, {
+            workspace: run.workspace,
+            sessionId: link.sessionId,
+            questionId: request.value.questionId as keyof TaskProfile,
+            value: request.value.value,
+            now,
+          });
+          if (mutation.replayed) {
+            const currentRun = this.requireRun(run.runId);
+            return this.intakeResponse(run.runId, currentRun.status, mutation.result);
+          }
+          if (run.status !== 'intake') conflict('Run is not waiting for intake');
+          markRunIntakeProfileSource(this.database, {
             workspace: run.workspace,
             runId: run.runId,
-            profileHash: profileHash(mutation.result.session.profile),
-            recommendedTags: mutation.result.recommendedTags,
-            finalizedAt: now,
+            field: request.value.questionId as keyof TaskProfile,
           });
-          finalRun = this.ledgerStore(run.workspace).updateRunStatusInTransaction(run.runId, 'active', now);
-        }
-        return this.intakeResponse(run.runId, finalRun.status, mutation.result);
-      },
-    ));
+          const events: LedgerEventInput[] = [this.lifecycleEvent('intake.answered', {
+            questionId: request.value.questionId,
+            value: request.value.value,
+          }, now)];
+          if (mutation.result.status === 'ready' || mutation.result.status === 'exhausted') {
+            events.push(this.lifecycleEvent(mutation.result.status === 'ready' ? 'intake.ready' : 'intake.exhausted', {
+              profile: mutation.result.session.profile,
+              profileHash: profileHash(mutation.result.session.profile),
+              recommendedTags: mutation.result.recommendedTags,
+              missingFields: mutation.result.missingFields,
+            }, now));
+            events.push(this.lifecycleEvent('run.started', {
+              intakeStatus: mutation.result.status,
+              profileHash: profileHash(mutation.result.session.profile),
+              recommendedTags: mutation.result.recommendedTags,
+            }, now));
+          }
+          this.ledgerStore(run.workspace).appendBatchInTransaction(run.runId, { events });
+          let finalRun = this.requireRun(run.runId);
+          if (mutation.result.status === 'ready' || mutation.result.status === 'exhausted') {
+            finalizeRunIntakeLink(this.database, {
+              workspace: run.workspace,
+              runId: run.runId,
+              profileHash: profileHash(mutation.result.session.profile),
+              recommendedTags: mutation.result.recommendedTags,
+              finalizedAt: now,
+            });
+            finalRun = this.ledgerStore(run.workspace).updateRunStatusInTransaction(run.runId, 'active', now);
+          }
+          return this.intakeResponse(run.runId, finalRun.status, mutation.result);
+        },
+      );
+    });
   }
 
   appendEvents(input: unknown): GatewayAppendResponse {
@@ -562,12 +592,11 @@ export class AgentGatewayService {
         const run = this.requireRun(envelope.runId);
         if (run.status !== 'active') conflict('Only active runs can be closed');
         const store = this.ledgerStore(run.workspace);
-        let ack: AppendAck;
-        if (request.events !== undefined) {
-          store.appendBatchInTransaction(run.runId, { events: request.events });
-        }
-        ack = store.appendBatchInTransaction(run.runId, {
-          events: [this.lifecycleEvent('run.closed', { status: request.status }, now)],
+        const ack: AppendAck = store.appendBatchInTransaction(run.runId, {
+          events: [
+            ...(request.events ?? []),
+            this.lifecycleEvent('run.closed', { status: request.status }, now),
+          ],
         });
         store.updateRunStatusInTransaction(run.runId, request.status, now);
         return { ...ack, status: request.status, runStatus: request.status, untrusted: true };

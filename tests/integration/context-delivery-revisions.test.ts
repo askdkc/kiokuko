@@ -8,9 +8,13 @@ import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
 import { recordContextDelivery, readContextDelivery } from '../../src/context/delivery.js';
 import { KiokukoError } from '../../src/errors.js';
+import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 
 const migrationsDirectory = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-22T00:00:00.000Z';
+const taskProfile = { taskType: 'build', target: 'delivery', expected: 'delivery', constraints: null } as const;
+const taskProfileHash = canonicalContentHash(taskProfile);
+const genericDeliveryPolicyVersion = 'context-ranking-v1+recommendations.v1';
 const scoreComponents = {
   status: 1, trust: 1, confidence: 1, taskAffinity: 1, recommendedTags: 0,
   pathOverlap: 0, errorSignature: 0, feedback: 0, recency: 0, contradiction: 0,
@@ -25,8 +29,33 @@ async function database() {
       run_id, workspace, client_kind, client_version, source_session_id, parent_run_id,
       protocol_version, capture_profile, coverage_json, status, title, task_hash,
       metadata_json, last_sequence, last_source_sequence, started_at, ended_at, created_at, updated_at
-    ) VALUES (?, ?, 'generic', '1.0.0', NULL, NULL, '1', 'standard', '{}', 'active', 'delivery', NULL, '{}', 1, NULL, ?, NULL, ?, ?)
+    ) VALUES (?, ?, 'generic', '1.0.0', NULL, NULL, '1', 'standard', '{"approval":"unavailable","command":"unavailable","file":"unavailable","run":"declared","tool":"unavailable"}', 'active', 'delivery', NULL, '{}', 0, NULL, ?, NULL, ?, ?)
   `).run('run-context-revisions', 'project:context-revisions', now, now, now);
+  db.prepare(`
+    INSERT INTO akinator_sessions (
+      id, workspace, task_text, profile_json, status, question_count, created_at, updated_at
+    ) VALUES (?, ?, 'delivery', ?, 'ready', 0, ?, ?)
+  `).run(
+    'session-context-revisions',
+    'project:context-revisions',
+    canonicalJson(taskProfile),
+    now,
+    now,
+  );
+  db.prepare(`
+    INSERT INTO run_intakes (
+      run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+      initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+    ) VALUES (?, ?, 'v2', 1, ?, ?, ?, ?, ?)
+  `).run(
+    'run-context-revisions',
+    'session-context-revisions',
+    canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+    taskProfileHash,
+    canonicalJson(['bot:builder', 'skill:tdd']),
+    now,
+    now,
+  );
   return db;
 }
 
@@ -35,12 +64,11 @@ function delivery(db: ReturnType<typeof openConnection>, deliveryId: string, ent
     workspace: 'project:context-revisions',
     deliveryId,
     runId: 'run-context-revisions',
-    throughSequence: 1,
-    intakeSessionId: null,
-    taskProfileHash: 'a'.repeat(64),
+    throughSequence: 0,
+    intakeSessionId: 'session-context-revisions',
+    taskProfileHash,
     queryHash: 'b'.repeat(64),
-    policyVersion: 'context-policy-v1',
-    externalSyncSummary: { attempted: false, imported: 0, sources: [] },
+    policyVersion: genericDeliveryPolicyVersion,
     charBudget: 8000,
     charCount: 10,
     truncated: false,

@@ -83,7 +83,7 @@ function handleError(request: IncomingMessage, response: Parameters<RequestListe
     writeJsonError(response, 500, operationFor(request, v1), 'INTEGRITY_ERROR', 'Internal integrity error');
     return;
   }
-  writeJsonError(response, 500, operationFor(request, v1), 'DATABASE_ERROR', 'Unexpected server error');
+  writeJsonError(response, 500, operationFor(request, v1), 'INTEGRITY_ERROR', 'Unexpected server error');
 }
 
 export function createApp(dependencies: AppDependencies): RequestListener {

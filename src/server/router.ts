@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { KiokukoError } from '../errors.js';
+import { parseStrictJson } from '../setup/strict-json.js';
 import { requireBearerAuthorization } from './auth.js';
 
 export interface ReadinessState {
@@ -41,6 +42,13 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 type ParsedJsonObject = Record<string, unknown>;
 
+function isJsonContentType(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const parts = value.split(';');
+  if (parts.length > 2 || parts[0]?.trim().toLowerCase() !== 'application/json') return false;
+  return parts.length === 1 || /^charset\s*=\s*utf-8$/iu.test(parts[1]?.trim() ?? '');
+}
+
 function writeJson(response: ServerResponse, status: number, value: unknown): void {
   const body = JSON.stringify(value);
   if (body === undefined || Buffer.byteLength(body) > MAX_RESPONSE_BYTES) {
@@ -73,14 +81,25 @@ async function readJsonObject(request: IncomingMessage): Promise<ParsedJsonObjec
     });
     request.on('end', () => {
       if (settled) return;
-      const text = Buffer.concat(chunks).toString('utf8');
+      let text: string;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks));
+      } catch {
+        settled = true;
+        reject(new KiokukoError('VALIDATION_ERROR', 'Request body is not valid UTF-8'));
+        return;
+      }
       if (text.trim().length === 0) {
         settled = true;
         reject(new KiokukoError('VALIDATION_ERROR', 'Request body must contain JSON'));
         return;
       }
       try {
-        const value: unknown = JSON.parse(text);
+        const value = parseStrictJson(
+          text,
+          { allowTrailingComma: false, disallowComments: true, allowEmptyContent: false },
+          'Request body is not valid JSON with unique keys',
+        );
         if (typeof value !== 'object' || value === null || Array.isArray(value)) {
           throw new KiokukoError('VALIDATION_ERROR', 'Request body must be a JSON object');
         }
@@ -89,7 +108,7 @@ async function readJsonObject(request: IncomingMessage): Promise<ParsedJsonObjec
       } catch (error) {
         if (settled) return;
         settled = true;
-        reject(error instanceof KiokukoError ? error : new KiokukoError('VALIDATION_ERROR', 'Request body is not valid JSON'));
+        reject(error);
       }
     });
     request.on('error', (error: unknown) => {
@@ -129,7 +148,7 @@ export function createRouter(dependencies: RouterDependencies): HttpHandler {
       const hasRequestBody = request.method === 'POST' || request.method === 'PUT' || request.method === 'PATCH';
       if (hasRequestBody) {
         const contentType = request.headers['content-type'];
-        if (typeof contentType !== 'string' || !/^application\/json(?:\s*;|\s*$)/i.test(contentType)) {
+        if (typeof contentType !== 'string' || !isJsonContentType(contentType)) {
           throw new KiokukoError('VALIDATION_ERROR', 'Request content type is invalid');
         }
       }

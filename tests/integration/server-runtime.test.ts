@@ -11,9 +11,9 @@ import {
   releaseInstanceLock,
   type InstanceLockOptions,
 } from '../../src/server/instance-lock.js';
+import { initializeDatabase } from '../../src/commands/init.js';
 import type { SqliteDatabase } from '../../src/db/adapter.js';
 import { openConnection } from '../../src/db/connection.js';
-import { migrateDatabase } from '../../src/db/migrate.js';
 import {
   createRuntimeDescriptor,
   readRuntimeDescriptor,
@@ -409,7 +409,7 @@ test('starts one process-lifetime database, queue, lock, server, and actual-port
   const instanceId = '123e4567-e89b-12d3-a456-426614174100';
   const capabilityToken = 'c'.repeat(64);
   let opened = 0;
-  let migrated = 0;
+  let initializedBeforeOpen = false;
   let closed = 0;
   let acquired = 0;
   let released = 0;
@@ -423,20 +423,20 @@ test('starts one process-lifetime database, queue, lock, server, and actual-port
     openDatabase: () => {
       opened += 1;
       const primary = openConnection(databasePath);
+      initializedBeforeOpen = Boolean(primary.prepare(`
+        SELECT 1 AS present
+          FROM sqlite_master
+         WHERE type = 'table' AND name = 'schema_migrations'
+      `).get()) && primary.prepare('PRAGMA journal_mode').get()?.journal_mode === 'wal';
       return {
         filePath: primary.filePath,
         exec: primary.exec.bind(primary),
         prepare: primary.prepare.bind(primary),
-        backup: primary.backup.bind(primary),
         close: () => {
           closed += 1;
           primary.close();
         },
       } satisfies SqliteDatabase;
-    },
-    migrateDatabase: (primary: SqliteDatabase, migrationsDirectory?: string) => {
-      migrated += 1;
-      return migrateDatabase(primary, migrationsDirectory);
     },
     acquireInstanceLock: async (databaseFile: string, lockOptions: InstanceLockOptions) => {
       acquired += 1;
@@ -458,7 +458,7 @@ test('starts one process-lifetime database, queue, lock, server, and actual-port
     assert.equal('capabilityToken' in handle.descriptor, false);
     assert.equal('capabilityToken' in handle.runtimeDescriptor, false);
     assert.equal(opened, 1);
-    assert.equal(migrated, 1);
+    assert.equal(initializedBeforeOpen, true);
     assert.equal(acquired, 1);
     assert.equal((await stat(descriptorPath)).mode & 0o777, 0o600);
     assert.equal((await readdir(runtimeDirectory)).filter((name) => name.endsWith('.lock')).length, 1);
@@ -485,7 +485,7 @@ test('composes a factory listener with the runtime-owned database and write queu
   const firstFactoryWriteStarted = deferred<void>();
   const secondFactoryWriteStarted = deferred<void>();
   let opened = 0;
-  let migrated = 0;
+  let initialized = 0;
   let closed = 0;
   let factoryCalls = 0;
   let openedAdapter: SqliteDatabase | undefined;
@@ -500,6 +500,11 @@ test('composes a factory listener with the runtime-owned database and write queu
     instanceId: '123e4567-e89b-12d3-a456-426614174111',
     capabilityToken,
     queueCapacity: 1,
+    initializeDatabase: async (options) => {
+      initialized += 1;
+      events.push('initialize');
+      await initializeDatabase(options);
+    },
     openDatabase: () => {
       opened += 1;
       const primary = openConnection(databasePath);
@@ -507,7 +512,6 @@ test('composes a factory listener with the runtime-owned database and write queu
         filePath: primary.filePath,
         exec: primary.exec.bind(primary),
         prepare: primary.prepare.bind(primary),
-        backup: primary.backup.bind(primary),
         close: () => {
           closed += 1;
           primary.close();
@@ -516,12 +520,6 @@ test('composes a factory listener with the runtime-owned database and write queu
       openedAdapter = adapter;
       events.push('open');
       return adapter;
-    },
-    migrateDatabase: (database: SqliteDatabase, migrationsDirectory?: string) => {
-      migrated += 1;
-      assert.strictEqual(database, openedAdapter);
-      events.push('migrate');
-      return migrateDatabase(database, migrationsDirectory);
     },
     createServer: (listener: RequestListener) => {
       events.push('create-server');
@@ -575,9 +573,9 @@ test('composes a factory listener with the runtime-owned database and write queu
   try {
     assert.equal(factoryCalls, 1);
     assert.equal(opened, 1);
-    assert.equal(migrated, 1);
-    assert.equal(events.indexOf('open') < events.indexOf('migrate'), true);
-    assert.equal(events.indexOf('migrate') < events.indexOf('factory'), true);
+    assert.equal(initialized, 1);
+    assert.equal(events.indexOf('initialize') < events.indexOf('open'), true);
+    assert.equal(events.indexOf('open') < events.indexOf('factory'), true);
     assert.equal(events.indexOf('factory') < events.indexOf('listen'), true);
     assert.equal('applicationFactory' in handle, false);
     assert.equal('database' in handle, false);
@@ -655,12 +653,11 @@ test('rolls back the database and lock when the application factory throws a saf
         filePath: databasePath,
         exec: () => undefined,
         prepare: () => { throw new Error('not used by this test'); },
-        backup: async () => 0,
         close: () => {
           databaseClosed += 1;
         },
       }),
-      migrateDatabase: () => undefined,
+      initializeDatabase: () => undefined,
       createServer: () => {
         serverCreated += 1;
         throw new Error('listener must not be created');
@@ -790,10 +787,9 @@ test('replaces a stale descriptor using injected PID liveness and removes only t
       filePath: databasePath,
       exec: () => undefined,
       prepare: () => { throw new Error('not used by this runtime test'); },
-      backup: async () => 0,
       close: () => undefined,
     }),
-    migrateDatabase: () => undefined,
+    initializeDatabase: () => undefined,
   });
   try {
     const replacement = await readRuntimeDescriptor(descriptorPath);
@@ -814,7 +810,6 @@ test('rejects a second server for the same database before opening its primary a
     filePath: databasePath,
     exec: () => undefined,
     prepare: () => { throw new Error('not used by this runtime test'); },
-    backup: async () => 0,
     close,
   });
   const first = await startHttpServer({
@@ -824,7 +819,7 @@ test('rejects a second server for the same database before opening its primary a
     instanceId: '123e4567-e89b-12d3-a456-426614174106',
     capabilityToken: '1'.repeat(64),
     openDatabase: () => database(() => undefined),
-    migrateDatabase: () => undefined,
+    initializeDatabase: () => undefined,
   });
   try {
     await assert.rejects(
@@ -838,7 +833,7 @@ test('rejects a second server for the same database before opening its primary a
           secondOpened += 1;
           return database(() => undefined);
         },
-        migrateDatabase: () => undefined,
+        initializeDatabase: () => undefined,
       }),
       (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT',
     );
@@ -885,7 +880,6 @@ test('rolls back the server, database, lock, and descriptor ownership when descr
     filePath: databasePath,
     exec: () => undefined,
     prepare: () => { throw new Error('not used by this runtime test'); },
-    backup: async () => 0,
     close: () => {
       databaseClosed += 1;
     },
@@ -899,7 +893,7 @@ test('rolls back the server, database, lock, and descriptor ownership when descr
       instanceId: '123e4567-e89b-12d3-a456-426614174109',
       capabilityToken: '4'.repeat(64),
       openDatabase: () => database,
-      migrateDatabase: () => undefined,
+      initializeDatabase: () => undefined,
       createServer: (listener: RequestListener) => {
         const server = createServer(listener);
         server.once('close', () => {
@@ -917,6 +911,81 @@ test('rolls back the server, database, lock, and descriptor ownership when descr
   assert.equal(serverClosed, 1);
   assert.deepEqual((await readdir(runtimeDirectory)).filter((name) => name.endsWith('.lock')), []);
   await assert.rejects(() => stat(descriptorPath), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT');
+});
+
+test('startup reports every cleanup failure without exposing raw causes', async () => {
+  const directory = await temp('http-runtime-startup-cleanup-failures');
+  const databasePath = path.join(directory, 'data.sqlite3');
+  const descriptorPath = path.join(directory, 'runtime', 'server.json');
+  const instanceId = '123e4567-e89b-12d3-a456-426614174199';
+  const rawSentinels = [
+    'descriptor-write-private-sentinel',
+    'database-close-private-sentinel',
+    'descriptor-remove-private-sentinel',
+    'lock-release-private-sentinel',
+  ];
+  let serverClosed = 0;
+  let databaseCloseAttempts = 0;
+  let descriptorRemoveAttempts = 0;
+  let lockReleaseAttempts = 0;
+
+  await assert.rejects(
+    () => startHttpServer({
+      databasePath,
+      descriptorPath,
+      instanceId,
+      capabilityToken: '8'.repeat(64),
+      initializeDatabase: () => undefined,
+      openDatabase: () => ({
+        filePath: databasePath,
+        exec: () => undefined,
+        prepare: () => { throw new Error('not used by this runtime test'); },
+        close: () => {
+          databaseCloseAttempts += 1;
+          throw new Error(rawSentinels[1]);
+        },
+      }),
+      acquireInstanceLock: () => ({
+        path: path.join(directory, 'synthetic.lock'),
+        instanceId,
+        release: async () => {
+          lockReleaseAttempts += 1;
+          throw new Error(rawSentinels[3]);
+        },
+      }),
+      createServer: (listener: RequestListener) => {
+        const server = createServer(listener);
+        server.once('close', () => {
+          serverClosed += 1;
+        });
+        return server;
+      },
+      writeRuntimeDescriptor: () => {
+        throw new Error(rawSentinels[0]);
+      },
+      removeRuntimeDescriptor: () => {
+        descriptorRemoveAttempts += 1;
+        throw new Error(rawSentinels[2]);
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.message, 'HTTP server startup failed and resource cleanup also failed');
+      assert.equal(error.errors.length, 4);
+      for (const failure of error.errors) {
+        assert.equal(failure instanceof Error && 'code' in failure && failure.code === 'DATABASE_ERROR', true);
+        assert.equal(failure instanceof Error && failure.message, 'Unable to start the HTTP server');
+      }
+      const exposed = `${error.message}\n${error.errors.map(String).join('\n')}`;
+      for (const sentinel of rawSentinels) assert.equal(exposed.includes(sentinel), false);
+      return true;
+    },
+  );
+
+  assert.equal(serverClosed, 1);
+  assert.equal(databaseCloseAttempts, 1);
+  assert.equal(descriptorRemoveAttempts, 1);
+  assert.equal(lockReleaseAttempts, 1);
 });
 
 test('rolls back all opened resources when the ephemeral listen fails', async () => {
@@ -945,12 +1014,11 @@ test('rolls back all opened resources when the ephemeral listen fails', async ()
           filePath: databasePath,
           exec: () => undefined,
           prepare: () => { throw new Error('not used by this runtime test'); },
-          backup: async () => 0,
           close: () => {
             databaseClosed += 1;
           },
         }),
-        migrateDatabase: () => undefined,
+        initializeDatabase: () => undefined,
         createServer: (listener: RequestListener) => {
           const server = createServer(listener);
           server.once('close', () => {

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
+import type { SqliteDatabase, SqliteRow, SqliteStatement, SqliteValue } from '../../src/db/adapter.js';
 import {
   insertAkinatorAnswer,
   insertAkinatorSession,
@@ -62,7 +63,7 @@ function seedRun(
     id: sessionId,
     workspace,
     task: 'Implement the feature',
-    profile,
+    profile: { ...profile, expected: null },
     status: 'active',
     questionCount: 0,
     createdAt: now,
@@ -76,6 +77,37 @@ function seedRun(
   `).run(runId, workspace, 'generic', '1', 'standard', '{}', 'intake', '{}', now, now, now);
 }
 
+function withInjectedRunFailure(
+  database: SqliteDatabase,
+  statementFragment: string,
+  failure: unknown,
+): SqliteDatabase {
+  return {
+    filePath: database.filePath,
+    exec(sql: string): void {
+      database.exec(sql);
+    },
+    prepare(sql: string): SqliteStatement {
+      const statement = database.prepare(sql);
+      if (!sql.includes(statementFragment)) return statement;
+      return {
+        run(..._parameters: SqliteValue[]): void {
+          throw failure;
+        },
+        get<T extends SqliteRow = SqliteRow>(...parameters: SqliteValue[]): T | undefined {
+          return statement.get<T>(...parameters);
+        },
+        all<T extends SqliteRow = SqliteRow>(...parameters: SqliteValue[]): T[] {
+          return statement.all<T>(...parameters);
+        },
+      };
+    },
+    close(): void {
+      database.close();
+    },
+  };
+}
+
 test('inserts and reads an Akinator session with camelCase fields and canonical values', async () => {
   const database = await setup();
   try {
@@ -84,7 +116,7 @@ test('inserts and reads an Akinator session with camelCase fields and canonical 
       workspace: 'workspace-a',
       task: 'Implement the feature',
       profile,
-      status: 'active' as const,
+      status: 'ready' as const,
       questionCount: 0,
       createdAt: now,
       updatedAt: now,
@@ -96,7 +128,7 @@ test('inserts and reads an Akinator session with camelCase fields and canonical 
       workspace: 'workspace-a',
       task: 'Implement the feature',
       profile,
-      status: 'active',
+      status: 'ready',
       questionCount: 0,
       createdAt: now,
       updatedAt: now,
@@ -198,7 +230,7 @@ test('inserts and reads a workspace-scoped run intake link with stable source an
       workspace: 'workspace-a',
       task: 'Implement the feature',
       profile,
-      status: 'active',
+      status: 'ready',
       questionCount: 0,
       createdAt: now,
       updatedAt: now,
@@ -248,7 +280,7 @@ test('finalizes an intake link once and replays only the exact finalization', as
       workspace: 'workspace-a',
       task: 'Implement the feature',
       profile,
-      status: 'active',
+      status: 'ready',
       questionCount: 0,
       createdAt: now,
       updatedAt: now,
@@ -311,7 +343,7 @@ test('uses fixed typed errors for empty/cross-workspace reads and corrupt persis
       workspace: 'workspace-a',
       task: 'Implement the feature',
       profile,
-      status: 'active',
+      status: 'ready',
       questionCount: 0,
       createdAt: now,
       updatedAt: now,
@@ -347,6 +379,128 @@ test('uses fixed typed errors for empty/cross-workspace reads and corrupt persis
   }
 });
 
+test('rejects non-canonical profiles and session states that contradict the domain evaluation', async () => {
+  const database = await setup();
+  try {
+    insertAkinatorSession(database, {
+      id: 'session-canonical-state',
+      workspace: 'workspace-a',
+      task: 'Implement the feature',
+      profile,
+      status: 'ready',
+      questionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const canonicalProfile = database.prepare(
+      'SELECT profile_json FROM akinator_sessions WHERE id = ?',
+    ).get<{ profile_json: string }>('session-canonical-state')?.profile_json;
+    assert.equal(typeof canonicalProfile, 'string');
+
+    for (const corruptProfile of [
+      `${canonicalProfile} `,
+      '{"constraints":null,"expected":"tests pass","target":"src/feature.ts","taskType":"build","taskType":"build"}',
+    ]) {
+      database.prepare('UPDATE akinator_sessions SET profile_json = ? WHERE id = ?').run(
+        corruptProfile,
+        'session-canonical-state',
+      );
+      assertStoreError(() => readAkinatorSession(database, {
+        workspace: 'workspace-a', sessionId: 'session-canonical-state',
+      }), 'INTEGRITY_ERROR');
+    }
+
+    database.prepare('UPDATE akinator_sessions SET profile_json = ?, status = ? WHERE id = ?').run(
+      canonicalProfile!,
+      'active',
+      'session-canonical-state',
+    );
+    assertStoreError(() => readAkinatorSession(database, {
+      workspace: 'workspace-a', sessionId: 'session-canonical-state',
+    }), 'INTEGRITY_ERROR');
+
+    insertAkinatorSession(database, {
+      id: 'session-question-count-state',
+      workspace: 'workspace-a',
+      task: 'Implement the feature',
+      profile: { taskType: null, target: null, expected: null, constraints: null },
+      status: 'active',
+      questionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    database.prepare('UPDATE akinator_sessions SET question_count = ? WHERE id = ?').run(
+      3,
+      'session-question-count-state',
+    );
+    assertStoreError(() => readAkinatorSession(database, {
+      workspace: 'workspace-a', sessionId: 'session-question-count-state',
+    }), 'INTEGRITY_ERROR');
+    database.prepare('UPDATE akinator_sessions SET status = ? WHERE id = ?').run(
+      'exhausted',
+      'session-question-count-state',
+    );
+    assert.equal(readAkinatorSession(database, {
+      workspace: 'workspace-a', sessionId: 'session-question-count-state',
+    }).status, 'exhausted');
+  } finally {
+    database.close();
+  }
+});
+
+test('rejects inconsistent session input before mutating storage', async () => {
+  const database = await setup();
+  try {
+    assertStoreError(() => insertAkinatorSession(database, {
+      id: 'session-invalid-insert',
+      workspace: 'workspace-a',
+      task: 'Implement the feature',
+      profile,
+      status: 'active',
+      questionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    }), 'VALIDATION_ERROR');
+    assert.equal(database.prepare(
+      'SELECT COUNT(*) AS count FROM akinator_sessions WHERE id = ?',
+    ).get<{ count: number }>('session-invalid-insert')?.count, 0);
+
+    insertAkinatorSession(database, {
+      id: 'session-invalid-update',
+      workspace: 'workspace-a',
+      task: 'Implement the feature',
+      profile: { ...profile, expected: null },
+      status: 'active',
+      questionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    assertStoreError(() => updateAkinatorSession(database, {
+      workspace: 'workspace-a',
+      sessionId: 'session-invalid-update',
+      expectedQuestionCount: 0,
+      profile,
+      status: 'active',
+      questionCount: 1,
+      updatedAt: '2026-08-20T00:01:00.000Z',
+    }), 'VALIDATION_ERROR');
+    assert.deepEqual(readAkinatorSession(database, {
+      workspace: 'workspace-a', sessionId: 'session-invalid-update',
+    }), {
+      id: 'session-invalid-update',
+      workspace: 'workspace-a',
+      task: 'Implement the feature',
+      profile: { ...profile, expected: null },
+      status: 'active',
+      questionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+  } finally {
+    database.close();
+  }
+});
+
 test('conflicts on a different answer and reports corrupted persisted answer without echoing it', async () => {
   const database = await setup();
   try {
@@ -376,6 +530,18 @@ test('conflicts on a different answer and reports corrupted persisted answer wit
     assertStoreError(() => readAkinatorAnswer(database, {
       workspace: 'workspace-a', sessionId: 'session-answer-errors', questionId: 'target',
     }), 'INTEGRITY_ERROR', sentinel);
+    for (const corruptAnswer of [
+      '{"value":"\\ud800"}',
+      `${'{"nested":'.repeat(129)}null${'}'.repeat(129)}`,
+    ]) {
+      database.prepare('UPDATE akinator_answers SET answer_json = ? WHERE session_id = ?').run(
+        corruptAnswer,
+        'session-answer-errors',
+      );
+      assertStoreError(() => readAkinatorAnswer(database, {
+        workspace: 'workspace-a', sessionId: 'session-answer-errors', questionId: 'target',
+      }), 'INTEGRITY_ERROR');
+    }
   } finally {
     database.close();
   }
@@ -388,7 +554,7 @@ test('rejects stale or finalized session updates without changing immutable or p
       id: 'session-stale',
       workspace: 'workspace-a',
       task: 'Original task',
-      profile,
+      profile: { ...profile, expected: null },
       status: 'active',
       questionCount: 0,
       createdAt: now,
@@ -399,7 +565,7 @@ test('rejects stale or finalized session updates without changing immutable or p
       workspace: 'workspace-a',
       sessionId: 'session-stale',
       expectedQuestionCount: 0,
-      profile: { ...profile, target: 'changed' },
+      profile: { ...profile, target: 'changed', expected: null },
       status: 'active',
       questionCount: 1,
       updatedAt: '2026-08-20T00:01:00.000Z',
@@ -419,7 +585,7 @@ test('rejects stale or finalized session updates without changing immutable or p
       workspace: 'workspace-a',
       sessionId: 'session-finalized',
       expectedQuestionCount: 0,
-      profile: { ...profile, target: 'changed' },
+      profile: { ...profile, target: 'changed', expected: null },
       status: 'active',
       questionCount: 1,
       updatedAt: '2026-08-20T00:01:00.000Z',
@@ -499,7 +665,7 @@ test('uses caller-owned transactions and leaves an outer marker intact after a h
         workspace: 'workspace-a',
         task: 'Transactional task',
         profile,
-        status: 'active',
+        status: 'ready',
         questionCount: 0,
         createdAt: now,
         updatedAt: now,
@@ -633,6 +799,162 @@ test('marks one pending profile field as a user answer without replacing other s
       expected: 'user_answer',
     });
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM run_intakes').get<{ count: number }>()?.count, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('propagates unexpected insert, update, answer, and intake-link database failures unchanged', async () => {
+  const database = await setup();
+  try {
+    seedRun(database, 'run-propagation', 'session-propagation');
+
+    const insertFailure = new Error('injected session insert failure');
+    assert.throws(() => insertAkinatorSession(
+      withInjectedRunFailure(database, 'INSERT INTO akinator_sessions', insertFailure),
+      {
+        id: 'session-insert-failure',
+        workspace: 'workspace-a',
+        task: 'Implement the feature',
+        profile,
+        status: 'ready',
+        questionCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ), (error: unknown) => error === insertFailure);
+
+    const updateFailure = new Error('injected session update failure');
+    assert.throws(() => updateAkinatorSession(
+      withInjectedRunFailure(database, 'UPDATE akinator_sessions', updateFailure),
+      {
+        workspace: 'workspace-a',
+        sessionId: 'session-propagation',
+        expectedQuestionCount: 0,
+        profile: { ...profile, expected: 'updated' },
+        status: 'ready',
+        questionCount: 1,
+        updatedAt: '2026-08-20T00:01:00.000Z',
+      },
+    ), (error: unknown) => error === updateFailure);
+
+    const answerFailure = new Error('injected answer insert failure');
+    assert.throws(() => insertAkinatorAnswer(
+      withInjectedRunFailure(database, 'INSERT INTO akinator_answers', answerFailure),
+      {
+        workspace: 'workspace-a',
+        sessionId: 'session-propagation',
+        questionId: 'target',
+        answer: 'src/feature.ts',
+        createdAt: now,
+      },
+    ), (error: unknown) => error === answerFailure);
+
+    const linkInput = {
+      runId: 'run-propagation',
+      sessionId: 'session-propagation',
+      workspace: 'workspace-a',
+      policyVersion: 'akinator-v1',
+      profileSchemaVersion: 1,
+      profileSources: { taskType: 'inferred' as const },
+      initialProfileHash: null,
+      recommendedTags: ['bot:builder'],
+      linkedAt: now,
+      finalizedAt: null,
+    };
+    const linkFailure = new Error('injected intake link insert failure');
+    assert.throws(() => insertRunIntakeLink(
+      withInjectedRunFailure(database, 'INSERT INTO run_intakes', linkFailure),
+      linkInput,
+    ), (error: unknown) => error === linkFailure);
+
+    insertRunIntakeLink(database, linkInput);
+    const finalizeFailure = new Error('injected intake finalization failure');
+    assert.throws(() => finalizeRunIntakeLink(
+      withInjectedRunFailure(database, 'UPDATE run_intakes', finalizeFailure),
+      {
+        workspace: 'workspace-a',
+        runId: 'run-propagation',
+        profileHash: 'a'.repeat(64),
+        recommendedTags: ['bot:builder'],
+        finalizedAt: '2026-08-20T00:02:00.000Z',
+      },
+    ), (error: unknown) => error === finalizeFailure);
+
+    const sourceFailure = new Error('injected intake source update failure');
+    assert.throws(() => markRunIntakeProfileSource(
+      withInjectedRunFailure(database, 'UPDATE run_intakes', sourceFailure),
+      { workspace: 'workspace-a', runId: 'run-propagation', field: 'target' },
+    ), (error: unknown) => error === sourceFailure);
+  } finally {
+    database.close();
+  }
+});
+
+test('maps only declared uniqueness and CAS misses to conflicts', async () => {
+  const database = await setup();
+  try {
+    const duplicate = {
+      id: 'session-duplicate',
+      workspace: 'workspace-a',
+      task: 'Implement the feature',
+      profile: { ...profile, expected: null },
+      status: 'active' as const,
+      questionCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    insertAkinatorSession(database, duplicate);
+    assertStoreError(() => insertAkinatorSession(database, duplicate), 'CONFLICT');
+
+    const spoofedConstraint = {
+      code: 'ERR_SQLITE_ERROR',
+      errcode: 1_555,
+      message: 'UNIQUE constraint failed: akinator_sessions.id',
+    };
+    assert.throws(() => insertAkinatorSession(
+      withInjectedRunFailure(database, 'INSERT INTO akinator_sessions', spoofedConstraint),
+      { ...duplicate, id: 'session-spoofed-failure' },
+    ), (error: unknown) => error === spoofedConstraint);
+
+    database.exec(`
+      CREATE TABLE unexpected_unique_target (value TEXT NOT NULL UNIQUE);
+      INSERT INTO unexpected_unique_target (value) VALUES ('occupied');
+      CREATE TRIGGER unexpected_session_unique_failure
+      BEFORE INSERT ON akinator_sessions
+      WHEN NEW.id = 'session-trigger-failure'
+      BEGIN
+        INSERT INTO unexpected_unique_target (value) VALUES ('occupied');
+      END;
+    `);
+    assert.throws(() => insertAkinatorSession(database, {
+      ...duplicate,
+      id: 'session-trigger-failure',
+    }), (error: unknown) => {
+      const failure = error as { code?: unknown; errcode?: unknown; message?: unknown };
+      assert.equal(failure.code, 'ERR_SQLITE_ERROR');
+      assert.equal(failure.errcode, 2_067);
+      assert.equal(failure.message, 'UNIQUE constraint failed: unexpected_unique_target.value');
+      return true;
+    });
+
+    database.exec(`
+      CREATE TRIGGER ignore_session_cas_update
+      BEFORE UPDATE ON akinator_sessions
+      WHEN OLD.id = 'session-duplicate'
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END;
+    `);
+    assertStoreError(() => updateAkinatorSession(database, {
+      workspace: 'workspace-a',
+      sessionId: 'session-duplicate',
+      expectedQuestionCount: 0,
+      profile: { ...profile, expected: 'updated' },
+      status: 'ready',
+      questionCount: 1,
+      updatedAt: '2026-08-20T00:01:00.000Z',
+    }), 'CONFLICT');
   } finally {
     database.close();
   }

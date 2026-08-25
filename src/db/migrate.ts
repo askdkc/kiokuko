@@ -2,8 +2,11 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 import { KiokukoError } from '../errors.js';
+import { canonicalizeEntryRevisionHashesInMigration } from '../memory/revisions.js';
 import type { SqliteDatabase, SqliteRow } from './adapter.js';
+import { withImmediateTransaction } from './transaction.js';
 
 export interface MigrationResult {
   applied: number[];
@@ -11,48 +14,100 @@ export interface MigrationResult {
 }
 
 export interface MigrationPlan {
-  applied: number[];
-  pending: number[];
-  databaseVersion: number;
-  currentVersion: number;
+  readonly applied: readonly number[];
+  readonly pending: readonly number[];
+  readonly databaseVersion: number;
+  readonly currentVersion: number;
+  readonly migrations: readonly MigrationSource[];
 }
 
-interface MigrationFile {
-  version: number;
-  name: string;
-  checksum: string;
-  sql: string;
+export interface MigrationIdentity {
+  readonly version: number;
+  readonly name: string;
+}
+
+export interface MigrationSource extends MigrationIdentity {
+  readonly checksum: string;
+  readonly sql: string;
+}
+
+export interface MigrationSnapshot {
+  readonly migrations: readonly MigrationSource[];
+}
+
+export interface MigrationHooks {
+  /**
+   * Runs after a pending migration's SQL and before its schema marker is
+   * written. The hook is inside the same SQLite transaction as both steps.
+   */
+  readonly beforeMarkApplied?: (database: SqliteDatabase, migration: MigrationIdentity) => void;
 }
 
 interface AppliedMigrationRow extends SqliteRow {
-  version: number | bigint;
-  name: string;
-  checksum: string;
+  version: unknown;
+  name: unknown;
+  checksum: unknown;
 }
 
-const MIGRATION_FILE = /^(\d+)_([a-z0-9_-]+)\.sql$/i;
-const LOCK_RETRY_LIMIT = 5;
+function applyBuiltInMigrationOperation(database: SqliteDatabase, migration: MigrationIdentity): void {
+  if (migration.version === 9 && migration.name === '009_external_skill_discovery.sql') {
+    canonicalizeEntryRevisionHashesInMigration(database);
+  }
+}
+
+const MIGRATION_FILE = /^([0-9]{3})_([a-z0-9_-]+)\.sql$/;
+const loadedMigrationSnapshots = new WeakSet<MigrationSnapshot>();
+const fatalUtf8Decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export function defaultMigrationsDirectory(): string {
   return fileURLToPath(new URL('../../migrations/', import.meta.url));
 }
 
-function listMigrations(directory: string): MigrationFile[] {
+export function loadMigrationSnapshot(directory = defaultMigrationsDirectory()): MigrationSnapshot {
   const migrations = readdirSync(directory)
     .map((name) => {
       const match = MIGRATION_FILE.exec(name);
-      if (!match) return undefined;
+      if (!match) {
+        if (/\.sql$/iu.test(name)) {
+          throw new KiokukoError(
+            'INTEGRITY_ERROR',
+            `Migration filename is not canonical: ${name}`,
+            { name },
+          );
+        }
+        return undefined;
+      }
       const version = Number(match[1]);
-      const sql = readFileSync(path.join(directory, name), 'utf8');
+      const bytes = readFileSync(path.join(directory, name));
+      if (bytes.subarray(0, 3).equals(Buffer.from([0xEF, 0xBB, 0xBF]))) {
+        throw new KiokukoError(
+          'INTEGRITY_ERROR',
+          `Migration file ${name} has a non-canonical UTF-8 BOM`,
+        );
+      }
+      let sql: string;
+      try {
+        sql = fatalUtf8Decoder.decode(bytes);
+      } catch (error) {
+        const failure = new KiokukoError(
+          'INTEGRITY_ERROR',
+          `Migration file ${name} is not valid UTF-8`,
+        );
+        Object.defineProperty(failure, 'cause', { value: error });
+        throw failure;
+      }
       return {
         version,
         name,
         sql,
-        checksum: createHash('sha256').update(sql).digest('hex'),
+        checksum: createHash('sha256').update(bytes).digest('hex'),
       };
     })
-    .filter((migration): migration is MigrationFile => migration !== undefined)
+    .filter((migration): migration is MigrationSource => migration !== undefined)
     .sort((left, right) => left.version - right.version);
+  if (migrations.length === 0) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Migration directory contains no versioned migration files');
+  }
   const versions = new Set<number>();
   for (const migration of migrations) {
     if (!Number.isSafeInteger(migration.version) || migration.version < 1) {
@@ -63,7 +118,31 @@ function listMigrations(directory: string): MigrationFile[] {
     }
     versions.add(migration.version);
   }
-  return migrations;
+  for (const [index, migration] of migrations.entries()) {
+    const expectedVersion = index + 1;
+    if (migration.version !== expectedVersion) {
+      throw new KiokukoError(
+        'INTEGRITY_ERROR',
+        `Migration files must form an exact contiguous sequence starting at version 1; expected ${expectedVersion} but found ${migration.version}`,
+        { expectedVersion, actualVersion: migration.version, name: migration.name },
+      );
+    }
+  }
+  const snapshot = Object.freeze({
+    migrations: Object.freeze(migrations.map((migration) => Object.freeze(migration))),
+  });
+  loadedMigrationSnapshots.add(snapshot);
+  return snapshot;
+}
+
+function requireLoadedMigrationSnapshot(snapshot: MigrationSnapshot): readonly MigrationSource[] {
+  if (!loadedMigrationSnapshots.has(snapshot)) {
+    throw new KiokukoError(
+      'INTEGRITY_ERROR',
+      'Migration snapshot was not produced by the validated snapshot loader',
+    );
+  }
+  return snapshot.migrations;
 }
 
 function hasMigrationTable(database: SqliteDatabase): boolean {
@@ -83,17 +162,28 @@ function appliedMigrationRows(database: SqliteDatabase): AppliedMigrationRow[] {
   `).all<AppliedMigrationRow>();
 }
 
-function migrationPlan(database: SqliteDatabase, migrations: MigrationFile[]): MigrationPlan {
+function appliedMigrationVersion(value: unknown): number {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1) return value;
+  throw new KiokukoError('INTEGRITY_ERROR', 'Database migration history contains an invalid version');
+}
+
+function migrationPlan(database: SqliteDatabase, migrations: readonly MigrationSource[]): MigrationPlan {
   const currentVersion = migrations.at(-1)?.version ?? 0;
   const byVersion = new Map(migrations.map((migration) => [migration.version, migration]));
   const rows = appliedMigrationRows(database);
   const applied: number[] = [];
+  const seenVersions = new Set<number>();
 
   for (const row of rows) {
-    const version = Number(row.version);
-    if (!Number.isSafeInteger(version) || version < 1) {
-      throw new KiokukoError('INTEGRITY_ERROR', 'Database migration history contains an invalid version');
+    const version = appliedMigrationVersion(row.version);
+    if (seenVersions.has(version)) {
+      throw new KiokukoError(
+        'INTEGRITY_ERROR',
+        `Database migration history contains duplicate version ${version}`,
+        { version },
+      );
     }
+    seenVersions.add(version);
     const migration = byVersion.get(version);
     if (!migration) {
       if (version > currentVersion) {
@@ -105,6 +195,13 @@ function migrationPlan(database: SqliteDatabase, migrations: MigrationFile[]): M
       }
       throw new KiokukoError('INTEGRITY_ERROR', `Database migration version ${version} is not supported by this Kiokuko binary`);
     }
+    if (typeof row.name !== 'string' || typeof row.checksum !== 'string') {
+      throw new KiokukoError(
+        'INTEGRITY_ERROR',
+        `Database migration history contains invalid metadata for version ${version}`,
+        { version },
+      );
+    }
     if (row.name !== migration.name || row.checksum !== migration.checksum) {
       throw new KiokukoError(
         'INTEGRITY_ERROR',
@@ -115,91 +212,67 @@ function migrationPlan(database: SqliteDatabase, migrations: MigrationFile[]): M
     applied.push(version);
   }
 
-  const appliedSet = new Set(applied);
-  let foundPending = false;
-  for (const migration of migrations) {
-    if (!appliedSet.has(migration.version)) foundPending = true;
-    else if (foundPending) {
+  for (const [index, version] of applied.entries()) {
+    const expectedVersion = index + 1;
+    if (version !== expectedVersion) {
       throw new KiokukoError('INTEGRITY_ERROR', 'Database migration history is not a contiguous prefix');
     }
   }
+  const appliedSet = new Set(applied);
   return {
-    applied,
-    pending: migrations.filter((migration) => !appliedSet.has(migration.version)).map((migration) => migration.version),
+    applied: Object.freeze(applied),
+    pending: Object.freeze(
+      migrations.filter((migration) => !appliedSet.has(migration.version)).map((migration) => migration.version),
+    ),
     databaseVersion: applied.at(-1) ?? 0,
     currentVersion,
+    migrations,
   };
 }
 
-export function inspectMigrationPlan(database: SqliteDatabase, directory = defaultMigrationsDirectory()): MigrationPlan {
-  return migrationPlan(database, listMigrations(directory));
+export function inspectMigrationSnapshot(database: SqliteDatabase, snapshot: MigrationSnapshot): MigrationPlan {
+  return migrationPlan(database, requireLoadedMigrationSnapshot(snapshot));
 }
 
-function isLockError(error: unknown): boolean {
-  return error instanceof Error && /database is locked|database table is locked|busy/i.test(error.message);
-}
-
-function waitForRetry(attempt: number): void {
-  const buffer = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(buffer, 0, 0, attempt * 25);
-}
-
-function withLockRetry<T>(operation: () => T): T {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return operation();
-    } catch (error) {
-      if (!isLockError(error) || attempt >= LOCK_RETRY_LIMIT) throw error;
-      waitForRetry(attempt);
+function applyOneInTransaction(
+  database: SqliteDatabase,
+  migration: MigrationSource,
+  migrations: readonly MigrationSource[],
+  hooks: MigrationHooks,
+): boolean {
+  // Revalidate while the caller's write lock is held. No other migrator can
+  // advance the history between this check, the SQL, the application hook,
+  // and the marker write.
+  migrationPlan(database, migrations);
+  const existing = database
+    .prepare('SELECT checksum FROM schema_migrations WHERE version = ?')
+    .get<{ checksum: unknown }>(migration.version);
+  if (existing) {
+    if (typeof existing.checksum !== 'string' || existing.checksum !== migration.checksum) {
+      throw new KiokukoError(
+        'INTEGRITY_ERROR',
+        `Migration checksum mismatch for ${migration.name}`,
+        { version: migration.version, name: migration.name },
+      );
     }
+    return false;
   }
+
+  database.exec(migration.sql);
+  applyBuiltInMigrationOperation(database, migration);
+  hooks.beforeMarkApplied?.(database, { version: migration.version, name: migration.name });
+  database
+    .prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
+    .run(migration.version, migration.name, migration.checksum, new Date().toISOString());
+  return true;
 }
 
-function rollback(database: SqliteDatabase): void {
-  try {
-    database.exec('ROLLBACK');
-  } catch {
-    // Preserve the original migration error.
-  }
-}
-
-function applyOne(database: SqliteDatabase, migration: MigrationFile, migrations: MigrationFile[]): boolean {
-  return withLockRetry(() => {
-    database.exec('BEGIN IMMEDIATE');
-    try {
-      // Revalidate under the write lock so a newer binary cannot advance the
-      // database between the read-only upgrade inspection and this write.
-      migrationPlan(database, migrations);
-      const existing = database
-        .prepare('SELECT checksum FROM schema_migrations WHERE version = ?')
-        .get<{ checksum: string }>(migration.version);
-      if (existing) {
-        if (existing.checksum !== migration.checksum) {
-          throw new KiokukoError(
-            'INTEGRITY_ERROR',
-            `Migration checksum mismatch for ${migration.name}`,
-            { version: migration.version, name: migration.name },
-          );
-        }
-        database.exec('COMMIT');
-        return false;
-      }
-
-      database.exec(migration.sql);
-      database
-        .prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
-        .run(migration.version, migration.name, migration.checksum, new Date().toISOString());
-      database.exec('COMMIT');
-      return true;
-    } catch (error) {
-      rollback(database);
-      throw error;
-    }
-  });
-}
-
-export function migrateDatabase(database: SqliteDatabase, directory = defaultMigrationsDirectory()): MigrationResult {
-  const migrations = listMigrations(directory);
+function applyMigrationSetInTransaction(
+  database: SqliteDatabase,
+  migrations: readonly MigrationSource[],
+  hooks: MigrationHooks,
+): MigrationResult {
+  // Revalidate the database state after the writer transaction begins.
   migrationPlan(database, migrations);
   database.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -212,10 +285,32 @@ export function migrateDatabase(database: SqliteDatabase, directory = defaultMig
 
   const applied: number[] = [];
   for (const migration of migrations) {
-    if (applyOne(database, migration, migrations)) applied.push(migration.version);
+    if (applyOneInTransaction(database, migration, migrations, hooks)) applied.push(migration.version);
   }
   const currentVersion = migrations.at(-1)?.version ?? 0;
   return { applied, currentVersion };
 }
 
-export const migrate = migrateDatabase;
+/** Apply an already-loaded migration snapshot inside a transaction owned by the caller. */
+export function migrateDatabaseSnapshotInTransaction(
+  database: SqliteDatabase,
+  snapshot: MigrationSnapshot,
+  hooks: MigrationHooks = {},
+): MigrationResult {
+  return applyMigrationSetInTransaction(database, requireLoadedMigrationSnapshot(snapshot), hooks);
+}
+
+export function migrateDatabase(
+  database: SqliteDatabase,
+  directory = defaultMigrationsDirectory(),
+  hooks: MigrationHooks = {},
+): MigrationResult {
+  const migrations = loadMigrationSnapshot(directory).migrations;
+  // Fail on unsupported history before beginning a write transaction, then
+  // repeat the check under the lock in applyMigrationSetInTransaction.
+  migrationPlan(database, migrations);
+  return withImmediateTransaction(
+    database,
+    () => applyMigrationSetInTransaction(database, migrations, hooks),
+  );
+}

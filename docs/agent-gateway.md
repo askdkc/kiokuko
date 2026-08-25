@@ -27,7 +27,7 @@ Every write requires:
 - strict unknown-field rejection
 - request body at most 2 MiB
 
-A key is scoped to the operation/run. Replaying the same key with the same canonical request returns the stored response. Reusing it with different content returns `409 CONFLICT`. Event batches are all-or-nothing and contain at most 200 events; one sanitized payload is at most 64 KiB.
+A key is scoped to the operation/run. Replaying the same key with the same canonical request returns the stored atomic mutation acknowledgement and does not repeat the mutation. Reusing it with different content returns `409 CONFLICT`. For operations that add capability-gated context, gating and retrieval happen after that mutation boundary and are re-evaluated against the current retrievable revisions and feedback. The full enriched JSON may therefore change on an exact retry even though the acknowledged mutation does not. Freezing the earlier enriched context would bypass current retrieval eligibility. Event batches are all-or-nothing and contain at most 200 events; one sanitized payload is at most 64 KiB.
 
 Success envelope:
 
@@ -57,7 +57,7 @@ If intake needs an answer, the run remains `intake`, the response includes only 
 
 `POST /api/v1/agent/runs/:runId/intake/answers`
 
-Accepts only the currently outstanding question ID. The answer, intake transition, lifecycle event, and run status transition are atomic. Exact retry returns the same response. A finalized profile is immutable; later task-understanding changes are appended as `task_profile.revised` events.
+Accepts only the currently outstanding question ID. The answer, intake transition, lifecycle event, and run status transition are atomic. Exact retry replays that mutation acknowledgement without repeating the answer; any post-commit capability gate and context retrieval are evaluated again under the bound catalog and current retrieval eligibility. A finalized profile is immutable; later task-understanding changes are appended as `task_profile.revised` events.
 
 ### Append events
 
@@ -69,16 +69,17 @@ The server preserves source event IDs/sequences and assigns a contiguous local s
 
 `POST /api/v1/agent/runs/:runId/checkpoints`
 
-Atomically appends the included events, then projects state through the committed cursor. Retrieval and optional official-source network work happen after the write transaction and outside the bounded write queue. The response contains accepted cursor, projected task profile, evidence/coverage projection, a bounded context delivery, and deterministic recommendation records.
+Atomically appends the included events, then projects state through the committed cursor. The response includes the authoritative finalized intake status (`ready` or `exhausted`). The request must include the exact complete `capabilities` catalog bound when the run opened; the server validates that binding before mutation and removes the catalog before strict checkpoint parsing. Retrieval happens after the write transaction and outside the bounded write queue. The broker ranks once, evaluates the capability gate against that fixed snapshot, and persists only that same snapshot after approval; it never previews and then re-queries. Inside the delivery transaction, every selected exact revision is revalidated as current and retrievable, including the active managed-external mapping and source identity. A concurrent revision, disable, stale, or refresh transition returns a conflict with no delivery instead of silently reranking. Actionable build/debug memory from `ready` intake is returned only when the bound catalog contains the local `memory-reasoning` Skill. The ready-only policy does not apply to bounded `exhausted` intake. Missing or unknown availability under the ready-only policy returns `nextAction: required_capability_unavailable`, `context: null`, and no recommendations or persisted delivery.
 
 ### Close, feedback, promotion
 
 - `POST /api/v1/agent/runs/:runId/close`
 - `POST /api/v1/agent/runs/:runId/feedback`
 - `POST /api/v1/agent/runs/:runId/promotions`
-- `POST /api/v1/context/query`
 
 Close records a terminal status, final events/evidence, unresolved items, outcome, and explicit memory proposals. Feedback records context, recommendation, intake-question/profile, and run outcomes without automatically changing entry trust/status or the active intake policy. Promotion creates only an existing-memory `candidate` entry and records run/event/delivery/intake provenance; it never auto-promotes to `verified`.
+
+The former unbound `POST /api/v1/context/query` route was removed. A request without a run cannot prove which capability catalog governs the returned memory, so the server does not provide an ungated compatibility fallback.
 
 ## Read protocol
 
@@ -88,11 +89,13 @@ Cursor-paginated read endpoints are:
 - `GET /api/v1/agent/runs/:runId`
 - `GET /api/v1/agent/runs/:runId/intake`
 - `GET /api/v1/agent/runs/:runId/events?after=&limit=&type=`
-- `GET /api/v1/agent/runs/:runId/context-deliveries`
-- `GET /api/v1/workspaces`
-- `GET /api/v1/memory/entries`
 
-List pages are capped at 100 records. Stored memory and event content returned to agents is marked `untrusted: true` and must be checked against the current repository/runtime.
+List pages are capped at 100 records. Event content returned to agents is marked
+`untrusted: true` and must be checked against the current repository/runtime.
+Workspace and memory inspection belongs to the human/operator CLI and Web
+management surfaces; the Agent API does not expose ungated read aliases.
+
+The former context-delivery listing route was removed because a GET request has no complete capability-catalog channel. Context deliveries are returned only by the capability-gated open, answer, and checkpoint operations that create them.
 
 ## Coverage
 

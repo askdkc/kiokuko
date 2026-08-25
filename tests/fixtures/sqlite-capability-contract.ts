@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict';
-import { backup, DatabaseSync, type DatabaseSync as DatabaseSyncType } from 'node:sqlite';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { DatabaseSync, type DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 
 export interface SqliteCapabilityContractResult {
   sqliteVersion: string;
@@ -37,14 +34,20 @@ export async function assertSqliteCapabilityContract(database: DatabaseSyncType)
   const journalMode = String(rowValue<{ journal_mode: string }>(database.prepare('PRAGMA journal_mode').get(), 'journal_mode')).toLowerCase();
   const wal = journalMode === 'wal';
   const integrityCheck = rowValue<{ integrity_check: string }>(database.prepare('PRAGMA integrity_check').get(), 'integrity_check') === 'ok';
-  const backupAvailable = typeof backup === 'function';
+  const sourceMethods = database as DatabaseSyncType & { serialize?: () => Uint8Array };
+  const backupAvailable = typeof sourceMethods.serialize === 'function';
   assert.equal(rowValue<{ value: string }>(database.prepare('SELECT value FROM capability_fixture').get(), 'value'), 'contract');
-  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-capability-'));
-  const backupPath = path.join(directory, 'backup.sqlite3');
-  await backup(database, backupPath);
-  const backupDatabase = new DatabaseSync(backupPath);
+  assert.equal(backupAvailable, true);
+  const serialized = Buffer.from(sourceMethods.serialize!());
+  serialized[18] = 1;
+  serialized[19] = 1;
+  const backupDatabase = new DatabaseSync(':memory:');
   try {
+    const backupMethods = backupDatabase as DatabaseSync & { deserialize?: (bytes: Uint8Array) => void };
+    assert.equal(typeof backupMethods.deserialize, 'function');
+    backupMethods.deserialize!(serialized);
     assert.equal(rowValue<{ integrity_check: string }>(backupDatabase.prepare('PRAGMA integrity_check').get(), 'integrity_check'), 'ok');
+    assert.equal(rowValue<{ value: string }>(backupDatabase.prepare('SELECT value FROM capability_fixture').get(), 'value'), 'contract');
   } finally {
     backupDatabase.close();
   }

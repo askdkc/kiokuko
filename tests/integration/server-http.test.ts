@@ -5,6 +5,7 @@ import { KiokukoError } from '../../src/errors.js';
 import { createApp } from '../../src/server/app.js';
 import { successEnvelope } from '../../src/serialization/envelope.js';
 import type { V1RouteRequest } from '../../src/server/router.js';
+import { MAX_STRICT_JSON_DEPTH } from '../../src/setup/strict-json.js';
 
 const token = 'a'.repeat(64);
 
@@ -208,6 +209,55 @@ test('malformed v1 JSON returns a fixed 400 envelope without echoing the request
       },
     });
     assert.equal(text.includes(requestContent), false);
+  } finally {
+    await closeServer(app.server);
+  }
+});
+
+test('v1 JSON rejects invalid bytes and ambiguous or unsafe syntax before handler dispatch', async () => {
+  let dispatches = 0;
+  const app = await startApp({
+    expectedToken: token,
+    readiness: () => true,
+    v1: () => {
+      dispatches += 1;
+      return successEnvelope('agent.body', { accepted: true });
+    },
+  });
+  const tooDeep = `${'{"value":'.repeat(MAX_STRICT_JSON_DEPTH + 1)}null${'}'.repeat(MAX_STRICT_JSON_DEPTH + 1)}`;
+  const bodies: BodyInit[] = [
+    '{"identity":"first","identity":"second"}',
+    '{"nested":{"identity":"first","identity":"second"}}',
+    '\uFEFF{"value":"safe"}',
+    '{"value":1e999}',
+    '{"value":"safe",}',
+    '{/* comment */"value":"safe"}',
+    tooDeep,
+    new Uint8Array([0x7b, 0x22, 0x76, 0x22, 0x3a, 0xff, 0x7d]),
+  ];
+  try {
+    for (const body of bodies) {
+      const response = await fetch(`${app.url}/api/v1/agent/body`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer ' + token,
+          'content-type': 'application/json',
+        },
+        body,
+      });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), {
+        apiVersion: '1',
+        ok: false,
+        operation: 'api.v1',
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request is invalid',
+          details: {},
+        },
+      });
+    }
+    assert.equal(dispatches, 0);
   } finally {
     await closeServer(app.server);
   }
@@ -470,7 +520,7 @@ test('unknown handler errors map to a fixed generic 500 envelope without raw det
       ok: false,
       operation: 'api.v1',
       error: {
-        code: 'DATABASE_ERROR',
+        code: 'INTEGRITY_ERROR',
         message: 'Unexpected server error',
         details: {},
       },
@@ -534,32 +584,45 @@ test('OPTIONS on /api/v1 does not grant permissive CORS and still authenticates 
 });
 
 test('v1 body requests require application/json content type', async () => {
+  let dispatches = 0;
   const app = await startApp({
     expectedToken: token,
     readiness: () => true,
-    v1: () => successEnvelope('agent.body', { accepted: true }),
+    v1: () => {
+      dispatches += 1;
+      return successEnvelope('agent.body', { accepted: true });
+    },
   });
   try {
-    const response = await fetch(`${app.url}/api/v1/agent/body`, {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer ' + token,
-        'content-type': 'text/plain',
-      },
-      body: JSON.stringify({ value: 'safe' }),
-    });
+    for (const contentType of [
+      'text/plain',
+      'application/jsonp',
+      'application/json; charset=iso-8859-1',
+      'application/json; charset=utf-8; charset=utf-8',
+      'application/json; profile=unsafe',
+    ]) {
+      const response = await fetch(`${app.url}/api/v1/agent/body`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer ' + token,
+          'content-type': contentType,
+        },
+        body: JSON.stringify({ value: 'safe' }),
+      });
 
-    assert.equal(response.status, 400);
-    assert.deepEqual(await response.json(), {
-      apiVersion: '1',
-      ok: false,
-      operation: 'api.v1',
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Request is invalid',
-        details: {},
-      },
-    });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), {
+        apiVersion: '1',
+        ok: false,
+        operation: 'api.v1',
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request is invalid',
+          details: {},
+        },
+      });
+    }
+    assert.equal(dispatches, 0);
   } finally {
     await closeServer(app.server);
   }

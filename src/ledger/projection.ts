@@ -8,7 +8,6 @@ import { canonicalJson } from './hash.js';
 export type IntakeStatus = 'ready' | 'exhausted';
 export type ProjectionCoverage = 'complete' | 'partial';
 export type EvidenceState = 'none' | 'failed' | 'fresh' | 'stale';
-export type ProfileField = keyof TaskProfile;
 export type MissingProfileField = 'taskType' | 'target' | 'expected';
 
 export interface LedgerEventSnapshot {

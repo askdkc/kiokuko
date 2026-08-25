@@ -4,13 +4,6 @@ import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { canonicalJson, type JsonValue } from '../serialization/validate.js';
 
-export interface IdempotencyInput {
-  readonly scope: unknown;
-  readonly key: unknown;
-  readonly request: unknown;
-  readonly createdAt?: unknown;
-}
-
 export type IdempotencyOperation<T extends JsonValue = JsonValue> = () => T;
 
 type ValidatedInput = {

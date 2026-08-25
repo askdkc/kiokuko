@@ -26,7 +26,6 @@ export const RECOMMENDATION_PRIORITY: Readonly<Record<RecommendationCode, number
   PROMOTION_CANDIDATE: 8,
 });
 
-export const RECOMMENDATION_CODE_PRIORITY = RECOMMENDATION_PRIORITY;
 export const MAX_RECOMMENDATIONS = RECOMMENDATION_CODES.length;
 export const MAX_EVIDENCE_EVENT_IDS = 16;
 export const MAX_REFERENCE_IDS = 16;
@@ -120,11 +119,6 @@ export interface RecommendationBrokerInput {
   staleDeliveredEntries?: RecommendationStaleDeliveredEntryInput[];
   contradictoryMemoryPairs?: RecommendationContradictionPairInput[];
   promotionCandidates?: RecommendationPromotionCandidateInput[];
-}
-
-export interface RecommendationInput {
-  projection: RecommendationProjectionInput;
-  broker?: RecommendationBrokerInput;
 }
 
 interface BoundedIds<T extends string = string> {

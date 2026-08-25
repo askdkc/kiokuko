@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { satisfiesFrameworkVersion } from '../../src/memory/federated-retrieval.js';
+import { satisfiesFrameworkVersion } from '../../src/repository/framework-version.js';
 
 test('uses standard semver behavior for caret zero-major, OR, comparator, tilde, and partial actual versions', () => {
   const cases: Array<[string, string, ReturnType<typeof satisfiesFrameworkVersion>]> = [
@@ -13,6 +13,8 @@ test('uses standard semver behavior for caret zero-major, OR, comparator, tilde,
     ['5.1.2', '~5.1', 'compatible'],
     ['12', '>=12 <13', 'compatible'],
     ['12.1', '~12.1', 'compatible'],
+    ['^13.1.0', '>=13 <14', 'compatible'],
+    ['>=12 <14', '^13', 'incompatible'],
     ['13.0.0', 'not a range', 'unknown'],
     ['not a version', '^13', 'unknown'],
     ['13.0.0', '13.0.0', 'exact'],

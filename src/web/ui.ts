@@ -12,6 +12,91 @@ const WEB_I18N_CONFIG = JSON.stringify({
   .replaceAll('\u2028', '\\u2028')
   .replaceAll('\u2029', '\\u2029');
 
+/** Strict client-boundary decoder for the bounded external-skill list shape. */
+export function externalSkillListItemIsValid(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const skill = value as Record<string, unknown>;
+  const fields = new Set([
+    'skillId', 'provider', 'sourceType', 'sourceLocator', 'slug', 'name', 'installUrl',
+    'officialStatus', 'duplicate', 'installs', 'state', 'sourceWorkspace', 'sourceCommit',
+    'snapshotHash', 'metadata', 'auditStatus', 'generation', 'firstSeenAt', 'lastSeenAt',
+    'lastCheckedAt', 'disabledAt',
+  ]);
+  const text = (item: unknown, maximum: number): item is string => typeof item === 'string'
+    && item.length >= 1 && item.length <= maximum && item === item.trim() && !/[\u0000-\u001f\u007f]/u.test(item);
+  const timestamp = (item: unknown): item is string => {
+    if (typeof item !== 'string') return false;
+    const parsed = Date.parse(item);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString() === item;
+  };
+  const metadata = skill.metadata;
+  const sourceLocator = skill.sourceLocator;
+  const slug = skill.slug;
+  const sourceCommit = skill.sourceCommit;
+  const snapshotHash = skill.snapshotHash;
+  const disabledAt = skill.disabledAt;
+  const officialStatus = skill.officialStatus;
+  const state = skill.state;
+  const auditStatus = skill.auditStatus;
+  if (Object.keys(skill).length !== fields.size || Object.keys(skill).some((field) => !fields.has(field))
+    || !text(skill.skillId, 500) || !text(skill.provider, 50) || !/^[A-Za-z0-9_.-]+$/u.test(skill.provider)
+    || skill.sourceType !== 'github'
+    || typeof sourceLocator !== 'string' || !/^[a-z0-9_.-]{1,100}\/[a-z0-9_.-]{1,100}$/u.test(sourceLocator)
+    || typeof slug !== 'string' || !/^[A-Za-z0-9_.\-/]{1,240}$/u.test(slug)
+    || slug.split('/').some((part) => part === '' || part === '.' || part === '..')
+    || skill.skillId !== `github:${sourceLocator}:${slug}`
+    || !text(skill.name, 500)
+    || skill.installUrl !== null && skill.installUrl !== `https://github.com/${sourceLocator}`
+    || typeof officialStatus !== 'string'
+    || !['curated', 'catalog-verified', 'owner-verified', 'registry-only', 'unknown'].includes(officialStatus)
+    || typeof skill.duplicate !== 'boolean'
+    || typeof skill.installs !== 'number' || !Number.isSafeInteger(skill.installs) || skill.installs < 0
+    || typeof state !== 'string'
+    || !['discovered', 'imported', 'blocked', 'stale', 'disabled'].includes(state)
+    || !text(skill.sourceWorkspace, 240)
+    || sourceCommit !== null && (typeof sourceCommit !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(sourceCommit))
+    || snapshotHash !== null && (typeof snapshotHash !== 'string' || !/^[0-9a-f]{64}$/u.test(snapshotHash))
+    || (sourceCommit === null) !== (snapshotHash === null)
+    || typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)
+    || Object.keys(metadata).length !== 2 || !Object.hasOwn(metadata, 'documents') || !Object.hasOwn(metadata, 'technology')
+    || typeof (metadata as Record<string, unknown>).documents !== 'number'
+    || !Number.isSafeInteger((metadata as Record<string, unknown>).documents)
+    || ((metadata as Record<string, unknown>).documents as number) < 0
+    || ((metadata as Record<string, unknown>).documents as number) > 64
+    || (metadata as Record<string, unknown>).technology !== null && !text((metadata as Record<string, unknown>).technology, 500)
+    || typeof auditStatus !== 'string'
+    || !['not-required', 'passed', 'failed', 'unavailable'].includes(auditStatus)
+    || typeof skill.generation !== 'number' || !Number.isSafeInteger(skill.generation) || skill.generation < 1
+    || !timestamp(skill.firstSeenAt) || !timestamp(skill.lastSeenAt) || !timestamp(skill.lastCheckedAt)
+    || disabledAt !== null && !timestamp(disabledAt)
+    || (skill.firstSeenAt as string) > (skill.lastSeenAt as string)
+    || (skill.firstSeenAt as string) > (skill.lastCheckedAt as string)
+    || disabledAt !== null && disabledAt < (skill.firstSeenAt as string)
+    || sourceCommit === null && (['imported', 'disabled'].includes(state) || disabledAt !== null)
+    || sourceCommit !== null && !['imported', 'disabled', 'stale', 'blocked'].includes(state)
+    || state === 'imported' && disabledAt !== null
+    || state === 'disabled' && disabledAt === null
+    || sourceCommit === null && ((metadata as Record<string, unknown>).documents !== 0 || (metadata as Record<string, unknown>).technology !== null)
+    || sourceCommit !== null && ((metadata as Record<string, unknown>).documents === 0 || !text((metadata as Record<string, unknown>).technology, 500))) return false;
+  return true;
+}
+
+/** Strict client-boundary decoder for one external-skill mapping summary. */
+export function externalSkillEntrySummaryIsValid(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  const fields = new Set(['entryId', 'revision', 'sourcePath', 'chunkIndex', 'primary', 'active']);
+  return Object.keys(entry).length === fields.size
+    && Object.keys(entry).every((field) => fields.has(field))
+    && typeof entry.entryId === 'string' && entry.entryId.length >= 1 && entry.entryId.length <= 500 && entry.entryId === entry.entryId.trim()
+    && typeof entry.revision === 'number' && Number.isSafeInteger(entry.revision) && entry.revision >= 1
+    && typeof entry.sourcePath === 'string' && entry.sourcePath.length >= 1 && entry.sourcePath.length <= 2_000
+    && /^[A-Za-z0-9_.\-/]+$/u.test(entry.sourcePath) && !entry.sourcePath.startsWith('/')
+    && !entry.sourcePath.split('/').some((part) => part === '' || part === '.' || part === '..')
+    && typeof entry.chunkIndex === 'number' && Number.isSafeInteger(entry.chunkIndex) && entry.chunkIndex >= 0
+    && typeof entry.primary === 'boolean' && typeof entry.active === 'boolean';
+}
+
 export const WEB_HTML = String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -142,6 +227,17 @@ export const WEB_HTML = String.raw`<!doctype html>
     .curator-confirm-field dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; }
     .curator-confirm-draft { max-height:280px; overflow:auto; margin:0; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--surface); white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.5; }
     .curator-confirm-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+    .skill-dialog { width:min(1040px,calc(100vw - 32px)); max-height:min(860px,calc(100vh - 48px)); display:flex; flex-direction:column; min-height:0; background:rgba(255,255,255,.96); box-shadow:0 28px 90px rgba(15,23,42,.28); }
+    .skill-dialog .panel-body { min-height:0; overflow-y:auto; }
+    .skill-list { display:grid; gap:12px; }
+    .skill-card { border:1px solid var(--line); border-radius:14px; padding:16px; background:var(--panel); }
+    .skill-card h3 { margin:8px 0; font-size:17px; overflow-wrap:anywhere; }
+    .skill-card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; margin-top:12px; }
+    .skill-field { min-width:0; padding:10px 11px; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+    .skill-field dt { margin:0 0 4px; color:var(--muted); font-size:11px; font-weight:800; }
+    .skill-field dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; font-size:13px; }
+    .skill-card-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+    .skill-source-link { color:var(--accent); overflow-wrap:anywhere; }
     @keyframes curator-backdrop-in { from { opacity:0; } to { opacity:1; } }
     @keyframes curator-backdrop-out { from { opacity:1; } to { opacity:0; } }
     @keyframes curator-dialog-in { from { opacity:0; transform:translateY(10px) scale(.98); } to { opacity:1; transform:translateY(0) scale(1); } }
@@ -173,6 +269,7 @@ export const WEB_HTML = String.raw`<!doctype html>
           <select id="workspace" class="control" aria-label="Workspace" data-i18n-aria-label="workspaceLabel"></select>
           <input id="search" class="search" type="search" placeholder="Search memory…" aria-label="Search memory…" data-i18n-placeholder="searchPlaceholder" data-i18n-aria-label="searchPlaceholder">
           <button id="curator-button" class="button" type="button" data-i18n="curator">Curator</button>
+          <button id="external-skills-button" class="button" type="button" data-i18n="openExternalSkills">External Skills</button>
           <button id="refresh" class="button" type="button" data-i18n="refresh">Refresh</button>
         </div>
       </div>
@@ -240,8 +337,23 @@ export const WEB_HTML = String.raw`<!doctype html>
       </section>
     </div>
   </div>
+  <div id="external-skills-modal" class="curator-modal" hidden>
+    <section id="external-skills-panel" class="panel skill-dialog" role="dialog" aria-modal="true" aria-labelledby="external-skills-title" aria-describedby="external-skills-description">
+      <div class="panel-head curator-dialog-head">
+        <div class="curator-heading"><h2 id="external-skills-title" data-i18n="externalSkills">External Skills</h2><span class="badge" data-i18n="trustBadge">stored data is untrusted / non-actionable</span></div>
+        <div class="curator-header-actions"><button id="external-skills-refresh" class="button" type="button" data-i18n="externalSkillsRefresh">Refresh</button><button id="external-skills-close" class="curator-close" type="button" aria-label="Close External Skills" data-i18n-aria-label="externalSkillsClose"><span aria-hidden="true">×</span></button></div>
+      </div>
+      <div class="panel-body">
+        <p id="external-skills-description" class="subtitle" data-i18n="externalSkillsDescription">Review fetched skills as untrusted reference data. Nothing here installs software or runs scripts.</p>
+        <div id="external-skills-status" class="status" role="status" aria-live="polite"></div>
+        <div id="external-skills-list" class="skill-list"></div>
+      </div>
+    </section>
+  </div>
   <script>
     const i18n = ${WEB_I18N_CONFIG};
+    const validExternalSkillListItem = (${externalSkillListItemIsValid.toString()});
+    const validExternalSkillEntrySummary = (${externalSkillEntrySummaryIsValid.toString()});
     const localeStorageKey = 'kiokuko.web.locale';
     const normalizeLocale = (value) => {
       if (typeof value !== 'string') return null;
@@ -253,7 +365,14 @@ export const WEB_HTML = String.raw`<!doctype html>
       if (language === 'zh' && (parts.length === 1 || parts.includes('hans') || parts.includes('cn') || parts.includes('sg'))) return 'zh-CN';
       return null;
     };
-    const readStoredLocale = () => { try { return localStorage.getItem(localeStorageKey); } catch { return null; } };
+    const isStorageAccessError = (error) => typeof DOMException !== 'undefined' && error instanceof DOMException;
+    const readStoredLocale = () => {
+      try { return localStorage.getItem(localeStorageKey); }
+      catch (error) {
+        if (!isStorageAccessError(error)) throw error;
+        return null;
+      }
+    };
     const browserLocales = Array.isArray(navigator.languages) ? navigator.languages : [navigator.language];
     const localeCandidates = [new URLSearchParams(location.search).get('lang'), readStoredLocale(), ...browserLocales];
     const initialLocale = localeCandidates.map(normalizeLocale).find(Boolean) || i18n.defaultLocale;
@@ -264,7 +383,7 @@ export const WEB_HTML = String.raw`<!doctype html>
       ['bot:common', 'bot.common'], ['bot:researcher', 'bot.researcher'], ['bot:builder', 'bot.builder'], ['bot:reviewer', 'bot.reviewer'], ['bot:devops', 'bot.devops'], ['bot:writer', 'bot.writer'], ['bot:analyst', 'bot.analyst']
     ];
     const curatorUrl = new URLSearchParams(location.search);
-    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], recallItems: [], tags: [], selected: null, selectedRecall: null, runs: [], selectedRun: null, curatorCandidates: [], curatorGlobalized: new Set(), curatorNextCursor: null, curatorTotalApproximate: 0, curatorOpen: false, curatorPreviousFocus: null, curatorPendingCandidate: null, curatorConfirmationTrigger: null, curatorGlobalizeBusy: false, localizedStatus: null, curatorSearch: curatorUrl.get('search') || '', curatorProject: curatorUrl.get('project') || '', curatorTags: new Set(curatorUrl.getAll('tag')), curatorFramework: curatorUrl.get('framework') || '', curatorLanguage: curatorUrl.get('language') || '', curatorMemoryClass: curatorUrl.get('memoryClass') || '', curatorTier: curatorUrl.get('tier') || '', curatorReady: curatorUrl.get('ready') === 'true', curatorIncludeGlobalized: curatorUrl.get('includeGlobalized') === 'true', curatorFacets: null };
+    const state = { locale: initialLocale, workspace: '', kind: 'all', tag: '', query: '', entries: [], recallItems: [], tags: [], selected: null, selectedRecall: null, runs: [], selectedRun: null, curatorCandidates: [], curatorGlobalized: new Set(), curatorNextCursor: null, curatorTotalApproximate: 0, curatorOpen: false, curatorPreviousFocus: null, curatorPendingCandidate: null, curatorConfirmationTrigger: null, curatorGlobalizeBusy: false, externalSkills: [], externalSkillsOpen: false, externalSkillsPreviousFocus: null, externalSkillsBusy: false, externalSkillsPendingDisable: null, localizedStatus: null, curatorSearch: curatorUrl.get('search') || '', curatorProject: curatorUrl.get('project') || '', curatorTags: new Set(curatorUrl.getAll('tag')), curatorFramework: curatorUrl.get('framework') || '', curatorLanguage: curatorUrl.get('language') || '', curatorMemoryClass: curatorUrl.get('memoryClass') || '', curatorTier: curatorUrl.get('tier') || '', curatorReady: curatorUrl.get('ready') === 'true', curatorIncludeGlobalized: curatorUrl.get('includeGlobalized') === 'true', curatorFacets: null };
     const $ = (id) => document.getElementById(id);
     const t = (key, parameters = {}) => {
       const template = i18n.messages[state.locale]?.[key] ?? i18n.messages[i18n.defaultLocale]?.[key] ?? key;
@@ -312,9 +431,10 @@ export const WEB_HTML = String.raw`<!doctype html>
     };
     const selectLocale = (value) => {
       state.locale = normalizeLocale(value) || i18n.defaultLocale;
-      try { localStorage.setItem(localeStorageKey, state.locale); } catch {}
+      try { localStorage.setItem(localeStorageKey, state.locale); }
+      catch (error) { if (!isStorageAccessError(error)) throw error; }
       setLanguageMenuOpen(false, true);
-      applyTranslations(); renderFilters(); renderEntries(); renderRuns(); renderRunDetail(); renderCurator(); updateEditorState();
+      applyTranslations(); renderFilters(); renderEntries(); renderRuns(); renderRunDetail(); renderCurator(); renderExternalSkills(); updateEditorState();
     };
     const applyTranslations = () => {
       document.documentElement.lang = state.locale;
@@ -328,10 +448,24 @@ export const WEB_HTML = String.raw`<!doctype html>
       renderLanguageMenu();
       if (state.localizedStatus) showStatus(state.localizedStatus.plural ? tp(state.localizedStatus.key, state.localizedStatus.count) : t(state.localizedStatus.key, state.localizedStatus.parameters), state.localizedStatus.error);
     };
+    const apiError = (value) => {
+      const rawCode = value?.error?.code;
+      const rawMessage = value?.error?.message;
+      const code = typeof rawCode === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(rawCode) ? rawCode : 'REQUEST_FAILED';
+      const normalizedMessage = typeof rawMessage === 'string' ? rawMessage.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 300) : '';
+      const error = new Error(normalizedMessage || t('requestFailed'));
+      error.code = code;
+      return error;
+    };
+    const apiErrorText = (error) => {
+      const code = error instanceof Error && typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : 'REQUEST_FAILED';
+      const normalizedMessage = error instanceof Error ? error.message.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 300) : '';
+      return '[' + code + '] ' + (normalizedMessage || t('requestFailed'));
+    };
     const api = async (path, options) => {
       const response = await fetch(path, options);
       const value = await response.json();
-      if (!response.ok) throw new Error(value.error?.message || t('requestFailed'));
+      if (!response.ok) throw apiError(value);
       return value;
     };
     const escapeTags = (value) => value.split(',').map((item) => item.trim()).filter(Boolean);
@@ -437,6 +571,242 @@ export const WEB_HTML = String.raw`<!doctype html>
       const last = focusable.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+
+    const setExternalSkillsStatus = (message, error = false) => {
+      const element = $('external-skills-status');
+      element.textContent = message;
+      element.className = error ? 'status notice error curator-status' : 'status curator-status';
+    };
+    function openExternalSkills() {
+      if (state.externalSkillsOpen) { $('external-skills-close')?.focus(); return; }
+      state.externalSkillsPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      state.externalSkillsOpen = true;
+      const modal = $('external-skills-modal');
+      modal.classList.remove('is-closing');
+      setCuratorBackgroundBlocked(true);
+      modal.hidden = false;
+      requestAnimationFrame(() => $('external-skills-close')?.focus());
+    }
+    function closeExternalSkills() {
+      if (state.externalSkillsBusy) return;
+      const modal = $('external-skills-modal');
+      if (modal.hidden) return;
+      state.externalSkillsOpen = false;
+      state.externalSkillsPendingDisable = null;
+      modal.classList.add('is-closing');
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        modal.hidden = true;
+        modal.classList.remove('is-closing');
+        setCuratorBackgroundBlocked(false);
+        const previousFocus = state.externalSkillsPreviousFocus;
+        state.externalSkillsPreviousFocus = null;
+        if (previousFocus?.isConnected) previousFocus.focus(); else $('external-skills-button')?.focus();
+      };
+      modal.addEventListener('animationend', (event) => { if (event.target === modal) finish(); }, { once: true });
+      window.setTimeout(finish, 220);
+    }
+    function handleExternalSkillsKeydown(event) {
+      if (event.key === 'Escape') { event.preventDefault(); closeExternalSkills(); return; }
+      if (event.key !== 'Tab') return;
+      const modal = $('external-skills-modal');
+      const focusable = [...modal.querySelectorAll('button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) { event.preventDefault(); return; }
+      const first = focusable[0]; const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    function skillField(labelKey, value) {
+      const field = document.createElement('div'); field.className = 'skill-field';
+      const label = document.createElement('dt'); setI18nText(label, labelKey);
+      const content = document.createElement('dd'); content.textContent = value || t('unknown');
+      field.append(label, content); return field;
+    }
+    function externalSkillButton(attribute, skillId) {
+      return [...document.querySelectorAll('[' + attribute + ']')].find((element) => element.getAttribute(attribute) === skillId);
+    }
+    function externalSkillSourceUrl(skill) {
+      return /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(skill.sourceLocator) ? 'https://github.com/' + skill.sourceLocator : null;
+    }
+    function renderExternalSkills() {
+      if (!state.externalSkillsOpen) return;
+      const root = $('external-skills-list');
+      if (!state.externalSkills.length) { const empty = document.createElement('div'); empty.className = 'editor-empty'; setI18nText(empty, 'externalSkillsEmpty'); root.replaceChildren(empty); return; }
+      root.replaceChildren(...state.externalSkills.map((skill) => {
+        const card = document.createElement('article'); card.className = 'skill-card';
+        const meta = document.createElement('div'); meta.className = 'entry-meta';
+        const stateBadge = document.createElement('span'); stateBadge.className = 'badge ' + (skill.state === 'disabled' ? 'superseded' : skill.state === 'imported' ? 'verified' : 'candidate'); stateBadge.textContent = skill.state;
+        const official = document.createElement('span'); official.className = 'badge'; official.textContent = skill.officialStatus;
+        meta.append(stateBadge, official);
+        const heading = document.createElement('h3'); heading.textContent = skill.name;
+        const fields = document.createElement('dl'); fields.className = 'skill-card-grid';
+        fields.append(
+          skillField('externalSkillsSource', skill.sourceLocator + '/' + skill.slug),
+          skillField('externalSkillsCommit', skill.sourceCommit ? skill.sourceCommit.slice(0, 12) : null),
+          skillField('externalSkillsSnapshot', skill.snapshotHash ? skill.snapshotHash.slice(0, 12) : null),
+          skillField('externalSkillsDocuments', String(skill.metadata?.documents ?? 0)),
+          skillField('externalSkillsFirstSeen', skill.firstSeenAt),
+          skillField('externalSkillsLastChecked', skill.lastCheckedAt),
+          skillField('externalSkillsTechnology', skill.metadata?.technology ?? skill.name),
+          skillField('externalSkillsAudit', skill.auditStatus),
+          skillField('externalSkillsState', skill.state),
+        );
+        const notice = document.createElement('div'); notice.className = 'notice'; setI18nText(notice, 'externalSkillsUntrusted');
+        const actions = document.createElement('div'); actions.className = 'skill-card-actions';
+        const sourceUrl = externalSkillSourceUrl(skill);
+        if (sourceUrl) { const source = document.createElement('a'); source.className = 'button'; source.href = sourceUrl; source.target = '_blank'; source.rel = 'noopener noreferrer'; setI18nText(source, 'externalSkillsSourceUrl'); actions.append(source); }
+        const refresh = document.createElement('button'); refresh.type = 'button'; refresh.className = 'button'; refresh.setAttribute('data-external-skill-refresh', skill.skillId); setI18nText(refresh, 'externalSkillsRefresh'); refresh.disabled = state.externalSkillsBusy; refresh.addEventListener('click', () => externalSkillAction(skill.skillId, 'refresh')); actions.append(refresh);
+        const action = skill.state === 'disabled' ? 'enable' : skill.state === 'imported' ? 'disable' : null;
+        if (action === 'disable' && state.externalSkillsPendingDisable === skill.skillId) {
+          const confirmation = document.createElement('div'); confirmation.className = 'notice'; confirmation.textContent = t('externalSkillsDisableConfirm');
+          const confirm = document.createElement('button'); confirm.type = 'button'; confirm.className = 'button primary'; confirm.setAttribute('data-external-skill-confirm', skill.skillId); setI18nText(confirm, 'externalSkillsDisable'); confirm.disabled = state.externalSkillsBusy; confirm.addEventListener('click', () => externalSkillAction(skill.skillId, action, true));
+          const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'button'; setI18nText(cancel, 'curatorCancel'); cancel.disabled = state.externalSkillsBusy; cancel.addEventListener('click', () => { state.externalSkillsPendingDisable = null; renderExternalSkills(); requestAnimationFrame(() => externalSkillButton('data-external-skill-toggle', skill.skillId)?.focus()); });
+          actions.append(confirmation, confirm, cancel);
+        } else if (action !== null) {
+          const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'button primary'; toggle.setAttribute('data-external-skill-toggle', skill.skillId); setI18nText(toggle, action === 'enable' ? 'externalSkillsEnable' : 'externalSkillsDisable'); toggle.disabled = state.externalSkillsBusy; toggle.addEventListener('click', () => externalSkillAction(skill.skillId, action)); actions.append(toggle);
+        }
+        const mapping = document.createElement('div'); mapping.className = 'detail-text'; mapping.hidden = true;
+        const viewEntries = document.createElement('button'); viewEntries.type = 'button'; viewEntries.className = 'button'; viewEntries.setAttribute('aria-expanded', 'false'); setI18nText(viewEntries, 'externalSkillsViewEntries'); viewEntries.disabled = state.externalSkillsBusy; viewEntries.addEventListener('click', async () => {
+          viewEntries.disabled = true;
+          try {
+            const detail = externalSkillDetail(await api('/api/skills/' + encodeURIComponent(skill.skillId)), skill.skillId);
+            if (detail === null) throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+            const entries = detail.entries;
+            mapping.textContent = entries.length ? entries.map((entry) => entry.sourcePath + '#' + entry.chunkIndex + ' → ' + entry.entryId + '@' + entry.revision + (entry.active ? '' : ' (inactive)')).join('\n') : t('externalSkillsNoEntries');
+            mapping.hidden = false;
+            viewEntries.setAttribute('aria-expanded', 'true');
+          } catch {
+            mapping.textContent = '';
+            mapping.hidden = true;
+            viewEntries.setAttribute('aria-expanded', 'false');
+            setExternalSkillsStatus(t('externalSkillsFailure'), true);
+          }
+          finally { viewEntries.disabled = state.externalSkillsBusy; }
+        });
+        actions.append(viewEntries);
+        card.append(meta, heading, fields, notice, actions, mapping); return card;
+      }));
+    }
+    async function reloadExternalSkills() {
+      const skills = [];
+      const skillIds = new Set();
+      const cursors = new Set();
+      let cursor = null;
+      for (let page = 0; page < 100; page += 1) {
+        const result = await api('/api/skills?limit=200' + (cursor === null ? '' : '&cursor=' + encodeURIComponent(cursor)));
+        if (!result || typeof result !== 'object' || Array.isArray(result)
+          || Object.keys(result).length !== 5
+          || result.untrusted !== true
+          || !Array.isArray(result.skills) || result.skills.length > 200
+          || !Number.isSafeInteger(result.count) || result.count !== result.skills.length
+          || typeof result.truncated !== 'boolean'
+          || result.nextCursor !== null && typeof result.nextCursor !== 'string') throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+        if (skills.length + result.skills.length > 20_000) throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+        for (const skill of result.skills) {
+          if (!validExternalSkillListItem(skill) || skillIds.has(skill.skillId)) throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+          skillIds.add(skill.skillId); skills.push(skill);
+        }
+        if (!result.truncated) {
+          if (result.nextCursor !== null) throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+          state.externalSkills = skills;
+          renderExternalSkills();
+          return;
+        }
+        if (result.skills.length === 0 || typeof result.nextCursor !== 'string' || result.nextCursor.length === 0 || cursors.has(result.nextCursor)) throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+        cursors.add(result.nextCursor); cursor = result.nextCursor;
+      }
+      throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+    }
+    function externalSkillDetail(result, expectedSkillId) {
+      if (!result || typeof result !== 'object' || Array.isArray(result)
+        || Object.keys(result).length !== 4 || result.untrusted !== true
+        || !validExternalSkillListItem(result.skill) || result.skill.skillId !== expectedSkillId
+        || !Array.isArray(result.entries) || result.entries.length > 200
+        || typeof result.entriesTruncated !== 'boolean'
+        || result.entriesTruncated && result.entries.length !== 200
+        || result.skill.sourceCommit === null && result.entries.length !== 0) return null;
+      const entryIds = new Set(); const mappingIds = new Set();
+      for (const entry of result.entries) {
+        const mappingId = validExternalSkillEntrySummary(entry) ? entry.sourcePath + '\u0000' + entry.chunkIndex : null;
+        if (mappingId === null || entryIds.has(entry.entryId) || mappingIds.has(mappingId)) return null;
+        entryIds.add(entry.entryId); mappingIds.add(mappingId);
+      }
+      return { skill: result.skill, entries: result.entries, entriesTruncated: result.entriesTruncated };
+    }
+    async function reloadExternalSkill(skillId) {
+      const detail = externalSkillDetail(await api('/api/skills/' + encodeURIComponent(skillId)), skillId);
+      if (detail === null) throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+      const index = state.externalSkills.findIndex((skill) => skill.skillId === skillId);
+      if (index < 0) throw apiError({ error: { code: 'INVALID_RESPONSE', message: t('requestFailed') } });
+      state.externalSkills[index] = detail.skill;
+      renderExternalSkills();
+    }
+    async function externalSkillAction(skillId, action, confirmed = false) {
+      if (state.externalSkillsBusy) return;
+      if (action === 'disable' && !confirmed) { state.externalSkillsPendingDisable = skillId; renderExternalSkills(); requestAnimationFrame(() => externalSkillButton('data-external-skill-confirm', skillId)?.focus()); return; }
+      state.externalSkillsPendingDisable = null;
+      state.externalSkillsBusy = true;
+      $('external-skills-refresh').disabled = true;
+      $('external-skills-panel').setAttribute('aria-busy', 'true');
+      setExternalSkillsStatus(action === 'refresh' ? t('externalSkillsRefreshing') : t('externalSkillsLoading'));
+      renderExternalSkills();
+      try {
+        let actionError = null;
+        try {
+          await api('/api/skills/' + encodeURIComponent(skillId) + '/' + action, { method: 'POST' });
+        } catch (error) {
+          actionError = error;
+        }
+        let reloadError = null;
+        try {
+          await reloadExternalSkill(skillId);
+        } catch (error) {
+          reloadError = error;
+        }
+        if (reloadError) {
+          state.externalSkills = [];
+          state.externalSkillsPendingDisable = null;
+        }
+        if (actionError) {
+          const reloadFailure = reloadError ? ' / ' + apiErrorText(reloadError) : '';
+          setExternalSkillsStatus(apiErrorText(actionError) + reloadFailure, true);
+        } else if (reloadError) {
+          setExternalSkillsStatus(apiErrorText(reloadError), true);
+        } else {
+          setExternalSkillsStatus(t(action === 'disable' ? 'externalSkillsDisabled' : action === 'enable' ? 'externalSkillsEnabled' : 'externalSkillsRefreshed'));
+        }
+      } finally {
+        state.externalSkillsBusy = false;
+        $('external-skills-refresh').disabled = false;
+        $('external-skills-panel').removeAttribute('aria-busy');
+        renderExternalSkills();
+        requestAnimationFrame(() => externalSkillButton(action === 'refresh' ? 'data-external-skill-refresh' : 'data-external-skill-toggle', skillId)?.focus());
+      }
+    }
+    async function loadExternalSkills(open = true) {
+      if (state.externalSkillsBusy) return;
+      if (open) openExternalSkills();
+      state.externalSkills = [];
+      state.externalSkillsPendingDisable = null;
+      state.externalSkillsBusy = true;
+      $('external-skills-refresh').disabled = true;
+      renderExternalSkills();
+      setExternalSkillsStatus(t('externalSkillsLoading'));
+      $('external-skills-panel').setAttribute('aria-busy', 'true');
+      try {
+        await reloadExternalSkills();
+        setExternalSkillsStatus('');
+      } catch (error) {
+        setExternalSkillsStatus(t('externalSkillsOffline') + ' ' + apiErrorText(error), true);
+      } finally {
+        $('external-skills-panel').removeAttribute('aria-busy');
+        state.externalSkillsBusy = false;
+        $('external-skills-refresh').disabled = false;
+        renderExternalSkills();
+      }
     }
 
     function filterButton(key, label, count, active, onClick) {
@@ -864,13 +1234,17 @@ export const WEB_HTML = String.raw`<!doctype html>
     });
     document.addEventListener('click', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
     document.addEventListener('focusin', (event) => { if (!$('language-picker')?.contains(event.target)) setLanguageMenuOpen(false); });
-    $('workspace').addEventListener('change', (event) => { if (state.curatorOpen) closeCurator(); state.workspace = event.target.value; state.selected = null; state.selectedRecall = null; state.selectedRun = null; state.runs = []; state.tag = ''; state.curatorCandidates = []; state.curatorGlobalized = new Set(); state.curatorNextCursor = null; state.curatorTotalApproximate = 0; state.curatorOpen = false; loadTags().then(loadEntries).then(loadRuns); });
+    $('workspace').addEventListener('change', (event) => { if (state.curatorOpen) closeCurator(); if (state.externalSkillsOpen) closeExternalSkills(); state.workspace = event.target.value; state.selected = null; state.selectedRecall = null; state.selectedRun = null; state.runs = []; state.tag = ''; state.curatorCandidates = []; state.curatorGlobalized = new Set(); state.curatorNextCursor = null; state.curatorTotalApproximate = 0; state.curatorOpen = false; loadTags().then(loadEntries).then(loadRuns); });
     $('curator-button').addEventListener('click', () => loadCurator());
     $('curator-close').addEventListener('click', () => closeCurator());
+    $('external-skills-button').addEventListener('click', () => loadExternalSkills());
+    $('external-skills-close').addEventListener('click', () => closeExternalSkills());
+    $('external-skills-refresh').addEventListener('click', () => loadExternalSkills(false));
     $('curator-confirm-cancel').addEventListener('click', () => closeCuratorConfirmation());
     $('curator-confirm-submit').addEventListener('click', () => globalizePendingCurator());
     $('curator-confirm-modal').addEventListener('keydown', handleCuratorConfirmationKeydown);
     $('curator-modal').addEventListener('keydown', handleCuratorKeydown);
+    $('external-skills-modal').addEventListener('keydown', handleExternalSkillsKeydown);
     window.addEventListener('popstate', () => { restoreCuratorUrl(); if (state.curatorOpen) loadCurator(); });
     $('refresh').addEventListener('click', () => loadWorkspaces());
     let searchTimer; $('search').addEventListener('input', (event) => { clearTimeout(searchTimer); state.query = event.target.value.trim(); searchTimer = setTimeout(() => loadEntries(), 180); });

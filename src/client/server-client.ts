@@ -1,11 +1,16 @@
 import { TextDecoder } from 'node:util';
+import { isProxy } from 'node:util/types';
 import { getRuntimeDescriptorPath } from '../config/paths.js';
 import { KiokukoError, type ErrorCode } from '../errors.js';
+import {
+  cloneBoundaryJson,
+  stringifyBoundaryJson,
+} from '../serialization/boundary-json.js';
 import { isPidAlive, type PidLiveness } from '../server/instance-lock.js';
 import { readRuntimeDescriptor, type RuntimeDescriptor } from '../server/runtime-descriptor.js';
-import type { DiscoverServerOptions } from './runtime-discovery.js';
+import { MAX_STRICT_JSON_DEPTH, parseStrictJson } from '../setup/strict-json.js';
 
-export type ServerMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+export type ServerMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export interface ServerRequest {
   readonly method: ServerMethod;
@@ -22,23 +27,25 @@ export interface ServerClient {
   request<T = unknown>(request: ServerRequest): Promise<T>;
 }
 
-export interface CreateServerClientOptions extends DiscoverServerOptions {
+export interface CreateServerClientOptions {
+  readonly descriptorPath?: string;
+  readonly isPidAlive?: PidLiveness;
   readonly fetchImplementation?: FetchImplementation;
   readonly fetch?: FetchImplementation;
 }
-
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PATH_BYTES = 16 * 1024;
 const MAX_QUERY_BYTES = 8 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES = 256;
 const MAX_OPERATION_BYTES = 256;
-const MAX_ERROR_MESSAGE_BYTES = 1024;
+const MAX_JSON_NODES = 262_144;
+const MAX_RESPONSE_CHUNKS = 8_192;
+const RESPONSE_CLEANUP_TIMEOUT_MS = 250;
 const HEALTH_READY_PATH = '/health/ready';
 const WRITE_METHODS = new Set<ServerMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
-const READ_METHODS = new Set<ServerMethod>(['GET', 'HEAD']);
-const SERVER_METHODS = new Set<ServerMethod>(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
+const READ_METHODS = new Set<ServerMethod>(['GET']);
+const SERVER_METHODS = new Set<ServerMethod>(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const ERROR_CODES: readonly ErrorCode[] = [
   'USAGE_ERROR',
   'VALIDATION_ERROR',
@@ -53,6 +60,20 @@ const ERROR_CODES: readonly ErrorCode[] = [
   'PARTIAL_FAILURE',
   'NOT_IMPLEMENTED',
 ];
+const ERROR_STATUS: Readonly<Record<ErrorCode, readonly number[]>> = {
+  USAGE_ERROR: [400],
+  VALIDATION_ERROR: [400],
+  NOT_FOUND: [404],
+  CONFLICT: [409],
+  DATABASE_ERROR: [500, 503],
+  BACKPRESSURE: [429],
+  SERVICE_UNAVAILABLE: [503],
+  SECURITY_REJECTION: [422],
+  AUTHENTICATION_ERROR: [401],
+  INTEGRITY_ERROR: [500],
+  PARTIAL_FAILURE: [],
+  NOT_IMPLEMENTED: [],
+};
 
 function validationError(): KiokukoError {
   return new KiokukoError('VALIDATION_ERROR', 'Request is invalid');
@@ -70,88 +91,75 @@ async function readLiveRuntimeDescriptor(options: {
   readonly descriptorPath?: string;
   readonly isPidAlive?: PidLiveness;
 }): Promise<RuntimeDescriptor> {
-  let descriptorPath: string;
-  try {
-    descriptorPath = options.descriptorPath ?? getRuntimeDescriptorPath();
-  } catch {
-    throw unavailableError();
-  }
-  let descriptor: RuntimeDescriptor | undefined;
-  try {
-    descriptor = await readRuntimeDescriptor(descriptorPath);
-  } catch (error) {
-    if (error instanceof KiokukoError) throw error;
-    throw unavailableError();
-  }
+  const descriptorPath = options.descriptorPath ?? getRuntimeDescriptorPath();
+  const descriptor = await readRuntimeDescriptor(descriptorPath);
   if (!descriptor) throw unavailableError();
-
-  let live: boolean;
-  try {
-    live = await (options.isPidAlive ?? isPidAlive)(descriptor.pid);
-  } catch {
-    throw unavailableError();
-  }
+  const live = await (options.isPidAlive ?? isPidAlive)(descriptor.pid);
   if (!live) throw unavailableError();
   return descriptor;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  if (typeof value !== 'object' || value === null || isProxy(value) || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
+function directPrototype(value: unknown): object | null | undefined {
+  if ((typeof value !== 'object' || value === null) && typeof value !== 'function') return undefined;
+  if (isProxy(value)) return undefined;
+  return Object.getPrototypeOf(value) as object | null;
+}
+
+const BUILTIN_ERROR_PROTOTYPES = new Set<object>([
+  Error.prototype,
+  EvalError.prototype,
+  RangeError.prototype,
+  ReferenceError.prototype,
+  SyntaxError.prototype,
+  TypeError.prototype,
+  URIError.prototype,
+]);
+
+function isExactErrorObject(value: unknown): value is Error {
+  const prototype = directPrototype(value);
+  return prototype !== undefined && prototype !== null && BUILTIN_ERROR_PROTOTYPES.has(prototype);
+}
+
+function isExactKiokukoError(value: unknown): value is KiokukoError {
+  return directPrototype(value) === KiokukoError.prototype;
+}
+
 function hasControlCharacters(value: string): boolean {
-  return /[\u0000-\u001f\u007f]/.test(value);
+  return /\p{Cc}/u.test(value);
 }
 
-function isCanonicalArrayIndex(value: string): boolean {
-  if (value === '0') return true;
-  if (!/^[1-9]\d*$/.test(value)) return false;
-  const index = Number(value);
-  return Number.isSafeInteger(index) && index < 4_294_967_295 && String(index) === value;
+function isByteString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 0xff) return false;
+  }
+  return true;
 }
 
-function cloneJson(value: unknown, seen: Set<object>): JsonValue {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
-  if (typeof value === 'number') {
-    if (Number.isFinite(value)) return value;
-    throw validationError();
+function ownDataDescriptors(value: object): ReadonlyMap<string, PropertyDescriptor> {
+  if (isProxy(value)) throw validationError();
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== 'string')) throw validationError();
+  const result = new Map<string, PropertyDescriptor>();
+  for (const key of keys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) throw validationError();
+    result.set(key, descriptor);
   }
-  if (typeof value !== 'object') throw validationError();
-  if (seen.has(value)) throw validationError();
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      const keys = Reflect.ownKeys(value);
-      if (keys.some((key) => typeof key === 'symbol'
-        || (typeof key === 'string' && key !== 'length' && !isCanonicalArrayIndex(key)))) {
-        throw validationError();
-      }
-      const result: JsonValue[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        if (!Object.prototype.hasOwnProperty.call(value, index)) throw validationError();
-        result.push(cloneJson(value[index], seen));
-      }
-      return result;
-    }
-    if (!isPlainObject(value) || Object.getOwnPropertySymbols(value).length > 0) throw validationError();
-    const result: Record<string, JsonValue> = {};
-    for (const key of Object.keys(value).sort()) result[key] = cloneJson(value[key], seen);
-    return result;
-  } finally {
-    seen.delete(value);
-  }
+  return result;
 }
 
 function jsonSnapshot(value: unknown): string {
-  let snapshot: string;
-  try {
-    snapshot = JSON.stringify(cloneJson(value, new Set())) as string;
-  } catch (error) {
-    if (error instanceof KiokukoError) throw error;
-    throw validationError();
-  }
+  const snapshot = stringifyBoundaryJson(cloneBoundaryJson(value, {
+    failure: validationError,
+    maximumDepth: MAX_STRICT_JSON_DEPTH,
+    maximumNodes: MAX_JSON_NODES,
+  }));
   if (Buffer.byteLength(snapshot, 'utf8') > MAX_JSON_BYTES) throw validationError();
   return snapshot;
 }
@@ -191,9 +199,11 @@ function validatePath(value: unknown, method: ServerMethod, baseUrl: string): st
     const base = new URL(baseUrl);
     const target = new URL(value, `${baseUrl}/`);
     if (target.origin !== base.origin || target.username !== '' || target.password !== '') throw validationError();
+    if (Buffer.byteLength(`${target.pathname}${target.search}`, 'utf8') > MAX_PATH_BYTES
+      || Buffer.byteLength(target.search.slice(1), 'utf8') > MAX_QUERY_BYTES) throw validationError();
     return target.toString();
   } catch (error) {
-    if (error instanceof KiokukoError) throw error;
+    if (isExactKiokukoError(error)) throw error;
     throw validationError();
   }
 }
@@ -204,8 +214,100 @@ function validateIdempotencyKey(method: ServerMethod, value: unknown): string | 
     return undefined;
   }
   if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > MAX_IDEMPOTENCY_KEY_BYTES
-    || hasControlCharacters(value)) throw validationError();
+    || value.trim() !== value || hasControlCharacters(value) || !isByteString(value)) throw validationError();
   return value;
+}
+
+interface NormalizedServerRequest {
+  readonly method: ServerMethod;
+  readonly path: string;
+  readonly operation: string;
+  readonly body: unknown;
+  readonly idempotencyKey: unknown;
+  readonly signal: AbortSignal | undefined;
+}
+
+function signalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+function signalReason(signal: AbortSignal): unknown {
+  return signal.reason;
+}
+
+function throwIfSignalAborted(signal: AbortSignal | undefined): void {
+  if (signalAborted(signal)) throw signalReason(signal as AbortSignal);
+}
+
+function awaitWithSignal<T>(operation: PromiseLike<T>, signal: AbortSignal | undefined): Promise<T> {
+  const guarded = Promise.resolve(operation);
+  if (signal === undefined) return guarded;
+  if (signalAborted(signal)) {
+    guarded.then(() => undefined, () => undefined);
+    return Promise.reject(signalReason(signal));
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(signalReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    guarded.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (signalAborted(signal)) reject(signalReason(signal));
+        else resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (signalAborted(signal)) reject(signalReason(signal));
+        else reject(error);
+      },
+    );
+  });
+}
+
+function normalizeRequestInput(input: ServerRequest): NormalizedServerRequest {
+  if (!isPlainObject(input)) throw validationError();
+  const descriptors = ownDataDescriptors(input);
+  const allowed = new Set(['method', 'path', 'operation', 'body', 'idempotencyKey', 'signal']);
+  if ([...descriptors.keys()].some((key) => !allowed.has(key))) throw validationError();
+  for (const field of ['method', 'path', 'operation']) {
+    const descriptor = descriptors.get(field);
+    if (descriptor === undefined || descriptor.enumerable !== true) throw validationError();
+  }
+  for (const descriptor of descriptors.values()) {
+    if (descriptor.enumerable !== true) throw validationError();
+  }
+  const signal = descriptors.get('signal')?.value;
+  if (signal !== undefined && directPrototype(signal) !== AbortSignal.prototype) {
+    throw validationError();
+  }
+  if (signal !== undefined) {
+    try {
+      void signal.aborted;
+    } catch {
+      throw validationError();
+    }
+  }
+  return {
+    method: descriptors.get('method')?.value as ServerMethod,
+    path: descriptors.get('path')?.value as string,
+    operation: descriptors.get('operation')?.value as string,
+    body: descriptors.get('body')?.value,
+    idempotencyKey: descriptors.get('idempotencyKey')?.value,
+    signal,
+  };
 }
 
 function assertExactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
@@ -217,96 +319,288 @@ function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === 'string' && ERROR_CODES.includes(value as ErrorCode);
 }
 
-function safeMessage(value: unknown, forbidden: readonly string[]): string {
-  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > MAX_ERROR_MESSAGE_BYTES
-    || hasControlCharacters(value) || forbidden.some((fragment) => fragment.length > 0 && value.includes(fragment))) {
-    throw integrityError();
-  }
-  return value;
+const TRANSPORT_ERROR_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETDOWN',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EPIPE',
+  'ETIMEDOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+function ownErrorField(value: object, field: string): unknown {
+  if (isProxy(value)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, field);
+  return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
 }
 
-function collectBodyFragments(value: unknown, fragments: Set<string>): void {
-  if (typeof value === 'string' || typeof value === 'number') {
-    const fragment = String(value);
-    if (fragment.length >= 4) fragments.add(fragment);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectBodyFragments(item, fragments);
-    return;
-  }
-  if (isPlainObject(value)) {
-    for (const [key, child] of Object.entries(value)) {
-      if (key.length >= 4) fragments.add(key);
-      collectBodyFragments(child, fragments);
-    }
-  }
+function hasExactOwnKeys(value: object, expected: readonly string[]): boolean {
+  const keys = Reflect.ownKeys(value);
+  const allowed = new Set(expected);
+  return keys.length === allowed.size
+    && keys.every((key) => typeof key === 'string' && allowed.has(key));
 }
 
-function bodyForbiddenFragments(snapshot: string | undefined): string[] {
-  if (snapshot === undefined) return [];
-  const fragments = new Set<string>();
+function isExactSystemTransportCause(cause: object, code: string): boolean {
+  if (directPrototype(cause) !== Error.prototype
+    || typeof ownErrorField(cause, 'message') !== 'string'
+    || typeof ownErrorField(cause, 'errno') !== 'number'
+    || ownErrorField(cause, 'code') !== code
+    || typeof ownErrorField(cause, 'syscall') !== 'string') return false;
+  if (code === 'EAI_AGAIN' || code === 'ENOTFOUND') {
+    return typeof ownErrorField(cause, 'hostname') === 'string'
+      && hasExactOwnKeys(cause, ['stack', 'message', 'errno', 'code', 'syscall', 'hostname']);
+  }
+  return typeof ownErrorField(cause, 'address') === 'string'
+    && typeof ownErrorField(cause, 'port') === 'number'
+    && hasExactOwnKeys(cause, ['stack', 'message', 'errno', 'code', 'syscall', 'address', 'port']);
+}
+
+function isExactUndiciTransportCause(cause: object, code: string): boolean {
+  const expectedName: Readonly<Record<string, string>> = {
+    UND_ERR_BODY_TIMEOUT: 'BodyTimeoutError',
+    UND_ERR_CONNECT_TIMEOUT: 'ConnectTimeoutError',
+    UND_ERR_HEADERS_TIMEOUT: 'HeadersTimeoutError',
+  };
+  return cause instanceof Error
+    && expectedName[code] !== undefined
+    && ownErrorField(cause, 'name') === expectedName[code]
+    && ownErrorField(cause, 'code') === code
+    && typeof ownErrorField(cause, 'message') === 'string'
+    && hasExactOwnKeys(cause, ['stack', 'message', 'name', 'code']);
+}
+
+function isExactTransportFailure(error: unknown): boolean {
+  if (!isExactErrorObject(error)) return false;
+  const cause = ownErrorField(error, 'cause');
+  const message = ownErrorField(error, 'message');
+  if (directPrototype(error) !== TypeError.prototype || (message !== 'fetch failed' && message !== 'terminated')
+    || (typeof cause !== 'object' && typeof cause !== 'function') || cause === null
+    || isProxy(cause) || cause === error
+    || !hasExactOwnKeys(error, ['stack', 'message', 'cause'])) return false;
+  const causeCode = ownErrorField(cause, 'code');
+  if (message === 'fetch failed') {
+    return typeof causeCode === 'string'
+      && TRANSPORT_ERROR_CODES.has(causeCode)
+      && (isExactSystemTransportCause(cause, causeCode) || isExactUndiciTransportCause(cause, causeCode));
+  }
+  return cause instanceof Error
+    && causeCode === 'UND_ERR_SOCKET'
+    && ownErrorField(cause, 'name') === 'SocketError'
+    && typeof ownErrorField(cause, 'message') === 'string'
+    && hasExactOwnKeys(cause, ['stack', 'message', 'name', 'code', 'socket']);
+}
+
+function throwTransportOrOriginal(error: unknown): never {
+  throw normalizedTransportOrOriginal(error);
+}
+
+function normalizedTransportOrOriginal(error: unknown): unknown {
+  return isExactTransportFailure(error) ? unavailableError() : error;
+}
+
+interface ValidatedResponse {
+  readonly status: number;
+  readonly headers: Headers;
+  readonly body: ReadableStream<Uint8Array> | null;
+}
+
+function invalidFetchResponse(): never {
+  throw new TypeError('Fetch implementation returned a non-Response value');
+}
+
+function validateFetchResponse(value: unknown): ValidatedResponse {
+  if (directPrototype(value) !== Response.prototype || Reflect.ownKeys(value as object).length !== 0) {
+    invalidFetchResponse();
+  }
+  let status: number;
+  let headers: Headers;
+  let body: ReadableStream<Uint8Array> | null;
+  let bodyUsed: boolean;
   try {
-    collectBodyFragments(JSON.parse(snapshot), fragments);
+    const response = value as Response;
+    status = response.status;
+    headers = response.headers;
+    body = response.body;
+    bodyUsed = response.bodyUsed;
+    if (directPrototype(headers) !== Headers.prototype
+      || Reflect.ownKeys(headers).some((key) => typeof key === 'string')
+      || (body !== null && (directPrototype(body) !== ReadableStream.prototype
+        || Reflect.ownKeys(body).some((key) => typeof key === 'string')))) invalidFetchResponse();
   } catch {
-    return [];
+    invalidFetchResponse();
   }
-  return [...fragments];
-}
-
-function containsUnsafeErrorKey(key: string): boolean {
-  return /^(?:key|body)$/i.test(key)
-    || /authorization|bearer|token|secret|password|cookie|credential|api[-_]?key|idempotency|request[-_]?body|requestbody|payload/i.test(key);
-}
-
-function safeDetails(value: unknown, forbidden: readonly string[]): Record<string, unknown> {
-  if (!isPlainObject(value)) throw integrityError();
-  if (Object.keys(value).some(containsUnsafeErrorKey)) throw integrityError();
-  const cloned = cloneJson(value, new Set());
-  if (typeof cloned !== 'object' || cloned === null || Array.isArray(cloned)) throw integrityError();
-  const text = JSON.stringify(cloned);
-  if (forbidden.some((fragment) => fragment.length > 0 && text.includes(fragment))) throw integrityError();
-  if (Buffer.byteLength(text, 'utf8') > MAX_JSON_BYTES) throw integrityError();
-  return cloned as Record<string, unknown>;
-}
-
-async function readBoundedBody(response: Response): Promise<string> {
-  const contentLength = response.headers.get('content-length');
-  if (contentLength !== null && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_JSON_BYTES) {
+  if (bodyUsed || body?.locked === true) {
     throw integrityError();
   }
-  if (response.body === null) return '';
-  const reader = response.body.getReader();
+  return { status, headers, body };
+}
+
+function header(response: ValidatedResponse, name: string): string | null {
+  return response.headers.get(name);
+}
+
+function hasHeader(response: ValidatedResponse, name: string): boolean {
+  return response.headers.has(name);
+}
+
+async function settleResponseCleanup(operation: PromiseLike<unknown>, signal?: AbortSignal): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = Promise.resolve(operation).then(
+    () => true,
+    () => false,
+  );
+  const timed = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), RESPONSE_CLEANUP_TIMEOUT_MS);
+  });
+  let cleaned: boolean;
+  try {
+    cleaned = await awaitWithSignal(Promise.race([settled, timed]), signal);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  if (!cleaned) throw integrityError();
+}
+
+async function discardResponseBody(response: ValidatedResponse, signal?: AbortSignal): Promise<void> {
+  if (response.body === null) return;
+  try {
+    await settleResponseCleanup(
+      response.body.cancel(),
+      signal,
+    );
+  } catch (error) {
+    throwIfSignalAborted(signal);
+    if (isExactKiokukoError(error)) throw error;
+    throw integrityError();
+  }
+}
+
+function exactResponseChunk(value: unknown): { readonly value: Uint8Array; readonly byteLength: number } {
+  if (directPrototype(value) !== Uint8Array.prototype) throw integrityError();
+  try {
+    const ownKeys = Reflect.ownKeys(value as object);
+    if (ownKeys.some((key) => typeof key !== 'string' || !/^(?:0|[1-9]\d*)$/u.test(key))) {
+      throw integrityError();
+    }
+    const byteLength = (value as Uint8Array).byteLength;
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0
+      || ownKeys.some((key) => Number(key) >= byteLength)) throw integrityError();
+    return { value: value as Uint8Array, byteLength };
+  } catch (error) {
+    if (isExactKiokukoError(error)) throw error;
+    throw integrityError();
+  }
+}
+
+function copyResponseChunk(value: Uint8Array, byteLength: number): Buffer {
+  try {
+    const copy = new Uint8Array(byteLength);
+    copy.set(value);
+    return Buffer.from(copy.buffer, copy.byteOffset, copy.byteLength);
+  } catch {
+    throw integrityError();
+  }
+}
+
+async function readBoundedBody(response: ValidatedResponse, signal?: AbortSignal): Promise<string> {
+  const contentLength = header(response, 'content-length');
+  if (contentLength !== null && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_JSON_BYTES) {
+    await discardResponseBody(response, signal);
+    throw integrityError();
+  }
+  if (response.body === null) {
+    throwIfSignalAborted(signal);
+    return '';
+  }
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = response.body.getReader();
+  } catch {
+    throw integrityError();
+  }
   const chunks: Buffer[] = [];
   let size = 0;
+  let chunkCount = 0;
+  let failed = false;
+  let primaryFailure: unknown;
+  const cleanupFailures: unknown[] = [];
   try {
     while (true) {
-      const item = await reader.read();
+      const item = await awaitWithSignal(
+        reader.read(),
+        signal,
+      );
+      throwIfSignalAborted(signal);
       if (item.done) break;
-      size += item.value.byteLength;
-      if (size > MAX_JSON_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw integrityError();
-      }
-      chunks.push(Buffer.from(item.value));
+      chunkCount += 1;
+      if (chunkCount > MAX_RESPONSE_CHUNKS) throw integrityError();
+      const chunk = exactResponseChunk(item.value);
+      size += chunk.byteLength;
+      if (size > MAX_JSON_BYTES) throw integrityError();
+      chunks.push(copyResponseChunk(chunk.value, chunk.byteLength));
     }
   } catch (error) {
-    if (error instanceof KiokukoError) throw error;
-    throw unavailableError();
+    failed = true;
+    primaryFailure = signal !== undefined && signalAborted(signal)
+      ? signalReason(signal)
+      : isExactKiokukoError(error)
+        ? error
+        : normalizedTransportOrOriginal(error);
+    try {
+      await settleResponseCleanup(reader.cancel());
+    } catch {
+      cleanupFailures.push(integrityError());
+    }
   }
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+    reader.releaseLock();
+  } catch {
+    cleanupFailures.push(integrityError());
+  }
+  if (!failed && signal !== undefined && signalAborted(signal)) {
+    failed = true;
+    primaryFailure = signalReason(signal);
+  }
+  if (failed) {
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(
+        [primaryFailure, ...cleanupFailures],
+        signal !== undefined && signalAborted(signal)
+          ? 'Response cleanup failed after caller abort'
+          : 'Response body read failed and cleanup also failed',
+      );
+    }
+    throw primaryFailure;
+  }
+  if (cleanupFailures.length === 1) throw cleanupFailures[0];
+  if (cleanupFailures.length > 1) throw new AggregateError(cleanupFailures, 'Response body cleanup failed');
+  throwIfSignalAborted(signal);
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks));
   } catch {
     throw integrityError();
   }
 }
 
 function parseJson(text: string): unknown {
-  if (text.length === 0) throw integrityError();
   try {
-    return JSON.parse(text);
-  } catch {
-    throw integrityError();
+    return parseStrictJson(
+      text,
+      { allowTrailingComma: false, disallowComments: true, allowEmptyContent: false },
+      'Server response is not valid JSON with unique keys',
+    );
+  } catch (error) {
+    if (isExactKiokukoError(error) && error.code === 'VALIDATION_ERROR') throw integrityError();
+    throw error;
   }
 }
 
@@ -326,10 +620,27 @@ function validateSuccessResponse(value: unknown, operation: string): unknown {
   return value.data;
 }
 
+function expectedErrorMessage(code: ErrorCode, status: number): string {
+  switch (code) {
+    case 'AUTHENTICATION_ERROR': return 'Authorization is invalid';
+    case 'NOT_FOUND': return 'Endpoint not found';
+    case 'USAGE_ERROR':
+    case 'VALIDATION_ERROR': return 'Request is invalid';
+    case 'CONFLICT': return 'Request conflicts with current state';
+    case 'BACKPRESSURE': return 'Service is busy';
+    case 'SERVICE_UNAVAILABLE': return 'Service unavailable';
+    case 'DATABASE_ERROR': return status === 503 ? 'Database unavailable' : 'Unexpected server error';
+    case 'SECURITY_REJECTION': return 'Request rejected';
+    case 'INTEGRITY_ERROR': return 'Internal integrity error';
+    case 'PARTIAL_FAILURE':
+    case 'NOT_IMPLEMENTED': throw integrityError();
+  }
+}
+
 function validateErrorResponse(
   value: unknown,
   operation: string,
-  forbidden: readonly string[],
+  status: number,
 ): { code: ErrorCode; message: string; details: Record<string, unknown> } {
   if (!isPlainObject(value)) throw integrityError();
   assertExactKeys(value, ['apiVersion', 'ok', 'operation', 'error']);
@@ -338,50 +649,65 @@ function validateErrorResponse(
   }
   assertExactKeys(value.error, ['code', 'message', 'details']);
   if (!isErrorCode(value.error.code)) throw integrityError();
+  if (!ERROR_STATUS[value.error.code].includes(status) || !isPlainObject(value.error.details)) throw integrityError();
+  const message = expectedErrorMessage(value.error.code, status);
+  if (value.error.message !== message) throw integrityError();
+  if (value.error.code === 'BACKPRESSURE') {
+    assertExactKeys(value.error.details, ['retryAfterSeconds']);
+    if (typeof value.error.details.retryAfterSeconds !== 'number'
+      || !Number.isSafeInteger(value.error.details.retryAfterSeconds)
+      || value.error.details.retryAfterSeconds < 1 || value.error.details.retryAfterSeconds > 60) throw integrityError();
+  } else {
+    assertExactKeys(value.error.details, []);
+  }
   return {
     code: value.error.code,
-    message: safeMessage(value.error.message, forbidden),
-    details: safeDetails(value.error.details, forbidden),
+    message,
+    details: value.error.details,
   };
 }
 
-function safeRetryAfter(response: Response): number | undefined {
-  const value = response.headers.get('retry-after');
-  if (value === null || !/^\d{1,5}$/.test(value)) return undefined;
+function safeRetryAfter(response: ValidatedResponse): number | undefined {
+  const value = header(response, 'retry-after');
+  if (value === null || !/^\d{1,2}$/.test(value)) return undefined;
   const seconds = Number(value);
-  return Number.isSafeInteger(seconds) && seconds <= 86_400 ? seconds : undefined;
+  return Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= 60 ? seconds : undefined;
 }
 
 async function parseResponse(
-  response: Response,
+  response: ValidatedResponse,
   requestPath: string,
   operation: string,
-  authorizationHeader: string,
-  baseUrl: string,
-  idempotencyKey: string | undefined,
-  bodySnapshot: string | undefined,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  const forbidden = [
-    authorizationHeader.startsWith('Bearer ') ? authorizationHeader.slice('Bearer '.length) : authorizationHeader,
-    baseUrl,
-    idempotencyKey ?? '',
-    bodySnapshot ?? '',
-    ...bodyForbiddenFragments(bodySnapshot),
-  ];
-  if (response.status === 204) {
-    if (requestPath === HEALTH_READY_PATH) return undefined;
+  if (response.status >= 200 && response.status < 300 && response.status !== 200) {
+    await discardResponseBody(response, signal);
     throw integrityError();
   }
-  const contentType = response.headers.get('content-type') ?? '';
-  if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) throw integrityError();
-  const parsed = parseJson(await readBoundedBody(response));
-  const isSuccess = response.status >= 200 && response.status < 300;
-  if (requestPath === HEALTH_READY_PATH && isSuccess) return validateHealthResponse(parsed);
+  const contentType = header(response, 'content-type') ?? '';
+  if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) {
+    await discardResponseBody(response, signal);
+    throw integrityError();
+  }
+  const parsed = parseJson(await readBoundedBody(response, signal));
+  const isSuccess = response.status === 200;
+  if (requestPath === HEALTH_READY_PATH && response.status === 200) return validateHealthResponse(parsed);
+  if (requestPath === HEALTH_READY_PATH && response.status === 503) {
+    if (!isPlainObject(parsed)) throw integrityError();
+    assertExactKeys(parsed, ['ok']);
+    if (parsed.ok !== false || hasHeader(response, 'retry-after')) throw integrityError();
+    throw new KiokukoError('SERVICE_UNAVAILABLE', 'Kiokuko server is unavailable');
+  }
   if (!isSuccess) {
-    const error = validateErrorResponse(parsed, operation, forbidden);
-    const retryAfter = safeRetryAfter(response);
-    if (retryAfter !== undefined && error.details.retryAfterSeconds === undefined) {
-      error.details.retryAfterSeconds = retryAfter;
+    const error = validateErrorResponse(parsed, operation, response.status);
+    const retryAfterHeader = header(response, 'retry-after');
+    if (error.code === 'BACKPRESSURE') {
+      const retryAfter = safeRetryAfter(response);
+      if (retryAfter === undefined || error.details.retryAfterSeconds !== retryAfter) {
+        throw integrityError();
+      }
+    } else if (retryAfterHeader !== null) {
+      throw integrityError();
     }
     throw new KiokukoError(error.code, error.message, error.details);
   }
@@ -394,14 +720,18 @@ export async function createServerClient(options: CreateServerClientOptions = {}
   const authorizationHeader = `Bearer ${descriptor.capabilityToken}`;
   const fetchImplementation = options.fetchImplementation ?? options.fetch ?? globalThis.fetch;
   const request = async <T = unknown>(input: ServerRequest): Promise<T> => {
-    if (typeof input !== 'object' || input === null) throw validationError();
-    const method = input.method;
+    const normalized = normalizeRequestInput(input);
+    const method = normalized.method;
     if (typeof method !== 'string' || !SERVER_METHODS.has(method as ServerMethod)) throw validationError();
     const typedMethod = method as ServerMethod;
-    const operation = validateOperation(input.operation);
-    const url = validatePath(input.path, typedMethod, baseUrl);
-    const idempotencyKey = validateIdempotencyKey(typedMethod, input.idempotencyKey);
-    const bodySnapshot = input.body === undefined ? undefined : jsonSnapshot(input.body);
+    const operation = validateOperation(normalized.operation);
+    const url = validatePath(normalized.path, typedMethod, baseUrl);
+    const requestPath = normalized.path.split('?')[0] ?? normalized.path;
+    if ((READ_METHODS.has(typedMethod) && normalized.body !== undefined)
+      || (requestPath === HEALTH_READY_PATH && typedMethod !== 'GET')
+      || ((requestPath === HEALTH_READY_PATH) !== (operation === 'health.ready'))) throw validationError();
+    const idempotencyKey = validateIdempotencyKey(typedMethod, normalized.idempotencyKey);
+    const bodySnapshot = normalized.body === undefined ? undefined : jsonSnapshot(normalized.body);
     if (typeof fetchImplementation !== 'function') throw unavailableError();
 
     const headers: Record<string, string> = {
@@ -414,17 +744,27 @@ export async function createServerClient(options: CreateServerClientOptions = {}
       method: typedMethod,
       headers,
       ...(bodySnapshot === undefined ? {} : { body: bodySnapshot }),
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(normalized.signal === undefined ? {} : { signal: normalized.signal }),
     };
 
-    let response: Response;
+    throwIfSignalAborted(normalized.signal);
+    let rawResponse: unknown;
     try {
-      response = await fetchImplementation(url, init);
-    } catch {
-      throw unavailableError();
+      rawResponse = await awaitWithSignal(fetchImplementation(url, init), normalized.signal);
+    } catch (error) {
+      throwIfSignalAborted(normalized.signal);
+      throwTransportOrOriginal(error);
     }
-    return await parseResponse(response, input.path.split('?')[0] ?? input.path, operation, authorizationHeader,
-      baseUrl, idempotencyKey, bodySnapshot) as T;
+    throwIfSignalAborted(normalized.signal);
+    const response = validateFetchResponse(rawResponse);
+    const result = await parseResponse(
+      response,
+      requestPath,
+      operation,
+      normalized.signal,
+    );
+    throwIfSignalAborted(normalized.signal);
+    return result as T;
   };
   return Object.freeze({ request });
 }

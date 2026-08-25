@@ -299,6 +299,47 @@ test('caller-owned transaction rolls back only a failed batch savepoint', async 
   }
 });
 
+test('reports both the batch failure and a savepoint rollback failure', async () => {
+  const database = await setup();
+  try {
+    const store = new LedgerStore(database);
+    store.createRun(runInput());
+    database.exec(`
+      CREATE TRIGGER force_ledger_cleanup_test_failure
+      BEFORE INSERT ON ledger_events
+      WHEN NEW.source_event_id = 'force-failure'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced ledger operation failure');
+      END;
+    `);
+    database.exec('BEGIN IMMEDIATE');
+    const originalExec = database.exec.bind(database);
+    const rollbackFailure = new Error('forced savepoint rollback failure');
+    database.exec = (sql: string): void => {
+      if (sql.startsWith('ROLLBACK TO SAVEPOINT ')) throw rollbackFailure;
+      originalExec(sql);
+    };
+    try {
+      assert.throws(() => store.appendBatchInTransaction('run-1', {
+        events: [
+          { sourceEventId: 'first-in-batch', eventType: 'tool.completed', actor: 'agent', payload: { index: 1 } },
+          { sourceEventId: 'force-failure', eventType: 'tool.completed', actor: 'agent', payload: { index: 2 } },
+        ],
+      }), (error: unknown) => {
+        assert.ok(error instanceof AggregateError);
+        assert.match(String(error.errors[0]), /forced ledger operation failure/i);
+        assert.equal(error.errors[1], rollbackFailure);
+        return true;
+      });
+    } finally {
+      database.exec = originalExec;
+      database.exec('ROLLBACK');
+    }
+  } finally {
+    database.close();
+  }
+});
+
 test('rejects oversized sanitized run metadata before writing the run', async () => {
   const database = await setup();
   try {

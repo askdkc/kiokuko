@@ -1,12 +1,14 @@
-import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { constants as fsConstants } from 'node:fs';
+import { open } from 'node:fs/promises';
+import { TextDecoder } from 'node:util';
+import { isProxy } from 'node:util/types';
 import { Command, CommanderError } from 'commander';
 import { initializeDatabase } from './commands/init.js';
-import { useRepository } from './commands/use.js';
+import { useRepository, type UseOptions } from './commands/use.js';
 import { searchEntries, recallEntries } from './memory/retrieval.js';
-import { readEntry, recordEntry } from './memory/entries.js';
+import { readEntry, recordEntry, type RecordEntryInput } from './memory/entries.js';
 import { recallScopedMemory } from './memory/scoped-memory.js';
-import type { MemoryScope, ScopedRecallResult } from './memory/scoped-memory.js';
+import type { ScopedRecallResult } from './memory/scoped-memory.js';
 import type { RecallResult } from './memory/retrieval.js';
 import { promoteEntry, supersedeEntry, linkEntries } from './memory/lifecycle.js';
 import { purgeEntry } from './commands/purge.js';
@@ -22,43 +24,173 @@ import { registerServerCommands, type ServerCommandDependencies } from './comman
 import { registerAgentCommand, type AgentCommandDependencies } from './commands/agent.js';
 import { registerLedgerCommands } from './commands/ledger.js';
 import type { SqliteDatabase } from './db/adapter.js';
-import { answerAkinator, getAkinatorContext, startAkinator } from './akinator/orchestrator.js';
-import { parseSetupClients, promptSetupClients, setupGlobalClients } from './commands/setup.js';
+import { answerAkinator, startAkinator } from './akinator/orchestrator.js';
+import {
+  parseSetupClients,
+  parseSetupSkillDiscoveryMode,
+  promptCommunitySkillDiscovery,
+  promptSetupClients,
+  promptSetupConfiguration,
+  setupGlobalClients,
+} from './commands/setup.js';
 import { runMcpServer } from './mcp/server.js';
 import { runCuratorCommand } from './commands/curator.js';
 import { globalizeCuratorCandidate } from './memory/curator.js';
 import { detectInstalledClients } from './setup/client-detection.js';
 import type { PathEnvironment } from './config/paths.js';
+import { registerSkillsCommands, type SkillsCommandDependencies } from './commands/skills.js';
+import { normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from './skills/config.js';
+import { PACKAGE_VERSION } from './package-version.js';
+import { parseStrictJson } from './setup/strict-json.js';
+import { validateRecordInput } from './serialization/validate.js';
 
-const packageMetadata = createRequire(import.meta.url)('../package.json') as { version?: unknown };
-if (typeof packageMetadata.version !== 'string' || packageMetadata.version.length === 0) {
-  throw new Error('Kiokuko package version is unavailable');
+const MAX_CLI_JSON_INPUT_BYTES = 2 * 1024 * 1024;
+const MAX_CALL_PATH_BYTES = 4 * 1024;
+const CONTROL_CHARACTERS = /\p{Cc}/u;
+
+function invalidJsonInput(): KiokukoError {
+  return new KiokukoError('VALIDATION_ERROR', 'Input is not valid JSON with unique keys');
 }
-const packageVersion = packageMetadata.version;
+
+async function readBoundedStdin(): Promise<Buffer> {
+  if (process.stdin.readableEncoding !== null || process.stdin.readableDidRead) {
+    throw invalidJsonInput();
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    if (!Buffer.isBuffer(chunk)) throw invalidJsonInput();
+    const bytes = chunk;
+    size += bytes.byteLength;
+    if (size > MAX_CLI_JSON_INPUT_BYTES) throw invalidJsonInput();
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks);
+}
+
+function filesystemErrorCode(error: unknown): string | undefined {
+  if ((typeof error !== 'object' && typeof error !== 'function') || error === null || isProxy(error)) {
+    return undefined;
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+  return descriptor !== undefined && 'value' in descriptor && typeof descriptor.value === 'string'
+    ? descriptor.value
+    : undefined;
+}
+
+async function readBoundedJsonFile(filePath: string): Promise<Buffer> {
+  let handle;
+  try {
+    handle = await open(filePath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  } catch (error) {
+    if (filesystemErrorCode(error) === 'ENOENT' || filesystemErrorCode(error) === 'ENOTDIR') {
+      throw new KiokukoError('NOT_FOUND', 'JSON input file does not exist');
+    }
+    throw error;
+  }
+  let result: Buffer | undefined;
+  let operationFailed = false;
+  let operationError: unknown;
+  try {
+    const initial = await handle.stat({ bigint: true });
+    if (!initial.isFile()) {
+      throw invalidJsonInput();
+    }
+    if (initial.size < 0n || initial.size > BigInt(MAX_CLI_JSON_INPUT_BYTES)) {
+      throw invalidJsonInput();
+    }
+    const expectedSize = Number(initial.size);
+    const bytes = Buffer.allocUnsafe(expectedSize + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const read = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    const final = await handle.stat({ bigint: true });
+    if (offset !== expectedSize
+      || final.size !== initial.size
+      || final.dev !== initial.dev
+      || final.ino !== initial.ino
+      || final.mtimeNs !== initial.mtimeNs
+      || final.ctimeNs !== initial.ctimeNs) {
+      throw new KiokukoError('CONFLICT', 'JSON input file changed while it was being read');
+    }
+    result = bytes.subarray(0, offset);
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  try {
+    await handle.close();
+  } catch (closeError) {
+    if (operationFailed) {
+      throw new AggregateError(
+        [operationError, closeError],
+        'JSON input read failed and its file descriptor could not be closed',
+      );
+    }
+    throw new AggregateError(
+      [closeError],
+      'JSON input was read, but its file descriptor could not be closed',
+    );
+  }
+  if (operationFailed) {
+    if (operationError instanceof KiokukoError && operationError.code === 'VALIDATION_ERROR') {
+      throw operationError;
+    }
+    throw operationError;
+  }
+  if (result === undefined) throw invalidJsonInput();
+  return result;
+}
 
 async function readJsonInput(filePath: string): Promise<unknown> {
-  const text = filePath === '-' ? await new Promise<string>((resolve, reject) => {
-    let value = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk: string) => { value += chunk; });
-    process.stdin.on('end', () => resolve(value));
-    process.stdin.on('error', reject);
-  }) : await readFile(filePath, 'utf8');
+  const bytes = filePath === '-' ? await readBoundedStdin() : await readBoundedJsonFile(filePath);
+  let text: string;
   try {
-    return JSON.parse(text) as unknown;
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
-    throw new KiokukoError('VALIDATION_ERROR', 'Input is not valid JSON');
+    throw invalidJsonInput();
   }
+  return parseStrictJson(
+    text,
+    { allowTrailingComma: false, disallowComments: true, allowEmptyContent: false },
+    'Input is not valid JSON with unique keys',
+  );
 }
 
 async function withDatabase<T>(operation: (database: SqliteDatabase) => T | Promise<T>): Promise<T> {
   const result = await initializeDatabase();
   const database = openConnection(result.databasePath);
+  let operationResult: { value: T } | undefined;
+  let operationFailed = false;
+  let operationError: unknown;
   try {
-    return await operation(database);
-  } finally {
-    database.close();
+    operationResult = { value: await operation(database) };
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
   }
+  try {
+    database.close();
+  } catch (closeError) {
+    if (operationFailed) {
+      throw new AggregateError(
+        [operationError, closeError],
+        'Database operation failed and closing its connection also failed',
+      );
+    }
+    throw new AggregateError(
+      [closeError],
+      'Database operation completed, but closing its connection failed',
+    );
+  }
+  if (operationFailed) throw operationError;
+  if (operationResult === undefined) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Database operation produced no result');
+  }
+  return operationResult.value;
 }
 
 function emit(value: unknown): void {
@@ -82,7 +214,7 @@ function addWorkspaceOptions(command: Command): Command {
 }
 
 function configureRecallCommand(command: Command): Command {
-  const recall = addWorkspaceOptions(command.description('Recall relevant memory entries').argument('<query>'))
+  const recall = addWorkspaceOptions(command.description('Human/operator management: recall relevant memory entries').argument('<query>'))
     .option('--limit <number>', 'Maximum entries', '5').option('--max-chars <number>', 'Context character budget', '8000')
     .option('--scope <scope>', 'auto, project, ecosystem, or global', 'auto').option('--cwd <path>', 'Repository path used for scoped recall');
   recall.action(async (query: string, options: Record<string, unknown>) => {
@@ -109,97 +241,509 @@ function configureRecallCommand(command: Command): Command {
 export interface CliDependencies {
   readonly server?: ServerCommandDependencies;
   readonly agent?: AgentCommandDependencies;
+  readonly skills?: SkillsCommandDependencies;
   readonly setupEnvironment?: PathEnvironment;
   readonly setupInput?: NodeJS.ReadableStream;
   readonly setupOutput?: NodeJS.WritableStream;
 }
 
-async function dispatchRequest(request: unknown): Promise<unknown> {
-  if (typeof request !== 'object' || request === null || Array.isArray(request)) throw new KiokukoError('VALIDATION_ERROR', 'Request must be a JSON object');
-  const value = request as Record<string, unknown>;
-  if (value.apiVersion !== '1') throw new KiokukoError('VALIDATION_ERROR', 'apiVersion must be "1"');
-  if (typeof value.operation !== 'string' || value.operation.length === 0) throw new KiokukoError('VALIDATION_ERROR', 'operation must be a non-empty string');
-  const args = typeof value.arguments === 'object' && value.arguments !== null && !Array.isArray(value.arguments) ? value.arguments as Record<string, unknown> : {};
-  const operation = value.operation;
-  if (operation === 'init') return initializeDatabase();
-  if (operation === 'use') return useRepository(args as never);
-  if (operation === 'record') return withDatabase((database) => recordEntry(database, args as never));
-  if (operation === 'read') return withDatabase((database) => readEntry(database, { workspace: String(args.workspace ?? ''), entryId: String(args.entryId ?? '') }));
-  if (operation === 'search') return withDatabase((database) => searchEntries(database, args as never));
-  if (operation === 'recall') {
-    if (typeof args.scope === 'string' || typeof args.cwd === 'string' || args.workspace === undefined) {
-      return withDatabase((database) => recallScopedMemory(database, {
-        query: String(args.query ?? ''),
-        scope: String(args.scope ?? 'auto') as MemoryScope,
-        ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
-        ...(typeof args.maxChars === 'number' ? { maxChars: args.maxChars } : {}),
-        ...(typeof args.cwd === 'string' ? { cwd: args.cwd } : {}),
-      }));
-    }
-    return withDatabase((database) => recallEntries(database, args as never));
+const CALL_OPERATIONS = [
+  'init',
+  'use',
+  'record',
+  'curator',
+  'curator_globalize',
+  'guide_start',
+  'guide_answer',
+  'promote',
+  'supersede',
+  'link',
+  'purge',
+  'export',
+  'import',
+  'backup',
+  'doctor',
+] as const;
+
+type CallOperation = (typeof CALL_OPERATIONS)[number];
+
+interface CallRequest {
+  apiVersion: '1';
+  operation: CallOperation;
+  arguments: Record<string, unknown>;
+}
+
+const SUPPORTED_CALL_OPERATIONS = new Set<string>(CALL_OPERATIONS);
+
+function snapshotPlainJsonObject(value: unknown, message: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new KiokukoError('VALIDATION_ERROR', message);
   }
-  if (operation === 'curator') return withDatabase((database) => runCuratorCommand(database, {
-    ...(typeof args.workspace === 'string' ? { workspace: args.workspace } : {}),
-    ...(typeof args.cwd === 'string' ? { cwd: args.cwd } : {}),
-    ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
-    ...(typeof args.entryId === 'string' ? { entryId: args.entryId } : {}),
-    yes: args.yes === true,
-    json: true,
-  }));
-  if (operation === 'curator_globalize') return withDatabase((database) => globalizeCuratorCandidate(database, {
-    workspace: String(args.workspace ?? ''),
-    entryId: String(args.entryId ?? ''),
-    expectedRevision: Number(args.expectedRevision),
-    ...(typeof args.actor === 'string' ? { actor: args.actor } : {}),
-  }));
-  if (operation === 'guide_start') return withDatabase((database) => startAkinator(database, {
-    workspace: String(args.workspace ?? ''),
-    task: String(args.task ?? ''),
-  }));
-  if (operation === 'guide_answer') return withDatabase((database) => answerAkinator(database, {
-    workspace: String(args.workspace ?? ''),
-    sessionId: String(args.sessionId ?? ''),
-    questionId: String(args.questionId ?? '') as never,
-    value: String(args.value ?? ''),
-  }));
-  if (operation === 'guide_context') return withDatabase((database) => getAkinatorContext(database, {
-    workspace: String(args.workspace ?? ''),
-    sessionId: String(args.sessionId ?? ''),
-  }));
-  if (operation === 'promote') return withDatabase((database) => promoteEntry(database, { workspace: String(args.workspace ?? ''), entryId: String(args.entryId ?? ''), expectedRevision: Number(args.expectedRevision) }));
-  if (operation === 'supersede') return withDatabase((database) => supersedeEntry(database, { workspace: String(args.workspace ?? ''), oldEntryId: String(args.oldEntryId ?? ''), replacementEntryId: String(args.replacementEntryId ?? ''), expectedRevision: Number(args.expectedRevision) }));
-  if (operation === 'link') return withDatabase((database) => { linkEntries(database, args as never); return { linked: true }; });
-  if (operation === 'purge') return withDatabase((database) => { purgeEntry(database, { workspace: String(args.workspace ?? ''), entryId: String(args.entryId ?? ''), confirm: args.confirm === true }); return { purged: true }; });
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new KiokukoError('VALIDATION_ERROR', message);
+  }
+  const result = Object.create(null) as Record<string, unknown>;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') throw new KiokukoError('VALIDATION_ERROR', message);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) {
+      throw new KiokukoError('VALIDATION_ERROR', message);
+    }
+    Object.defineProperty(result, key, {
+      value: descriptor.value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return result;
+}
+
+function assertExactCallArguments(
+  args: Record<string, unknown>,
+  operation: CallOperation,
+  allowed: readonly string[],
+  required: readonly string[] = [],
+): void {
+  const allowedFields = new Set(allowed);
+  for (const field of Object.keys(args)) {
+    if (!allowedFields.has(field)) {
+      throw new KiokukoError('VALIDATION_ERROR', `Unknown ${operation} argument: ${field}`);
+    }
+  }
+  for (const field of required) {
+    if (!Object.hasOwn(args, field)) {
+      throw new KiokukoError('VALIDATION_ERROR', `${operation}.${field} is required`);
+    }
+  }
+}
+
+function requiredStringArgument(
+  args: Record<string, unknown>,
+  operation: CallOperation,
+  field: string,
+): string {
+  const value = args[field];
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new KiokukoError('VALIDATION_ERROR', `${operation}.${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+function optionalStringArgument(
+  args: Record<string, unknown>,
+  operation: CallOperation,
+  field: string,
+): string | undefined {
+  return Object.hasOwn(args, field) ? requiredStringArgument(args, operation, field) : undefined;
+}
+
+function requiredPathArgument(
+  args: Record<string, unknown>,
+  operation: CallOperation,
+  field: string,
+): string {
+  const value = requiredStringArgument(args, operation, field);
+  if (CONTROL_CHARACTERS.test(value) || Buffer.byteLength(value, 'utf8') > MAX_CALL_PATH_BYTES) {
+    throw new KiokukoError(
+      'VALIDATION_ERROR',
+      `${operation}.${field} must be a bounded path without control characters`,
+    );
+  }
+  return value;
+}
+
+function optionalPathArgument(
+  args: Record<string, unknown>,
+  operation: CallOperation,
+  field: string,
+): string | undefined {
+  return Object.hasOwn(args, field) ? requiredPathArgument(args, operation, field) : undefined;
+}
+
+function requiredBooleanArgument(
+  args: Record<string, unknown>,
+  operation: CallOperation,
+  field: string,
+): boolean {
+  const value = args[field];
+  if (typeof value !== 'boolean') {
+    throw new KiokukoError('VALIDATION_ERROR', `${operation}.${field} must be a boolean`);
+  }
+  return value;
+}
+
+function optionalBooleanArgument(
+  args: Record<string, unknown>,
+  operation: CallOperation,
+  field: string,
+): boolean | undefined {
+  return Object.hasOwn(args, field) ? requiredBooleanArgument(args, operation, field) : undefined;
+}
+
+function requiredPositiveIntegerArgument(
+  args: Record<string, unknown>,
+  operation: CallOperation,
+  field: string,
+): number {
+  const value = args[field];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new KiokukoError('VALIDATION_ERROR', `${operation}.${field} must be a positive integer`);
+  }
+  return value;
+}
+
+function validateUseCallArguments(args: Record<string, unknown>): UseOptions {
+  const operation = 'use';
+  assertExactCallArguments(args, operation, [
+    'cwd',
+    'root',
+    'workspace',
+    'agentFile',
+    'dryRun',
+    'noAgentFile',
+    'forceRebind',
+    'allowDirectory',
+    'databasePath',
+    'migrationsDirectory',
+    'repositoryId',
+  ]);
+  const result: UseOptions = {};
+  const cwd = optionalPathArgument(args, operation, 'cwd');
+  const root = optionalPathArgument(args, operation, 'root');
+  const workspace = optionalStringArgument(args, operation, 'workspace');
+  const agentFile = optionalPathArgument(args, operation, 'agentFile');
+  const databasePath = optionalPathArgument(args, operation, 'databasePath');
+  const migrationsDirectory = optionalPathArgument(args, operation, 'migrationsDirectory');
+  const repositoryId = optionalStringArgument(args, operation, 'repositoryId');
+  const dryRun = optionalBooleanArgument(args, operation, 'dryRun');
+  const noAgentFile = optionalBooleanArgument(args, operation, 'noAgentFile');
+  const forceRebind = optionalBooleanArgument(args, operation, 'forceRebind');
+  const allowDirectory = optionalBooleanArgument(args, operation, 'allowDirectory');
+  if (cwd !== undefined) result.cwd = cwd;
+  if (root !== undefined) result.root = root;
+  if (workspace !== undefined) result.workspace = workspace;
+  if (agentFile !== undefined) result.agentFile = agentFile;
+  if (databasePath !== undefined) result.databasePath = databasePath;
+  if (migrationsDirectory !== undefined) result.migrationsDirectory = migrationsDirectory;
+  if (repositoryId !== undefined) result.repositoryId = repositoryId;
+  if (dryRun !== undefined) result.dryRun = dryRun;
+  if (noAgentFile !== undefined) result.noAgentFile = noAgentFile;
+  if (forceRebind !== undefined) result.forceRebind = forceRebind;
+  if (allowDirectory !== undefined) result.allowDirectory = allowDirectory;
+  return result;
+}
+
+function validateRecordCallArguments(args: Record<string, unknown>): RecordEntryInput {
+  return validateRecordInput(args);
+}
+
+function validateCuratorCallArguments(args: Record<string, unknown>): {
+  workspace?: string;
+  cwd?: string;
+  limit?: number;
+  entryId?: string;
+  yes?: boolean;
+} {
+  const operation = 'curator';
+  assertExactCallArguments(args, operation, ['workspace', 'cwd', 'limit', 'entryId', 'yes']);
+  const workspace = optionalStringArgument(args, operation, 'workspace');
+  const cwd = optionalPathArgument(args, operation, 'cwd');
+  const entryId = optionalStringArgument(args, operation, 'entryId');
+  const yes = optionalBooleanArgument(args, operation, 'yes');
+  const limit = Object.hasOwn(args, 'limit')
+    ? requiredPositiveIntegerArgument(args, operation, 'limit')
+    : undefined;
+  if (limit !== undefined && limit > 50) {
+    throw new KiokukoError('VALIDATION_ERROR', 'curator.limit must be an integer between 1 and 50');
+  }
+  return {
+    ...(workspace === undefined ? {} : { workspace }),
+    ...(cwd === undefined ? {} : { cwd }),
+    ...(limit === undefined ? {} : { limit }),
+    ...(entryId === undefined ? {} : { entryId }),
+    ...(yes === undefined ? {} : { yes }),
+  };
+}
+
+function validateCuratorGlobalizeCallArguments(args: Record<string, unknown>): {
+  workspace: string;
+  entryId: string;
+  expectedRevision: number;
+  actor?: string;
+} {
+  const operation = 'curator_globalize';
+  assertExactCallArguments(
+    args,
+    operation,
+    ['workspace', 'entryId', 'expectedRevision', 'actor'],
+    ['workspace', 'entryId', 'expectedRevision'],
+  );
+  const actor = optionalStringArgument(args, operation, 'actor');
+  return {
+    workspace: requiredStringArgument(args, operation, 'workspace'),
+    entryId: requiredStringArgument(args, operation, 'entryId'),
+    expectedRevision: requiredPositiveIntegerArgument(args, operation, 'expectedRevision'),
+    ...(actor === undefined ? {} : { actor }),
+  };
+}
+
+function validateGuideStartCallArguments(args: Record<string, unknown>): {
+  workspace: string;
+  task: string;
+} {
+  const operation = 'guide_start';
+  assertExactCallArguments(args, operation, ['workspace', 'task'], ['workspace', 'task']);
+  return {
+    workspace: requiredStringArgument(args, operation, 'workspace'),
+    task: requiredStringArgument(args, operation, 'task'),
+  };
+}
+
+function validateGuideAnswerCallArguments(args: Record<string, unknown>): {
+  workspace: string;
+  sessionId: string;
+  questionId: 'taskType' | 'target' | 'expected' | 'constraints';
+  value: string;
+} {
+  const operation = 'guide_answer';
+  assertExactCallArguments(
+    args,
+    operation,
+    ['workspace', 'sessionId', 'questionId', 'value'],
+    ['workspace', 'sessionId', 'questionId', 'value'],
+  );
+  const questionId = requiredStringArgument(args, operation, 'questionId');
+  if (!['taskType', 'target', 'expected', 'constraints'].includes(questionId)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'guide_answer.questionId is unsupported');
+  }
+  return {
+    workspace: requiredStringArgument(args, operation, 'workspace'),
+    sessionId: requiredStringArgument(args, operation, 'sessionId'),
+    questionId: questionId as 'taskType' | 'target' | 'expected' | 'constraints',
+    value: requiredStringArgument(args, operation, 'value'),
+  };
+}
+
+function validatePromoteCallArguments(args: Record<string, unknown>): {
+  workspace: string;
+  entryId: string;
+  expectedRevision: number;
+} {
+  const operation = 'promote';
+  assertExactCallArguments(
+    args,
+    operation,
+    ['workspace', 'entryId', 'expectedRevision'],
+    ['workspace', 'entryId', 'expectedRevision'],
+  );
+  return {
+    workspace: requiredStringArgument(args, operation, 'workspace'),
+    entryId: requiredStringArgument(args, operation, 'entryId'),
+    expectedRevision: requiredPositiveIntegerArgument(args, operation, 'expectedRevision'),
+  };
+}
+
+function validateSupersedeCallArguments(args: Record<string, unknown>): {
+  workspace: string;
+  oldEntryId: string;
+  replacementEntryId: string;
+  expectedRevision: number;
+} {
+  const operation = 'supersede';
+  assertExactCallArguments(
+    args,
+    operation,
+    ['workspace', 'oldEntryId', 'replacementEntryId', 'expectedRevision'],
+    ['workspace', 'oldEntryId', 'replacementEntryId', 'expectedRevision'],
+  );
+  return {
+    workspace: requiredStringArgument(args, operation, 'workspace'),
+    oldEntryId: requiredStringArgument(args, operation, 'oldEntryId'),
+    replacementEntryId: requiredStringArgument(args, operation, 'replacementEntryId'),
+    expectedRevision: requiredPositiveIntegerArgument(args, operation, 'expectedRevision'),
+  };
+}
+
+function validateLinkCallArguments(args: Record<string, unknown>): {
+  workspace: string;
+  fromEntryId: string;
+  toEntryId: string;
+  relation: 'supports' | 'contradicts' | 'derived_from' | 'related_to';
+  actor?: string;
+  now?: string;
+} {
+  const operation = 'link';
+  assertExactCallArguments(
+    args,
+    operation,
+    ['workspace', 'fromEntryId', 'toEntryId', 'relation', 'actor', 'now'],
+    ['workspace', 'fromEntryId', 'toEntryId', 'relation'],
+  );
+  const relation = requiredStringArgument(args, operation, 'relation');
+  if (!['supports', 'contradicts', 'derived_from', 'related_to'].includes(relation)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'link.relation is unsupported');
+  }
+  const actor = optionalStringArgument(args, operation, 'actor');
+  const now = optionalStringArgument(args, operation, 'now');
+  return {
+    workspace: requiredStringArgument(args, operation, 'workspace'),
+    fromEntryId: requiredStringArgument(args, operation, 'fromEntryId'),
+    toEntryId: requiredStringArgument(args, operation, 'toEntryId'),
+    relation: relation as 'supports' | 'contradicts' | 'derived_from' | 'related_to',
+    ...(actor === undefined ? {} : { actor }),
+    ...(now === undefined ? {} : { now }),
+  };
+}
+
+function validatePurgeCallArguments(args: Record<string, unknown>): {
+  workspace: string;
+  entryId: string;
+  confirm: boolean;
+} {
+  const operation = 'purge';
+  assertExactCallArguments(
+    args,
+    operation,
+    ['workspace', 'entryId', 'confirm'],
+    ['workspace', 'entryId', 'confirm'],
+  );
+  return {
+    workspace: requiredStringArgument(args, operation, 'workspace'),
+    entryId: requiredStringArgument(args, operation, 'entryId'),
+    confirm: requiredBooleanArgument(args, operation, 'confirm'),
+  };
+}
+
+function parseCallRequest(request: unknown): CallRequest {
+  const value = snapshotPlainJsonObject(request, 'Request must be a JSON object');
+  const fields = Object.keys(value).sort();
+  if (fields.length !== 3
+    || fields[0] !== 'apiVersion'
+    || fields[1] !== 'arguments'
+    || fields[2] !== 'operation') {
+    throw new KiokukoError(
+      'VALIDATION_ERROR',
+      'Request must contain exactly apiVersion, operation, and arguments',
+    );
+  }
+  if (value.apiVersion !== '1') {
+    throw new KiokukoError('VALIDATION_ERROR', 'apiVersion must be "1"');
+  }
+  if (typeof value.operation !== 'string' || value.operation.length === 0) {
+    throw new KiokukoError('VALIDATION_ERROR', 'operation must be a non-empty string');
+  }
+  const args = snapshotPlainJsonObject(value.arguments, 'arguments must be a JSON object');
+  if (!SUPPORTED_CALL_OPERATIONS.has(value.operation)) {
+    throw new KiokukoError('VALIDATION_ERROR', `Unknown operation: ${value.operation}`);
+  }
+  return {
+    apiVersion: '1',
+    operation: value.operation as CallOperation,
+    arguments: args,
+  };
+}
+
+async function dispatchRequest(request: CallRequest): Promise<unknown> {
+  const args = request.arguments;
+  const operation = request.operation;
+  if (operation === 'init') {
+    assertExactCallArguments(args, operation, []);
+    return initializeDatabase();
+  }
+  if (operation === 'use') return useRepository(validateUseCallArguments(args));
+  if (operation === 'record') {
+    const input = validateRecordCallArguments(args);
+    return withDatabase((database) => recordEntry(database, input));
+  }
+  if (operation === 'curator') {
+    const input = validateCuratorCallArguments(args);
+    return withDatabase((database) => runCuratorCommand(database, { ...input, json: true }));
+  }
+  if (operation === 'curator_globalize') {
+    const input = validateCuratorGlobalizeCallArguments(args);
+    return withDatabase((database) => globalizeCuratorCandidate(database, input));
+  }
+  if (operation === 'guide_start') {
+    const input = validateGuideStartCallArguments(args);
+    return withDatabase((database) => startAkinator(database, input));
+  }
+  if (operation === 'guide_answer') {
+    const input = validateGuideAnswerCallArguments(args);
+    return withDatabase((database) => answerAkinator(database, input));
+  }
+  if (operation === 'promote') {
+    const input = validatePromoteCallArguments(args);
+    return withDatabase((database) => promoteEntry(database, input));
+  }
+  if (operation === 'supersede') {
+    const input = validateSupersedeCallArguments(args);
+    return withDatabase((database) => supersedeEntry(database, input));
+  }
+  if (operation === 'link') {
+    const input = validateLinkCallArguments(args);
+    return withDatabase((database) => {
+      linkEntries(database, input);
+      return { linked: true };
+    });
+  }
+  if (operation === 'purge') {
+    const input = validatePurgeCallArguments(args);
+    return withDatabase((database) => {
+      purgeEntry(database, input);
+      return { purged: true };
+    });
+  }
   if (operation === 'export') {
-    const workspace = String(args.workspace ?? '');
-    const output = String(args.output ?? '');
-    if (output.length === 0) throw new KiokukoError('VALIDATION_ERROR', 'export output is required');
+    assertExactCallArguments(args, operation, ['workspace', 'output']);
+    if (!Object.hasOwn(args, 'output')) {
+      throw new KiokukoError('VALIDATION_ERROR', 'export output is required');
+    }
+    const workspace = requiredStringArgument(args, operation, 'workspace');
+    const output = requiredPathArgument(args, operation, 'output');
     return withDatabase((database) => writeExport(database, { workspace, output }));
   }
   if (operation === 'import') {
-    const input = String(args.input ?? '');
-    if (input.length === 0) throw new KiokukoError('VALIDATION_ERROR', 'import input is required');
-    const importOptions: Parameters<typeof importWorkspace>[1] = { input, dryRun: args.dryRun === true };
-    if (typeof args.workspace === 'string') importOptions.workspace = args.workspace;
-    return args.dryRun === true ? importWorkspace(undefined, importOptions) : withDatabase((database) => importWorkspace(database, importOptions));
+    assertExactCallArguments(args, operation, ['input', 'workspace', 'dryRun']);
+    if (!Object.hasOwn(args, 'input')) {
+      throw new KiokukoError('VALIDATION_ERROR', 'import input is required');
+    }
+    const input = requiredPathArgument(args, operation, 'input');
+    const workspace = optionalStringArgument(args, operation, 'workspace');
+    const dryRun = optionalBooleanArgument(args, operation, 'dryRun');
+    const importOptions: Parameters<typeof importWorkspace>[1] = {
+      input,
+      ...(workspace === undefined ? {} : { workspace }),
+      ...(dryRun === undefined ? {} : { dryRun }),
+    };
+    return dryRun === true
+      ? importWorkspace(undefined, importOptions)
+      : withDatabase((database) => importWorkspace(database, importOptions));
   }
   if (operation === 'backup') {
-    const output = String(args.output ?? '');
-    if (output.length === 0) throw new KiokukoError('VALIDATION_ERROR', 'backup output is required');
+    assertExactCallArguments(args, operation, ['output']);
+    if (!Object.hasOwn(args, 'output')) {
+      throw new KiokukoError('VALIDATION_ERROR', 'backup output is required');
+    }
+    const output = requiredPathArgument(args, operation, 'output');
     return createBackup(output);
   }
-  if (operation === 'doctor') return runDoctor();
-  throw new KiokukoError('VALIDATION_ERROR', `Unknown operation: ${operation}`);
+  if (operation === 'doctor') {
+    assertExactCallArguments(args, operation, []);
+    return runDoctor();
+  }
+  throw new KiokukoError('INTEGRITY_ERROR', 'Supported call operation has no dispatcher');
 }
 
 export function buildCli(dependencies: CliDependencies = {}): Command {
   const cli = new Command();
-  cli.name('kiokuko').description('Model-agnostic external memory for AI coding agents').version(packageVersion);
+  cli.name('kiokuko').description('Model-agnostic external memory for AI coding agents').version(PACKAGE_VERSION);
   cli.exitOverride();
   cli.configureOutput({ outputError: () => undefined });
 
   cli.command('version').description('Show the Kiokuko package version').action(() => {
-    process.stdout.write(`${packageVersion}\n`);
+    process.stdout.write(`${PACKAGE_VERSION}\n`);
   });
 
   cli.command('init').description('Initialize the global Kiokuko database').option('--json').action(async (options: { json?: boolean }) => {
@@ -213,35 +757,48 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
     .option('--dry-run', 'Validate and show planned changes without writing')
     .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
-    .option('--no-claude-prompt-hook', 'Skip installing the Claude UserPromptSubmit memory hook')
-    .option('--opencode-capture <profile>', 'OpenCode evidence capture: off,minimal,standard', 'off')
-    .option('--opencode-mode <mode>', 'OpenCode prepare enforcement: advisory,strict', 'advisory')
+    .option('--skill-discovery <mode>', 'External Skill discovery: off,official,community')
     .option('--json', 'Emit a JSON response')
-    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; opencodeCapture: string; opencodeMode: string; standardSkills: boolean; claudePromptHook: boolean }) => {
-      if (!['off', 'minimal', 'standard'].includes(options.opencodeCapture)) throw new KiokukoError('VALIDATION_ERROR', 'opencode capture must be off, minimal, or standard');
-      if (!['advisory', 'strict'].includes(options.opencodeMode)) throw new KiokukoError('VALIDATION_ERROR', 'opencode mode must be advisory or strict');
+    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; standardSkills: boolean; skillDiscovery?: string }) => {
+      const optionSkillDiscoveryMode = options.skillDiscovery === undefined
+        ? undefined
+        : parseSetupSkillDiscoveryMode(options.skillDiscovery);
       const setupEnvironment = dependencies.setupEnvironment ?? {};
+      const setupProcessEnvironment = setupEnvironment.env ?? process.env;
+      const environmentSkillDiscoveryMode = optionSkillDiscoveryMode === undefined
+        && Object.prototype.hasOwnProperty.call(setupProcessEnvironment, SKILL_DISCOVERY_ENV)
+        ? normalizeSkillDiscoveryMode(setupProcessEnvironment[SKILL_DISCOVERY_ENV])
+        : undefined;
+      const requestedSkillDiscoveryMode = optionSkillDiscoveryMode ?? environmentSkillDiscoveryMode;
       const detectedClients = options.clients === undefined ? await detectInstalledClients(setupEnvironment) : [];
       const setupInput = dependencies.setupInput ?? process.stdin;
       const setupOutput = dependencies.setupOutput ?? process.stdout;
-      const interactive = options.clients === undefined
-        && options.json !== true
+      const interactive = options.json !== true
         && (setupInput as { isTTY?: boolean }).isTTY === true
         && (setupOutput as { isTTY?: boolean }).isTTY === true;
-      const clients = options.clients !== undefined
-        ? parseSetupClients(options.clients)
-        : interactive
-          ? await promptSetupClients(detectedClients, { input: setupInput, output: setupOutput })
-          : detectedClients;
+      let clients: ReturnType<typeof parseSetupClients>;
+      let skillDiscoveryMode = requestedSkillDiscoveryMode;
+      if (interactive && options.clients === undefined && requestedSkillDiscoveryMode === undefined) {
+        const prompted = await promptSetupConfiguration(detectedClients, { input: setupInput, output: setupOutput });
+        clients = prompted.clients;
+        skillDiscoveryMode = prompted.skillDiscoveryMode;
+      } else {
+        clients = options.clients !== undefined
+          ? parseSetupClients(options.clients)
+          : interactive
+            ? await promptSetupClients(detectedClients, { input: setupInput, output: setupOutput })
+            : detectedClients;
+        if (interactive && clients.length > 0 && skillDiscoveryMode === undefined) {
+          skillDiscoveryMode = await promptCommunitySkillDiscovery({ input: setupInput, output: setupOutput });
+        }
+      }
       const data = await setupGlobalClients({
         ...setupEnvironment,
         clients,
         command: options.command,
         dryRun: options.dryRun === true,
         standardSkills: options.standardSkills,
-        claudePromptHook: options.claudePromptHook,
-        opencodeCapture: options.opencodeCapture as 'off' | 'minimal' | 'standard',
-        opencodeMode: options.opencodeMode as 'advisory' | 'strict',
+        ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
       });
       const changed = data.files.filter((file) => file.action !== 'unchanged').length;
       const clientLabel = data.clients.length === 0 ? 'no detected clients' : data.clients.join(', ');
@@ -258,7 +815,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   });
 
   cli.command('use').description('Bind this repository to Kiokuko external memory')
-    .option('--root <path>').option('--workspace <name>').option('--agent-file <path>', 'Agent instruction file', 'AGENTS.md')
+    .option('--root <path>').option('--workspace <name>').option('--agent-file <path>', 'Agent instruction file')
     .option('--dry-run').option('--no-agent-file').option('--force-rebind').option('--allow-directory').option('--json')
     .action(async (options: Record<string, unknown>) => {
       const useOptions: Parameters<typeof useRepository>[0] = {};
@@ -274,7 +831,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     });
 
   configureRecallCommand(cli.command('recall'));
-  const memory = cli.command('memory').description('Memory operations');
+  const memory = cli.command('memory').description('Human/operator memory management');
   configureRecallCommand(memory.command('recall'));
 
   const guide = cli.command('guide').description('Run the Akinator-style knowledge and skill intake');
@@ -291,18 +848,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     }));
     humanOrJson(options.json, 'guide.answer', data, data.question?.prompt ?? 'Akinator context is ready');
   });
-  guide.command('context').description('Build the knowledge and skill context for an intake session').argument('<session-id>').requiredOption('--workspace <name>')
-    .option('--no-client-skills', 'Allow the mattpocock/skills fallback because the client has no available skills')
-    .option('--json').action(async (sessionId: string, options: { workspace: string; clientSkills?: boolean; json?: boolean }) => {
-    const data = await withDatabase((database) => getAkinatorContext(database, {
-      workspace: options.workspace,
-      sessionId,
-      ...(options.clientSkills === false ? { allowExternalSkillFallback: true } : {}),
-    }));
-    humanOrJson(options.json, 'guide.context', data, `${data.entries.length} knowledge entries selected`);
-  });
-
-  const search = addWorkspaceOptions(cli.command('search').description('Search memory entries').argument('<query>'))
+  const search = addWorkspaceOptions(cli.command('search').description('Human/operator management: search memory entries').argument('<query>'))
     .option('--limit <number>', 'Maximum entries', '20').option('--kind <kind>').option('--status <status>').option('--tag <tag>');
   search.action(async (query: string, options: Record<string, unknown>) => {
     const searchOptions: Parameters<typeof searchEntries>[1] = { workspace: String(options.workspace ?? ''), query, limit: Number(options.limit) };
@@ -313,7 +859,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json === true, 'search', data, `${data.items.length} memory entries found`, { count: data.count });
   });
 
-  const read = addWorkspaceOptions(cli.command('read').description('Read one memory entry').argument('<entry-id>'));
+  const read = addWorkspaceOptions(cli.command('read').description('Human/operator management: read one memory entry').argument('<entry-id>'));
   read.action(async (entryId: string, options: Record<string, unknown>) => {
     const data = await withDatabase((database) => readEntry(database, { workspace: String(options.workspace ?? ''), entryId }));
     humanOrJson(options.json === true, 'read', data, `${data.title}\n${data.body}`);
@@ -321,9 +867,12 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
   const record = cli.command('record').description('Record a memory entry').requiredOption('--workspace <name>').requiredOption('--input-json <file>').option('--json');
   record.action(async (options: { workspace: string; inputJson: string; json?: boolean }) => {
-    const input = await readJsonInput(options.inputJson);
-    if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new KiokukoError('VALIDATION_ERROR', 'record input must be a JSON object');
-    const data = await withDatabase((database) => recordEntry(database, { ...(input as Record<string, unknown>), workspace: options.workspace } as never));
+    const parsed = snapshotPlainJsonObject(
+      await readJsonInput(options.inputJson),
+      'record input must be a JSON object',
+    );
+    const input = validateRecordInput({ ...parsed, workspace: options.workspace });
+    const data = await withDatabase((database) => recordEntry(database, input));
     humanOrJson(options.json, 'record', data, `Recorded ${data.id}`);
   });
 
@@ -386,6 +935,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerServerCommands(cli, dependencies.server);
   registerAgentCommand(cli, dependencies.agent);
   registerLedgerCommands(cli, { withDatabase });
+  registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });
 
   cli.command('web').description('Start the local Kiokuko web UI')
     .option('--host <host>', 'Loopback host', '127.0.0.1')
@@ -421,11 +971,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'import', data, `${data.count} records inspected`);
   });
 
-  cli.command('call').description('Process one JSON request').requiredOption('--input-json <file>').option('--json').action(async (options: { inputJson: string }) => {
-    const request = await readJsonInput(options.inputJson);
-    const operation = typeof request === 'object' && request !== null && !Array.isArray(request) && typeof (request as Record<string, unknown>).operation === 'string' ? (request as Record<string, unknown>).operation as string : 'unknown';
+  cli.command('call').description('Process one management JSON request; memory reads are not supported').requiredOption('--input-json <file>').option('--json').action(async (options: { inputJson: string }) => {
+    const request = parseCallRequest(await readJsonInput(options.inputJson));
     const data = await dispatchRequest(request);
-    emit(successEnvelope(operation, data));
+    emit(successEnvelope(request.operation, data));
   });
 
   return cli;
@@ -433,8 +982,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
 function operationFor(argv: string[]): string {
   const command = argv[2] ?? 'unknown';
-  if (command === 'server' && argv[3] !== undefined && !argv[3].startsWith('-')) return `server.${argv[3]}`;
-  if (command === 'agent' && argv[3] !== undefined && !argv[3].startsWith('-')) return `agent.${argv[3]}`;
+  if (['server', 'agent', 'skills'].includes(command) && argv[3] !== undefined && !argv[3].startsWith('-')) return `${command}.${argv[3]}`;
   return command;
 }
 
@@ -460,12 +1008,18 @@ export async function runCli(argv: string[] = process.argv, dependencies: CliDep
     return 0;
   } catch (error) {
     if (error instanceof CommanderError) {
+      if (error.exitCode === 0) return 0;
+      if (jsonRequested) {
+        emit(errorEnvelope(operation, new KiokukoError('USAGE_ERROR', 'Invalid command-line usage', { commanderCode: error.code })));
+        return 2;
+      }
       const diagnostic = commanderDiagnostic(error);
       if (diagnostic.length > 0) process.stderr.write(diagnostic);
-      return error.exitCode === 0 ? 0 : 2;
+      return 2;
     }
-    if (jsonRequested && !(serveStarted && operation === 'serve')) emit(errorEnvelope(operation, error));
-    else process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    const envelope = errorEnvelope(operation, error);
+    if (jsonRequested && !(serveStarted && operation === 'serve')) emit(envelope);
+    else process.stderr.write(`${envelope.error.message}\n`);
     return exitCodeFor(error);
   }
 }

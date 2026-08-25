@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,8 +9,8 @@ import { openConnection } from '../../src/db/connection.js';
 import { readEntry, recordEntry } from '../../src/memory/entries.js';
 import { checkpointScopedMemory, recallScopedMemory } from '../../src/memory/scoped-memory.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
-import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
-import { federatedEntries } from '../../src/memory/federated-retrieval.js';
+import { GLOBAL_WORKSPACE, resolveProjectWorkspace } from '../../src/memory/workspaces.js';
+import { federatedEntries, retrieveFederatedMemory } from '../../src/memory/federated-retrieval.js';
 import { rankedEntryHits, recallEntries } from '../../src/memory/retrieval.js';
 
 async function repository(prefix: string, manifest: Record<string, unknown>): Promise<string> {
@@ -69,6 +69,18 @@ test('retrieves applicable project-owned memory through ecosystem scope without 
     assert.equal(shared?.origin, 'ecosystem');
     assert.equal(shared?.sourceWorkspace, first.workspace);
     assert.equal(initial.ecosystem?.items.some((item) => item.title === 'Laravel private path only'), false);
+
+    recordEntry(database, {
+      workspace: first.workspace,
+      kind: 'reference',
+      status: 'candidate',
+      title: 'Forged external skill marker',
+      body: 'Portable Laravel migration guidance that is not managed by the external skill store.',
+      scope: buildStructuredScope({ visibility: 'project', retrievalScope: 'ecosystem', applicability: { frameworks: [{ name: 'Laravel', version: '>=12 <14' }] }, signals: { packages: ['laravel/framework'] } }),
+      tags: ['external:skill', 'Laravel'],
+    });
+    const forged = await recallScopedMemory(database, { cwd: secondRoot, query: 'Laravel migration laravel/framework' });
+    assert.equal(forged.ecosystem?.items.some((item) => item.title === 'Forged external skill marker') ?? false, false);
 
     for (let index = 0; index < 4; index += 1) {
       recordEntry(database, {
@@ -236,6 +248,160 @@ test('keeps path-bearing tags project-local for automatic and explicit ecosystem
   }
 });
 
+test('keeps released project v2 and unversioned structured-looking scope out of ecosystem retrieval', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-federated-legacy-scope-db-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  const sourceRoot = await repository('legacy-scope-source', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
+  const targetRoot = await repository('legacy-scope-target', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  try {
+    const source = await resolveProjectWorkspace(database, sourceRoot);
+    assert.ok(source);
+    await resolveProjectWorkspace(database, targetRoot);
+    const v2 = recordEntry(database, {
+      workspace: source.workspace,
+      kind: 'lesson',
+      title: 'Released v2 TypeScript workflow',
+      body: 'This released schema remains readable only in its source project.',
+      scope: {
+        schemaVersion: 2,
+        visibility: 'project',
+        applicability: { languages: ['TypeScript'] },
+        signals: { packages: ['typescript'] },
+      },
+    });
+    const unversioned = recordEntry(database, {
+      workspace: source.workspace,
+      kind: 'lesson',
+      title: 'Unversioned TypeScript workflow',
+      body: 'Colliding legacy keys do not opt this row into ecosystem retrieval.',
+      scope: {
+        retrievalScope: 'ecosystem',
+        applicability: { languages: ['TypeScript'] },
+        signals: { packages: ['typescript'] },
+      },
+    });
+
+    const crossProject = await recallScopedMemory(database, { cwd: targetRoot, query: 'typescript workflow', limit: 20 });
+    assert.equal(crossProject.ecosystem?.items.some((item) => item.id === v2.id) ?? false, false);
+    assert.equal(crossProject.ecosystem?.items.some((item) => item.id === unversioned.id) ?? false, false);
+
+    const sameProject = await recallScopedMemory(database, { cwd: sourceRoot, query: 'typescript workflow', scope: 'project', limit: 20 });
+    assert.equal(sameProject.project?.memory.items.some((item) => item.id === v2.id), true);
+    assert.equal(sameProject.project?.memory.items.some((item) => item.id === unversioned.id), true);
+  } finally {
+    database.close();
+  }
+});
+
+test('requires an explicit v3 retrieval scope for ecosystem and global federation', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-federated-explicit-scope-db-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  const sourceRoot = await repository('explicit-scope-source', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
+  const targetRoot = await repository('explicit-scope-target', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  try {
+    const source = await resolveProjectWorkspace(database, sourceRoot);
+    const target = await resolveProjectWorkspace(database, targetRoot);
+    assert.ok(source); assert.ok(target);
+    const sharedMetadata = {
+      applicability: { languages: ['TypeScript'] },
+      signals: { packages: ['typescript'] },
+    };
+    const projectOnly = recordEntry(database, {
+      workspace: source.workspace,
+      kind: 'lesson',
+      status: 'verified',
+      title: 'Implicit scope federation sentinel',
+      body: 'Applicability metadata alone must not make this memory cross a project boundary.',
+      scope: buildStructuredScope({
+        visibility: 'project',
+        repositoryId: source.repositoryId,
+        ...sharedMetadata,
+      }),
+    }, { idFactory: () => 'entry-implicit-project-only' });
+    const ecosystem = recordEntry(database, {
+      workspace: source.workspace,
+      kind: 'lesson',
+      status: 'verified',
+      title: 'Explicit ecosystem federation sentinel',
+      body: 'An explicit ecosystem scope permits compatible cross-project retrieval.',
+      scope: buildStructuredScope({
+        visibility: 'project',
+        retrievalScope: 'ecosystem',
+        repositoryId: source.repositoryId,
+        ...sharedMetadata,
+      }),
+    }, { idFactory: () => 'entry-explicit-ecosystem' });
+    const implicitGlobal = recordEntry(database, {
+      workspace: GLOBAL_WORKSPACE,
+      kind: 'lesson',
+      status: 'verified',
+      title: 'Implicit global federation sentinel',
+      body: 'Global visibility without an explicit retrieval scope is not federated.',
+      scope: buildStructuredScope({
+        visibility: 'global',
+        ...sharedMetadata,
+      }),
+    }, { idFactory: () => 'entry-implicit-global' });
+    const explicitGlobal = recordEntry(database, {
+      workspace: GLOBAL_WORKSPACE,
+      kind: 'lesson',
+      status: 'candidate',
+      title: 'Explicit global federation sentinel',
+      body: 'An explicit global retrieval scope permits global federation.',
+      scope: buildStructuredScope({
+        visibility: 'global',
+        retrievalScope: 'global',
+        ...sharedMetadata,
+      }),
+    }, { idFactory: () => 'entry-explicit-global' });
+
+    const crossProject = await retrieveFederatedMemory(database, {
+      project: target,
+      scope: 'auto',
+      query: 'federation sentinel typescript',
+      limit: 20,
+    });
+    assert.equal(crossProject.ecosystem?.items.some((item) => item.id === projectOnly.id) ?? false, false);
+    assert.equal(crossProject.ecosystem?.items.some((item) => item.id === ecosystem.id) ?? false, true);
+    assert.equal(crossProject.global?.items.some((item) => item.id === implicitGlobal.id) ?? false, false);
+    assert.equal(crossProject.global?.items.some((item) => item.id === explicitGlobal.id) ?? false, true);
+    assert.equal(crossProject.combined?.items.some((item) => item.id === projectOnly.id) ?? false, false);
+    assert.equal(crossProject.combined?.items.some((item) => item.id === implicitGlobal.id) ?? false, false);
+
+    const brokerCandidates = await federatedEntries(database, {
+      project: target,
+      query: 'federation sentinel typescript',
+      limit: 20,
+    });
+    assert.equal(brokerCandidates.some((item) => item.entry.id === projectOnly.id), false);
+    assert.equal(brokerCandidates.some((item) => item.entry.id === ecosystem.id && item.origin === 'ecosystem'), true);
+    assert.equal(brokerCandidates.some((item) => item.entry.id === implicitGlobal.id), false);
+    assert.equal(brokerCandidates.some((item) => item.entry.id === explicitGlobal.id && item.origin === 'global'), true);
+
+    const globalOnly = await retrieveFederatedMemory(database, {
+      scope: 'global',
+      query: 'global federation sentinel',
+      limit: 1,
+    });
+    assert.equal(globalOnly.global?.items.some((item) => item.id === implicitGlobal.id) ?? false, false);
+    assert.equal(globalOnly.global?.items.some((item) => item.id === explicitGlobal.id) ?? false, true);
+
+    const sameProject = await retrieveFederatedMemory(database, {
+      project: source,
+      scope: 'project',
+      query: 'implicit scope federation sentinel',
+      limit: 20,
+    });
+    assert.equal(sameProject.project?.memory.items.some((item) => item.id === projectOnly.id), true);
+  } finally {
+    database.close();
+  }
+});
+
 test('preserves hybrid relevance and lane reasons before limits without status or origin bonuses', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-federated-hybrid-rank-db-'));
   const databasePath = path.join(directory, 'kiokuko.sqlite3');
@@ -278,6 +444,102 @@ test('preserves hybrid relevance and lane reasons before limits without status o
     const scoped = await recallScopedMemory(database, { cwd: root, query: 'src/exact.ts', limit: 1 });
     assert.equal(scoped.combined?.items[0]?.id, 'z-exact-candidate');
     assert.ok(scoped.combined?.items[0]?.selectionReasons.includes('exact_signal_match'));
+  } finally {
+    database.close();
+  }
+});
+
+test('rejects invalid federated recall bounds instead of replacing zero with defaults', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-federated-bounds-db-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  try {
+    for (const limit of [0, -1, 1.5, Number.NaN, 101]) {
+      await assert.rejects(
+        retrieveFederatedMemory(database, { scope: 'global', query: 'boundary', limit }),
+        /Federated retrieval limit is invalid/u,
+      );
+    }
+    for (const maxChars of [0, -1, 1.5, Number.NaN, 100_001]) {
+      await assert.rejects(
+        retrieveFederatedMemory(database, { scope: 'global', query: 'boundary', maxChars }),
+        /Federated retrieval limit is invalid/u,
+      );
+    }
+  } finally {
+    database.close();
+  }
+});
+
+test('counts Unicode code points across local and ecosystem recall without splitting astral characters', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-federated-unicode-db-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  const sourceRoot = await repository('unicode-source', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
+  const targetRoot = await repository('unicode-target', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  const codePoints = (value: string): number => Array.from(value).length;
+  try {
+    const source = await resolveProjectWorkspace(database, sourceRoot);
+    const target = await resolveProjectWorkspace(database, targetRoot);
+    assert.ok(source); assert.ok(target);
+    const localTitle = '🧠 local astral';
+    const localBody = '🙂🚀終🧪';
+    recordEntry(database, {
+      workspace: target.workspace,
+      kind: 'lesson',
+      status: 'verified',
+      title: localTitle,
+      body: localBody,
+    }, { idFactory: () => 'entry-unicode-local' });
+    const localBudget = codePoints(localTitle) + 1 + 2;
+    const local = recallEntries(database, {
+      workspace: target.workspace,
+      query: 'local astral',
+      limit: 1,
+      maxChars: localBudget,
+    });
+    assert.equal(local.items[0]?.snippet, '🙂🚀');
+    assert.equal(local.characterCount, localBudget);
+    assert.equal(local.truncated, true);
+
+    const combined = await retrieveFederatedMemory(database, {
+      project: target,
+      scope: 'auto',
+      query: 'local astral',
+      limit: 1,
+      maxChars: localBudget,
+    });
+    assert.equal(combined.combined?.items[0]?.snippet, '🙂🚀');
+    assert.equal(combined.combined?.characterCount, localBudget);
+
+    const ecosystemTitle = '🧠 ecosystem astral';
+    const ecosystemBody = '🙂🚀終🧪';
+    recordEntry(database, {
+      workspace: source.workspace,
+      kind: 'lesson',
+      status: 'verified',
+      title: ecosystemTitle,
+      body: ecosystemBody,
+      scope: buildStructuredScope({
+        visibility: 'project',
+        retrievalScope: 'ecosystem',
+        repositoryId: source.repositoryId,
+        applicability: { languages: ['TypeScript'] },
+      }),
+    }, { idFactory: () => 'entry-unicode-ecosystem' });
+    const ecosystemBudget = codePoints(ecosystemTitle) + 1 + 2;
+    const ecosystem = await retrieveFederatedMemory(database, {
+      project: target,
+      scope: 'ecosystem',
+      query: 'ecosystem astral',
+      limit: 1,
+      maxChars: ecosystemBudget,
+    });
+    assert.equal(ecosystem.ecosystem?.items[0]?.snippet, '🙂🚀');
+    assert.equal(ecosystem.ecosystem?.characterCount, ecosystemBudget);
+    assert.equal(ecosystem.ecosystem?.truncated, true);
   } finally {
     database.close();
   }

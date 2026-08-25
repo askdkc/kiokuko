@@ -112,6 +112,7 @@ test('HTTP intake preserves needs_answer without context, then atomically reache
     assert.equal(first.body.data.runStatus, 'intake');
     assert.equal(first.body.data.currentQuestion.id, 'target');
     assert.equal(first.body.data.context, null);
+    assert.equal(first.body.data.profileHash, null);
 
     const replay = await jsonRequest(runtime.url, `/api/v1/agent/runs/${runId}/intake/answers`, {
       method: 'POST',
@@ -137,6 +138,8 @@ test('HTTP intake preserves needs_answer without context, then atomically reache
     });
     assert.equal(second.body.data.runStatus, 'intake');
     assert.equal(second.body.data.currentQuestion.id, 'expected');
+    assert.equal(second.body.data.context, null);
+    assert.equal(second.body.data.profileHash, null);
 
     const ready = await jsonRequest(runtime.url, `/api/v1/agent/runs/${runId}/intake/answers`, {
       method: 'POST',

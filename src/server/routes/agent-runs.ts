@@ -4,7 +4,8 @@ import type { AgentGatewayService } from '../../gateway/agent-service.js';
 import type { CheckpointService, FeedbackService } from '../../gateway/checkpoint-service.js';
 import type { ContextBroker } from '../../context/broker.js';
 import type { V1RouteHandler, V1RouteRequest } from '../router.js';
-import { attachInitialContext } from './task5-support.js';
+import { attachCapabilityGatedContext, requestCapabilityCatalog } from './agent-capability-gate.js';
+import { agentRequestBindingHash } from './request-binding.js';
 
 const RUNS_PATH = '/api/v1/agent/runs';
 const CONTROL_CHARACTERS = /\p{Cc}/u;
@@ -79,7 +80,7 @@ export function runIdSegment(pathname: string, suffix?: string): string | undefi
 
 export function requireIdempotencyKey(request: V1RouteRequest): string {
   const value = request.headers['idempotency-key'];
-  if (Array.isArray(value) || typeof value !== 'string' || value.trim().length === 0
+  if (Array.isArray(value) || typeof value !== 'string' || value.trim().length === 0 || value.trim() !== value
     || Buffer.byteLength(value, 'utf8') > MAX_IDEMPOTENCY_KEY_BYTES || CONTROL_CHARACTERS.test(value)) {
     invalid();
   }
@@ -103,11 +104,22 @@ export function createAgentRunsRoute(context: AgentRouteContext): V1RouteHandler
     if (request.method === 'POST' && isRunsPath(request.url.pathname)) {
       requireNoQuery(request.url);
       const idempotencyKey = requireIdempotencyKey(request);
+      const requestBindingHash = agentRequestBindingHash({
+        operation: 'agent.open',
+        pathRunId: null,
+        idempotencyKey,
+        requestBody: request.body,
+      });
       const data = await context.enqueueWrite(() => context.service.openRun({
         idempotencyKey,
         request: request.body,
       }));
-      return successEnvelope('agent.open', await attachInitialContext(context, data.runId, data));
+      const gated = await attachCapabilityGatedContext(
+        context,
+        data,
+        requestCapabilityCatalog(request.body),
+      );
+      return successEnvelope('agent.open', { ...gated, requestBindingHash });
     }
 
     if (request.method === 'GET' && isRunsPath(request.url.pathname)) {
@@ -130,12 +142,18 @@ export function createAgentRunsRoute(context: AgentRouteContext): V1RouteHandler
         requireNoQuery(request.url);
         const runId = decodeRunId(rawRunId);
         const idempotencyKey = requireIdempotencyKey(request);
+        const requestBindingHash = agentRequestBindingHash({
+          operation: 'agent.close',
+          pathRunId: runId,
+          idempotencyKey,
+          requestBody: request.body,
+        });
         const data = await context.enqueueWrite(() => context.service.closeRun({
           runId,
           idempotencyKey,
           request: request.body,
         }));
-        return successEnvelope('agent.close', data);
+        return successEnvelope('agent.close', { ...data, requestBindingHash });
       }
     }
 

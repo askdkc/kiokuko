@@ -28,7 +28,6 @@ function fakeDatabase(filePath: string, onClose: () => void): SqliteDatabase {
     prepare: () => {
       throw new Error('not used by this test');
     },
-    backup: async () => 0,
     close: onClose,
   };
 }
@@ -88,7 +87,7 @@ test('close stops new writes, keeps the descriptor during drain, then closes and
     openDatabase: () => fakeDatabase(databasePath, () => {
       databaseCloses += 1;
     }),
-    migrateDatabase: () => undefined,
+    initializeDatabase: () => undefined,
   });
   const started = deferred<void>();
   const release = deferred<void>();
@@ -148,7 +147,7 @@ test('close drains an HTTP request admitted before shutdown even when its body f
     openDatabase: () => fakeDatabase(databasePath, () => {
       databaseCloses += 1;
     }),
-    migrateDatabase: () => undefined,
+    initializeDatabase: () => undefined,
     v1: async () => {
       handlerStarted.resolve();
       if (enqueueWrite === undefined) throw new Error('enqueueWrite was not initialized');
@@ -242,11 +241,77 @@ test('close stops accepting new HTTP connections after accepted work has drained
     instanceId: '123e4567-e89b-12d3-a456-426614174102',
     capabilityToken: 'e'.repeat(64),
     openDatabase: () => fakeDatabase(databasePath, () => undefined),
-    migrateDatabase: () => undefined,
+    initializeDatabase: () => undefined,
   });
 
   const response = await fetch(`${handle.url}/health/live`);
   assert.equal(response.status, 200);
   await handle.close();
   await assert.rejects(() => fetch(`${handle.url}/health/live`));
+});
+
+test('close aggregates independent cleanup failures and retries only resources that did not close', async () => {
+  const directory = await temp('http-shutdown-cleanup-retry');
+  const databasePath = path.join(directory, 'data.sqlite3');
+  const descriptorPath = path.join(directory, 'runtime', 'server.json');
+  const instanceId = '123e4567-e89b-12d3-a456-426614174198';
+  const rawSentinels = [
+    'database-close-private-sentinel',
+    'descriptor-remove-private-sentinel',
+    'lock-release-private-sentinel',
+  ];
+  let databaseCloseAttempts = 0;
+  let descriptorRemoveAttempts = 0;
+  let lockReleaseAttempts = 0;
+  const handle = await startHttpServer({
+    databasePath,
+    descriptorPath,
+    instanceId,
+    capabilityToken: '9'.repeat(64),
+    initializeDatabase: () => undefined,
+    openDatabase: () => fakeDatabase(databasePath, () => {
+      databaseCloseAttempts += 1;
+      if (databaseCloseAttempts === 1) throw new Error(rawSentinels[0]);
+    }),
+    acquireInstanceLock: () => ({
+      path: path.join(directory, 'synthetic.lock'),
+      instanceId,
+      release: async () => {
+        lockReleaseAttempts += 1;
+        if (lockReleaseAttempts === 1) throw new Error(rawSentinels[2]);
+        return true;
+      },
+    }),
+    readRuntimeDescriptor: () => undefined,
+    writeRuntimeDescriptor: () => undefined,
+    removeRuntimeDescriptor: () => {
+      descriptorRemoveAttempts += 1;
+      if (descriptorRemoveAttempts === 1) throw new Error(rawSentinels[1]);
+      return true;
+    },
+  });
+
+  await assert.rejects(
+    handle.close(),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.message, 'HTTP server resource cleanup failed');
+      assert.equal(error.errors.length, 3);
+      for (const failure of error.errors) {
+        assert.equal(failure instanceof Error && 'code' in failure && failure.code === 'DATABASE_ERROR', true);
+        assert.equal(failure instanceof Error && failure.message, 'Unable to close the HTTP server');
+      }
+      const exposed = `${error.message}\n${error.errors.map(String).join('\n')}`;
+      for (const sentinel of rawSentinels) assert.equal(exposed.includes(sentinel), false);
+      return true;
+    },
+  );
+  assert.equal(databaseCloseAttempts, 1);
+  assert.equal(descriptorRemoveAttempts, 1);
+  assert.equal(lockReleaseAttempts, 1);
+
+  await handle.close();
+  assert.equal(databaseCloseAttempts, 2);
+  assert.equal(descriptorRemoveAttempts, 2);
+  assert.equal(lockReleaseAttempts, 2);
 });

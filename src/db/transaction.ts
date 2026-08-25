@@ -1,40 +1,75 @@
 import type { SqliteDatabase } from './adapter.js';
+import { withSqliteLockRetry } from './sqlite-retry.js';
 
-const LOCK_RETRY_LIMIT = 5;
+/**
+ * COMMIT threw and the subsequent ROLLBACK also threw. The caller must treat
+ * the transaction as possibly committed: compensating durable side effects
+ * could otherwise turn an uncertain outcome into split-brain state.
+ */
+export class TransactionCommitUncertainError extends AggregateError {
+  readonly commitError: unknown;
+  readonly rollbackError: unknown;
 
-function isLockError(error: unknown): boolean {
-  return error instanceof Error && /database is locked|database table is locked|busy/i.test(error.message);
+  constructor(commitError: unknown, rollbackError: unknown) {
+    super(
+      [commitError, rollbackError],
+      'Transaction commit outcome is uncertain because commit and rollback both failed',
+    );
+    this.name = 'TransactionCommitUncertainError';
+    this.commitError = commitError;
+    this.rollbackError = rollbackError;
+  }
 }
 
-function waitForRetry(attempt: number): void {
-  const buffer = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(buffer, 0, 0, attempt * 25);
-}
-
-function rollback(database: SqliteDatabase): void {
+export function rollbackFailedTransaction(database: SqliteDatabase, operationError: unknown): never {
   try {
     database.exec('ROLLBACK');
-  } catch {
-    // Preserve the original operation error.
+  } catch (rollbackError) {
+    throw new AggregateError(
+      [operationError, rollbackError],
+      'Transaction operation failed and rollback also failed',
+    );
+  }
+  throw operationError;
+}
+
+function commitOrRollback(database: SqliteDatabase): void {
+  try {
+    database.exec('COMMIT');
+  } catch (commitError) {
+    try {
+      database.exec('ROLLBACK');
+    } catch (rollbackError) {
+      throw new TransactionCommitUncertainError(commitError, rollbackError);
+    }
+    throw commitError;
   }
 }
 
 /** Run a synchronous write transaction with bounded retry for SQLite lock errors only. */
 export function withImmediateTransaction<T>(database: SqliteDatabase, operation: () => T): T {
-  for (let attempt = 1; ; attempt += 1) {
+  return withSqliteLockRetry(() => {
+    database.exec('BEGIN IMMEDIATE');
+    let result: T;
     try {
-      database.exec('BEGIN IMMEDIATE');
-      try {
-        const result = operation();
-        database.exec('COMMIT');
-        return result;
-      } catch (error) {
-        rollback(database);
-        throw error;
-      }
+      result = operation();
     } catch (error) {
-      if (!isLockError(error) || attempt >= LOCK_RETRY_LIMIT) throw error;
-      waitForRetry(attempt);
+      rollbackFailedTransaction(database, error);
     }
+    commitOrRollback(database);
+    return result;
+  });
+}
+
+/** Run synchronous reads against one SQLite snapshot without reserving a writer lock. */
+export function withDeferredReadTransaction<T>(database: SqliteDatabase, operation: () => T): T {
+  database.exec('BEGIN DEFERRED');
+  let result: T;
+  try {
+    result = operation();
+  } catch (error) {
+    rollbackFailedTransaction(database, error);
   }
+  commitOrRollback(database);
+  return result;
 }

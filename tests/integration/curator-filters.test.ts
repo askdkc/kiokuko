@@ -9,6 +9,25 @@ import { curateMemoryCandidates, curatorFacets, globalizeCuratorCandidate } from
 import { recordEntry } from '../../src/memory/entries.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
+import { documentsFromSkillSnapshot } from '../../src/skills/import-preparation.js';
+import { authorizeSkillMaterialization } from '../../src/skills/materialization-authority.js';
+import { externalSkillWorkspace, importSkillSnapshot } from '../../src/skills/store.js';
+import { validateSkillSnapshot } from '../../src/skills/source/snapshot-validator.js';
+import type { SkillCandidate, SkillRequirement } from '../../src/skills/types.js';
+
+async function passedAuditAuthority(skill: SkillCandidate) {
+  const result = await authorizeSkillMaterialization({
+    id: skill.provider,
+    async search() { return { provider: skill.provider, experimental: false, candidates: [] }; },
+    async audit(audited) {
+      assert.equal(audited.id, skill.id);
+      return { status: 'passed' };
+    },
+  }, skill);
+  assert.equal(result.status, 'passed');
+  if (result.status !== 'passed') throw new Error('fixture audit did not issue materialization authority');
+  return result.authorization;
+}
 
 test('curator filters, facets, cursor pagination, and globalization visibility are server-side', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-curator-filters-'));
@@ -76,6 +95,56 @@ test('curator filters, facets, cursor pagination, and globalization visibility a
   }
 });
 
+test('curator facets exclude every managed external skill dimension', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-curator-external-facets-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  const skill: SkillCandidate = {
+    id: 'fixture:external/repo:external-only',
+    provider: 'fixture',
+    name: 'external-only',
+    slug: 'external-only',
+    source: 'external/repo',
+    sourceType: 'github',
+    installUrl: 'https://github.com/external/repo',
+    installs: 1,
+    duplicate: false,
+    officialStatus: 'catalog-verified',
+    auditStatus: 'passed',
+  };
+  const requirement: SkillRequirement = {
+    id: 'external-only',
+    technology: 'external-only',
+    aliases: ['external-only'],
+    queries: ['external-only'],
+    owners: ['external'],
+    repositories: ['external/repo'],
+    applicability: { frameworks: [{ name: 'ExternalOnly' }], languages: ['ExternalLang'] },
+    signals: { packages: ['external-only'] },
+    reason: 'Facet exclusion fixture.',
+  };
+  try {
+    const snapshot = validateSkillSnapshot({
+      candidate: skill,
+      sourceCommit: 'dddddddddddddddddddddddddddddddddddddddd',
+      files: [{ path: 'skills/external-only/SKILL.md', content: '---\nname: External Only\ndescription: external reference\n---\n# External\n\nReusable external workflow reference.', primary: true }],
+    });
+    const authorization = await passedAuditAuthority(skill);
+    importSkillSnapshot(database, snapshot, documentsFromSkillSnapshot(snapshot), requirement, undefined, authorization);
+
+    const candidates = await curateMemoryCandidates(database, { allWorkspaces: true });
+    const facets = curatorFacets(database);
+    assert.equal(candidates.count, 0);
+    assert.equal(facets.projects.some((facet) => facet.workspace === externalSkillWorkspace(skill)), false);
+    assert.equal(facets.tags.some((facet) => facet.value === 'external:skill'), false);
+    assert.equal(facets.frameworks.some((facet) => facet.value === 'externalonly'), false);
+    assert.equal(facets.languages.some((facet) => facet.value === 'externallang'), false);
+  } finally {
+    database.close();
+  }
+});
+
 test('curator cursor pagination reaches candidates beyond the first SQL scan batch', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-curator-pagination-'));
   const databasePath = path.join(directory, 'kiokuko.sqlite3');
@@ -112,6 +181,113 @@ test('curator cursor pagination reaches candidates beyond the first SQL scan bat
     assert.equal(finalPage.candidates.length, 1);
     assert.equal(finalPage.nextCursor, null);
     assert.equal(finalPage.totalApproximate, 501);
+  } finally {
+    database.close();
+  }
+});
+
+test('curator decodes corrupt rows before external-marker filtering or facet aggregation', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-curator-decode-before-filter-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  try {
+    const entry = recordEntry(database, {
+      workspace: 'project:curator-corrupt',
+      kind: 'lesson',
+      status: 'candidate',
+      title: 'Reusable fail-closed workflow',
+      body: 'When a stored candidate is inspected, verify its canonical revision and fail explicitly before applying semantic filters.',
+      tags: ['workflow'],
+    });
+    // This forged marker used to make the corrupt revision disappear in the
+    // raw SQL exclusion clause before the canonical hash was checked.
+    database.prepare('INSERT INTO entry_revision_tags (entry_id, revision, tag) VALUES (?, ?, ?)')
+      .run(entry.id, entry.revision, 'external:skill');
+
+    const integrity = (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR';
+    await assert.rejects(() => curateMemoryCandidates(database, { allWorkspaces: true }), integrity);
+    assert.throws(() => curatorFacets(database), integrity);
+  } finally {
+    database.close();
+  }
+});
+
+test('curator globalized detection uses exact decoded provenance identity, not substring matching', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-curator-globalized-identity-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  try {
+    const source = recordEntry(database, {
+      workspace: 'project:curator-source-identity',
+      kind: 'lesson',
+      status: 'candidate',
+      title: 'Reusable transaction recovery workflow',
+      body: 'When a transaction fails, verify the boundary, inspect the persisted state, and run the documented recovery procedure before retrying.',
+      tags: ['workflow', 'reusable'],
+    }, { idFactory: () => 'source-with-substring-collision' });
+    const reference = `${source.id}@${source.revision}#deterministic-v1`;
+    recordEntry(database, {
+      workspace: 'global',
+      kind: 'reference',
+      status: 'verified',
+      title: 'Unrelated global reference',
+      body: 'This global entry is unrelated to the curator source.',
+      scope: buildStructuredScope({ visibility: 'global', portableReason: 'Explicit unrelated portable fixture' }),
+      provenance: { type: 'test', reference: `prefix:${reference}:suffix`, sourceWorkspace: source.workspace },
+    });
+    recordEntry(database, {
+      workspace: 'global',
+      kind: 'reference',
+      status: 'verified',
+      title: 'Wrong source identity',
+      body: 'Even an exact reference is insufficient when the source workspace is different.',
+      scope: buildStructuredScope({ visibility: 'global', portableReason: 'Explicit wrong-identity portable fixture' }),
+      provenance: { type: 'curator_globalize', reference, sourceWorkspace: 'project:different-source' },
+    });
+
+    const result = await curateMemoryCandidates(database, { allWorkspaces: true });
+    assert.equal(result.candidates.some((candidate) => candidate.entryId === source.id), true);
+    assert.equal(curatorFacets(database).projects.some((facet) => facet.workspace === source.workspace), true);
+  } finally {
+    database.close();
+  }
+});
+
+test('curator does not treat released schema v2 scope as current structured metadata', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-curator-schema-v2-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  try {
+    const entry = recordEntry(database, {
+      workspace: 'project:curator-schema-v2',
+      kind: 'lesson',
+      status: 'candidate',
+      title: 'Released project-local metadata',
+      body: 'This released row remains readable, but its legacy metadata cannot authorize current structured filtering.',
+      scope: {
+        schemaVersion: 2,
+        visibility: 'project',
+        memoryClass: 'troubleshooting',
+        applicability: { frameworks: [{ name: 'LegacyFramework' }], languages: ['LegacyLanguage'] },
+      },
+      tags: ['legacy-v2'],
+    });
+
+    const facets = curatorFacets(database);
+    assert.equal(facets.projects.some((facet) => facet.workspace === entry.workspace), true);
+    assert.equal(facets.frameworks.some((facet) => facet.value === 'legacyframework'), false);
+    assert.equal(facets.languages.some((facet) => facet.value === 'legacylanguage'), false);
+    assert.equal(facets.memoryClasses.some((facet) => facet.value === 'troubleshooting'), false);
+    const filtered = await curateMemoryCandidates(database, {
+      allWorkspaces: true,
+      frameworks: ['LegacyFramework'],
+      languages: ['LegacyLanguage'],
+      memoryClasses: ['troubleshooting'],
+    });
+    assert.equal(filtered.candidates.some((candidate) => candidate.entryId === entry.id), false);
   } finally {
     database.close();
   }

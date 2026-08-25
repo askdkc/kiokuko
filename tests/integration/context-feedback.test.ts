@@ -154,6 +154,48 @@ test('records run outcome feedback bound to its workspace', async () => {
   }
 });
 
+test('bounds run outcomes and comments by UTF-8 bytes', async () => {
+  const database = await temporaryDatabase('run-feedback-utf8-bounds');
+  try {
+    seedLedgerContext(database);
+    const exact = '😀'.repeat(1024);
+    const common = {
+      workspace,
+      runId: 'run-feedback-1',
+      actor: 'user-1',
+      createdAt: now,
+    };
+    const record = recordRunFeedback(database, {
+      ...common,
+      feedbackId: 'run-feedback-utf8-exact',
+      outcome: exact,
+      comment: exact,
+      idempotencyKey: 'run-feedback-utf8-exact-key',
+    });
+    assert.equal(Buffer.byteLength(record.outcome ?? '', 'utf8'), 4096);
+    assert.equal(Buffer.byteLength(record.comment ?? '', 'utf8'), 4096);
+
+    for (const input of [
+      { outcome: '😀'.repeat(1025), comment: null },
+      { outcome: 'completed', comment: '😀'.repeat(1025) },
+    ]) {
+      assert.throws(
+        () => recordRunFeedback(database, {
+          ...common,
+          ...input,
+          feedbackId: `run-feedback-utf8-over-${input.comment === null ? 'outcome' : 'comment'}`,
+          idempotencyKey: `run-feedback-utf8-over-${input.comment === null ? 'outcome' : 'comment'}-key`,
+        }),
+        (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR'
+          && (error as Error).message === 'Feedback input is invalid',
+      );
+    }
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM run_feedback').get<{ count: number }>()?.count, 1);
+  } finally {
+    database.close();
+  }
+});
+
 test('lists run feedback deterministically and reports truncation', async () => {
   const database = await temporaryDatabase('run-feedback-list');
   try {
@@ -289,12 +331,25 @@ test('rejects unknown, non-JSON, non-finite, and cyclic public input with fixed 
     };
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
+    const symbolInput = { ...contextBase } as Record<string | symbol, unknown>;
+    symbolInput[Symbol('raw-comment-sentinel')] = 'raw-comment-sentinel';
+    const accessorInput = { ...contextBase } as Record<string, unknown>;
+    Object.defineProperty(accessorInput, 'comment', {
+      enumerable: true,
+      get: () => { throw new Error('raw-comment-sentinel'); },
+    });
+    const proxyInput = new Proxy({ ...contextBase }, {
+      get: () => { throw new Error('raw-comment-sentinel'); },
+    });
     for (const invalid of [
       { ...contextBase, unknownSentinel: 'raw-comment-sentinel' },
       { ...contextBase, comment: Number.NaN },
       { ...contextBase, comment: cyclic },
       new Date(),
       { ...contextBase, comment: Infinity },
+      symbolInput,
+      accessorInput,
+      proxyInput,
     ]) {
       assert.throws(
         () => recordContextFeedback(database, invalid),
@@ -321,6 +376,40 @@ test('rejects unknown, non-JSON, non-finite, and cyclic public input with fixed 
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_feedback').get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM run_feedback').get<{ count: number }>()?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('accepts only the canonical millisecond UTC feedback timestamp', async () => {
+  const database = await temporaryDatabase('feedback-timestamp-validation');
+  try {
+    seedLedgerContext(database);
+    const base = {
+      workspace,
+      feedbackId: 'timestamp-context',
+      deliveryId: 'delivery-feedback-1',
+      entryId: 'entry-feedback-1',
+      runId: 'run-feedback-1',
+      verdict: 'helpful' as const,
+      actor: 'timestamp-user',
+      idempotencyKey: 'timestamp-key',
+    };
+    for (const createdAt of [
+      null,
+      0,
+      '2026-08-20T00:00:00Z',
+      '2026-08-20T09:00:00.000+09:00',
+      '+010000-01-01T00:00:00.000Z',
+      '2026-02-29T00:00:00.000Z',
+    ]) {
+      assert.throws(
+        () => recordContextFeedback(database, { ...base, createdAt }),
+        (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR'
+          && (error as Error).message === 'Feedback input is invalid',
+      );
+    }
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_feedback').get<{ count: number }>()?.count, 0);
   } finally {
     database.close();
   }
@@ -528,7 +617,7 @@ test('caller-owned context transactions do not commit and preserve the outer mar
   }
 });
 
-test('standalone failures roll back feedback and trigger side effects', async () => {
+test('standalone failures roll back feedback and trigger side effects while propagating an unexpected trigger failure', async () => {
   const database = await temporaryDatabase('feedback-rollback');
   try {
     seedLedgerContext(database);
@@ -553,10 +642,67 @@ test('standalone failures roll back feedback and trigger side effects', async ()
         idempotencyKey: 'rollback-key',
         createdAt: now,
       }),
-      (error: unknown) => (error as { code?: string }).code === 'DATABASE_ERROR' && (error as Error).message === 'Feedback database operation failed',
+      (error: unknown) => {
+        const failure = error as { code?: unknown; errcode?: unknown; message?: unknown };
+        assert.equal(failure.code, 'ERR_SQLITE_ERROR');
+        assert.equal(failure.errcode, 1_811);
+        assert.equal(failure.message, 'intentional feedback failure');
+        return true;
+      },
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_feedback').get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM feedback_side_effects').get<{ count: number }>()?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('feedback propagates unrelated constraints and programmer errors that merely mention constraints', async () => {
+  const database = await temporaryDatabase('feedback-error-classification');
+  try {
+    seedLedgerContext(database);
+    database.exec(`
+      CREATE TABLE unrelated_feedback_unique (value TEXT NOT NULL UNIQUE);
+      INSERT INTO unrelated_feedback_unique (value) VALUES ('occupied');
+      CREATE TRIGGER unrelated_feedback_unique_failure
+      BEFORE INSERT ON context_feedback
+      BEGIN
+        INSERT INTO unrelated_feedback_unique (value) VALUES ('occupied');
+      END;
+    `);
+    assert.throws(
+      () => recordContextFeedback(database, {
+        workspace,
+        feedbackId: 'unrelated-constraint-feedback',
+        deliveryId: 'delivery-feedback-1',
+        entryId: 'entry-feedback-1',
+        runId: 'run-feedback-1',
+        verdict: 'helpful',
+        actor: 'user-1',
+        idempotencyKey: 'unrelated-constraint-key',
+        createdAt: now,
+      }),
+      (error: unknown) => {
+        const failure = error as { code?: unknown; errcode?: unknown; message?: unknown };
+        assert.equal(failure.code, 'ERR_SQLITE_ERROR');
+        assert.equal(failure.errcode, 2_067);
+        assert.equal(failure.message, 'UNIQUE constraint failed: unrelated_feedback_unique.value');
+        return true;
+      },
+    );
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_feedback').get<{ count: number }>()?.count, 0);
+
+    const programmerFailure = new Error('programmer failure mentioning unique and constraint');
+    const failingDatabase = {
+      filePath: database.filePath,
+      exec: database.exec.bind(database),
+      prepare: () => { throw programmerFailure; },
+      close: () => {},
+    };
+    assert.throws(
+      () => listContextFeedback(failingDatabase, { workspace }),
+      (error: unknown) => error === programmerFailure,
+    );
   } finally {
     database.close();
   }

@@ -89,12 +89,12 @@ export class WriteQueue<T> {
       .then(item.operation)
       .then(
         (value) => {
-          this.#finishCurrent();
           item.resolve(value);
+          this.#finishCurrent();
         },
         (error: unknown) => {
-          this.#finishCurrent();
           item.reject(error);
+          this.#finishCurrent();
         },
       );
   }

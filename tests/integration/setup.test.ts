@@ -1,13 +1,23 @@
 import assert from 'node:assert/strict';
-import { access, chmod, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, link, lstat, mkdtemp, mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { parse } from 'jsonc-parser';
+import {
+  atomicWriteTextIfUnchanged,
+  AtomicCommittedMutationError,
+  AtomicCommittedUnlinkError,
+  unlinkRegularFileIfUnchanged,
+} from '../../src/agent-file/atomic-write.js';
 import { buildCli } from '../../src/cli.js';
 import { setupGlobalClients } from '../../src/commands/setup.js';
 import { openConnection } from '../../src/db/connection.js';
 import { GLOBAL_REPOSITORY_ID, GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
+import {
+  LEGACY_CLAUDE_PROMPT_HOOK,
+  legacyOpenCodeLoopGuardFixture,
+} from '../fixtures/legacy-client-cleanup.js';
 
 async function temporaryEnvironment(prefix: string) {
   const root = await mkdtemp(path.join(tmpdir(), `kiokuko-setup-${prefix}-`));
@@ -22,6 +32,24 @@ async function temporaryEnvironment(prefix: string) {
     data,
     env: { HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: data },
     databasePath: path.join(data, 'kiokuko', 'kiokuko.sqlite3'),
+  };
+}
+
+function openConnectionWithCloseFailure(closeFailure: unknown): typeof openConnection {
+  return (filePath, options) => {
+    const database = openConnection(filePath, options);
+    return new Proxy(database, {
+      get(target, property) {
+        if (property === 'close') {
+          return () => {
+            target.close();
+            throw closeFailure;
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
   };
 }
 
@@ -40,6 +68,27 @@ async function runCliJson(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, arg
   return JSON.parse(stdout) as { ok: boolean; data: Record<string, unknown> };
 }
 
+test('setup preserves both global-workspace initialization and database-close failures', async () => {
+  const temporary = await temporaryEnvironment('workspace-dual-failure');
+  const workspaceFailure = new Error('workspace-initialization-failure-sentinel');
+  const closeFailure = new Error('setup-database-close-failure-sentinel');
+
+  await assert.rejects(setupGlobalClients({
+    clients: [],
+    databasePath: temporary.databasePath,
+    platform: 'linux',
+    env: temporary.env,
+  }, {
+    openConnection: openConnectionWithCloseFailure(closeFailure),
+    ensureGlobalWorkspace: () => { throw workspaceFailure; },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.message, 'Global workspace initialization failed and closing the database connection also failed');
+    assert.deepEqual(error.errors, [workspaceFailure, closeFailure]);
+    return true;
+  });
+});
+
 test('CLI no-argument setup configures only the detected Hermes profile when the executable is present', async () => {
   for (const platform of ['linux', 'darwin'] as const) {
     const temporary = await temporaryEnvironment(`cli-hermes-${platform}`);
@@ -53,9 +102,9 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
       'model: test\nmcp_servers:\n  other:\n    command: other\n    args: [serve]\n',
     );
     const hermes = path.join(bin, 'hermes');
-    await writeFile(hermes, '#!/bin/sh\n');
+    await writeFile(hermes, '#!/bin/sh\nprintf "%s\\n" "$HERMES_CONFIG_PATH"\n');
     await chmod(hermes, 0o755);
-    const env = { ...temporary.env, PATH: bin };
+    const env = { ...temporary.env, PATH: bin, HERMES_CONFIG_PATH: path.join(hermesHome, 'config.yaml') };
 
     const dryRun = await runCliJson(platform, env, ['setup', '--dry-run', '--json']);
     assert.equal(dryRun.ok, true);
@@ -120,15 +169,40 @@ test('CLI uses hermes config path to select a profile when active_profile is una
   await assert.rejects(access(path.join(temporary.home, '.hermes', 'config.yaml')));
 });
 
-test('CLI --no-claude-prompt-hook does not create Claude settings.json', async () => {
-  const temporary = await temporaryEnvironment('cli-no-claude-prompt-hook');
+test('CLI Claude setup does not create or manage settings.json hooks', async () => {
+  const temporary = await temporaryEnvironment('cli-no-claude-hook-management');
   const result = await runCliJson('linux', temporary.env, [
-    'setup', '--clients', 'claude', '--no-claude-prompt-hook', '--no-standard-skills', '--json',
+    'setup', '--clients', 'claude', '--no-standard-skills', '--json',
   ]);
   assert.equal(result.ok, true);
   const files = result.data.files as Array<{ purpose: string }>;
-  assert.equal(files.some((file) => file.purpose === 'hook-config'), false);
+  assert.deepEqual(files.map((file) => file.purpose).sort(), ['instructions', 'mcp-config']);
   await assert.rejects(access(path.join(temporary.home, '.claude', 'settings.json')));
+});
+
+test('CLI batch setup persists an explicit community discovery choice', async () => {
+  const temporary = await temporaryEnvironment('cli-community-discovery');
+  const result = await runCliJson('linux', temporary.env, [
+    'setup', '--clients', 'codex', '--no-standard-skills', '--skill-discovery', 'community', '--json',
+  ]);
+  assert.equal(result.ok, true);
+  assert.match(
+    await readFile(path.join(temporary.home, '.codex', 'config.toml'), 'utf8'),
+    /KIOKUKO_SKILL_DISCOVERY = "community"/,
+  );
+});
+
+test('CLI setup preserves an explicit discovery environment override', async () => {
+  const temporary = await temporaryEnvironment('cli-discovery-environment');
+  const result = await runCliJson('linux', {
+    ...temporary.env,
+    KIOKUKO_SKILL_DISCOVERY: 'off',
+  }, ['setup', '--clients', 'codex', '--no-standard-skills', '--json']);
+  assert.equal(result.ok, true);
+  assert.match(
+    await readFile(path.join(temporary.home, '.codex', 'config.toml'), 'utf8'),
+    /KIOKUKO_SKILL_DISCOVERY = "off"/,
+  );
 });
 
 test('setup safely merges Codex, OpenCode, and Claude Code global configuration and is idempotent', async () => {
@@ -153,33 +227,40 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     databasePath: temporary.databasePath,
   });
   assert.equal(first.standardSkills, true);
-  assert.equal(first.files.length, 17);
+  assert.equal(first.files.length, 15);
   assert.equal(first.files.filter((file) => file.action === 'updated').length, 6);
-  assert.equal(first.files.filter((file) => file.action === 'created').length, 11);
+  assert.equal(first.files.filter((file) => file.action === 'created').length, 9);
   assert.equal(first.files.filter((file) => file.purpose === 'standard-skill').length, 8);
-  assert.equal(first.files.filter((file) => file.purpose === 'hook-config').length, 1);
 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
   assert.match(codexConfig, /^model = "gpt-test"/);
   assert.match(codexConfig, /\[mcp_servers\.kiokuko\]/);
   assert.match(codexConfig, /command = "kiokuko"/);
+  assert.match(codexConfig, /KIOKUKO_SKILL_DISCOVERY = "official"/);
   const openCodeText = await readFile(path.join(openCodeDirectory, 'opencode.jsonc'), 'utf8');
   assert.match(openCodeText, /keep this comment/);
-  const openCode = parse(openCodeText) as { theme: string; mcp: { kiokuko: { type: string; command: string[]; enabled: boolean } } };
+  const openCode = parse(openCodeText) as { theme: string; mcp: { kiokuko: { type: string; command: string[]; enabled: boolean; environment: { KIOKUKO_SKILL_DISCOVERY: string } } } };
   assert.equal(openCode.theme, 'dark');
-  assert.deepEqual(openCode.mcp.kiokuko, { type: 'local', command: ['kiokuko', 'mcp'], enabled: true });
-  const openCodeGuard = await readFile(path.join(openCodeDirectory, 'plugins', 'kiokuko-loop-guard.js'), 'utf8');
-  assert.match(openCodeGuard, /MAX_AGENT_STEPS = 12/);
-  assert.match(openCodeGuard, /task_prepare is limited to once per user request/);
+  assert.deepEqual(openCode.mcp.kiokuko, {
+    type: 'local',
+    command: ['kiokuko', 'mcp'],
+    enabled: true,
+    environment: { KIOKUKO_SKILL_DISCOVERY: 'official' },
+  });
   const claude = JSON.parse(await readFile(path.join(temporary.home, '.claude.json'), 'utf8')) as { theme: string; mcpServers: { kiokuko: { type: string; command: string; args: string[]; env: object } } };
   assert.equal(claude.theme, 'dark');
-  assert.deepEqual(claude.mcpServers.kiokuko, { type: 'stdio', command: 'kiokuko', args: ['mcp'], env: {} });
-  const claudeSettings = JSON.parse(await readFile(path.join(claudeDirectory, 'settings.json'), 'utf8')) as { hooks: { UserPromptSubmit: Array<{ hooks: Array<{ type: string; server?: string; tool?: string }> }> } };
-  assert.equal(claudeSettings.hooks.UserPromptSubmit.flatMap((group) => group.hooks).filter((hook) => hook.type === 'mcp_tool' && hook.server === 'kiokuko' && hook.tool === 'claude_prompt_context').length, 1);
+  assert.deepEqual(claude.mcpServers.kiokuko, {
+    type: 'stdio',
+    command: 'kiokuko',
+    args: ['mcp'],
+    env: { KIOKUKO_SKILL_DISCOVERY: 'official' },
+  });
+  await assert.rejects(access(path.join(claudeDirectory, 'settings.json')));
   const hermesConfig = await readFile(path.join(temporary.home, '.hermes', 'config.yaml'), 'utf8');
   assert.match(hermesConfig, /Managed by `kiokuko setup`\./);
   assert.match(hermesConfig, /command: kiokuko/);
   assert.match(hermesConfig, /- mcp/);
+  assert.match(hermesConfig, /KIOKUKO_SKILL_DISCOVERY: official/);
 
   const skillDirectories = [
     path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul'),
@@ -200,10 +281,26 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /^# Human/);
     assert.equal((instructions.match(/BEGIN KIOKUKO GLOBAL MEMORY/g) ?? []).length, 1);
     assert.match(instructions, /task_prepare/);
+    assert.match(instructions, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
+    assert.match(instructions, /Every descriptor must include its kind and canonical name/u);
+    assert.match(instructions, /bounded opaque `requestId`/);
+    assert.match(instructions, /Use a new ID for every new logical request/);
+    assert.match(instructions, /Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict/);
     assert.match(instructions, /task_answer/);
     assert.match(instructions, /memory_checkpoint/);
     assert.match(instructions, /curator_check/);
     assert.match(instructions, /curator_globalize/);
+    assert.match(instructions, /Optional external skill discovery is feature-flagged and reference-only/);
+    assert.match(instructions, /Inspect `nextAction` after every `task_prepare` and `task_answer` response/);
+    assert.match(instructions, /`required_capability_unavailable` is a hard stop/);
+    assert.match(instructions, /Do not continue through `catalog_similarity`, legacy instructions, external Skill discovery, fetched skills, or any other fallback/);
+    assert.match(instructions, /Availability alone is not compliance: read that Skill before modifying code/);
+    assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(instructions, /Call `task_answer` with the same capability catalog, run ID, and context budget/);
+    assert.match(instructions, /unavailable before a non-trivial build\/debug request can obtain its policy, stop and report/);
+    assert.match(instructions, /For such a request, repository-only continuation is allowed only after the policy establishes that no Kiokuko memory was delivered or used/);
+    assert.doesNotMatch(instructions, /Kiokuko is unavailable[^.]*continue from current evidence/iu);
+    assert.doesNotMatch(instructions, /legacy fallback|mattpocock\/skills|explicitly empty catalog/iu);
   }
 
   const database = openConnection(temporary.databasePath);
@@ -226,22 +323,225 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   assert.deepEqual(await Promise.all(second.files.map((file) => readFile(file.path, 'utf8'))), before);
 });
 
-test('setup preserves existing Claude settings while adding one managed prompt hook', async () => {
+test('setup removes exact retired Claude and OpenCode automation once, then is idempotent', async () => {
+  const temporary = await temporaryEnvironment('legacy-automation-cleanup');
+  const pluginPath = path.join(temporary.config, 'opencode', 'plugins', 'kiokuko-loop-guard.js');
+  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
+  const settings = `${JSON.stringify({
+    permissions: { allow: ['Read'] },
+    hooks: {
+      UserPromptSubmit: [
+        { matcher: 'human', hooks: [{ type: 'command', command: 'echo keep' }] },
+        { hooks: [LEGACY_CLAUDE_PROMPT_HOOK] },
+      ],
+    },
+  }, null, 2)}\n`;
+  await mkdir(path.dirname(pluginPath), { recursive: true });
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+  await writeFile(pluginPath, legacyOpenCodeLoopGuardFixture());
+  await writeFile(settingsPath, settings);
+
+  const first = await setupGlobalClients({
+    clients: ['opencode', 'claude'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+  assert.deepEqual(
+    first.files.filter((file) => file.purpose === 'legacy-cleanup').map((file) => ({ client: file.client, action: file.action })),
+    [{ client: 'opencode', action: 'deleted' }, { client: 'claude', action: 'updated' }],
+  );
+  await assert.rejects(access(pluginPath));
+  const cleaned = JSON.parse(await readFile(settingsPath, 'utf8')) as { permissions: object; hooks: { UserPromptSubmit: unknown[] } };
+  assert.deepEqual(cleaned.permissions, { allow: ['Read'] });
+  assert.deepEqual(cleaned.hooks.UserPromptSubmit, [{ matcher: 'human', hooks: [{ type: 'command', command: 'echo keep' }] }]);
+
+  const second = await setupGlobalClients({
+    clients: ['opencode', 'claude'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+  assert.equal(second.files.some((file) => file.purpose === 'legacy-cleanup'), false);
+  assert.ok(second.files.every((file) => file.action === 'unchanged'));
+});
+
+test('setup rejects modified retired automation before database or client writes', async () => {
+  for (const client of ['opencode', 'claude'] as const) {
+    const temporary = await temporaryEnvironment(`legacy-automation-conflict-${client}`);
+    if (client === 'opencode') {
+      const pluginPath = path.join(temporary.config, 'opencode', 'plugins', 'kiokuko-loop-guard.js');
+      await mkdir(path.dirname(pluginPath), { recursive: true });
+      await writeFile(pluginPath, `${legacyOpenCodeLoopGuardFixture()}\n// modified\n`);
+    } else {
+      const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
+      await mkdir(path.dirname(settingsPath), { recursive: true });
+      await writeFile(settingsPath, JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: 'mcp_tool', server: 'kiokuko' }] }] } }));
+    }
+
+    await assert.rejects(setupGlobalClients({
+      clients: [client],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+      standardSkills: false,
+    }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+    await assert.rejects(access(temporary.databasePath));
+    await assert.rejects(access(client === 'opencode'
+      ? path.join(temporary.config, 'opencode', 'opencode.json')
+      : path.join(temporary.home, '.claude.json')));
+  }
+});
+
+test('setup restores retired automation cleanup when a later write fails', async () => {
+  const temporary = await temporaryEnvironment('legacy-automation-cleanup-rollback');
+  const pluginPath = path.join(temporary.config, 'opencode', 'plugins', 'kiokuko-loop-guard.js');
+  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
+  const plugin = legacyOpenCodeLoopGuardFixture();
+  const settings = `${JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [LEGACY_CLAUDE_PROMPT_HOOK] }] } }, null, 2)}\n`;
+  await mkdir(path.dirname(pluginPath), { recursive: true });
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+  await writeFile(pluginPath, plugin);
+  await writeFile(settingsPath, settings);
+  const failure = new Error('later standard skill write failed');
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['opencode', 'claude'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectedContent, mode) => {
+      if (filePath.endsWith('SKILL.md')) throw failure;
+      return atomicWriteTextIfUnchanged(filePath, content, expectedContent, mode);
+    },
+  }), (error: unknown) => error === failure);
+
+  assert.equal(await readFile(pluginPath, 'utf8'), plugin);
+  assert.equal(await readFile(settingsPath, 'utf8'), settings);
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'AGENTS.md')));
+  await assert.rejects(access(path.join(temporary.home, '.claude.json')));
+  await assert.rejects(access(path.join(temporary.home, '.claude', 'CLAUDE.md')));
+});
+
+test('setup persists community discovery for every client and preserves it when a later batch run omits the mode', async () => {
+  const temporary = await temporaryEnvironment('community-discovery');
+  const first = await setupGlobalClients({
+    clients: ['codex', 'opencode', 'claude', 'hermes'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+    skillDiscoveryMode: 'community',
+  });
+  assert.ok(first.files.every((file) => file.action === 'created'));
+
+  const codexPath = path.join(temporary.home, '.codex', 'config.toml');
+  const openCodePath = path.join(temporary.config, 'opencode', 'opencode.json');
+  const claudePath = path.join(temporary.home, '.claude.json');
+  const hermesPath = path.join(temporary.home, '.hermes', 'config.yaml');
+  assert.match(await readFile(codexPath, 'utf8'), /KIOKUKO_SKILL_DISCOVERY = "community"/);
+  const openCode = parse(await readFile(openCodePath, 'utf8')) as { mcp: { kiokuko: { environment: { KIOKUKO_SKILL_DISCOVERY: string } } } };
+  assert.equal(openCode.mcp.kiokuko.environment.KIOKUKO_SKILL_DISCOVERY, 'community');
+  const claude = JSON.parse(await readFile(claudePath, 'utf8')) as { mcpServers: { kiokuko: { env: { KIOKUKO_SKILL_DISCOVERY: string } } } };
+  assert.equal(claude.mcpServers.kiokuko.env.KIOKUKO_SKILL_DISCOVERY, 'community');
+  assert.match(await readFile(hermesPath, 'utf8'), /KIOKUKO_SKILL_DISCOVERY: community/);
+
+  const before = await Promise.all([codexPath, openCodePath, claudePath, hermesPath].map((file) => readFile(file, 'utf8')));
+  const second = await setupGlobalClients({
+    clients: ['codex', 'opencode', 'claude', 'hermes'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+  assert.ok(second.files.every((file) => file.action === 'unchanged'));
+  assert.deepEqual(await Promise.all([codexPath, openCodePath, claudePath, hermesPath].map((file) => readFile(file, 'utf8'))), before);
+});
+
+test('explicit setup discovery mode outranks an invalid lower-priority environment value', async () => {
+  const temporary = await temporaryEnvironment('explicit-discovery-precedence');
+  const result = await runCliJson('linux', {
+    ...temporary.env,
+    PATH: '',
+    KIOKUKO_SKILL_DISCOVERY: 'invalid-lower-priority-value',
+  }, [
+    'setup',
+    '--clients', 'codex',
+    '--skill-discovery', 'community',
+    '--no-standard-skills',
+    '--json',
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.data.clients, ['codex']);
+  const config = await readFile(path.join(temporary.home, '.codex', 'config.toml'), 'utf8');
+  assert.match(config, /KIOKUKO_SKILL_DISCOVERY = "community"/u);
+});
+
+test('setup rejects an invalid explicit discovery mode before writing with no selected clients', async () => {
+  const temporary = await temporaryEnvironment('invalid-explicit-discovery');
+
+  await assert.rejects(
+    setupGlobalClients({
+      clients: [],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+      skillDiscoveryMode: 'invalid' as never,
+    }),
+    (error: unknown) => error instanceof Error
+      && 'code' in error
+      && error.code === 'VALIDATION_ERROR',
+  );
+  await assert.rejects(access(temporary.databasePath));
+});
+
+test('setup rejects a non-string command as validation before writing', async () => {
+  const temporary = await temporaryEnvironment('invalid-command-type');
+
+  await assert.rejects(
+    setupGlobalClients({
+      clients: [],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+      command: 42 as never,
+    }),
+    (error: unknown) => error instanceof Error
+      && 'code' in error
+      && error.code === 'VALIDATION_ERROR',
+  );
+  await assert.rejects(access(temporary.databasePath));
+});
+
+test('setup rejects a non-array client selection as validation before writing', async () => {
+  const temporary = await temporaryEnvironment('invalid-client-type');
+
+  await assert.rejects(
+    setupGlobalClients({
+      clients: 'codex' as never,
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+    }),
+    (error: unknown) => error instanceof Error
+      && 'code' in error
+      && error.code === 'VALIDATION_ERROR',
+  );
+  await assert.rejects(access(temporary.databasePath));
+});
+
+test('setup does not inspect or modify existing Claude settings', async () => {
   const temporary = await temporaryEnvironment('claude-settings-preserved');
   const claudeDirectory = path.join(temporary.home, '.claude');
   const settingsPath = path.join(claudeDirectory, 'settings.json');
-  const settings = {
-    permissions: { allow: ['Bash(git status)'] },
-    customSetting: { keep: true },
-    hooks: {
-      UserPromptSubmit: [{
-        matcher: 'keep-this-group',
-        hooks: [{ type: 'command', command: 'echo keep' }],
-      }],
-    },
-  };
+  const settings = '{"permissions":{"allow":["Bash(git status)"]},"customSetting":{"keep":true}}\n';
   await mkdir(claudeDirectory, { recursive: true });
-  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+  await writeFile(settingsPath, settings);
 
   const result = await setupGlobalClients({
     clients: ['claude'],
@@ -251,16 +551,8 @@ test('setup preserves existing Claude settings while adding one managed prompt h
     standardSkills: false,
   });
 
-  assert.equal(result.files.filter((file) => file.purpose === 'hook-config').length, 1);
-  const updated = JSON.parse(await readFile(settingsPath, 'utf8')) as {
-    permissions: { allow: string[] };
-    customSetting: { keep: boolean };
-    hooks: { UserPromptSubmit: Array<{ matcher?: string; hooks: Array<{ type: string; command?: string; server?: string; tool?: string }> }> };
-  };
-  assert.deepEqual(updated.permissions, settings.permissions);
-  assert.deepEqual(updated.customSetting, settings.customSetting);
-  assert.equal(updated.hooks.UserPromptSubmit.some((group) => group.matcher === 'keep-this-group' && group.hooks[0]?.command === 'echo keep'), true);
-  assert.equal(updated.hooks.UserPromptSubmit.flatMap((group) => group.hooks).filter((hook) => hook.type === 'mcp_tool' && hook.server === 'kiokuko' && hook.tool === 'claude_prompt_context').length, 1);
+  assert.deepEqual(result.files.map((file) => file.purpose).sort(), ['instructions', 'mcp-config']);
+  assert.equal(await readFile(settingsPath, 'utf8'), settings);
 });
 
 test('setup dry-run validates but writes no files or database', async () => {
@@ -352,61 +644,6 @@ test('setup can skip new standard-skill installation without deleting an existin
   assert.equal(await readFile(skillPath, 'utf8'), 'human-owned skill\n');
 });
 
-test('setup can skip installing the new Claude prompt hook without creating settings.json', async () => {
-  const temporary = await temporaryEnvironment('no-claude-prompt-hook');
-  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
-
-  const result = await setupGlobalClients({
-    clients: ['claude'],
-    platform: 'linux',
-    env: temporary.env,
-    databasePath: temporary.databasePath,
-    claudePromptHook: false,
-    standardSkills: false,
-  });
-
-  assert.equal(result.files.some((file) => file.purpose === 'hook-config'), false);
-  await assert.rejects(access(settingsPath));
-});
-
-test('setup preserves an existing Claude settings file when the prompt hook is disabled', async () => {
-  const temporary = await temporaryEnvironment('no-claude-prompt-hook-existing');
-  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
-  const settings = '{"permissions":{"allow":["Bash(git status)"]},"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo keep"}]}]}}\n';
-  await mkdir(path.dirname(settingsPath), { recursive: true });
-  await writeFile(settingsPath, settings);
-
-  const result = await setupGlobalClients({
-    clients: ['claude'],
-    platform: 'linux',
-    env: temporary.env,
-    databasePath: temporary.databasePath,
-    claudePromptHook: false,
-    standardSkills: false,
-  });
-
-  assert.equal(result.files.some((file) => file.purpose === 'hook-config'), false);
-  assert.equal(await readFile(settingsPath, 'utf8'), settings);
-});
-
-test('setup for another client does not change an existing Claude prompt hook', async () => {
-  const temporary = await temporaryEnvironment('non-claude-preserves-hook');
-  const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
-  const settings = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"kiokuko","tool":"claude_prompt_context"}]}]}}\n';
-  await mkdir(path.dirname(settingsPath), { recursive: true });
-  await writeFile(settingsPath, settings);
-
-  await setupGlobalClients({
-    clients: ['codex'],
-    platform: 'linux',
-    env: temporary.env,
-    databasePath: temporary.databasePath,
-    standardSkills: false,
-  });
-
-  assert.equal(await readFile(settingsPath, 'utf8'), settings);
-});
-
 test('setup upgrades an older managed standard skill and then reports it unchanged', async () => {
   const temporary = await temporaryEnvironment('managed-skill-upgrade');
   const skillDirectory = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul');
@@ -492,8 +729,8 @@ test('setup rolls back earlier client and skill files when a later standard-skil
   await assert.rejects(access(path.join(referencesDirectory, 'ui-checklist.md')));
 });
 
-test('setup rolls back a Claude hook when a later standard-skill write fails', { skip: process.platform === 'win32' }, async () => {
-  const temporary = await temporaryEnvironment('claude-hook-rollback');
+test('setup rolls back Claude MCP and instructions when a later standard-skill write fails', { skip: process.platform === 'win32' }, async () => {
+  const temporary = await temporaryEnvironment('claude-setup-rollback');
   const settingsPath = path.join(temporary.home, '.claude', 'settings.json');
   const settings = '{"permissions":{"allow":["Bash(git status)"]}}\n';
   await mkdir(path.dirname(settingsPath), { recursive: true });
@@ -517,6 +754,338 @@ test('setup rolls back a Claude hook when a later standard-skill write fails', {
   await assert.rejects(access(path.join(temporary.home, '.claude', 'CLAUDE.md')));
   await assert.rejects(access(path.join(temporary.home, '.claude', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
   await assert.rejects(access(path.join(referencesDirectory, 'ui-checklist.md')));
+});
+
+test('setup exposes the initiating failure and every failed restore after attempting them all', async () => {
+  const temporary = await temporaryEnvironment('restore-failures');
+  const initiatingFailure = new Error('initiating-write-sensitive-detail');
+  const agentRestoreFailure = new Error('agent-restore-sensitive-detail');
+  const configRestoreFailure = new Error('config-restore-sensitive-detail');
+  const restoreAttempts: string[] = [];
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['opencode'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectedContent, mode) => {
+      if (filePath.endsWith('SKILL.md')) throw initiatingFailure;
+      return atomicWriteTextIfUnchanged(filePath, content, expectedContent, mode);
+    },
+    unlinkRegularFileIfUnchanged: async (filePath) => {
+      const restoredPath = String(filePath);
+      restoreAttempts.push(restoredPath);
+      if (restoredPath.endsWith('AGENTS.md')) throw agentRestoreFailure;
+      throw configRestoreFailure;
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.message, 'Setup failed and filesystem restoration also failed');
+    assert.doesNotMatch(error.message, /sensitive|opencode/u);
+    assert.equal(error.errors[0], initiatingFailure);
+    assert.equal(error.errors[1], agentRestoreFailure);
+    assert.equal(error.errors[2], configRestoreFailure);
+    return true;
+  });
+
+  assert.deepEqual(restoreAttempts.map((filePath) => path.basename(filePath)), [
+    'AGENTS.md',
+    'opencode.json',
+  ]);
+});
+
+test('setup preserves a file concurrently created after planning and fails with conflict', async () => {
+  const temporary = await temporaryEnvironment('forward-create-cas');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  const concurrent = 'human concurrent config\n';
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectedContent, mode) => {
+      if (!injected && filePath === configPath) {
+        injected = true;
+        await mkdir(path.dirname(configPath), { recursive: true });
+        await writeFile(configPath, concurrent);
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectedContent, mode);
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.message, 'Setup failed and filesystem restoration also failed');
+    assert.equal(error.errors.length, 2);
+    assert.equal(error.errors[0] instanceof Error && 'code' in error.errors[0] && error.errors[0].code, 'CONFLICT');
+    assert.equal(error.errors[1] instanceof Error && 'code' in error.errors[1] && error.errors[1].code, 'ENOTEMPTY');
+    return true;
+  });
+
+  assert.equal(injected, true);
+  assert.equal(await readFile(configPath, 'utf8'), concurrent);
+  await assert.rejects(access(path.join(temporary.home, '.codex', 'AGENTS.md')));
+});
+
+test('setup preserves a concurrent edit made before an update commit', async () => {
+  const temporary = await temporaryEnvironment('forward-edit-cas');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  await setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+  const concurrent = 'human concurrent replacement\n';
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    command: '/new/kiokuko',
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectedContent, mode) => {
+      if (!injected && filePath === configPath) {
+        injected = true;
+        await writeFile(configPath, concurrent);
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectedContent, mode);
+    },
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+  assert.equal(injected, true);
+  assert.equal(await readFile(configPath, 'utf8'), concurrent);
+});
+
+test('setup rejects a replaced parent even when every planned child keeps its exact inode', async () => {
+  const temporary = await temporaryEnvironment('parent-swap-exact-children');
+  const codexDirectory = path.join(temporary.home, '.codex');
+  const displacedDirectory = path.join(temporary.home, '.codex.displaced');
+  const configPath = path.join(codexDirectory, 'config.toml');
+  const instructionsPath = path.join(codexDirectory, 'AGENTS.md');
+  await setupGlobalClients({
+    clients: ['codex'],
+    command: '/old/kiokuko',
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+  const originalConfig = await readFile(configPath, 'utf8');
+  const originalInstructions = await readFile(instructionsPath, 'utf8');
+  const originalParent = await lstat(codexDirectory, { bigint: true });
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    command: '/new/kiokuko',
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    beforeCommit: async () => {
+      await rename(codexDirectory, displacedDirectory);
+      await mkdir(codexDirectory);
+      await link(path.join(displacedDirectory, 'config.toml'), configPath);
+      await link(path.join(displacedDirectory, 'AGENTS.md'), instructionsPath);
+      await writeFile(path.join(displacedDirectory, 'human-sentinel'), 'untouched\n');
+    },
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+  const replacementParent = await lstat(codexDirectory, { bigint: true });
+  assert.notEqual(replacementParent.ino, originalParent.ino);
+  assert.equal(await readFile(configPath, 'utf8'), originalConfig);
+  assert.equal(await readFile(instructionsPath, 'utf8'), originalInstructions);
+  assert.equal(await readFile(path.join(displacedDirectory, 'config.toml'), 'utf8'), originalConfig);
+  assert.equal(await readFile(path.join(displacedDirectory, 'AGENTS.md'), 'utf8'), originalInstructions);
+  assert.equal(await readFile(path.join(displacedDirectory, 'human-sentinel'), 'utf8'), 'untouched\n');
+  assert.doesNotMatch(originalConfig, /\/new\/kiokuko/u);
+});
+
+test('setup never adopts a parent directory that was absent during planning', async () => {
+  const temporary = await temporaryEnvironment('parent-create-only');
+  const codexDirectory = path.join(temporary.home, '.codex');
+  const sentinelPath = path.join(codexDirectory, 'human-sentinel');
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    beforeCommit: async () => {
+      await mkdir(codexDirectory);
+      await writeFile(sentinelPath, 'human-owned\n');
+    },
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+  assert.equal(await readFile(sentinelPath, 'utf8'), 'human-owned\n');
+  await assert.rejects(access(path.join(codexDirectory, 'config.toml')));
+  await assert.rejects(access(path.join(codexDirectory, 'AGENTS.md')));
+});
+
+test('setup never adopts a nested skill directory chain that was absent during planning', async () => {
+  const temporary = await temporaryEnvironment('nested-parent-create-only');
+  const skillDirectory = path.join(
+    temporary.home,
+    '.agents',
+    'skills',
+    'kiokuko-ui-design-soul',
+  );
+  const referencesDirectory = path.join(skillDirectory, 'references');
+  const sentinelPath = path.join(referencesDirectory, 'human-sentinel');
+  await setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+  }, {
+    beforeCommit: async () => {
+      await mkdir(referencesDirectory, { recursive: true });
+      await writeFile(sentinelPath, 'human-owned\n');
+    },
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+  assert.equal(await readFile(sentinelPath, 'utf8'), 'human-owned\n');
+  await assert.rejects(access(path.join(skillDirectory, 'SKILL.md')));
+  await assert.rejects(access(path.join(referencesDirectory, 'ui-checklist.md')));
+});
+
+test('setup binds a newly created parent into the first write and never follows a replacement', async () => {
+  const temporary = await temporaryEnvironment('created-parent-swap');
+  const codexDirectory = path.join(temporary.home, '.codex');
+  const displacedDirectory = path.join(temporary.home, '.codex.displaced');
+  const sentinelPath = path.join(codexDirectory, 'human-sentinel');
+  let expectedParentInode: bigint | undefined;
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+      if (!injected) {
+        injected = true;
+        expectedParentInode = expectation.expectedParentDirectory?.inode;
+        await rename(codexDirectory, displacedDirectory);
+        await mkdir(codexDirectory);
+        await writeFile(sentinelPath, 'human-owned\n');
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.message, 'Setup failed and filesystem restoration also failed');
+    assert.equal(error.errors.length, 2);
+    assert.equal(error.errors[0] instanceof Error && 'code' in error.errors[0] && error.errors[0].code, 'CONFLICT');
+    assert.equal(error.errors[1] instanceof Error && 'code' in error.errors[1] && error.errors[1].code, 'CONFLICT');
+    return true;
+  });
+
+  assert.equal(injected, true);
+  const displaced = await lstat(displacedDirectory, { bigint: true });
+  assert.equal(expectedParentInode, displaced.ino);
+  assert.equal(await readFile(sentinelPath, 'utf8'), 'human-owned\n');
+  await assert.rejects(access(path.join(codexDirectory, 'config.toml')));
+  await assert.rejects(access(path.join(displacedDirectory, 'config.toml')));
+});
+
+test('setup restores the original after an update quarantine commits and its post-rename hook fails', async () => {
+  const temporary = await temporaryEnvironment('write-quarantine-committed');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  await setupGlobalClients({
+    clients: ['codex'],
+    command: '/old/kiokuko',
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+  const original = await readFile(configPath, 'utf8');
+  const sentinel = new Error('post-rename hook failed after update quarantine');
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    command: '/new/kiokuko',
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+      if (!injected && filePath === configPath) {
+        injected = true;
+        return atomicWriteTextIfUnchanged(filePath, content, expectation, mode, {
+          afterRename: async (_source, destination) => {
+            if (destination.endsWith('.previous')) {
+              throw sentinel;
+            }
+          },
+        });
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+    },
+  }), (error: unknown) => error instanceof AtomicCommittedUnlinkError
+    && error.operationError === sentinel);
+
+  assert.equal(injected, true);
+  assert.equal(await readFile(configPath, 'utf8'), original);
+  assert.doesNotMatch(await readFile(configPath, 'utf8'), /\/new\/kiokuko/u);
+});
+
+test('setup rollback does not delete a newly installed file after a concurrent edit', async () => {
+  const temporary = await temporaryEnvironment('rollback-edit-cas');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  const instructionsPath = path.join(temporary.home, '.codex', 'AGENTS.md');
+  const concurrent = 'human edit after setup write\n';
+  const laterFailure = new Error('later setup write failed');
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectedContent, mode) => {
+      if (filePath === instructionsPath) {
+        await writeFile(configPath, concurrent);
+        throw laterFailure;
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectedContent, mode);
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.message, 'Setup failed and filesystem restoration also failed');
+    assert.equal(error.errors[0], laterFailure);
+    assert.equal(error.errors.length, 3);
+    assert.equal(error.errors[1] instanceof Error && 'code' in error.errors[1] && error.errors[1].code, 'CONFLICT');
+    assert.equal(error.errors[2] instanceof Error && 'code' in error.errors[2] && error.errors[2].code, 'ENOTEMPTY');
+    return true;
+  });
+
+  assert.equal(await readFile(configPath, 'utf8'), concurrent);
+  await assert.rejects(access(instructionsPath));
 });
 
 test('a profile-shaped HERMES_HOME wins over the sticky root profile', async () => {
@@ -603,6 +1172,28 @@ test('a Hermes conflict plans no database or other client writes', async () => {
   await assert.rejects(access(temporary.databasePath));
 });
 
+test('semantically invalid Codex TOML fails before any setup mutation', async () => {
+  const temporary = await temporaryEnvironment('invalid-codex-toml');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  await mkdir(path.dirname(configPath), { recursive: true });
+  const original = 'a = 1\n[a]\nb = 2\n';
+  await writeFile(configPath, original);
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex', 'opencode'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }), (error: unknown) => error instanceof Error
+    && 'code' in error
+    && error.code === 'VALIDATION_ERROR');
+
+  assert.equal(await readFile(configPath, 'utf8'), original);
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
+  await assert.rejects(access(temporary.databasePath));
+});
+
 test('setup refuses an unmanaged Codex kiokuko table before writing anything', async () => {
   const temporary = await temporaryEnvironment('conflict');
   const codexDirectory = path.join(temporary.home, '.codex');
@@ -620,28 +1211,476 @@ test('setup refuses an unmanaged Codex kiokuko table before writing anything', a
   await assert.rejects(access(temporary.databasePath));
 });
 
-test('setup refuses an unmanaged OpenCode loop guard before writing anything', async () => {
-  const temporary = await temporaryEnvironment('opencode-guard-conflict');
-  const openCodeDirectory = path.join(temporary.config, 'opencode');
-  const pluginsDirectory = path.join(openCodeDirectory, 'plugins');
-  await mkdir(pluginsDirectory, { recursive: true });
-  const configPath = path.join(openCodeDirectory, 'opencode.json');
-  const instructionsPath = path.join(openCodeDirectory, 'AGENTS.md');
-  const guardPath = path.join(pluginsDirectory, 'kiokuko-loop-guard.js');
-  const originalGuard = 'export const HumanPlugin = async () => ({})\n';
-  await writeFile(configPath, '{"theme":"dark"}\n');
-  await writeFile(instructionsPath, '# Human OpenCode rules\n');
-  await writeFile(guardPath, originalGuard);
+test('setup refuses legacy or tampered marked Codex blocks without rewriting them', async () => {
+  const variants = [
+    [
+      'model = "human"',
+      '# BEGIN KIOKUKO MCP',
+      '# Managed by `kiokuko setup`.',
+      '[mcp_servers.kiokuko]',
+      'command = "kiokuko"',
+      'args = ["mcp"]',
+      'enabled = true',
+      '# END KIOKUKO MCP',
+      '',
+    ].join('\n'),
+    [
+      'model = "human"',
+      '# BEGIN KIOKUKO MCP',
+      '# copied markers around a human wrapper',
+      '[mcp_servers.kiokuko]',
+      'command = "human-wrapper"',
+      'args = ["run", "kiokuko"]',
+      'enabled = true',
+      'env = { KIOKUKO_SKILL_DISCOVERY = "official" }',
+      '# END KIOKUKO MCP',
+      '',
+    ].join('\n'),
+  ];
+
+  for (const [index, original] of variants.entries()) {
+    const temporary = await temporaryEnvironment(`codex-marked-conflict-${index}`);
+    const configPath = path.join(temporary.home, '.codex', 'config.toml');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, original);
+
+    await assert.rejects(setupGlobalClients({
+      clients: ['codex'],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+      standardSkills: false,
+    }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+    assert.equal(await readFile(configPath, 'utf8'), original);
+    await assert.rejects(access(path.join(temporary.home, '.codex', 'AGENTS.md')));
+    await assert.rejects(access(temporary.databasePath));
+  }
+});
+
+test('setup refuses modified OpenCode and Claude kiokuko servers before writing anything', async () => {
+  for (const client of ['opencode', 'claude'] as const) {
+    const temporary = await temporaryEnvironment(`${client}-mcp-conflict`);
+    const codexDirectory = path.join(temporary.home, '.codex');
+    const codexPath = path.join(codexDirectory, 'config.toml');
+    await mkdir(codexDirectory, { recursive: true });
+    const originalCodex = 'model = "human"\n';
+    await writeFile(codexPath, originalCodex);
+
+    const configPath = client === 'opencode'
+      ? path.join(temporary.config, 'opencode', 'opencode.json')
+      : path.join(temporary.home, '.claude.json');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    const originalClient = client === 'opencode'
+      ? '{"theme":"human","mcp":{"kiokuko":{"type":"local","command":["kiokuko","mcp"],"enabled":true,"environment":{"KIOKUKO_SKILL_DISCOVERY":"official","PATH":"/human"}}}}\n'
+      : '{"theme":"human","mcpServers":{"kiokuko":{"type":"stdio","command":"kiokuko","args":["mcp"],"env":{"KIOKUKO_SKILL_DISCOVERY":"official","PATH":"/human"}}}}\n';
+    await writeFile(configPath, originalClient);
+
+    await assert.rejects(setupGlobalClients({
+      clients: ['codex', client],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+      standardSkills: false,
+    }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+    assert.equal(await readFile(codexPath, 'utf8'), originalCodex);
+    assert.equal(await readFile(configPath, 'utf8'), originalClient);
+    await assert.rejects(access(temporary.databasePath));
+  }
+});
+
+test('setup rejects a dangling preferred OpenCode JSONC entry instead of falling back to JSON', { skip: process.platform === 'win32' }, async () => {
+  const temporary = await temporaryEnvironment('opencode-dangling-jsonc');
+  const directory = path.join(temporary.config, 'opencode');
+  const jsonc = path.join(directory, 'opencode.jsonc');
+  await mkdir(directory, { recursive: true });
+  await symlink(path.join(directory, 'missing.jsonc'), jsonc);
+
+  await assert.rejects(
+    setupGlobalClients({
+      clients: ['opencode'],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+      standardSkills: false,
+    }),
+    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'SECURITY_REJECTION',
+  );
+  await assert.rejects(access(path.join(directory, 'opencode.json')));
+  await assert.rejects(access(temporary.databasePath));
+});
+
+test('setup binds OpenCode alternate-path absence through commit', async () => {
+  const temporary = await temporaryEnvironment('opencode-alternate-race');
+  const directory = path.join(temporary.config, 'opencode');
+  const jsonc = path.join(directory, 'opencode.jsonc');
+  const json = path.join(directory, 'opencode.json');
 
   await assert.rejects(setupGlobalClients({
     clients: ['opencode'],
     platform: 'linux',
     env: temporary.env,
     databasePath: temporary.databasePath,
-  }), /unmanaged file/);
+    standardSkills: false,
+  }, {
+    beforeCommit: async () => {
+      await mkdir(directory, { recursive: true });
+      await writeFile(jsonc, '{}\n');
+    },
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
 
-  assert.equal(await readFile(configPath, 'utf8'), '{"theme":"dark"}\n');
-  assert.equal(await readFile(instructionsPath, 'utf8'), '# Human OpenCode rules\n');
-  assert.equal(await readFile(guardPath, 'utf8'), originalGuard);
+  assert.equal(await readFile(jsonc, 'utf8'), '{}\n');
+  await assert.rejects(access(json));
+});
+
+test('setup revalidates unchanged targets by identity before committing', async () => {
+  const temporary = await temporaryEnvironment('unchanged-identity-race');
+  await setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  const displaced = path.join(temporary.home, '.codex', 'config.previous');
+  const identical = await readFile(configPath, 'utf8');
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    beforeCommit: async () => {
+      await rename(configPath, displaced);
+      await writeFile(configPath, identical);
+    },
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+  assert.equal(await readFile(configPath, 'utf8'), identical);
+});
+
+test('setup commit detects a retired artifact that appears after an absent cleanup plan', async () => {
+  const temporary = await temporaryEnvironment('retired-artifact-race');
+  const pluginPath = path.join(temporary.config, 'opencode', 'plugins', 'kiokuko-loop-guard.js');
+  const plugin = legacyOpenCodeLoopGuardFixture();
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['opencode'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    beforeCommit: async () => {
+      await mkdir(path.dirname(pluginPath), { recursive: true });
+      await writeFile(pluginPath, plugin);
+    },
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+
+  assert.equal(await readFile(pluginPath, 'utf8'), plugin);
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
+});
+
+test('setup resolves the Hermes profile once for config and standard-skill destinations', async () => {
+  const temporary = await temporaryEnvironment('hermes-single-resolution');
+  const bin = path.join(temporary.root, 'bin');
+  const profile = path.join(temporary.home, '.hermes', 'profiles', 'bound');
+  const countPath = path.join(temporary.root, 'hermes-count');
+  await mkdir(bin, { recursive: true });
+  await mkdir(profile, { recursive: true });
+  const executable = path.join(bin, 'hermes');
+  await writeFile(executable, '#!/bin/sh\nprintf "x\\n" >> "$HERMES_COUNT"\nprintf "%s\\n" "$HERMES_CONFIG_PATH"\n');
+  await chmod(executable, 0o755);
+
+  await setupGlobalClients({
+    clients: ['hermes'],
+    platform: 'linux',
+    env: {
+      ...temporary.env,
+      PATH: bin,
+      HERMES_COUNT: countPath,
+      HERMES_CONFIG_PATH: path.join(profile, 'config.yaml'),
+    },
+    databasePath: temporary.databasePath,
+  });
+
+  assert.equal(await readFile(countPath, 'utf8'), 'x\n');
+  await access(path.join(profile, 'config.yaml'));
+  await access(path.join(profile, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'));
+});
+
+test('setup rejects invalid UTF-8 managed text before database mutation', async () => {
+  const temporary = await temporaryEnvironment('invalid-utf8');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, Buffer.from([0xc3, 0x28]));
+
+  await assert.rejects(
+    setupGlobalClients({
+      clients: ['codex'],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+      standardSkills: false,
+    }),
+    (error: unknown) => error instanceof Error && 'code' in error && error.code === 'VALIDATION_ERROR',
+  );
   await assert.rejects(access(temporary.databasePath));
+});
+
+test('setup compensates a committed file and exposes post-commit cleanup failure', async () => {
+  const temporary = await temporaryEnvironment('cleanup-partial-commit');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+      if (!injected) {
+        injected = true;
+        return atomicWriteTextIfUnchanged(filePath, content, expectation, mode, {
+          beforeCleanup: async () => { throw new Error('cleanup-sentinel'); },
+        });
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.message, 'Setup failed and filesystem restoration also failed');
+    assert.equal(error.errors.length, 2);
+    assert.ok(error.errors[0] instanceof AggregateError);
+    assert.equal(error.errors[0].message, 'File mutation committed, but committed-artifact cleanup failed');
+    assert.equal(error.errors[1] instanceof Error && 'code' in error.errors[1] && error.errors[1].code, 'ENOTEMPTY');
+    return true;
+  });
+
+  assert.equal(injected, true);
+  await assert.rejects(access(configPath));
+  await assert.rejects(access(path.join(temporary.home, '.codex', 'AGENTS.md')));
+});
+
+test('setup compensates a target committed before post-install validation fails', async () => {
+  const temporary = await temporaryEnvironment('post-install-partial-commit');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  const sentinel = new Error('post-install-sentinel');
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+      if (!injected) {
+        injected = true;
+        return atomicWriteTextIfUnchanged(filePath, content, expectation, mode, {
+          afterInstall: async () => { throw sentinel; },
+        });
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+    },
+  }), (error: unknown) => error instanceof AtomicCommittedMutationError
+    && error.operationError === sentinel);
+
+  await assert.rejects(access(configPath));
+  await assert.rejects(access(path.join(temporary.home, '.codex', 'AGENTS.md')));
+});
+
+test('setup compensates a create whose alternate-conflict rollback rename fails', async () => {
+  const temporary = await temporaryEnvironment('alternate-rollback-committed-create');
+  const configDirectory = path.join(temporary.config, 'opencode');
+  const configPath = path.join(configDirectory, 'opencode.json');
+  const alternatePath = path.join(configDirectory, 'opencode.jsonc');
+  const sentinel = new Error('installed-target rollback rename failed');
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['opencode'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+      if (!injected && filePath === configPath) {
+        injected = true;
+        return atomicWriteTextIfUnchanged(filePath, content, expectation, mode, {
+          afterInstall: async () => writeFile(alternatePath, '{"concurrent":true}\n'),
+          beforeRename: async (_source, destination) => {
+            if (destination.endsWith('.rollback')) {
+              throw sentinel;
+            }
+          },
+        });
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.message, 'Setup failed and filesystem restoration also failed');
+    assert.ok(error.errors[0] instanceof AtomicCommittedMutationError);
+    assert.ok(error.errors[0].operationError instanceof AggregateError);
+    assert.equal(error.errors[0].operationError.errors.includes(sentinel), true);
+    return true;
+  });
+
+  assert.equal(injected, true);
+  await assert.rejects(access(configPath));
+  assert.equal(await readFile(alternatePath, 'utf8'), '{"concurrent":true}\n');
+  await assert.rejects(access(path.join(configDirectory, 'AGENTS.md')));
+  assert.deepEqual(await readdir(configDirectory), ['opencode.jsonc']);
+});
+
+test('setup restores an update whose alternate-conflict rollback rename fails', async () => {
+  const temporary = await temporaryEnvironment('alternate-rollback-committed-update');
+  const configDirectory = path.join(temporary.config, 'opencode');
+  const configPath = path.join(configDirectory, 'opencode.json');
+  const alternatePath = path.join(configDirectory, 'opencode.jsonc');
+  await setupGlobalClients({
+    clients: ['opencode'],
+    command: '/old/kiokuko',
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+  const original = await readFile(configPath, 'utf8');
+  const sentinel = new Error('installed update rollback rename failed');
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['opencode'],
+    command: '/new/kiokuko',
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+      if (!injected && filePath === configPath) {
+        injected = true;
+        return atomicWriteTextIfUnchanged(filePath, content, expectation, mode, {
+          afterInstall: async () => writeFile(alternatePath, '{"concurrent":true}\n'),
+          beforeRename: async (_source, destination) => {
+            if (destination.endsWith('.rollback')) {
+              throw sentinel;
+            }
+          },
+        });
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AtomicCommittedMutationError);
+    assert.ok(error.operationError instanceof AggregateError);
+    assert.equal(error.operationError.errors.includes(sentinel), true);
+    return true;
+  });
+
+  assert.equal(injected, true);
+  assert.equal(await readFile(configPath, 'utf8'), original);
+  assert.doesNotMatch(await readFile(configPath, 'utf8'), /\/new\/kiokuko/u);
+  assert.equal(await readFile(alternatePath, 'utf8'), '{"concurrent":true}\n');
+  assert.equal((await readdir(configDirectory)).some((name) => name.endsWith('.tmp')), false);
+});
+
+test('setup restores a deletion whose quarantine committed before exact observation failed', async () => {
+  const temporary = await temporaryEnvironment('committed-unlink-rollback');
+  const pluginPath = path.join(temporary.config, 'opencode', 'plugins', 'kiokuko-loop-guard.js');
+  const plugin = legacyOpenCodeLoopGuardFixture();
+  await mkdir(path.dirname(pluginPath), { recursive: true });
+  await writeFile(pluginPath, plugin);
+  let injected = false;
+  let committedError: AtomicCommittedUnlinkError | undefined;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['opencode'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    unlinkRegularFileIfUnchanged: async (filePath, expectation, dependencies) => {
+      if (filePath !== pluginPath || injected) {
+        return unlinkRegularFileIfUnchanged(filePath, expectation, dependencies);
+      }
+      injected = true;
+      return unlinkRegularFileIfUnchanged(filePath, expectation, {
+        ...dependencies,
+        afterRename: async (_source, destination) => {
+          if (destination.endsWith('.deleted')) {
+            await writeFile(destination, 'attacker quarantine\n');
+          }
+        },
+      });
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof AtomicCommittedUnlinkError);
+    committedError = error;
+    assert.equal(error.outcome.cleanupFailures.length, 1);
+    return true;
+  });
+
+  assert.equal(injected, true);
+  assert.ok(committedError);
+  assert.equal(await readFile(pluginPath, 'utf8'), plugin);
+  const [quarantineName] = (await readdir(path.dirname(pluginPath)))
+    .filter((name) => name.endsWith('.deleted'));
+  assert.ok(quarantineName);
+  assert.equal(
+    await readFile(path.join(path.dirname(pluginPath), quarantineName), 'utf8'),
+    'attacker quarantine\n',
+  );
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'AGENTS.md')));
+});
+
+test('setup restores a deletion when its post-rename hook fails after quarantine commits', async () => {
+  const temporary = await temporaryEnvironment('committed-unlink-rename-error');
+  const pluginPath = path.join(temporary.config, 'opencode', 'plugins', 'kiokuko-loop-guard.js');
+  const plugin = legacyOpenCodeLoopGuardFixture();
+  const sentinel = new Error('post-rename hook failed after unlink quarantine');
+  await mkdir(path.dirname(pluginPath), { recursive: true });
+  await writeFile(pluginPath, plugin);
+  let injected = false;
+
+  await assert.rejects(setupGlobalClients({
+    clients: ['opencode'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  }, {
+    unlinkRegularFileIfUnchanged: async (filePath, expectation, dependencies) => {
+      if (filePath !== pluginPath || injected) {
+        return unlinkRegularFileIfUnchanged(filePath, expectation, dependencies);
+      }
+      injected = true;
+      return unlinkRegularFileIfUnchanged(filePath, expectation, {
+        ...dependencies,
+        afterRename: async (_source, destination) => {
+          if (destination.endsWith('.deleted')) {
+            throw sentinel;
+          }
+        },
+      });
+    },
+  }), (error: unknown) => error instanceof AtomicCommittedUnlinkError
+    && error.operationError === sentinel);
+
+  assert.equal(injected, true);
+  assert.equal(await readFile(pluginPath, 'utf8'), plugin);
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
+  await assert.rejects(access(path.join(temporary.config, 'opencode', 'AGENTS.md')));
 });

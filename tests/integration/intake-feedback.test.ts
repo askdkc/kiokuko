@@ -440,7 +440,13 @@ test('preserves caller transaction state on handled conflict and rolls back stan
     `);
     assert.throws(
       () => recordIntakeFeedback(database, { ...input, feedbackId: 'transaction-failure', idempotencyKey: 'transaction-failure-key' }),
-      (error: unknown) => (error as { code?: string }).code === 'DATABASE_ERROR' && (error as Error).message === 'Feedback database operation failed',
+      (error: unknown) => {
+        const failure = error as { code?: unknown; errcode?: unknown; message?: unknown };
+        assert.equal(failure.code, 'ERR_SQLITE_ERROR');
+        assert.equal(failure.errcode, 1_811);
+        assert.equal(failure.message, 'intentional intake feedback failure');
+        return true;
+      },
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM intake_feedback WHERE feedback_id = ?').get<{ count: number }>('transaction-failure')?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM intake_feedback_side_effects').get<{ count: number }>()?.count, 0);

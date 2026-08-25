@@ -108,6 +108,7 @@ export interface ContextCandidateSnapshot {
   tags: string[];
   scope: Record<string, unknown>;
   updatedAt: string;
+  selectionReasons?: string[];
   contradiction?: boolean;
   origin?: 'project' | 'ecosystem' | 'global';
 }
@@ -120,18 +121,6 @@ export interface PriorDeliveredEntry {
 export interface ContextFeedback {
   entryId: string;
   verdict: FeedbackVerdict;
-}
-
-export interface ContextRankingInput {
-  taskProfile: TaskProfile;
-  recommendedTags: string[];
-  changedPaths: string[];
-  errorSignatures: string[];
-  priorDelivered: PriorDeliveredEntry[];
-  feedback: ContextFeedback[];
-  candidates: ContextCandidateSnapshot[];
-  limit: number;
-  characterBudget?: number;
 }
 
 export interface RankedScoreComponents {
@@ -374,7 +363,7 @@ function parseTaskProfile(value: unknown): TaskProfile {
 function parseCandidate(value: unknown): ContextCandidateSnapshot {
   if (!isRecord(value)) invalid();
   knownFields(value, [
-    'id', 'revision', 'kind', 'status', 'trustLevel', 'confidence', 'title', 'summary', 'body', 'tags', 'scope', 'updatedAt', 'contradiction', 'origin',
+    'id', 'revision', 'kind', 'status', 'trustLevel', 'confidence', 'title', 'summary', 'body', 'tags', 'scope', 'updatedAt', 'selectionReasons', 'contradiction', 'origin',
   ]);
   requiredFields(value, [
     'id', 'revision', 'kind', 'status', 'trustLevel', 'confidence', 'title', 'summary', 'body', 'tags', 'scope', 'updatedAt',
@@ -382,6 +371,10 @@ function parseCandidate(value: unknown): ContextCandidateSnapshot {
   const summary = value.summary === null ? null : boundedString(value.summary, MAX_SUMMARY_LENGTH, false);
   const contradiction = value.contradiction === undefined ? false : value.contradiction;
   if (typeof contradiction !== 'boolean') invalid();
+  const selectionReasons = value.selectionReasons === undefined
+    ? []
+    : stringArray(value.selectionReasons, MAX_TAG_LENGTH, CONTEXT_SELECTION_REASON_ORDER.length);
+  if (selectionReasons.some((reason) => !CONTEXT_SELECTION_REASON_ORDER.includes(reason as (typeof CONTEXT_SELECTION_REASON_ORDER)[number]))) invalid();
   return {
     id: boundedString(value.id, MAX_ID_LENGTH),
     revision: positiveInteger(value.revision, Number.MAX_SAFE_INTEGER),
@@ -395,6 +388,7 @@ function parseCandidate(value: unknown): ContextCandidateSnapshot {
     tags: stringArray(value.tags, MAX_TAG_LENGTH, MAX_ARRAY_ITEMS),
     scope: cloneScope(value.scope),
     updatedAt: canonicalTimestamp(value.updatedAt),
+    ...(selectionReasons.length === 0 ? {} : { selectionReasons: canonicalSelectionReasons(selectionReasons) }),
     ...(contradiction ? { contradiction: true } : {}),
     ...(value.origin === undefined ? {} : { origin: enumValue(value.origin, ['project', 'ecosystem', 'global'] as const) }),
   };
@@ -498,7 +492,7 @@ function scoreCandidate(candidate: ContextCandidateSnapshot, context: RankingCon
     recency: recencyScore,
     contradiction: 0,
   };
-  const selectionReasons: string[] = [];
+  const selectionReasons: string[] = [...(candidate.selectionReasons ?? [])];
   if (origin !== undefined) selectionReasons.push(origin === 'project' ? 'project_origin' : origin === 'ecosystem' ? 'ecosystem_origin' : 'global_origin');
   if (candidate.status === 'verified') selectionReasons.push('verified');
   else selectionReasons.push('candidate');
@@ -518,7 +512,7 @@ function scoreCandidate(candidate: ContextCandidateSnapshot, context: RankingCon
   if (candidate.contradiction === true) selectionReasons.push('contradiction_warning');
   const deliveredRevision = context.priorDelivered.get(candidate.id);
   if (deliveredRevision !== undefined && candidate.revision > deliveredRevision) selectionReasons.push('revision_changed');
-  selectionReasons.sort((left, right) => reasonRank(left) - reasonRank(right) || compareStrings(left, right));
+  const canonicalReasons = canonicalSelectionReasons(selectionReasons);
   return {
     entryId: candidate.id,
     revision: candidate.revision,
@@ -531,7 +525,7 @@ function scoreCandidate(candidate: ContextCandidateSnapshot, context: RankingCon
     updatedAt: candidate.updatedAt,
     totalScore: Object.values(scoreComponents).reduce((sum, component) => sum + component, 0) + (origin === undefined ? 0 : origin === 'project' ? 100 : origin === 'ecosystem' ? 45 : 35),
     scoreComponents,
-    selectionReasons,
+    selectionReasons: canonicalReasons,
     content: {
       title: candidate.title,
       summary: candidate.summary,
@@ -550,6 +544,10 @@ function compareStrings(left: string, right: string): number {
 function reasonRank(reason: string): number {
   const index = CONTEXT_SELECTION_REASON_ORDER.indexOf(reason as (typeof CONTEXT_SELECTION_REASON_ORDER)[number]);
   return index === -1 ? CONTEXT_SELECTION_REASON_ORDER.length : index;
+}
+
+function canonicalSelectionReasons(reasons: readonly string[]): string[] {
+  return [...new Set(reasons)].sort((left, right) => reasonRank(left) - reasonRank(right) || compareStrings(left, right));
 }
 
 function characterCount(value: string): number {

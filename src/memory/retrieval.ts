@@ -1,4 +1,4 @@
-import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
+import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry, type EntryRecord } from './entries.js';
 import { requireWorkspace, type EntryKind, type EntryStatus } from '../serialization/validate.js';
@@ -59,16 +59,19 @@ export interface RankedRecallResult {
   truncated: boolean;
 }
 
-interface SearchRow extends SqliteRow {
-  id: string;
-  score?: number;
-}
-
 const DEFAULT_SEARCH_LIMIT = 20;
 const DEFAULT_RECALL_LIMIT = 5;
 const DEFAULT_RECALL_MAX_CHARS = 8000;
 const MAX_LIMIT = 1000;
 const MAX_RECALL_CHARS = 100_000;
+
+function characterCount(value: string): number {
+  return Array.from(value).length;
+}
+
+function takeCharacters(value: string, limit: number): string {
+  return Array.from(value).slice(0, Math.max(0, limit)).join('');
+}
 
 function normalizedLimit(value: number | undefined, defaultValue: number): number {
   if (value === undefined) return defaultValue;
@@ -86,157 +89,35 @@ function normalizedMaxChars(value: number | undefined): number {
   return value;
 }
 
-function hasTable(database: SqliteDatabase, name: string): boolean {
-  return Boolean(
-    database
-      .prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?")
-      .get<{ present: number }>(name),
-  );
-}
-
-function ftsQuery(query: string): string | undefined {
-  const tokens = query
-    .trim()
-    .split(/\s+/u)
-    .map((token) => token.replace(/[^\p{L}\p{N}_]/gu, ''))
-    .filter((token) => token.length > 0)
-    .map((token) => `"${token.replaceAll('"', '""')}"`);
-  return tokens.length > 0 ? tokens.join(' ') : undefined;
-}
-
-function filterSql(input: SearchEntriesInput, parameters: Array<string | number>): string {
-  const clauses = ['e.workspace = ?'];
-  parameters.push(input.workspace);
-  if (!input.includeSuperseded) clauses.push("e.status <> 'superseded'");
-  if (input.kind) {
-    clauses.push('r.kind = ?');
-    parameters.push(input.kind);
-  }
-  if (input.status) {
-    clauses.push('e.status = ?');
-    parameters.push(input.status);
-  }
-  if (input.tag) {
-    clauses.push('EXISTS (SELECT 1 FROM entry_revision_tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.revision = e.current_revision AND filter_tags.tag = ?)');
-    parameters.push(input.tag);
-  }
-  return clauses.join(' AND ');
-}
-
-function rankingSql(): string {
-  return `
-    CASE e.status WHEN 'verified' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
-    CASE e.trust_level
-      WHEN 'system_verified' THEN 0
-      WHEN 'source_verified' THEN 1
-      WHEN 'user_asserted' THEN 2
-      ELSE 3
-    END,
-    e.confidence DESC,
-    e.updated_at DESC,
-    e.id ASC`;
-}
-
-function searchWithFts(database: SqliteDatabase, input: SearchEntriesInput, limit: number, match: string): SearchRow[] {
-  const parameters: Array<string | number> = [match];
-  const filters = filterSql(input, parameters);
-  parameters.push(limit);
-  return database
-    .prepare(
-       `SELECT e.id, bm25(entries_fts) AS score
-       FROM entries_fts
-       JOIN entries e ON e.rowid = entries_fts.rowid
-       JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
-       WHERE entries_fts MATCH ? AND ${filters}
-       ORDER BY score ASC, ${rankingSql()}
-       LIMIT ?`,
-    )
-    .all<SearchRow>(...parameters);
-}
-
-function searchWithLike(database: SqliteDatabase, input: SearchEntriesInput, limit: number): SearchRow[] {
-  const parameters: Array<string | number> = [];
-  const filters = filterSql(input, parameters);
-  const pattern = `%${input.query.trim()}%`;
-  parameters.unshift(pattern, pattern, pattern, pattern);
-  parameters.push(limit);
-  return database
-    .prepare(
-       `SELECT e.id, 0 AS score
-       FROM entries e
-       JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
-       WHERE (
-         r.title LIKE ?
-         OR r.body LIKE ?
-         OR COALESCE(r.summary, '') LIKE ?
-         OR EXISTS (
-           SELECT 1 FROM entry_revision_tags like_tags
-           WHERE like_tags.entry_id = e.id AND like_tags.revision = e.current_revision AND like_tags.tag LIKE ?
-         )
-       )
-         AND ${filters}
-       ORDER BY ${rankingSql()}
-       LIMIT ?`,
-    )
-    .all<SearchRow>(...parameters);
-}
-
 export function rankedEntryHits(database: SqliteDatabase, input: SearchEntriesInput): RankedRecallResult {
   const limit = normalizedLimit(input.limit, DEFAULT_SEARCH_LIMIT);
   const workspace = requireWorkspace(input.workspace);
   const normalizedInput = { ...input, workspace };
   if (normalizedInput.query.trim().length === 0) return { hits: [], truncated: false };
 
-  try {
-    const candidates = hybridSearch(database, { ...normalizedInput, limit });
-    return {
-      hits: candidates.slice(0, limit).map((candidate, index) => ({
-        entryId: candidate.entryId,
-        retrievalScore: Number((candidate.fusedScore * 100).toFixed(6)),
-        rank: index + 1,
-        reasons: [...candidate.reasons],
-      })),
-      truncated: candidates.length > limit,
-    };
-  } catch (error) {
-    if (!(error instanceof KiokukoError) || error.code !== 'VALIDATION_ERROR') throw error;
-  }
-
-  const match = ftsQuery(normalizedInput.query);
-  if (match && hasTable(database, 'entries_fts')) {
-    try {
-      const rows = searchWithFts(database, normalizedInput, limit + 1, match);
-      return {
-        hits: rows.slice(0, limit).map((row, index) => ({ entryId: row.id, retrievalScore: rows.length - index, rank: index + 1, reasons: ['lexical_match'] })),
-        truncated: rows.length > limit,
-      };
-    } catch (error) {
-      if (!(error instanceof Error) || !/fts|match|syntax/i.test(error.message)) throw error;
-    }
-  }
-  const rows = searchWithLike(database, normalizedInput, limit + 1);
+  const candidates = hybridSearch(database, { ...normalizedInput, limit });
   return {
-    hits: rows.slice(0, limit).map((row, index) => ({ entryId: row.id, retrievalScore: rows.length - index, rank: index + 1, reasons: ['literal_fallback_match'] })),
-    truncated: rows.length > limit,
+    hits: candidates.slice(0, limit).map((candidate, index) => ({
+      entryId: candidate.entryId,
+      retrievalScore: Number((candidate.fusedScore * 100).toFixed(6)),
+      rank: index + 1,
+      reasons: [...candidate.reasons],
+    })),
+    truncated: candidates.length > limit,
   };
-}
-
-function selectRows(database: SqliteDatabase, input: SearchEntriesInput, limit: number): { rows: SearchRow[]; truncated: boolean } {
-  const ranked = rankedEntryHits(database, { ...input, limit });
-  return { rows: ranked.hits.map((hit) => ({ id: hit.entryId, score: hit.retrievalScore })), truncated: ranked.truncated };
 }
 
 export function searchEntries(database: SqliteDatabase, input: SearchEntriesInput): SearchResult {
   const limit = normalizedLimit(input.limit, DEFAULT_SEARCH_LIMIT);
-  const selected = selectRows(database, input, limit);
-  const items = selected.rows.map((row) => readEntry(database, { workspace: input.workspace, entryId: row.id }));
+  const selected = rankedEntryHits(database, { ...input, limit });
+  const items = selected.hits.map((hit) => readEntry(database, { workspace: input.workspace, entryId: hit.entryId }));
   return { items, count: items.length, truncated: selected.truncated };
 }
 
 function recallSnippet(entry: EntryRecord, remaining: number): string {
   const source = entry.summary ?? entry.body;
   if (remaining <= 0) return '';
-  return source.slice(0, remaining);
+  return takeCharacters(source, remaining);
 }
 
 export function recallEntries(database: SqliteDatabase, input: RecallEntriesInput): RecallResult {
@@ -245,20 +126,21 @@ export function recallEntries(database: SqliteDatabase, input: RecallEntriesInpu
   const selected = rankedEntryHits(database, { ...input, limit });
   const rows = selected.hits;
   const items: RecallItem[] = [];
-  let characterCount = 0;
+  let characters = 0;
   let truncated = false;
 
   for (const row of rows) {
     const entry = readEntry(database, { workspace: input.workspace, entryId: row.entryId });
     const fullSource = entry.summary ?? entry.body;
-    const titleCost = entry.title.length + 1;
-    const remaining = maxChars - characterCount - titleCost;
+    const titleCost = characterCount(entry.title) + 1;
+    const remaining = maxChars - characters - titleCost;
     if (remaining <= 0) {
       truncated = true;
       break;
     }
     const snippet = recallSnippet(entry, remaining);
-    if (snippet.length < fullSource.length || entry.body.length > snippet.length) truncated = true;
+    if (characterCount(snippet) < characterCount(fullSource)
+      || characterCount(entry.body) > characterCount(snippet)) truncated = true;
     items.push({
       id: entry.id,
       workspace: entry.workspace,
@@ -270,10 +152,10 @@ export function recallEntries(database: SqliteDatabase, input: RecallEntriesInpu
       tags: entry.tags,
       metadata: { storedData: true, untrusted: true, instructions: false },
     });
-    characterCount += titleCost + snippet.length;
-    if (characterCount >= maxChars) break;
+    characters += titleCost + characterCount(snippet);
+    if (characters >= maxChars) break;
   }
 
   if (items.length < rows.length || selected.truncated) truncated = true;
-  return { items, count: items.length, characterCount, truncated };
+  return { items, count: items.length, characterCount: characters, truncated };
 }

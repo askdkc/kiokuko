@@ -29,7 +29,6 @@ export type CoverageLevel = (typeof COVERAGE_LEVELS)[number];
 export const RUN_STATUSES = ['intake', 'active', 'completed', 'failed', 'cancelled', 'interrupted'] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 export const TERMINAL_RUN_STATUSES = ['completed', 'failed', 'cancelled', 'interrupted'] as const;
-export type TerminalRunStatus = (typeof TERMINAL_RUN_STATUSES)[number];
 
 export const TASK_TYPES = ['build', 'debug', 'research', 'review', 'devops', 'writing', 'analysis'] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
@@ -90,10 +89,6 @@ export interface LedgerEventInput {
   outcome?: string | null;
   occurredAt?: string;
   payload: JsonValue;
-}
-
-export interface AppendBatchInput {
-  events: LedgerEventInput[];
 }
 
 export interface Redaction {

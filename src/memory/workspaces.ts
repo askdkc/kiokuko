@@ -124,8 +124,8 @@ export async function resolveProjectWorkspace(
  * updating last-used timestamps, or creating a repository row.
  *
  * The normal resolver intentionally persists this mapping so later commands
- * can reuse the same project identity. Hook pre-recall is different: it must
- * not turn untrusted cwd input into database state.
+ * can reuse the same project identity. A read-only lookup must not turn an
+ * untrusted cwd input into database state.
  */
 export async function resolveProjectWorkspaceReadOnly(
   database: SqliteDatabase,

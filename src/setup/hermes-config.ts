@@ -1,5 +1,7 @@
 import { parseDocument, isMap, isNode, isPair, isScalar, isSeq, type Pair, type YAMLMap } from 'yaml';
 import { KiokukoError } from '../errors.js';
+import { isSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
+import type { SkillDiscoveryMode } from '../skills/types.js';
 import type { DelimitedBlockResult } from './managed-text.js';
 
 export const HERMES_MANAGED_MARKER = 'Managed by `kiokuko setup`.';
@@ -15,20 +17,32 @@ function findKeyPair(map: HermesMap, key: string): Pair | undefined {
 }
 
 function hasManagedMarker(pair: Pair): boolean {
-  return (isNode(pair.key) && pair.key.commentBefore?.includes(HERMES_MANAGED_MARKER) === true)
-    || (isNode(pair.value) && pair.value.commentBefore?.includes(HERMES_MANAGED_MARKER) === true);
+  return isNode(pair.value) && pair.value.commentBefore?.trim() === HERMES_MANAGED_MARKER;
 }
 
 function hasCanonicalManagedShape(pair: Pair): boolean {
   if (!isMap(pair.value)) return false;
   const fields = pair.value.items.map((item) => isPair(item) ? scalarValue(item.key) : undefined);
-  if (fields.length !== 2 || fields[0] === fields[1] || !fields.includes('command') || !fields.includes('args')) return false;
+  if (fields.length !== 3
+    || new Set(fields).size !== fields.length
+    || !fields.includes('command')
+    || !fields.includes('args')
+    || fields.some((field) => field !== 'command' && field !== 'args' && field !== 'env')) return false;
   const commandNode = pair.value.get('command', true);
   const argsNode = pair.value.get('args', true);
-  return typeof scalarValue(commandNode) === 'string'
-    && isSeq(argsNode)
-    && argsNode.items.length === 1
-    && scalarValue(argsNode.items[0]) === 'mcp';
+  const command = scalarValue(commandNode);
+  if (typeof command !== 'string'
+    || command.trim().length === 0
+    || command.includes('\0')
+    || !isSeq(argsNode)
+    || argsNode.items.length !== 1
+    || scalarValue(argsNode.items[0]) !== 'mcp') return false;
+  const envNode = pair.value.get('env', true);
+  if (!isMap(envNode) || envNode.items.length !== 1) return false;
+  const environmentPair = envNode.items[0];
+  return isPair(environmentPair)
+    && scalarValue(environmentPair.key) === SKILL_DISCOVERY_ENV
+    && isSkillDiscoveryMode(scalarValue(environmentPair.value));
 }
 
 function currentManagedCommand(pair: Pair): string | undefined {
@@ -37,8 +51,17 @@ function currentManagedCommand(pair: Pair): string | undefined {
   return typeof command === 'string' ? command : undefined;
 }
 
-function hasRequestedState(pair: Pair, command: string): boolean {
-  return currentManagedCommand(pair) === command;
+function currentManagedSkillDiscoveryMode(pair: Pair): SkillDiscoveryMode | undefined {
+  if (!hasCanonicalManagedShape(pair) || !isMap(pair.value)) return undefined;
+  const environment = pair.value.get('env', true);
+  if (!isMap(environment)) return undefined;
+  const mode = scalarValue(environment.get(SKILL_DISCOVERY_ENV, true));
+  return isSkillDiscoveryMode(mode) ? mode : undefined;
+}
+
+function hasRequestedState(pair: Pair, command: string, skillDiscoveryMode: SkillDiscoveryMode): boolean {
+  return currentManagedCommand(pair) === command
+    && currentManagedSkillDiscoveryMode(pair) === skillDiscoveryMode;
 }
 
 function validation(): never {
@@ -63,7 +86,13 @@ function serializeHermesDocument(
   };
 }
 
-export function renderHermesConfig(existing: string | undefined, command = 'kiokuko'): DelimitedBlockResult {
+export function renderHermesConfig(existing: string | undefined, command = 'kiokuko', skillDiscoveryMode?: SkillDiscoveryMode): DelimitedBlockResult {
+  if (typeof command !== 'string' || command.trim().length === 0 || command.includes('\0')) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Hermes MCP command must be a non-empty executable path or name');
+  }
+  if (skillDiscoveryMode !== undefined && !isSkillDiscoveryMode(skillDiscoveryMode)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Hermes Skill discovery mode is invalid');
+  }
   const source = existing ?? '';
   const document = parseDocument(source);
   if (document.errors.length > 0) validation();
@@ -88,13 +117,22 @@ export function renderHermesConfig(existing: string | undefined, command = 'kiok
   const existingPair = findKeyPair(serverMap, 'kiokuko');
   if (existingPair !== undefined) {
     if (!hasManagedMarker(existingPair) || !hasCanonicalManagedShape(existingPair)) conflict();
-    if (hasRequestedState(existingPair, command)) return { content: source, action: 'unchanged' };
+    const currentSkillDiscoveryMode = currentManagedSkillDiscoveryMode(existingPair);
+    if (currentSkillDiscoveryMode === undefined) conflict();
+    const effectiveSkillDiscoveryMode = skillDiscoveryMode ?? currentSkillDiscoveryMode;
+    if (hasRequestedState(existingPair, command, effectiveSkillDiscoveryMode)) return { content: source, action: 'unchanged' };
     if (!isMap(existingPair.value)) conflict();
     existingPair.value.set('command', command);
+    existingPair.value.set('env', { [SKILL_DISCOVERY_ENV]: effectiveSkillDiscoveryMode });
     return serializeHermesDocument(document, source, existing);
   }
 
-  const pair = document.createPair('kiokuko', { command, args: ['mcp'] }) as unknown as Pair;
+  const effectiveSkillDiscoveryMode = skillDiscoveryMode ?? 'official';
+  const pair = document.createPair('kiokuko', {
+    command,
+    args: ['mcp'],
+    env: { [SKILL_DISCOVERY_ENV]: effectiveSkillDiscoveryMode },
+  }) as unknown as Pair;
   if (!isNode(pair.value)) validation();
   pair.value.commentBefore = ` ${HERMES_MANAGED_MARKER}`;
   serverMap.add(pair);

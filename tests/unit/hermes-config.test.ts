@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getHermesConfigPath } from '../../src/config/paths.js';
-import { renderHermesConfig } from '../../src/setup/hermes-config.js';
+import { HERMES_MANAGED_MARKER, renderHermesConfig } from '../../src/setup/hermes-config.js';
 
 function errorIdentity(callback: () => unknown): { code: string | undefined; message: string | undefined } {
   try {
@@ -36,6 +36,7 @@ test('renders Hermes MCP config while preserving comments, other servers, and to
   assert.match(result.content, /Managed by `kiokuko setup`\./);
   assert.match(result.content, /command: \/opt\/kiokuko/);
   assert.match(result.content, /- mcp/);
+  assert.match(result.content, /KIOKUKO_SKILL_DISCOVERY: official/);
 });
 
 test('replays an exactly managed Hermes config unchanged', () => {
@@ -79,7 +80,8 @@ test('updates the command of a canonical managed kiokuko server and remains idem
   assert.match(result.content, /- mcp/);
   assert.match(result.content, /other-server/);
   assert.match(result.content, /Managed by `kiokuko setup`\./);
-  assert.doesNotMatch(result.content, /enabled:|env:/);
+  assert.doesNotMatch(result.content, /enabled:/);
+  assert.match(result.content, /KIOKUKO_SKILL_DISCOVERY: official/);
 
   const replay = renderHermesConfig(result.content, '/opt/homebrew/bin/kiokuko');
   assert.equal(replay.action, 'unchanged');
@@ -96,6 +98,13 @@ test('preserves CRLF when migrating a managed Hermes command', () => {
   assert.match(result.content, /command: \/opt\/homebrew\/bin\/kiokuko/);
 });
 
+test('rejects the legacy managed shape instead of silently migrating it', () => {
+  const current = renderHermesConfig('model: test\n').content;
+  const legacy = current.replace('    env:\n      KIOKUKO_SKILL_DISCOVERY: official\n', '');
+  const identity = errorIdentity(() => renderHermesConfig(legacy));
+  assert.equal(identity.code, 'CONFLICT');
+});
+
 test('rejects an unmanaged or non-canonical kiokuko server as a conflict', () => {
   const unmanaged = [
     'mcp_servers:',
@@ -109,12 +118,30 @@ test('rejects an unmanaged or non-canonical kiokuko server as a conflict', () =>
 
   const managed = renderHermesConfig('model: test\n').content;
   for (const existing of [
-    managed.replace('    args:\n      - mcp\n', '    args:\n      - mcp\n    enabled: false\n'),
+    managed.replace('    env:\n', '    enabled: false\n    env:\n'),
     managed.replace('      - mcp\n', '      - something-else\n'),
-    managed.replace('    args:\n      - mcp\n', '    args:\n      - mcp\n    env:\n      PATH: /custom\n'),
+    managed.replace('      KIOKUKO_SKILL_DISCOVERY: official\n', '      PATH: /custom\n'),
+    managed.replace('      KIOKUKO_SKILL_DISCOVERY: official\n', '      KIOKUKO_SKILL_DISCOVERY: invalid\n'),
+    managed.replace('    command: kiokuko\n', '    command: ""\n'),
+    managed.replace('    command: kiokuko\n', '    command: "\\0"\n'),
+    managed.replace(HERMES_MANAGED_MARKER, `copied prefix ${HERMES_MANAGED_MARKER}`),
+    managed.replace(
+      `  kiokuko:\n    # ${HERMES_MANAGED_MARKER}`,
+      `  # ${HERMES_MANAGED_MARKER}\n  kiokuko:`,
+    ),
   ]) {
     const identity = errorIdentity(() => renderHermesConfig(existing, 'different-kiokuko'));
     assert.equal(identity.code, 'CONFLICT');
+  }
+});
+
+test('rejects invalid requested Hermes state with typed validation errors', () => {
+  for (const callback of [
+    () => renderHermesConfig('', '   '),
+    () => renderHermesConfig('', 'kiokuko', 'invalid' as never),
+  ]) {
+    const identity = errorIdentity(callback);
+    assert.equal(identity.code, 'VALIDATION_ERROR');
   }
 });
 

@@ -12,7 +12,7 @@ Kiokukoは、AIコーディングエージェント向けの外部記憶です�
 
 ## すぐ使う
 
-Node.js 24以上が必要です。
+Node.js 24.16以上が必要です。
 以下の2コマンドで楽々スタートです💕
 
 ```bash
@@ -21,8 +21,10 @@ kiokuko setup
 ```
 
 `setup`は、インストール済みの対応クライアントを検出し、SQLiteデータベースとMCP接続を自動設定します。
-Claude Codeでは、ユーザーの依頼時に関連記憶を自動で事前取得するHookもセットアップされます。詳細は[クライアント互換性ポリシー](docs/client-compatibility.md)を参照してください。
-Claude Codeの`/hooks`画面を開き、`UserPromptSubmit`の`kiokuko` / `claude_prompt_context` Hookが有効になっていることを確認できます。
+対話式setupでは、監査済みcommunity Skillも参考資料として利用するか確認します。既定は「いいえ」です。
+モデル向けの記憶は、capability gateを通るMCPツール `task_prepare` と
+`task_answer` からだけタスクへ渡されます。Kiokukoは、これらの呼び出し前に
+記憶を暗黙取得するclient Hookやpluginをインストールしません。
 
 設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。
 
@@ -92,6 +94,30 @@ http://127.0.0.1:4173
 ```
 
 Web UIはローカル環境だけで動作し、外部ネットワークへ公開されません。
+Web UIと明示的なmemory CLI commandは人間/operator向けの管理surfaceです。
+モデルが `task_prepare` / `task_answer` を迂回してタスク記憶を取得する経路ではありません。
+
+## 外部Skill
+
+外部Skillの発見は参考データ専用で、Akinatorのtask preparationでは既定で
+`official` モードを使います。現在のGitHub commitを検証し、制限した本文を
+常に `candidate` + `untrusted` + `reference` の記憶として保存します。
+インストールや実行は行いません。自動発見を止める場合は
+`KIOKUKO_SKILL_DISCOVERY=off` を指定します。`community` は引き続き明示的な
+opt-inです。対話式 `kiokuko setup` はcommunityを有効にするか確認し、バッチ実行では
+`--skill-discovery community` で明示できます。
+
+具体的な操作例:
+
+```bash
+kiokuko skills find svelte --official-only --json
+kiokuko skills list
+kiokuko skills disable sveltejs/ai-tools/svelte-code-writer
+kiokuko skills refresh sveltejs/ai-tools/svelte-code-writer
+```
+
+Web UIのExternal Skills画面ではsource状態を確認し、mappingを無効化・再有効化
+できます。インストール、script実行、MCP登録の操作はありません。
 
 ## 安全性
 

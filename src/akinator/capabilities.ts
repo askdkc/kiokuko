@@ -1,5 +1,6 @@
 import type { TaskProfile } from './types.js';
 import { STANDARD_UI_SKILL_NAME } from '../setup/standard-skills.js';
+import { compareCanonicalStrings } from '../serialization/validate.js';
 
 export const CAPABILITY_KINDS = ['skill', 'mcp_tool'] as const;
 export type CapabilityKind = (typeof CAPABILITY_KINDS)[number];
@@ -44,6 +45,7 @@ export interface CapabilityRecommendation {
   availability: 'available' | 'missing' | 'unknown';
   reason: string;
   source: 'akinator_policy' | 'catalog_similarity';
+  required?: boolean;
 }
 
 export interface CapabilityResolution {
@@ -52,14 +54,47 @@ export interface CapabilityResolution {
   availableSkillCount: number | null;
   diagnostics: CapabilityCatalogDiagnostics;
   warnings: CapabilityWarning[];
-  externalSkillFallback: ExternalSkillFallbackDecision;
   recommendations: CapabilityRecommendation[];
 }
 
-export interface ExternalSkillFallbackDecision {
-  eligible: boolean;
-  source: 'https://github.com/mattpocock/skills';
-  reason: 'no_skills_available' | 'skills_available' | 'capability_catalog_nonempty' | 'capability_catalog_unknown';
+export const MEMORY_REASONING_SKILL_NAME = 'memory-reasoning' as const;
+export type MemoryUseSignal = 'none' | 'actionable';
+export type MemoryReasoningCapabilityAvailability = 'available' | 'missing' | 'unknown';
+
+export interface MemoryPolicy {
+  memoryReasoningRequired: boolean;
+}
+
+const ACTIONABLE_MEMORY_SELECTION_REASONS = new Set([
+  'exact_signal_match',
+  'word_match',
+  'lexical_match',
+  'applicability_match',
+  'tag_match',
+  'changed_path_match',
+  'error_signature_match',
+  'helpful_feedback',
+]);
+
+export function hasActionableMemorySelection(
+  items: ReadonlyArray<{ selectionReasons: ReadonlyArray<string> }>,
+): boolean {
+  return items.some((item) => item.selectionReasons.some((reason) => ACTIONABLE_MEMORY_SELECTION_REASONS.has(reason)));
+}
+
+export function deriveMemoryUseSignal(input: {
+  deliveryId: string | null;
+  items: ReadonlyArray<{ selectionReasons: ReadonlyArray<string> }>;
+} | null): MemoryUseSignal {
+  if (input === null || input.deliveryId === null || input.items.length === 0) return 'none';
+  return hasActionableMemorySelection(input.items) ? 'actionable' : 'none';
+}
+
+export function memoryReasoningRequired(
+  profile: Pick<TaskProfile, 'taskType'>,
+  memoryUse: MemoryUseSignal,
+): boolean {
+  return memoryUse === 'actionable' && (profile.taskType === 'build' || profile.taskType === 'debug');
 }
 
 export function boundedCodePointLength(value: string, limit: number): number {
@@ -135,8 +170,11 @@ function normalizedCatalogWarningList(
 
 function validateCapabilityHeader(value: unknown): Pick<CapabilityDescriptor, 'kind' | 'name'> | null {
   if (!isPlainRecord(value) || !isCapabilityKind(value.kind) || typeof value.name !== 'string') return null;
+  const allowedKeys = new Set(['kind', 'name', 'description']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) return null;
   if (boundedCodePointLength(value.name, MAX_CAPABILITY_NAME_CHARS) > MAX_CAPABILITY_NAME_CHARS
     || value.name.trim().length === 0
+    || value.name.trim() !== value.name
     || /[\p{Cc}\p{Cf}]/u.test(value.name)) return null;
   return { kind: value.kind, name: value.name };
 }
@@ -186,7 +224,7 @@ export function normalizeCapabilityCatalog(input: unknown): NormalizedCapability
       continue;
     }
     if (typeof item.description !== 'string') {
-      accept(descriptor, true);
+      diagnostics.dropped += 1;
       continue;
     }
     const scanLimit = Math.min(remaining, MAX_RAW_CAPABILITY_DESCRIPTION_CHARS);
@@ -206,7 +244,11 @@ export function normalizeCapabilityCatalog(input: unknown): NormalizedCapability
     if (compacted.description.length > 0) descriptor.description = compacted.description;
     accept(descriptor, compacted.truncated || (item.description.length > 0 && compacted.description.length === 0));
   }
-  const availability: CapabilityCatalogAvailability = input.length === 0 ? 'known-empty' : 'known-nonempty';
+  const availability: CapabilityCatalogAvailability = input.length === 0
+    ? 'known-empty'
+    : diagnostics.dropped > 0 || budgetExceeded
+      ? 'unknown'
+      : 'known-nonempty';
   return { availability, skills, tools, diagnostics, budgetExceeded };
 }
 
@@ -225,6 +267,7 @@ const SKILL_REASONS: Record<string, string> = {
   'diagnosing-bugs': 'The debugging task benefits from a reproducible diagnosis workflow.',
   research: 'The research task requires source-grounded findings.',
   'code-review': 'The review task benefits from a structured code-review workflow.',
+  [MEMORY_REASONING_SKILL_NAME]: 'Relevant stored memory was delivered for a build or debug task; verify its premises, invariants, counterexamples, and tests before changing code.',
   [STANDARD_UI_SKILL_NAME]: 'The task explicitly involves UI implementation, design, or review and benefits from Kiokuko\'s interaction-state and accessibility contract.',
 };
 
@@ -232,7 +275,7 @@ const EXPLICIT_UI_INTENT = /(?:\b(?:ui|ux|frontend|front-end|swiftui|accessibili
 const EXCLUDED_UI_SCOPE = /(?:\bbackend[- ]only\b|\bserver[- ]side only\b|\bimage generation only\b|バックエンド(?:だけ|のみ)|画像生成(?:だけ|のみ))/iu;
 
 function normalizedName(value: string): string {
-  return value.trim().toLocaleLowerCase().replaceAll('_', '-');
+  return value.trim().toLowerCase().replaceAll('_', '-');
 }
 
 function nameAliases(value: string): Set<string> {
@@ -242,20 +285,23 @@ function nameAliases(value: string): Set<string> {
 }
 
 function tokens(value: string): Set<string> {
-  const found = value.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
+  const found = value.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
   return new Set(found.flatMap((token) => {
     const normalized = token.replaceAll('_', '-');
     return [normalized, ...normalized.split('-')];
   }).filter((token) => token.length > 2));
 }
 
-function desiredSkills(input: { task: string; profile: TaskProfile; recommendedTags: string[] }): string[] {
+function desiredSkills(input: { task: string; profile: TaskProfile; recommendedTags: string[]; memoryUse: MemoryUseSignal }): string[] {
   const skillNames = input.recommendedTags
     .filter((tag) => tag.startsWith('skill:'))
     .map((tag) => normalizedName(tag.slice('skill:'.length)))
     .filter(Boolean);
   const taskScope = [input.task, input.profile.target ?? '', input.profile.expected ?? '', input.profile.constraints ?? ''].join(' ');
   if (!EXCLUDED_UI_SCOPE.test(taskScope) && EXPLICIT_UI_INTENT.test(taskScope)) skillNames.push(STANDARD_UI_SKILL_NAME);
+  if (memoryReasoningRequired(input.profile, input.memoryUse)) {
+    skillNames.push(MEMORY_REASONING_SKILL_NAME);
+  }
   return [...new Set(skillNames)];
 }
 
@@ -263,30 +309,16 @@ function matchingSkill(catalog: CapabilityDescriptor[], desired: string): Capabi
   return catalog.find((candidate) => candidate.kind === 'skill' && nameAliases(candidate.name).has(desired));
 }
 
-function externalSkillFallbackForCatalog(catalog: NormalizedCapabilityCatalog): ExternalSkillFallbackDecision {
-  if (catalog.availability === 'unknown') {
-    return {
-      eligible: false,
-      source: 'https://github.com/mattpocock/skills',
-      reason: 'capability_catalog_unknown',
-    };
-  }
-  if (catalog.availability === 'known-empty') {
-    return {
-      eligible: true,
-      source: 'https://github.com/mattpocock/skills',
-      reason: 'no_skills_available',
-    };
-  }
-  return {
-    eligible: false,
-    source: 'https://github.com/mattpocock/skills',
-    reason: catalog.skills.length > 0 ? 'skills_available' : 'capability_catalog_nonempty',
-  };
+function matchingMemoryReasoningSkill(catalog: CapabilityDescriptor[]): CapabilityDescriptor | undefined {
+  return catalog.find((candidate) => candidate.kind === 'skill'
+    && candidate.name === MEMORY_REASONING_SKILL_NAME);
 }
 
-export function decideExternalSkillFallback(input?: unknown): ExternalSkillFallbackDecision {
-  return externalSkillFallbackForCatalog(normalizeCapabilityCatalog(input));
+export function memoryReasoningCapabilityAvailability(capabilities: unknown): MemoryReasoningCapabilityAvailability {
+  const normalized = normalizeCapabilityCatalog(capabilities);
+  if (normalized.availability === 'unknown') return 'unknown';
+  if (matchingMemoryReasoningSkill(normalized.skills)) return 'available';
+  return 'missing';
 }
 
 function relevantCatalogCapabilities(
@@ -299,9 +331,9 @@ function relevantCatalogCapabilities(
   const roleTerms = new Set(profile.taskType ? TASK_TOOL_TERMS[profile.taskType] : []);
   return catalog
     .filter((candidate) => {
-      if (candidate.kind === 'mcp_tool') return true;
       const aliases = nameAliases(candidate.name);
-      if (aliases.has(STANDARD_UI_SKILL_NAME)) return false;
+      if (aliases.has(STANDARD_UI_SKILL_NAME) || aliases.has(MEMORY_REASONING_SKILL_NAME)) return false;
+      if (candidate.kind === 'mcp_tool') return true;
       return ![...aliases].some((alias) => desiredSkillNames.has(alias));
     })
     .map((candidate) => {
@@ -316,7 +348,7 @@ function relevantCatalogCapabilities(
       };
     })
     .filter(({ score, matchedTaskTerms, matchedRoleTerms }) => score >= 3 || (matchedTaskTerms.length > 0 && matchedRoleTerms.length > 0))
-    .sort((left, right) => right.score - left.score || left.candidate.name.localeCompare(right.candidate.name))
+    .sort((left, right) => right.score - left.score || compareCanonicalStrings(left.candidate.name, right.candidate.name))
     .slice(0, 5)
     .map(({ candidate, matchedTaskTerms, matchedRoleTerms }) => {
       const terms = [...new Set([...matchedTaskTerms, ...matchedRoleTerms])].slice(0, 5);
@@ -335,21 +367,29 @@ export function resolveCapabilities(input: {
   profile: TaskProfile;
   recommendedTags: string[];
   capabilities?: unknown;
+  memoryUse: MemoryUseSignal;
 }): CapabilityResolution {
   const normalized = normalizeCapabilityCatalog(input.capabilities);
   const catalogProvided = normalized.availability !== 'unknown';
   const catalog = [...normalized.skills, ...normalized.tools];
-  const externalSkillFallback = externalSkillFallbackForCatalog(normalized);
   const desired = desiredSkills(input);
   const desiredSkillNames = new Set(desired);
   const skills: CapabilityRecommendation[] = desired.map((desiredName) => {
-    const matched = matchingSkill(catalog, desiredName);
+    // The required memory workflow is a clean-break contract. A namespaced,
+    // fetched, or similarly named Skill must not satisfy the local capability.
+    const matched = desiredName === MEMORY_REASONING_SKILL_NAME
+      ? matchingMemoryReasoningSkill(normalized.skills)
+      : matchingSkill(catalog, desiredName);
+    const availability = desiredName === MEMORY_REASONING_SKILL_NAME && normalized.availability === 'unknown'
+      ? 'unknown'
+      : matched ? 'available' : normalized.availability === 'unknown' ? 'unknown' : 'missing';
     return {
       kind: 'skill',
       name: matched?.name ?? desiredName,
-      availability: matched ? 'available' : normalized.availability === 'unknown' ? 'unknown' : 'missing',
+      availability,
       reason: SKILL_REASONS[desiredName] ?? 'The Akinator task policy recommends this workflow.',
       source: 'akinator_policy',
+      ...(desiredName === MEMORY_REASONING_SKILL_NAME ? { required: true } : {}),
     };
   });
   return {
@@ -358,7 +398,6 @@ export function resolveCapabilities(input: {
     availableSkillCount: normalized.availability === 'unknown' ? null : normalized.skills.length,
     diagnostics: normalized.diagnostics,
     warnings: normalizedCatalogWarningList(normalized.availability, normalized.diagnostics, input.capabilities !== undefined, normalized.budgetExceeded),
-    externalSkillFallback,
     recommendations: [...skills, ...relevantCatalogCapabilities(input.task, input.profile, catalog, desiredSkillNames)],
   };
 }

@@ -2,9 +2,9 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer as nodeCreateServer, type RequestListener, type Server } from 'node:http';
 import path from 'node:path';
+import { initializeDatabase as defaultInitializeDatabase, type InitOptions } from '../commands/init.js';
 import { getGlobalDatabasePath, getRuntimeDescriptorPath, type PathEnvironment } from '../config/paths.js';
 import { openConnection } from '../db/connection.js';
-import { migrateDatabase as defaultMigrateDatabase } from '../db/migrate.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { createApp } from './app.js';
@@ -37,7 +37,7 @@ interface RequestAdmission {
 }
 
 export type DatabaseOpener = (databasePath: string) => SqliteDatabase | PromiseLike<SqliteDatabase>;
-export type DatabaseMigrator = (database: SqliteDatabase, migrationsDirectory?: string) => unknown | PromiseLike<unknown>;
+export type DatabaseInitializer = (options: InitOptions) => unknown | PromiseLike<unknown>;
 export type HttpServerFactory = (listener: RequestListener) => Server;
 export type InstanceLockAcquirer = (databasePath: string, options: InstanceLockOptions) => InstanceLock | PromiseLike<InstanceLock>;
 export type RuntimeDescriptorFactory = (input: CreateRuntimeDescriptorInput) => RuntimeDescriptor;
@@ -54,8 +54,8 @@ export interface HttpApplicationContext {
 export type HttpApplicationFactory = (context: HttpApplicationContext) => RequestListener;
 
 export interface HttpServerDependencies {
+  readonly initializeDatabase?: DatabaseInitializer;
   readonly openDatabase?: DatabaseOpener;
-  readonly migrateDatabase?: DatabaseMigrator;
   readonly createServer?: HttpServerFactory;
   readonly acquireInstanceLock?: InstanceLockAcquirer;
   readonly isPidAlive?: PidLiveness;
@@ -81,8 +81,8 @@ export interface HttpServerOptions extends PathEnvironment {
   readonly v1?: V1RouteHandler;
   readonly applicationFactory?: HttpApplicationFactory;
   readonly dependencies?: HttpServerDependencies;
+  readonly initializeDatabase?: DatabaseInitializer;
   readonly openDatabase?: DatabaseOpener;
-  readonly migrateDatabase?: DatabaseMigrator;
   readonly createServer?: HttpServerFactory;
   readonly acquireInstanceLock?: InstanceLockAcquirer;
   readonly isPidAlive?: PidLiveness;
@@ -189,6 +189,22 @@ function safeCloseError(error: unknown): KiokukoError {
   return safeRuntimeError(error, 'Unable to close the HTTP server');
 }
 
+function throwStartupFailure(originalError: unknown, cleanupErrors: readonly unknown[]): never {
+  const startupError = safeStartupError(originalError);
+  if (cleanupErrors.length === 0) throw startupError;
+  throw new AggregateError(
+    [startupError, ...cleanupErrors.map((error) => safeStartupError(error))],
+    'HTTP server startup failed and resource cleanup also failed',
+  );
+}
+
+function throwCloseFailures(errors: readonly unknown[]): void {
+  if (errors.length === 0) return;
+  const safeErrors = errors.map((error) => safeCloseError(error));
+  if (safeErrors.length === 1) throw safeErrors[0];
+  throw new AggregateError(safeErrors, 'HTTP server resource cleanup failed');
+}
+
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     try {
@@ -267,8 +283,8 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
   const removeDescriptor = options.dependencies?.removeRuntimeDescriptor ?? options.removeRuntimeDescriptor ?? defaultRemoveRuntimeDescriptor;
   const createDescriptor = options.dependencies?.createRuntimeDescriptor ?? options.createRuntimeDescriptor ?? defaultCreateRuntimeDescriptor;
   const acquireLock = options.dependencies?.acquireInstanceLock ?? options.acquireInstanceLock ?? defaultAcquireInstanceLock;
+  const initialize = options.dependencies?.initializeDatabase ?? options.initializeDatabase ?? defaultInitializeDatabase;
   const openDatabase = options.dependencies?.openDatabase ?? options.openDatabase ?? openConnection;
-  const migrate = options.dependencies?.migrateDatabase ?? options.migrateDatabase ?? defaultMigrateDatabase;
   const createHttpServer = options.dependencies?.createServer ?? options.createServer ?? nodeCreateServer;
 
   try {
@@ -281,36 +297,64 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
   let lock: InstanceLock | undefined;
   let server: Server | undefined;
   let descriptorAttempted = false;
+  let serverClosed = false;
+  let queueClosed = false;
   let databaseClosed = false;
   let lockReleased = false;
   let descriptorRemoved = false;
 
   const rollback = async (originalError: unknown): Promise<never> => {
-    if (server !== undefined) await closeServer(server).catch(() => undefined);
-    await queue.close().catch(() => undefined);
+    const cleanupErrors: unknown[] = [];
+    if (server !== undefined && !serverClosed) {
+      try {
+        await closeServer(server);
+        serverClosed = true;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (!queueClosed) {
+      try {
+        await queue.close();
+        queueClosed = true;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
     if (database !== undefined && !databaseClosed) {
       try {
         database.close();
-      } catch {
-        // Preserve the startup error.
+        databaseClosed = true;
+      } catch (error) {
+        cleanupErrors.push(error);
       }
-      databaseClosed = true;
     }
     if (descriptorAttempted && !descriptorRemoved) {
-      await removeOwnedDescriptor(removeDescriptor, descriptorPath, instanceId).catch(() => undefined);
-      descriptorRemoved = true;
+      try {
+        await removeOwnedDescriptor(removeDescriptor, descriptorPath, instanceId);
+        descriptorRemoved = true;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
     }
     if (lock !== undefined && !lockReleased) {
-      await lock.release().catch(() => undefined);
-      lockReleased = true;
+      try {
+        await lock.release();
+        lockReleased = true;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
     }
-    throw safeStartupError(originalError);
+    throwStartupFailure(originalError, cleanupErrors);
   };
 
   try {
     lock = await acquireLock(databasePath, lockOptionsFor(options, instanceId, pid, isPidAlive));
+    await initialize({
+      databasePath,
+      ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
+    });
     database = await openDatabase(databasePath);
-    await migrate(database, options.migrationsDirectory);
 
     let closing = false;
     let ready = false;
@@ -396,50 +440,48 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
         if (closePromise !== undefined) return closePromise;
         closing = true;
         ready = false;
-        closePromise = (async () => {
-          let firstError: unknown;
-          const serverClose = closeServer(server as Server).catch((error: unknown) => {
-            firstError ??= error;
-          });
-          const requestClose = waitForAcceptedRequests().catch((error: unknown) => {
-            firstError ??= error;
-          });
-          const queueClose = activeRequests === 0
-            ? queue.close().catch((error: unknown) => {
-              firstError ??= error;
-            })
+        const attempt = (async () => {
+          const cleanupErrors: unknown[] = [];
+          const capture = async (operation: () => unknown | PromiseLike<unknown>, completed: () => void): Promise<void> => {
+            try {
+              await operation();
+              completed();
+            } catch (error) {
+              cleanupErrors.push(error);
+            }
+          };
+          const serverClose = serverClosed
+            ? Promise.resolve()
+            : capture(() => closeServer(server as Server), () => { serverClosed = true; });
+          const requestClose = capture(waitForAcceptedRequests, () => undefined);
+          const queueClose = activeRequests === 0 && !queueClosed
+            ? capture(() => queue.close(), () => { queueClosed = true; })
             : undefined;
           await Promise.all([serverClose, requestClose]);
-          if (queueClose === undefined) {
-            await queue.close().catch((error: unknown) => {
-              firstError ??= error;
-            });
-          } else {
+          if (queueClose !== undefined) {
             await queueClose;
+          } else if (!queueClosed) {
+            await capture(() => queue.close(), () => { queueClosed = true; });
           }
           if (database !== undefined && !databaseClosed) {
-            try {
-              database.close();
-            } catch (error) {
-              firstError ??= error;
-            }
-            databaseClosed = true;
+            await capture(() => database?.close(), () => { databaseClosed = true; });
           }
           if (!descriptorRemoved) {
-            await removeOwnedDescriptor(removeDescriptor, descriptorPath, instanceId).catch((error: unknown) => {
-              firstError ??= error;
-            });
-            descriptorRemoved = true;
+            await capture(
+              () => removeOwnedDescriptor(removeDescriptor, descriptorPath, instanceId),
+              () => { descriptorRemoved = true; },
+            );
           }
           if (lock !== undefined && !lockReleased) {
-            await lock.release().catch((error: unknown) => {
-              firstError ??= error;
-            });
-            lockReleased = true;
+            await capture(() => lock?.release(), () => { lockReleased = true; });
           }
-          if (firstError !== undefined) throw safeCloseError(firstError);
+          throwCloseFailures(cleanupErrors);
         })();
-        return closePromise;
+        closePromise = attempt;
+        void attempt.then(undefined, () => {
+          if (closePromise === attempt) closePromise = undefined;
+        });
+        return attempt;
       },
     };
     return handle;

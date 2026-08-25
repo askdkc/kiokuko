@@ -39,13 +39,23 @@ async function writeJson(directory: string, name: string, value: unknown): Promi
   return file;
 }
 
-async function answerUntilActive(opened: Record<string, any>, descriptorPath: string): Promise<Record<string, any>> {
+async function answerUntilActive(
+  opened: Record<string, any>,
+  descriptorPath: string,
+  capabilitiesPath: string,
+): Promise<Record<string, any>> {
   let response = opened;
   const answers: Record<string, string> = { taskType: 'build', target: 'src/gateway', expected: 'tests pass', constraints: 'none' };
   for (let count = 0; response.data.runStatus === 'intake' && count < 3; count += 1) {
     const question = response.data.currentQuestion;
     assert.equal(typeof question?.id, 'string');
-    response = await captureCli(['agent', 'answer', response.data.runId, '--question-id', question.id, '--value', answers[question.id] ?? 'explicit answer', '--json'], descriptorPath);
+    response = await captureCli([
+      'agent', 'answer', response.data.runId,
+      '--question-id', question.id,
+      '--value', answers[question.id] ?? 'explicit answer',
+      '--capabilities-json', capabilitiesPath,
+      '--json',
+    ], descriptorPath);
   }
   assert.equal(response.data.runStatus, 'active');
   assert.ok(['ready', 'exhausted'].includes(response.data.intakeStatus));
@@ -83,11 +93,21 @@ test('generic CLI completes the gateway lifecycle over real TCP and persists one
     database.close();
   }
 
+  const capabilitiesPath = await writeJson(inputs, 'capabilities.json', [
+    { kind: 'skill', name: 'memory-reasoning' },
+  ]);
   const runtime = await startAgentHttpServer({ databasePath, runtimeDirectory, descriptorPath });
   try {
-    const opened = await captureCli(['agent', 'open', '--workspace', workspace, '--client', 'generic', '--task', 'Implement and verify the gateway', '--json'], descriptorPath);
+    const opened = await captureCli([
+      'agent', 'open',
+      '--workspace', workspace,
+      '--client', 'generic',
+      '--task', 'Implement and verify the gateway',
+      '--capabilities-json', capabilitiesPath,
+      '--json',
+    ], descriptorPath);
     assert.equal(opened.operation, 'agent.open');
-    const active = await answerUntilActive(opened, descriptorPath);
+    const active = await answerUntilActive(opened, descriptorPath, capabilitiesPath);
     const runId = active.data.runId as string;
     assert.equal(active.data.context?.untrusted, true);
 
@@ -111,7 +131,12 @@ test('generic CLI completes the gateway lifecycle over real TCP and persists one
       apiVersion: '1',
       taskProfileRevision: { target: 'src/gateway/index.ts' },
     });
-    const revised = await captureCli(['agent', 'checkpoint', runId, '--input-json', checkpointPath, '--json'], descriptorPath);
+    const revised = await captureCli([
+      'agent', 'checkpoint', runId,
+      '--input-json', checkpointPath,
+      '--capabilities-json', capabilitiesPath,
+      '--json',
+    ], descriptorPath);
     assert.equal(revised.data.taskProfile.target, 'src/gateway/index.ts');
 
     const verificationPath = await writeJson(inputs, 'verification.json', {
@@ -123,7 +148,12 @@ test('generic CLI completes the gateway lifecycle over real TCP and persists one
     const finalCheckpointPath = await writeJson(inputs, 'final-checkpoint.json', {
       idempotencyKey: 'e2e-final-checkpoint-key', apiVersion: '1', currentStep: 'final verification',
     });
-    const checkpoint = await captureCli(['agent', 'checkpoint', runId, '--input-json', finalCheckpointPath, '--json'], descriptorPath);
+    const checkpoint = await captureCli([
+      'agent', 'checkpoint', runId,
+      '--input-json', finalCheckpointPath,
+      '--capabilities-json', capabilitiesPath,
+      '--json',
+    ], descriptorPath);
     assert.equal(checkpoint.data.taskProfile.target, 'src/gateway/index.ts');
     assert.equal(checkpoint.data.projection.evidenceState, 'fresh');
     assert.equal(checkpoint.data.context?.untrusted, true);

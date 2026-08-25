@@ -298,7 +298,8 @@ test('appends active events, closes atomically, and rejects new terminal operati
     const closed = service.closeRun({ runId: opened.runId, idempotencyKey: 'close-1', request: closeRequest });
     assert.equal(closed.status, 'completed');
     assert.equal(closed.runStatus, 'completed');
-    assert.equal(closed.eventIds.length, 1);
+    assert.equal(closed.eventIds.length, 2);
+    assert.equal(closed.eventIds[0], 'final-event-1');
     assert.deepEqual(service.closeRun({ runId: opened.runId, idempotencyKey: 'close-1', request: closeRequest }), closed);
     assert.equal(service.readRun({ runId: opened.runId }).untrusted, true);
     assert.equal(service.listEvents({ runId: opened.runId }).untrusted, true);
@@ -441,4 +442,3 @@ test('rolls back open and answer lifecycles when a later event write fails', asy
     database.close();
   }
 });
-

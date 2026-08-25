@@ -8,7 +8,8 @@ import {
   runIdSegment,
   type AgentRouteContext,
 } from './agent-runs.js';
-import { attachInitialContext } from './task5-support.js';
+import { attachCapabilityGatedContext, requestCapabilityCatalog } from './agent-capability-gate.js';
+import { agentRequestBindingHash } from './request-binding.js';
 
 const ANSWERS_SUFFIX = 'intake/answers';
 const INTAKE_SUFFIX = 'intake';
@@ -23,12 +24,23 @@ export function createAgentIntakeRoute(context: AgentRouteContext): V1RouteHandl
         const runId = decodeRunId(rawRunId);
         requireNoQuery(request.url);
         const idempotencyKey = requireIdempotencyKey(request);
+        const requestBindingHash = agentRequestBindingHash({
+          operation: 'agent.answer',
+          pathRunId: runId,
+          idempotencyKey,
+          requestBody: request.body,
+        });
         const data = await context.enqueueWrite(() => context.service.answerIntake({
           runId,
           idempotencyKey,
           request: request.body,
         }));
-        return successEnvelope('agent.answer', await attachInitialContext(context, data.runId, data));
+        const gated = await attachCapabilityGatedContext(
+          context,
+          data,
+          requestCapabilityCatalog(request.body),
+        );
+        return successEnvelope('agent.answer', { ...gated, requestBindingHash });
       }
     }
 
@@ -50,4 +62,3 @@ export function agentIntakeOperation(method: string, pathname: string): string |
   if (method === 'GET' && runIdSegment(pathname, INTAKE_SUFFIX) !== undefined) return 'agent.intake.read';
   return undefined;
 }
-

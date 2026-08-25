@@ -10,6 +10,7 @@ import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { CURATOR_DRAFT_VERSION, curateMemoryCandidates, globalizeCuratorCandidate } from '../../src/memory/curator.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
+import { canonicalEntryRevisionContentHash, canonicalJson, type JsonObject, type JsonValue } from '../../src/serialization/validate.js';
 import { startWebServer } from '../../src/web/server.js';
 import { recallEntries } from '../../src/memory/retrieval.js';
 
@@ -81,6 +82,7 @@ test('curator identifies reusable candidates and globalizes only after explicit 
     assert.equal(result.global.workspace, 'global');
     assert.equal(result.global.status, 'candidate');
     assert.equal(result.global.scope.visibility, 'global');
+    assert.equal(result.global.scope.retrievalScope, 'global');
     assert.equal(result.global.provenance.type, 'curator_globalize');
     assert.equal(result.global.provenance.reference, `${data.reusable.id}@${data.reusable.revision}#${CURATOR_DRAFT_VERSION}`);
     assert.equal(result.global.title, candidate.draft.title);
@@ -99,6 +101,148 @@ test('curator identifies reusable candidates and globalizes only after explicit 
     assert.equal(replay.idempotent, true);
     assert.equal(replay.global.id, result.global.id);
     assert.equal(data.database.prepare('SELECT COUNT(*) AS count FROM entries WHERE workspace = ?').get<{ count: number }>('global')?.count, 1);
+  } finally {
+    data.database.close();
+  }
+});
+
+test('curator idempotency rejects a provenance claimant whose full projection is forged', async () => {
+  const data = await fixture();
+  try {
+    recordEntry(data.database, {
+      workspace: 'global',
+      kind: data.reusable.kind,
+      status: 'candidate',
+      title: 'Forged globalization claimant',
+      body: 'This row has the claimed source reference but not the deterministic curator projection.',
+      scope: buildStructuredScope({ visibility: 'global', retrievalScope: 'global', portableReason: 'forged claimant' }),
+      provenance: {
+        type: 'curator_globalize',
+        reference: `${data.reusable.id}@${data.reusable.revision}#${CURATOR_DRAFT_VERSION}`,
+        sourceWorkspace: data.reusable.workspace,
+        clientKind: 'forged-client',
+        timestamp: '2026-08-26T00:00:00.000Z',
+      },
+      tags: ['global', 'forged'],
+      createdBy: 'forged-client',
+    }, { now: '2026-08-26T00:00:00.000Z' });
+
+    assert.throws(
+      () => globalizeCuratorCandidate(data.database, {
+        workspace: data.reusable.workspace,
+        entryId: data.reusable.id,
+        expectedRevision: data.reusable.revision,
+      }),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR',
+    );
+    assert.equal(data.database.prepare('SELECT COUNT(*) AS count FROM entries WHERE workspace = ?').get<{ count: number }>('global')?.count, 1);
+  } finally {
+    data.database.close();
+  }
+});
+
+test('curator idempotency rejects duplicate source claimants instead of selecting the first match', async () => {
+  const data = await fixture();
+  try {
+    for (const suffix of ['a', 'b']) {
+      recordEntry(data.database, {
+        workspace: 'global',
+        kind: data.reusable.kind,
+        status: 'candidate',
+        title: `Duplicate globalization claimant ${suffix}`,
+        body: `Duplicate claimant body ${suffix}`,
+        scope: buildStructuredScope({ visibility: 'global', retrievalScope: 'global', portableReason: 'duplicate claimant' }),
+        provenance: {
+          type: 'curator_globalize',
+          reference: `${data.reusable.id}@${data.reusable.revision}#${CURATOR_DRAFT_VERSION}`,
+          sourceWorkspace: data.reusable.workspace,
+          clientKind: `duplicate-${suffix}`,
+          timestamp: `2026-08-26T00:00:0${suffix === 'a' ? '1' : '2'}.000Z`,
+        },
+        tags: ['global', `duplicate-${suffix}`],
+        createdBy: `duplicate-${suffix}`,
+      }, { now: `2026-08-26T00:00:0${suffix === 'a' ? '1' : '2'}.000Z` });
+    }
+
+    assert.throws(
+      () => globalizeCuratorCandidate(data.database, {
+        workspace: data.reusable.workspace,
+        entryId: data.reusable.id,
+        expectedRevision: data.reusable.revision,
+      }),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR',
+    );
+    assert.equal(data.database.prepare('SELECT COUNT(*) AS count FROM entries WHERE workspace = ?').get<{ count: number }>('global')?.count, 2);
+  } finally {
+    data.database.close();
+  }
+});
+
+const corruptStructuredMetadata: Array<{ field: 'applicability' | 'signals'; value: JsonValue }> = [
+  { field: 'applicability', value: [] },
+  { field: 'signals', value: { commands: 'run' } },
+];
+
+for (const corrupt of corruptStructuredMetadata) {
+  test(`curator fails closed on malformed stored ${corrupt.field} metadata`, async () => {
+    const data = await fixture();
+    try {
+      const corruptEntry = recordEntry(data.database, {
+        workspace: 'project:curator-test',
+        kind: 'lesson',
+        title: `Reusable workflow with corrupt ${corrupt.field}`,
+        body: 'A reusable troubleshooting workflow: when an operation fails, verify the current state and apply the documented recovery procedure.',
+        scope: buildStructuredScope({ visibility: 'project' }),
+        tags: ['workflow', 'reusable'],
+      });
+      const corruptScope = { schemaVersion: 3, visibility: 'project', [corrupt.field]: corrupt.value } as JsonObject;
+      const corruptHash = canonicalEntryRevisionContentHash({ ...corruptEntry, scope: corruptScope });
+      data.database.exec('DROP TRIGGER entry_revisions_immutable_update');
+      data.database.prepare('UPDATE entry_revisions SET scope_json = ?, content_hash = ? WHERE entry_id = ? AND revision = ?')
+        .run(canonicalJson(corruptScope), corruptHash, corruptEntry.id, corruptEntry.revision);
+
+      const isIntegrityError = (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR';
+      await assert.rejects(
+        curateMemoryCandidates(data.database, { workspace: 'project:curator-test' }),
+        isIntegrityError,
+      );
+      assert.throws(
+        () => globalizeCuratorCandidate(data.database, {
+          workspace: corruptEntry.workspace,
+          entryId: corruptEntry.id,
+          expectedRevision: corruptEntry.revision,
+        }),
+        isIntegrityError,
+      );
+      assert.equal(data.database.prepare('SELECT COUNT(*) AS count FROM entries WHERE workspace = ?').get<{ count: number }>('global')?.count, 0);
+    } finally {
+      data.database.close();
+    }
+  });
+}
+
+test('curator treats unversioned reserved-key collisions as unstructured legacy scope', async () => {
+  const data = await fixture();
+  try {
+    const legacy = recordEntry(data.database, {
+      workspace: 'project:curator-test',
+      kind: 'lesson',
+      title: 'Reusable legacy recovery workflow',
+      body: 'A reusable troubleshooting workflow: when an operation fails, verify the current state and apply the documented recovery procedure.',
+      scope: {
+        visibility: 7,
+        applicability: [],
+        signals: { commands: 'not typed metadata' },
+      },
+      tags: ['workflow', 'reusable'],
+    });
+
+    const result = await curateMemoryCandidates(data.database, { workspace: legacy.workspace });
+
+    const candidate = result.candidates.find((item) => item.entryId === legacy.id);
+    assert.ok(candidate);
+    assert.equal(candidate.applicability, undefined);
+    assert.equal(candidate.memoryClass, undefined);
   } finally {
     data.database.close();
   }
@@ -125,7 +269,12 @@ test('curator command supports explicit batch confirmation', async () => {
 
 test('web exposes curator candidates and a revision-checked globalize action', async () => {
   const data = await fixture();
-  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0 });
+  const web = await startWebServer({
+    databasePath: data.databasePath,
+    host: '127.0.0.1',
+    port: 0,
+    httpOptions: { runtimeDirectory: path.join(data.directory, 'runtime') },
+  });
   try {
     const home = await fetch(web.url);
     assert.equal(home.status, 200);
@@ -167,7 +316,12 @@ test('web curator lists candidates across projects and globalizes the selected s
     summary: 'A reusable workflow for bounded retries.',
     tags: ['workflow', 'reusable'],
   });
-  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0 });
+  const web = await startWebServer({
+    databasePath: data.databasePath,
+    host: '127.0.0.1',
+    port: 0,
+    httpOptions: { runtimeDirectory: path.join(data.directory, 'runtime') },
+  });
   try {
     const sessionResponse = await fetch(web.url);
     const cookie = sessionResponse.headers.get('set-cookie')?.split(';', 1)[0];
@@ -197,7 +351,12 @@ test('web curator lists candidates across projects and globalizes the selected s
 
 test('web curator applies SQL-backed filters and exposes facets', async () => {
   const data = await fixture();
-  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0 });
+  const web = await startWebServer({
+    databasePath: data.databasePath,
+    host: '127.0.0.1',
+    port: 0,
+    httpOptions: { runtimeDirectory: path.join(data.directory, 'runtime') },
+  });
   try {
     const sessionResponse = await fetch(web.url);
     const cookie = sessionResponse.headers.get('set-cookie')?.split(';', 1)[0];

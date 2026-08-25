@@ -1,7 +1,9 @@
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { parseRetrievalQuery, normalizeSearchSignal, type ParsedRetrievalQuery } from './retrieval-query.js';
-import type { EntryKind, EntryStatus } from '../serialization/validate.js';
+import { compareCanonicalStrings, ENTRY_KINDS, ENTRY_STATUSES, type EntryKind, type EntryStatus } from '../serialization/validate.js';
+import { readEntry, type EntryRecord } from './entries.js';
+import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
 
 export type RetrievalLane = 'exact-signal' | 'word-fts' | 'trigram' | 'like' | 'tag';
 
@@ -39,12 +41,45 @@ const LANE_WEIGHTS: Record<RetrievalLane, number> = {
   tag: 3,
 };
 
-function invalid(): never {
-  throw new KiokukoError('VALIDATION_ERROR', 'Search query is invalid');
+interface ExternalMappingRow extends SqliteRow {
+  skill_id: unknown;
 }
 
-function hasTable(database: SqliteDatabase, name: string): boolean {
-  return Boolean(database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?").get(name));
+/** Decide eligibility only after the entry and the complete parent snapshot decode. */
+export function isRetrievableEntry(database: SqliteDatabase, entry: EntryRecord): boolean {
+  const mappingRows = database.prepare(`
+    SELECT skill_id
+      FROM external_skill_entries
+     WHERE entry_id = ?
+     ORDER BY skill_id, source_path, chunk_index
+  `).all<ExternalMappingRow>(entry.id);
+  const markedExternal = isExternalSkillReference(entry);
+  if (!markedExternal && mappingRows.length === 0) return true;
+  if (!markedExternal) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'A managed external skill mapping points to an ordinary entry');
+  }
+  if (mappingRows.length === 0) return false;
+
+  const skillIds = new Set<string>();
+  for (const mapping of mappingRows) {
+    if (typeof mapping.skill_id !== 'string' || mapping.skill_id.length === 0) {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Managed external skill mapping is invalid');
+    }
+    skillIds.add(mapping.skill_id);
+  }
+  if (skillIds.size !== 1) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'A managed external skill entry has multiple parent skills');
+  }
+  const skillId = [...skillIds][0]!;
+  const detail = readExternalSkill(database, skillId);
+  if (detail === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Managed external skill parent is missing');
+  const active = detail.entries.filter((mapping) => mapping.entryId === entry.id && mapping.active);
+  if (active.length > 1) throw new KiokukoError('INTEGRITY_ERROR', 'Managed external skill entry has multiple active mappings');
+  return active.length === 1 && active[0]!.revision === entry.revision;
+}
+
+function invalid(): never {
+  throw new KiokukoError('VALIDATION_ERROR', 'Search query is invalid');
 }
 
 function quotedFts(value: string): string {
@@ -58,19 +93,6 @@ function escapedLike(value: string): string {
 function filterSql(input: HybridSearchInput, parameters: Array<string | number>): string {
   const clauses = ['e.workspace = ?'];
   parameters.push(input.workspace);
-  if (!input.includeSuperseded) clauses.push("e.status <> 'superseded'");
-  if (input.kind !== undefined) {
-    clauses.push('r.kind = ?');
-    parameters.push(input.kind);
-  }
-  if (input.status !== undefined) {
-    clauses.push('e.status = ?');
-    parameters.push(input.status);
-  }
-  if (input.tag !== undefined) {
-    clauses.push('EXISTS (SELECT 1 FROM entry_revision_tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.revision = e.current_revision AND filter_tags.tag = ?)');
-    parameters.push(input.tag);
-  }
   return clauses.join(' AND ');
 }
 
@@ -81,7 +103,6 @@ function rankSql(): string {
 }
 
 function exactSignalLane(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): SearchRow[] {
-  if (!hasTable(database, 'entry_search_signals')) return [];
   const values = parsed.exactSignals.map((signal) => signal.normalizedValue).filter(Boolean).slice(0, 32);
   if (values.length === 0) return [];
   const parameters: Array<string | number> = [input.workspace, ...values];
@@ -123,7 +144,6 @@ function tagLane(database: SqliteDatabase, input: HybridSearchInput, parsed: Par
 }
 
 function wordFtsLane(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): SearchRow[] {
-  if (!hasTable(database, 'entries_fts')) return [];
   const values = [...new Set([...parsed.lexicalTerms, ...parsed.phraseTerms])]
     .filter((value) => value.length > 0)
     .slice(0, 24);
@@ -132,42 +152,33 @@ function wordFtsLane(database: SqliteDatabase, input: HybridSearchInput, parsed:
     const parameters: Array<string | number> = [quotedFts(value)];
     const filters = filterSql(input, parameters);
     parameters.push(MAX_LANE_CANDIDATES);
-    try {
-      rows.push(...database.prepare(`
-        SELECT e.id, bm25(entries_fts) AS score
-        FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid
-        JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
-        WHERE entries_fts MATCH ? AND ${filters}
-        ORDER BY score ASC, ${rankSql()}
-        LIMIT ?
-      `).all<SearchRow>(...parameters));
-    } catch (error) {
-      if (!(error instanceof Error) || !/fts|match|syntax/i.test(error.message)) throw error;
-    }
+    rows.push(...database.prepare(`
+      SELECT e.id, bm25(entries_fts) AS score
+      FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid
+      JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
+      WHERE entries_fts MATCH ? AND ${filters}
+      ORDER BY score ASC, ${rankSql()}
+      LIMIT ?
+    `).all<SearchRow>(...parameters));
   }
   return rows;
 }
 
 function trigramLane(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): SearchRow[] {
-  if (!hasTable(database, 'entries_trigram')) return [];
   const values = parsed.substringTerms.filter((value) => value.length >= 2).slice(0, 24);
   const rows: SearchRow[] = [];
   for (const value of values) {
     const parameters: Array<string | number> = [quotedFts(value)];
     const filters = filterSql(input, parameters);
     parameters.push(MAX_LANE_CANDIDATES);
-    try {
-      rows.push(...database.prepare(`
-        SELECT e.id, bm25(entries_trigram) AS score
-        FROM entries_trigram JOIN entries e ON e.rowid = entries_trigram.rowid
-        JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
-        WHERE entries_trigram MATCH ? AND ${filters}
-        ORDER BY score ASC, ${rankSql()}
-        LIMIT ?
-      `).all<SearchRow>(...parameters));
-    } catch (error) {
-      if (!(error instanceof Error) || !/fts|match|syntax/i.test(error.message)) throw error;
-    }
+    rows.push(...database.prepare(`
+      SELECT e.id, bm25(entries_trigram) AS score
+      FROM entries_trigram JOIN entries e ON e.rowid = entries_trigram.rowid
+      JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
+      WHERE entries_trigram MATCH ? AND ${filters}
+      ORDER BY score ASC, ${rankSql()}
+      LIMIT ?
+    `).all<SearchRow>(...parameters));
   }
   return rows;
 }
@@ -210,6 +221,9 @@ function laneRows(database: SqliteDatabase, input: HybridSearchInput, parsed: Pa
 export function hybridSearch(database: SqliteDatabase, input: HybridSearchInput): RetrievalCandidate[] {
   if (typeof input.workspace !== 'string' || input.workspace.trim().length === 0) invalid();
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 1_000) invalid();
+  if (input.kind !== undefined && !ENTRY_KINDS.includes(input.kind)) invalid();
+  if (input.status !== undefined && !ENTRY_STATUSES.includes(input.status)) invalid();
+  if (input.tag !== undefined && (typeof input.tag !== 'string' || input.tag.length === 0)) invalid();
   const parsed = parseRetrievalQuery(input.query);
   if (parsed.normalized.length === 0) return [];
   // Treat SQL/FTS-looking operator soup as data, not as a broad OR query. A
@@ -236,17 +250,22 @@ export function hybridSearch(database: SqliteDatabase, input: HybridSearchInput)
       if (merged.size >= MAX_MERGED_CANDIDATES) break;
     }
   }
-  return [...merged.values()]
+  const candidates = [...merged.values()]
     .map((candidate) => ({
       ...candidate,
       matchedSignals: [...new Set(candidate.matchedSignals)].sort(),
       reasons: [...new Set(candidate.reasons)].sort(),
     }))
-    .sort((left, right) => right.fusedScore - left.fusedScore || left.entryId.localeCompare(right.entryId));
-}
-
-export function hybridSearchRows(database: SqliteDatabase, input: HybridSearchInput): { rows: SearchRow[]; truncated: boolean } {
-  const candidates = hybridSearch(database, input);
-  const rows = candidates.slice(0, input.limit).map(({ entryId: id, fusedScore: score }) => ({ id, score }));
-  return { rows, truncated: candidates.length > input.limit };
+    .sort((left, right) => right.fusedScore - left.fusedScore || compareCanonicalStrings(left.entryId, right.entryId));
+  // Candidate generation may use projections, but every semantic predicate is
+  // applied only to the canonical decoded record.
+  return candidates.filter((candidate) => {
+    const entry = readEntry(database, { workspace: input.workspace, entryId: candidate.entryId });
+    if (!isRetrievableEntry(database, entry)) return false;
+    if (!input.includeSuperseded && entry.status === 'superseded') return false;
+    if (input.kind !== undefined && entry.kind !== input.kind) return false;
+    if (input.status !== undefined && entry.status !== input.status) return false;
+    if (input.tag !== undefined && !entry.tags.includes(input.tag)) return false;
+    return true;
+  });
 }

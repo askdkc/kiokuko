@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
+import { isSqliteCorruptionError } from '../db/sqlite-retry.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { findSecret } from '../memory/secrets.js';
@@ -77,7 +78,7 @@ type Run = Row & { run_id?: string };
 type Event = Row & { run_id?: string; sequence?: number };
 
 function errorValidation(message: string): never { throw new KiokukoError('VALIDATION_ERROR', message); }
-function errorDatabase(): never { throw new KiokukoError('DATABASE_ERROR', 'Ledger database operation failed'); }
+function errorIntegrity(): never { throw new KiokukoError('INTEGRITY_ERROR', 'Ledger database integrity validation failed'); }
 function str(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined; }
 function nullableStr(value: unknown): string | null | undefined { return value === null ? null : str(value); }
 function integer(value: unknown): number | undefined { return typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined; }
@@ -149,15 +150,21 @@ function parseJson(
     return undefined;
   }
   let parsed: unknown;
-  try { parsed = JSON.parse(raw) as unknown; } catch {
-    for (const check of checks) findings.add(check, 'malformed_json', category, value);
-    return undefined;
+  try { parsed = JSON.parse(raw) as unknown; } catch (error) {
+    if (error instanceof SyntaxError) {
+      for (const check of checks) findings.add(check, 'malformed_json', category, value);
+      return undefined;
+    }
+    throw error;
   }
   try {
     if (canonicalJson(parsed) !== raw) for (const check of checks) findings.add(check, 'noncanonical_json', category, value);
-  } catch {
-    for (const check of checks) findings.add(check, 'invalid_json_value', category, value);
-    return undefined;
+  } catch (error) {
+    if (error instanceof KiokukoError && error.code === 'VALIDATION_ERROR') {
+      for (const check of checks) findings.add(check, 'invalid_json_value', category, value);
+      return undefined;
+    }
+    throw error;
   }
   if ((shape === 'object' && !isObject(parsed)) || (shape === 'array' && !Array.isArray(parsed))) {
     for (const check of checks) findings.add(check, 'invalid_json_shape', category, value);
@@ -174,10 +181,6 @@ function validRedactions(value: unknown): value is Redaction[] {
   return Array.isArray(value) && value.every((item) => isObject(item) && typeof item.path === 'string' && typeof item.kind === 'string' && REDACTION_KINDS.has(item.kind));
 }
 
-function selectedRows(database: SqliteDatabase, table: string, workspace: string | undefined): Row[] {
-  if (workspace === undefined) return database.prepare(`SELECT * FROM ${table} ORDER BY run_id ASC`).all<Row>();
-  return database.prepare(`SELECT ${table}.* FROM ${table} JOIN ledger_runs AS r ON r.run_id = ${table}.run_id WHERE r.workspace = ? ORDER BY ${table}.run_id ASC`).all<Row>(workspace);
-}
 function selectedEvents(database: SqliteDatabase, workspace: string | undefined): Event[] {
   if (workspace === undefined) return database.prepare('SELECT * FROM ledger_events ORDER BY run_id ASC, sequence ASC, event_id ASC').all<Event>();
   return database.prepare(`SELECT e.* FROM ledger_events AS e JOIN ledger_runs AS r ON r.run_id = e.run_id WHERE r.workspace = ? ORDER BY e.run_id ASC, e.sequence ASC, e.event_id ASC`).all<Event>(workspace);
@@ -338,7 +341,7 @@ function inspectReferences(database: SqliteDatabase, workspace: string | undefin
     if (row.byte_size !== null && (integer(row.byte_size) === undefined || (row.byte_size as number) < 0)) findings.add('storedValues', 'invalid_byte_size', 'ledger_evidence', row.evidence_id);
     scanRow(row, 'ledger_evidence', row.evidence_id, findings);
   }
-  const deliveries = database.prepare(`SELECT cd.*, r.workspace AS run_workspace, s.workspace AS intake_workspace FROM context_deliveries AS cd LEFT JOIN ledger_runs AS r ON r.run_id = cd.run_id LEFT JOIN akinator_sessions AS s ON s.id = cd.intake_session_id${scope} ORDER BY cd.delivery_id ASC`).all<Row>(...param);
+  const deliveries = database.prepare(`SELECT cd.delivery_id, cd.run_id, cd.through_sequence, cd.intake_session_id, cd.task_profile_hash, cd.query_hash, cd.policy_version, cd.char_budget, cd.char_count, cd.truncated, cd.created_at, cd.score_schema_version, r.workspace AS run_workspace, s.workspace AS intake_workspace FROM context_deliveries AS cd LEFT JOIN ledger_runs AS r ON r.run_id = cd.run_id LEFT JOIN akinator_sessions AS s ON s.id = cd.intake_session_id${scope} ORDER BY cd.delivery_id ASC`).all<Row>(...param);
   for (const row of deliveries) {
     if (row.run_workspace === null || row.run_workspace === undefined) findings.add('references', 'orphan_delivery_run', 'context_deliveries', row.delivery_id);
     if (row.intake_session_id !== null && row.intake_workspace !== row.run_workspace) findings.add('references', 'delivery_intake_workspace_mismatch', 'context_deliveries', row.delivery_id);
@@ -366,7 +369,7 @@ function inspectReferences(database: SqliteDatabase, workspace: string | undefin
 function inspectContext(database: SqliteDatabase, workspace: string | undefined, runs: Map<string, Run>, findings: FindingCollector): void {
   const scope = workspace === undefined ? '' : ' WHERE r.workspace = ?';
   const param = workspace === undefined ? [] : [workspace];
-  const deliveries = database.prepare(`SELECT cd.*, r.last_sequence AS run_last_sequence FROM context_deliveries AS cd LEFT JOIN ledger_runs AS r ON r.run_id = cd.run_id${scope} ORDER BY cd.delivery_id ASC`).all<Row>(...param);
+  const deliveries = database.prepare(`SELECT cd.delivery_id, cd.run_id, cd.through_sequence, cd.intake_session_id, cd.task_profile_hash, cd.query_hash, cd.policy_version, cd.char_budget, cd.char_count, cd.truncated, cd.created_at, cd.score_schema_version, r.last_sequence AS run_last_sequence FROM context_deliveries AS cd LEFT JOIN ledger_runs AS r ON r.run_id = cd.run_id${scope} ORDER BY cd.delivery_id ASC`).all<Row>(...param);
   for (const row of deliveries) {
     const through = integer(row.through_sequence); const last = integer(row.run_last_sequence);
     if (through === undefined || through < 0 || last === undefined || through > last) findings.add('contextDeliveries', 'through_sequence_out_of_range', 'context_deliveries', row.delivery_id);
@@ -377,7 +380,6 @@ function inspectContext(database: SqliteDatabase, workspace: string | undefined,
     if (typeof row.query_hash !== 'string' || !HASH.test(row.query_hash)) findings.add('storedValues', 'invalid_hash_shape', 'context_deliveries', row.delivery_id);
     if (typeof row.policy_version !== 'string' || row.policy_version.length === 0) findings.add('storedValues', 'invalid_text', 'context_deliveries', row.delivery_id);
     if (!validTimestamp(row.created_at)) findings.add('contextDeliveries', 'invalid_timestamp', 'context_deliveries', row.delivery_id);
-    parseJson(row.external_sync_summary_json, ['contextDeliveries', 'storedValues'], 'context_deliveries.external_sync_summary_json', row.delivery_id, findings, 'object');
     if (!runs.has(str(row.run_id) ?? '')) findings.add('references', 'orphan_delivery_run', 'context_deliveries', row.delivery_id);
   }
 }
@@ -474,14 +476,14 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
     return { ok: LEDGER_CHECK_NAMES.every((name) => checks[name].ok), workspace: workspace ?? null, counts: reportCounts, checks, findings: findings.findings, findingCount: findings.findingCount, findingsTruncated: findings.findingsTruncated, tombstoneCount };
   } catch (error) {
     if (error instanceof KiokukoError) throw error;
-    errorDatabase();
+    if (isSqliteCorruptionError(error)) errorIntegrity();
+    throw error;
   }
 }
 
 export const PURGE_TARGET_TYPES = ['run', 'event', 'evidence', 'delivery', 'feedback', 'memory_link'] as const;
 export type PurgeTargetType = (typeof PURGE_TARGET_TYPES)[number];
 export const PURGE_BACKUP_WARNING = 'Backups may retain purged content and must be managed separately.';
-export interface PurgeLedgerTargetInput { workspace: string; targetType: PurgeTargetType; targetId: string; actor: string; reason?: string | null; createdAt: string; purgeId: string; confirmed?: boolean; }
 export interface LedgerPurgeTombstone { purgeId: string; runId: string | null; eventId: string | null; deliveryId: string | null; entryId: string | null; targetType: PurgeTargetType; targetId: string; actor: string; reason: string | null; createdAt: string; }
 export interface PurgeResult { purgeId: string; targetType: PurgeTargetType; targetId: string; deletedCount: number; replayed: boolean; tombstone: LedgerPurgeTombstone; backupWarning: typeof PURGE_BACKUP_WARNING; }
 
@@ -509,8 +511,7 @@ function normalizePurge(value: unknown): ValidatedPurge {
   let reason: string | null = null;
   if (value.reason !== undefined && value.reason !== null) {
     if (typeof value.reason !== 'string') errorValidation('reason must be a bounded string');
-    let sanitized: unknown;
-    try { sanitized = sanitizeJson(value.reason).value; } catch { errorValidation('reason must be a bounded string'); }
+    const sanitized: unknown = sanitizeJson(value.reason).value;
     if (typeof sanitized !== 'string' || Buffer.byteLength(sanitized, 'utf8') > 2048) errorValidation('reason must be a bounded string');
     if (findSecret(sanitized)) throw new KiokukoError('SECURITY_REJECTION', 'Purge input was rejected by privacy security policy');
     reason = sanitized;
@@ -570,7 +571,7 @@ function runGraphCount(database: SqliteDatabase, runId: string): number {
 }
 function executePurge(database: SqliteDatabase, input: ValidatedPurge, row: Row): { value: LedgerPurgeTombstone; count: number } {
   if (input.targetType === 'event') throw new KiokukoError('CONFLICT', EVENT_PURGE_CONFLICT);
-  const value = insertPurgeTombstone(database, input, row);
+  insertPurgeTombstone(database, input, row);
   let deleted = 1;
   switch (input.targetType) {
     case 'run': {
@@ -608,6 +609,4 @@ function purgeInTransaction(database: SqliteDatabase, input: ValidatedPurge): Pu
   const result = executePurge(database, input, row);
   return purgeResult(result.value, result.count, false);
 }
-function normalizePurgeError(error: unknown): never { if (error instanceof KiokukoError) throw error; throw new KiokukoError('DATABASE_ERROR', 'Ledger purge database operation failed'); }
-export function purgeLedgerTargetInTransaction(database: SqliteDatabase, input: unknown): PurgeResult { const value = normalizePurge(input); try { return purgeInTransaction(database, value); } catch (error) { normalizePurgeError(error); } }
-export function purgeLedgerTarget(database: SqliteDatabase, input: unknown): PurgeResult { const value = normalizePurge(input); try { return withImmediateTransaction(database, () => purgeInTransaction(database, value)); } catch (error) { normalizePurgeError(error); } }
+export function purgeLedgerTarget(database: SqliteDatabase, input: unknown): PurgeResult { const value = normalizePurge(input); return withImmediateTransaction(database, () => purgeInTransaction(database, value)); }

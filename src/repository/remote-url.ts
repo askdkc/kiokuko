@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { URL } from 'node:url';
-import path from 'node:path';
 import { KiokukoError } from '../errors.js';
 
 function cleanPath(value: string): string {
@@ -36,5 +35,3 @@ export function fingerprintRemoteUrl(remoteUrl: string): string {
   const normalized = normalizeRemoteUrl(remoteUrl);
   return `sha256:${createHash('sha256').update(normalized).digest('hex')}`;
 }
-
-export const sanitizeRemoteUrl = normalizeRemoteUrl;

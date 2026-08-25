@@ -12,7 +12,7 @@ Kiokuko는 AI 코딩 에이전트를 위한 외부 메모리입니다.
 
 ## 바로 시작하기
 
-Node.js 24 이상이 필요합니다.
+Node.js 24.16 이상이 필요합니다.
 다음 두 명령어로 쉽게 시작할 수 있습니다 💕
 
 ```bash
@@ -21,6 +21,10 @@ kiokuko setup
 ```
 
 `setup`은 설치된 지원 클라이언트를 감지하고 SQLite 데이터베이스와 MCP 연결을 자동으로 설정합니다.
+대화형 setup은 감사된 community Skill도 참고 자료로 사용할지 묻고, 기본 응답은 아니요입니다.
+모델용 메모리는 capability gate를 거치는 MCP 도구 `task_prepare`와
+`task_answer`를 통해서만 작업에 전달됩니다. Kiokuko는 이 호출 전에 메모리를
+암묵적으로 불러오는 클라이언트 훅이나 플러그인을 설치하지 않습니다.
 
 설정 후 대상 AI 클라이언트를 실행하고 평소처럼 사용하면 됩니다. 이미 실행 중이라면 한 번 종료한 후 다시 시작하십시오.
 
@@ -90,6 +94,29 @@ http://127.0.0.1:4173
 ```
 
 Web UI는 로컬 환경에서만 작동하며 외부 네트워크에 공개되지 않습니다.
+Web UI와 명시적 memory CLI 명령은 사람/operator용 관리 화면입니다. 모델이
+`task_prepare` / `task_answer`를 우회하여 작업 메모리를 가져오는 경로가 아닙니다.
+
+## 외부 스킬
+
+외부 스킬 검색은 참고 데이터 전용이며 Akinator task preparation에서 기본적으로
+`official` 모드를 사용합니다. 현재 GitHub 커밋을 검증하고 제한된 내용을 신뢰할 수
+없는 후보 메모리로 저장하지만 자동 설치나 실행은 하지 않습니다. 자동 검색을
+중지하려면 `KIOKUKO_SKILL_DISCOVERY=off`를 지정합니다. `community`는 계속 명시적으로
+활성화해야 합니다. 대화형 `kiokuko setup`에서 활성화 여부를 확인하며, 배치 실행은
+`--skill-discovery community`를 사용할 수 있습니다.
+
+명령 예시:
+
+```bash
+kiokuko skills find svelte --official-only --json
+kiokuko skills list
+kiokuko skills disable sveltejs/ai-tools/svelte-code-writer
+kiokuko skills refresh sveltejs/ai-tools/svelte-code-writer
+```
+
+Web UI의 외부 스킬 화면에서는 출처 상태를 확인하고 가져온 매핑을 비활성화하거나
+다시 활성화할 수 있습니다. 설치, 스크립트 실행, MCP 등록 기능은 없습니다.
 
 ## 안전성
 

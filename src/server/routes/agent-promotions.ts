@@ -15,7 +15,7 @@ import {
 } from './agent-runs.js';
 
 const PROMOTIONS_SUFFIX = 'promotions';
-const PROMOTION_FIELDS = new Set(['proposalEventId', 'deliveryId', 'actor', 'createdAt', 'confirmed']);
+const PROMOTION_FIELDS = new Set(['apiVersion', 'proposalEventId', 'deliveryId', 'actor', 'createdAt', 'confirmed']);
 
 function invalid(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Request is invalid');
@@ -25,7 +25,9 @@ function promotionBody(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid();
   const body = value as Record<string, unknown>;
   if (Object.keys(body).some((field) => !PROMOTION_FIELDS.has(field))) invalid();
-  return body;
+  if (body.apiVersion !== '1') invalid();
+  const { apiVersion: _apiVersion, ...promotion } = body;
+  return promotion;
 }
 
 function promotionScope(runId: string): string {

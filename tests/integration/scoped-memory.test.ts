@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { access, mkdtemp } from 'node:fs/promises';
+import { access, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { checkpointScopedMemory, recallScopedMemory } from '../../src/memory/scoped-memory.js';
-import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
+import { ensureGlobalWorkspace, resolveProjectWorkspace } from '../../src/memory/workspaces.js';
+import { recordContextDelivery } from '../../src/context/delivery.js';
+import { finalizeRunIntakeLink, insertAkinatorSession, insertRunIntakeLink } from '../../src/akinator/store.js';
+import { canonicalContentHash } from '../../src/serialization/validate.js';
 
 async function gitRepository(prefix: string, remote?: string): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), `kiokuko-scope-${prefix}-`));
@@ -21,6 +24,99 @@ async function databasePath(prefix: string): Promise<string> {
   const filePath = path.join(directory, 'kiokuko.sqlite3');
   await initializeDatabase({ databasePath: filePath });
   return filePath;
+}
+
+function seedCheckpointRun(
+  database: ReturnType<typeof openConnection>,
+  runId: string,
+  workspace: string,
+  now = '2026-08-25T00:00:00.000Z',
+): { sessionId: string; profileHash: string } {
+  const sessionId = `session-${runId}`;
+  const profile = { taskType: 'build' as const, target: 'memory', expected: 'checkpoint', constraints: null };
+  const profileHash = canonicalContentHash(profile);
+  insertAkinatorSession(database, {
+    id: sessionId,
+    workspace,
+    task: 'checkpoint',
+    profile,
+    status: 'ready',
+    questionCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
+  database.prepare(`
+    INSERT INTO ledger_runs (
+      run_id, workspace, client_kind, client_version, source_session_id, parent_run_id,
+      protocol_version, capture_profile, coverage_json, status, title, task_hash,
+      metadata_json, last_sequence, last_source_sequence, started_at, ended_at, created_at, updated_at
+    ) VALUES (?, ?, 'test', '1', ?, NULL, '1', 'standard', '{"approval":"unavailable","command":"unavailable","file":"unavailable","run":"declared","tool":"unavailable"}', 'active', 'checkpoint', NULL, '{}', 0, NULL, ?, NULL, ?, ?)
+  `).run(runId, workspace, sessionId, now, now, now);
+  insertRunIntakeLink(database, {
+    runId,
+    sessionId,
+    workspace,
+    policyVersion: 'v2',
+    profileSchemaVersion: 1,
+    profileSources: { taskType: 'inferred', target: 'inferred', expected: 'inferred', constraints: 'inferred' },
+    initialProfileHash: null,
+    recommendedTags: ['bot:builder', 'skill:tdd'],
+    linkedAt: now,
+    finalizedAt: null,
+  });
+  finalizeRunIntakeLink(database, {
+    workspace,
+    runId,
+    profileHash,
+    recommendedTags: ['bot:builder', 'skill:tdd'],
+    finalizedAt: now,
+  });
+  return { sessionId, profileHash };
+}
+
+function seedEmptyCheckpointDelivery(
+  database: ReturnType<typeof openConnection>,
+  workspace: string,
+  runId: string,
+  deliveryId: string,
+  now = '2026-08-25T00:00:00.000Z',
+): void {
+  const run = seedCheckpointRun(database, runId, workspace, now);
+  recordContextDelivery(database, {
+    workspace,
+    deliveryId,
+    runId,
+    throughSequence: 0,
+    intakeSessionId: run.sessionId,
+    taskProfileHash: run.profileHash,
+    queryHash: 'b'.repeat(64),
+    policyVersion: 'context-ranking-v1+recommendations.v1',
+    charBudget: 1,
+    charCount: 0,
+    truncated: false,
+    createdAt: now,
+    items: [],
+  });
+}
+
+function checkpointMutationSnapshot(database: ReturnType<typeof openConnection>): Record<string, unknown> {
+  return {
+    repositories: database.prepare(`
+      SELECT repository_id, workspace, display_name, remote_fingerprint,
+             binding_schema_version, agent_template_version, created_at, last_used_at
+        FROM repositories ORDER BY repository_id
+    `).all(),
+    locations: database.prepare(`
+      SELECT repository_id, canonical_root, first_seen_at, last_seen_at
+        FROM repository_locations ORDER BY repository_id, canonical_root
+    `).all(),
+    entries: database.prepare('SELECT id, workspace, status, current_revision FROM entries ORDER BY id').all(),
+    events: database.prepare('SELECT event_id, run_id, sequence, event_type FROM ledger_events ORDER BY run_id, sequence').all(),
+    evidence: database.prepare('SELECT evidence_id, run_id, event_id FROM ledger_evidence ORDER BY evidence_id').all(),
+    links: database.prepare('SELECT link_id, run_id, delivery_id, entry_id FROM ledger_memory_links ORDER BY link_id').all(),
+    feedback: database.prepare('SELECT feedback_id, delivery_id, entry_id, run_id FROM context_feedback ORDER BY feedback_id').all(),
+    runs: database.prepare('SELECT run_id, status, last_sequence, updated_at FROM ledger_runs ORDER BY run_id').all(),
+  };
 }
 
 test('auto resolution is stable and does not write repository files', async () => {
@@ -68,7 +164,13 @@ test('auto recall returns current-project and global memory but never another pr
       cwd: firstRoot,
       memories: [
         { kind: 'decision', title: 'Alpha durable beacon', body: 'durable-beacon belongs only to alpha' },
-        { kind: 'preference', title: 'Global durable beacon', body: 'durable-beacon applies everywhere', scope: 'global' },
+        {
+          kind: 'preference',
+          title: 'Global durable beacon',
+          body: 'durable-beacon applies everywhere',
+          scope: 'global',
+          portableReason: 'The preference applies independently of repository technology.',
+        },
       ],
     });
     const fromFirst = await recallScopedMemory(database, { cwd: firstRoot, query: 'durable beacon' });
@@ -80,6 +182,179 @@ test('auto recall returns current-project and global memory but never another pr
     assert.equal(fromSecond.global?.items.length, 1);
     assert.doesNotMatch(JSON.stringify(fromSecond), /belongs only to alpha/);
     assert.match(fromSecond.securityNotice, /untrusted data/);
+  } finally {
+    database.close();
+  }
+});
+
+test('global checkpoint preferences require explicit portability metadata', async () => {
+  const root = await gitRepository('global-portability');
+  const filePath = await databasePath('global-portability');
+  const database = openConnection(filePath);
+  try {
+    await assert.rejects(
+      checkpointScopedMemory(database, {
+        cwd: root,
+        memories: [
+          { kind: 'decision', title: 'Must roll back', body: 'This project entry must not survive a rejected batch.' },
+          { kind: 'preference', title: 'Unscoped global preference', body: 'No portability evidence.', scope: 'global' },
+        ],
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR',
+    );
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
+
+    const withApplicability = await checkpointScopedMemory(database, {
+      cwd: root,
+      memories: [{
+        kind: 'preference',
+        title: 'Scoped global preference',
+        body: 'Applies to TypeScript projects.',
+        scope: 'global',
+        applicability: { languages: ['TypeScript'] },
+      }],
+    });
+    assert.equal(withApplicability.entries.length, 1);
+    const scopeRow = database.prepare('SELECT scope_json AS scope FROM entry_revisions WHERE entry_id = ? AND revision = ?')
+      .get<{ scope: string }>(withApplicability.entries[0]!.id, withApplicability.entries[0]!.revision);
+    assert.ok(scopeRow);
+    assert.equal(Object.hasOwn(JSON.parse(scopeRow.scope) as Record<string, unknown>, 'portableReason'), false);
+  } finally {
+    database.close();
+  }
+});
+
+test('checkpoint provenance stores the repository HEAD commit', async () => {
+  const root = await gitRepository('provenance');
+  await writeFile(path.join(root, 'checkpoint.txt'), 'checkpoint provenance\n');
+  execFileSync('git', ['-C', root, 'add', 'checkpoint.txt']);
+  execFileSync('git', ['-C', root, '-c', 'user.name=Kiokuko Test', '-c', 'user.email=kiokuko@example.invalid', 'commit', '-q', '-m', 'checkpoint provenance']);
+  const expected = execFileSync('git', ['-C', root, 'rev-parse', '--verify', 'HEAD^{commit}'], { encoding: 'utf8' }).trim();
+  const filePath = await databasePath('provenance');
+  const database = openConnection(filePath);
+  try {
+    const checkpoint = await checkpointScopedMemory(database, {
+      cwd: root,
+      memories: [{ kind: 'decision', title: 'Commit-bound decision', body: 'Bound to the current repository commit.' }],
+    });
+    const entry = checkpoint.entries[0]!;
+    const row = database.prepare('SELECT provenance_json AS provenance FROM entry_revisions WHERE entry_id = ? AND revision = ?')
+      .get<{ provenance: string }>(entry.id, entry.revision);
+    assert.ok(row);
+    assert.equal((JSON.parse(row.provenance) as { sourceCommit?: string }).sourceCommit, expected);
+  } finally {
+    database.close();
+  }
+});
+
+test('checkpoint validates delivery ownership before mutating memory or ledger state', async () => {
+  const firstRoot = await gitRepository('delivery-owner-a');
+  const secondRoot = await gitRepository('delivery-owner-b');
+  const filePath = await databasePath('delivery-owner');
+  const database = openConnection(filePath);
+  try {
+    const first = await resolveProjectWorkspace(database, firstRoot);
+    const second = await resolveProjectWorkspace(database, secondRoot);
+    assert.ok(first);
+    assert.ok(second);
+    const now = '2026-08-25T00:00:00.000Z';
+    seedEmptyCheckpointDelivery(database, first.workspace, 'run-delivery-owner-a', 'delivery-owner-a', now);
+    seedCheckpointRun(database, 'run-delivery-owner-b', second.workspace, now);
+    const before = {
+      entries: database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()!.count,
+      events: database.prepare('SELECT COUNT(*) AS count FROM ledger_events').get<{ count: number }>()!.count,
+      links: database.prepare('SELECT COUNT(*) AS count FROM ledger_memory_links').get<{ count: number }>()!.count,
+    };
+
+    await assert.rejects(
+      checkpointScopedMemory(database, {
+        cwd: firstRoot,
+        deliveryId: 'delivery-owner-a',
+        memories: [{ kind: 'lesson', title: 'Must not persist', body: 'delivery without run' }],
+      }),
+      (error: unknown) => (error as { code?: unknown }).code === 'VALIDATION_ERROR',
+    );
+    await assert.rejects(
+      checkpointScopedMemory(database, {
+        cwd: secondRoot,
+        runId: 'run-delivery-owner-b',
+        deliveryId: 'delivery-owner-a',
+        memories: [],
+        outcome: 'completed',
+      }),
+      (error: unknown) => (error as { code?: unknown }).code === 'NOT_FOUND',
+    );
+    assert.deepEqual({
+      entries: database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()!.count,
+      events: database.prepare('SELECT COUNT(*) AS count FROM ledger_events').get<{ count: number }>()!.count,
+      links: database.prepare('SELECT COUNT(*) AS count FROM ledger_memory_links').get<{ count: number }>()!.count,
+    }, before);
+  } finally {
+    database.close();
+  }
+});
+
+test('checkpoint validates all input and exact feedback targets before workspace mutation', async () => {
+  const root = await gitRepository('prevalidation-no-mutation');
+  const filePath = await databasePath('prevalidation-no-mutation');
+  const database = openConnection(filePath);
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+    ensureGlobalWorkspace(database, '2026-08-24T00:00:00.000Z');
+    seedEmptyCheckpointDelivery(
+      database,
+      project.workspace,
+      'run-checkpoint-prevalidation',
+      'delivery-checkpoint-prevalidation',
+    );
+    const timestampSentinel = '2001-02-03T04:05:06.000Z';
+    database.prepare('UPDATE repositories SET last_used_at = ?').run(timestampSentinel);
+    database.prepare('UPDATE repository_locations SET last_seen_at = ?').run(timestampSentinel);
+    const before = checkpointMutationSnapshot(database);
+    const rejectsWithoutMutation = async (
+      input: Parameters<typeof checkpointScopedMemory>[1],
+      code: string,
+    ): Promise<void> => {
+      await assert.rejects(
+        checkpointScopedMemory(database, input),
+        (error: unknown) => (error as { code?: unknown }).code === code,
+      );
+      assert.deepEqual(checkpointMutationSnapshot(database), before);
+    };
+
+    await rejectsWithoutMutation({
+      cwd: root,
+      memories: [{ kind: 'lesson', title: 'Invalid evidence sentinel', body: 'Must not be persisted.' }],
+      evidence: { changedPaths: ['../outside-repository'] },
+    }, 'VALIDATION_ERROR');
+    await rejectsWithoutMutation({
+      cwd: root,
+      memories: [{ kind: 'removed-kind' as never, title: 'Invalid memory sentinel', body: 'Must not be persisted.' }],
+    }, 'VALIDATION_ERROR');
+    await rejectsWithoutMutation({
+      cwd: root,
+      memories: [{
+        kind: 'lesson',
+        title: 'Unretrievable ecosystem sentinel',
+        body: 'An explicit ecosystem scope requires applicability.',
+        retrievalScope: 'ecosystem',
+      }],
+    }, 'VALIDATION_ERROR');
+    await rejectsWithoutMutation({
+      cwd: root,
+      runId: 'run-checkpoint-prevalidation',
+      deliveryId: 'delivery-checkpoint-prevalidation',
+      memories: [],
+      feedback: [{ entryId: 'missing-entry', entryRevision: 1, verdict: 'unknown-verdict' }],
+    }, 'VALIDATION_ERROR');
+    await rejectsWithoutMutation({
+      cwd: root,
+      runId: 'run-checkpoint-prevalidation',
+      deliveryId: 'delivery-checkpoint-prevalidation',
+      memories: [],
+      feedback: [{ entryId: 'missing-entry', entryRevision: 1, verdict: 'helpful' }],
+    }, 'NOT_FOUND');
   } finally {
     database.close();
   }

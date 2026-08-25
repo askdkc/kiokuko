@@ -43,5 +43,5 @@ export class KiokukoError extends Error {
 
 export function exitCodeFor(error: unknown): number {
   if (error instanceof KiokukoError) return error.exitCode;
-  return EXIT_CODES.DATABASE_ERROR;
+  return EXIT_CODES.INTEGRITY_ERROR;
 }

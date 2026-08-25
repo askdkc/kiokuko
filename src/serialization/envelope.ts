@@ -27,5 +27,5 @@ export function errorEnvelope(operation: string, error: unknown): ErrorEnvelope 
   if (error instanceof KiokukoError) {
     return { apiVersion: '1', ok: false, operation, error: { code: error.code, message: error.message, details: error.details } };
   }
-  return { apiVersion: '1', ok: false, operation, error: { code: 'DATABASE_ERROR', message: error instanceof Error ? error.message : String(error), details: {} } };
+  return { apiVersion: '1', ok: false, operation, error: { code: 'INTEGRITY_ERROR', message: 'Unexpected internal error', details: {} } };
 }

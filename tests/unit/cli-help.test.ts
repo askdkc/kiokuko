@@ -3,10 +3,32 @@ import { readFileSync } from 'node:fs';
 import { access, chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Readable, Writable } from 'node:stream';
+import { PassThrough, Readable, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
-import { promptSetupClients } from '../../src/commands/setup.js';
+import {
+  parseSetupSkillDiscoveryMode,
+  promptCommunitySkillDiscovery,
+  promptSetupClients,
+  promptSetupConfiguration,
+} from '../../src/commands/setup.js';
+
+function interactiveAnswers(...answers: string[]): PassThrough & { isTTY?: boolean } {
+  const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+  let index = 0;
+  const writeNext = () => {
+    const answer = answers[index];
+    if (answer === undefined) {
+      input.end();
+      return;
+    }
+    index += 1;
+    input.write(answer);
+    setImmediate(writeNext);
+  };
+  setImmediate(writeNext);
+  return input;
+}
 
 test('reports the package version instead of a stale hard-coded CLI version', () => {
   const packageMetadata = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
@@ -55,9 +77,27 @@ test('registers required commands', () => {
     'guide',
     'call',
     'agent',
+    'skills',
   ]) {
     assert.ok(names.includes(name), `missing ${name}`);
   }
+});
+
+test('does not synthesize an agent-file override when the use flag is omitted', () => {
+  const use = buildCli().commands.find((command) => command.name() === 'use');
+  assert.ok(use);
+  const agentFile = use.options.find((option) => option.long === '--agent-file');
+  assert.ok(agentFile);
+  assert.equal(agentFile.defaultValue, undefined);
+});
+
+test('exposes the small external-skill management surface', () => {
+  const skills = buildCli().commands.find((command) => command.name() === 'skills');
+  assert.ok(skills);
+  assert.deepEqual(skills.commands.map((command) => command.name()), ['find', 'import', 'list', 'show', 'disable', 'enable', 'refresh', 'prune-cache']);
+  assert.match(skills.commands.find((command) => command.name() === 'find')?.helpInformation() ?? '', /--official-only/);
+  assert.match(skills.commands.find((command) => command.name() === 'import')?.helpInformation() ?? '', /<skill>/);
+  assert.deepEqual(skills.commands.find((command) => command.name() === 'list')?.options.find((option) => option.long === '--state')?.argChoices, ['discovered', 'imported', 'blocked', 'stale', 'disabled']);
 });
 
 test('exposes scoped recall through the documented memory recall command', () => {
@@ -73,6 +113,8 @@ test('exposes scoped recall through the documented memory recall command', () =>
   assert.match(recall.helpInformation(), /--max-chars <number>/);
   assert.match(recall.helpInformation(), /--workspace <name>/);
   assert.match(recall.helpInformation(), /--json/);
+  assert.match(recall.description(), /Human\/operator management/u);
+  assert.match(buildCli().commands.find((command) => command.name() === 'call')?.description() ?? '', /memory reads are not supported/u);
 });
 
 test('exposes the curator review and confirmation options', () => {
@@ -89,8 +131,7 @@ test('exposes the curator review and confirmation options', () => {
 test('exposes the Akinator guide subcommands', () => {
   const guide = buildCli().commands.find((command) => command.name() === 'guide');
   assert.ok(guide);
-  assert.deepEqual(guide.commands.map((command) => command.name()), ['start', 'answer', 'context']);
-  assert.match(guide.commands.find((command) => command.name() === 'context')?.helpInformation() ?? '', /--no-client-skills/);
+  assert.deepEqual(guide.commands.map((command) => command.name()), ['start', 'answer']);
 });
 
 test('exposes the generic agent lifecycle subcommands and required options', () => {
@@ -100,7 +141,10 @@ test('exposes the generic agent lifecycle subcommands and required options', () 
   assert.match(agent.commands.find((command) => command.name() === 'open')?.helpInformation() ?? '', /--workspace <workspace>/);
   assert.match(agent.commands.find((command) => command.name() === 'open')?.helpInformation() ?? '', /--client <kind>/);
   assert.match(agent.commands.find((command) => command.name() === 'open')?.helpInformation() ?? '', /--task <task>/);
+  assert.match(agent.commands.find((command) => command.name() === 'open')?.helpInformation() ?? '', /--capabilities-json <file\|->/);
   assert.match(agent.commands.find((command) => command.name() === 'answer')?.helpInformation() ?? '', /--question-id <id>/);
+  assert.match(agent.commands.find((command) => command.name() === 'answer')?.helpInformation() ?? '', /--capabilities-json <file\|->/);
+  assert.match(agent.commands.find((command) => command.name() === 'checkpoint')?.helpInformation() ?? '', /--capabilities-json <file\|->/);
   assert.match(agent.commands.find((command) => command.name() === 'events')?.helpInformation() ?? '', /--input-json <file\|->/);
 });
 test('exposes help for the use command', () => {
@@ -118,6 +162,8 @@ test('exposes Claude Code as a global setup client', () => {
   assert.match(setup.description(), /Claude Code/);
   assert.match(setup.description(), /Hermes Agent/);
   assert.match(setup.helpInformation(), /--no-standard-skills/);
+  assert.match(setup.helpInformation(), /--skill-discovery <mode>/);
+  assert.doesNotMatch(setup.helpInformation(), /claude-prompt-hook|opencode-capture|opencode-mode/u);
 });
 
 test('plans Hermes-only setup when Hermes Agent is detected and no client is selected', async () => {
@@ -128,7 +174,7 @@ test('plans Hermes-only setup when Hermes Agent is detected and no client is sel
   await mkdir(bin, { recursive: true });
   await writeFile(path.join(hermesHome, 'active_profile'), 'default\n');
   const hermes = path.join(bin, 'hermes');
-  await writeFile(hermes, '#!/bin/sh\n');
+  await writeFile(hermes, '#!/bin/sh\nprintf "%s\\n" "$HERMES_CONFIG_PATH"\n');
   await chmod(hermes, 0o755);
 
   let stdout = '';
@@ -138,7 +184,7 @@ test('plans Hermes-only setup when Hermes Agent is detected and no client is sel
     return true;
   }) as typeof process.stdout.write;
   try {
-    await buildCli({ setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: bin } } })
+    await buildCli({ setupEnvironment: { platform: 'linux', env: { HOME: root, PATH: bin, HERMES_CONFIG_PATH: path.join(hermesHome, 'config.yaml') } } })
       .parseAsync(['node', 'kiokuko', 'setup', '--dry-run', '--json']);
   } finally {
     process.stdout.write = originalWrite;
@@ -242,6 +288,34 @@ test('setup prompt accepts the detected selection on an empty answer', async () 
   assert.deepEqual(selected, ['hermes']);
 });
 
+test('setup prompt keeps official discovery by default and explicitly enables community discovery', async () => {
+  let outputText = '';
+  const output = new Writable({
+    write(chunk, _encoding, callback) {
+      outputText += chunk.toString();
+      callback();
+    },
+  });
+  assert.equal(await promptCommunitySkillDiscovery({ input: Readable.from(['\n']), output }), 'official');
+  assert.match(outputText, /Official external Skill discovery is enabled by default/u);
+  assert.match(outputText, /Enable community Skill discovery\? \[y\/N\]/u);
+
+  const enabledOutput = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  assert.equal(await promptCommunitySkillDiscovery({ input: Readable.from(['yes\n']), output: enabledOutput }), 'community');
+  assert.equal(parseSetupSkillDiscoveryMode('off'), 'off');
+  assert.equal(parseSetupSkillDiscoveryMode('community'), 'community');
+  assert.throws(() => parseSetupSkillDiscoveryMode('on'), /off, official, or community/u);
+});
+
+test('combined setup prompt keeps both answers in one readline session', async () => {
+  const output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  const selected = await promptSetupConfiguration(['codex'], {
+    input: interactiveAnswers('4\n', 'y\n'),
+    output,
+  });
+  assert.deepEqual(selected, { clients: ['hermes'], skillDiscoveryMode: 'community' });
+});
+
 test('interactive setup applies the selection returned by the prompt', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-interactive-'));
   const bin = path.join(root, 'bin');
@@ -250,12 +324,26 @@ test('interactive setup applies the selection returned by the prompt', async () 
   await writeFile(codex, '#!/bin/sh\n');
   await chmod(codex, 0o755);
 
-  const input = Readable.from(['4\n']) as Readable & { isTTY?: boolean };
+  const input = new PassThrough() as PassThrough & { isTTY?: boolean };
   input.isTTY = true;
   let promptOutput = '';
+  let answeredClients = false;
+  let answeredCommunity = false;
   const output = new Writable({
     write(chunk, _encoding, callback) {
-      promptOutput += chunk.toString();
+      const text = chunk.toString();
+      promptOutput += text;
+      if (!answeredClients && text.includes('Clients [')) {
+        answeredClients = true;
+        setImmediate(() => input.write('4\n'));
+      }
+      if (!answeredCommunity && text.includes('Enable community Skill discovery?')) {
+        answeredCommunity = true;
+        setImmediate(() => {
+          input.write('y\n');
+          input.end();
+        });
+      }
       callback();
     },
   }) as Writable & { isTTY?: boolean };
@@ -277,6 +365,7 @@ test('interactive setup applies the selection returned by the prompt', async () 
   }
 
   assert.match(promptOutput, /1\. \[x\] Codex \(detected\)/);
+  assert.match(promptOutput, /Enable community Skill discovery\? \[y\/N\]/u);
   assert.match(stdout, /Kiokuko setup plan for hermes:/);
 });
 

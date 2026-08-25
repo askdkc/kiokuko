@@ -25,16 +25,6 @@ const PROMOTION_CONFIDENCE = 0.25;
 const PROPOSAL_FIELDS = new Set(['kind', 'title', 'body', 'summary', 'scope', 'tags']);
 const PROMOTION_INPUT_FIELDS = new Set(['workspace', 'runId', 'proposalEventId', 'deliveryId', 'actor', 'createdAt', 'confirmed']);
 
-export interface PromoteLedgerProposalInput {
-  workspace: string;
-  runId: string;
-  proposalEventId: string;
-  deliveryId?: string;
-  actor: string;
-  createdAt: string;
-  confirmed: boolean;
-}
-
 export interface LedgerMemoryLinkView {
   linkId: string;
   runId: string;

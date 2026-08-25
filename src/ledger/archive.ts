@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import type { SqliteDatabase, SqliteValue } from '../db/adapter.js';
+import { isSqliteCorruptionError, isSqliteUniqueConstraintError } from '../db/sqlite-retry.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { findSecret } from '../memory/secrets.js';
@@ -19,14 +20,11 @@ import {
 
 export const LEDGER_ARCHIVE_FORMAT = 'kiokuko-ledger-jsonl' as const;
 export const LEDGER_ARCHIVE_API_VERSION = '1' as const;
-export const LEDGER_ARCHIVE_VERSION = 1 as const;
+export const LEDGER_ARCHIVE_VERSION = 2 as const;
 
 export const MAX_ARCHIVE_LINE_COUNT = 10_000;
 export const MAX_ARCHIVE_LINE_BYTES = 512 * 1024;
 export const MAX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024;
-export const MAX_LEDGER_ARCHIVE_LINES = MAX_ARCHIVE_LINE_COUNT;
-export const MAX_LEDGER_ARCHIVE_LINE_BYTES = MAX_ARCHIVE_LINE_BYTES;
-export const MAX_LEDGER_ARCHIVE_BYTES = MAX_ARCHIVE_TOTAL_BYTES;
 
 const COMMENT_MAX_BYTES = 4 * 1024;
 const IDENTIFIER_MAX_LENGTH = 256;
@@ -133,7 +131,7 @@ const RECORD_FIELDS: Record<ArchiveRecordType | 'manifest' | 'checksum', readonl
   ],
   deliveries: [
     'type', 'delivery_id', 'run_id', 'through_sequence', 'intake_session_id', 'task_profile_hash', 'query_hash',
-    'policy_version', 'external_sync_summary_json', 'char_budget', 'char_count', 'truncated', 'created_at',
+    'policy_version', 'score_schema_version', 'char_budget', 'char_count', 'truncated', 'created_at',
   ],
   deliveryEntries: ['type', 'delivery_id', 'entry_id', 'entry_revision', 'rank', 'score_components_json', 'selection_reason_json', 'origin_scope'],
   contextFeedback: ['type', 'feedback_id', 'delivery_id', 'entry_id', 'run_id', 'verdict', 'comment', 'actor', 'idempotency_key', 'created_at'],
@@ -179,6 +177,22 @@ const TABLE_NAMES: Record<ArchiveRecordType, string> = {
   purgeAudit: 'ledger_purge_audit',
 };
 
+const UNIQUE_CONSTRAINT_TARGETS: Record<ArchiveRecordType, readonly string[]> = {
+  runs: ['ledger_runs.run_id'],
+  sessions: ['akinator_sessions.id'],
+  answers: ['akinator_answers.session_id, akinator_answers.question_id'],
+  runIntakes: ['run_intakes.run_id', 'run_intakes.session_id'],
+  intakeFeedback: ['intake_feedback.feedback_id', 'intake_feedback.run_id, intake_feedback.actor, intake_feedback.idempotency_key'],
+  events: ['ledger_events.event_id', 'ledger_events.run_id, ledger_events.sequence', 'ledger_events.run_id, ledger_events.source_event_id'],
+  evidence: ['ledger_evidence.evidence_id'],
+  deliveries: ['context_deliveries.delivery_id'],
+  deliveryEntries: ['context_delivery_entries.delivery_id, context_delivery_entries.entry_id'],
+  contextFeedback: ['context_feedback.feedback_id', 'context_feedback.run_id, context_feedback.actor, context_feedback.idempotency_key'],
+  runFeedback: ['run_feedback.feedback_id', 'run_feedback.run_id, run_feedback.actor, run_feedback.idempotency_key'],
+  memoryLinks: ['ledger_memory_links.link_id'],
+  purgeAudit: ['ledger_purge_audit.purge_id'],
+};
+
 const RECORD_NAMES: Record<ArchiveRecordType, string> = {
   runs: 'run',
   sessions: 'session',
@@ -219,6 +233,11 @@ function notFound(): never {
 
 function databaseFailure(): never {
   return fail('DATABASE_ERROR', 'Ledger archive database operation failed');
+}
+
+function canonicalIntegrityFailure(error: unknown): never {
+  if (error instanceof KiokukoError && error.code === 'VALIDATION_ERROR') integrity();
+  throw error;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -280,28 +299,26 @@ function parsedJson(value: unknown, validator: (value: unknown) => void): string
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
-    canonicalJson(parsed);
-  } catch {
-    integrity();
-  }
-  try {
-    validator(parsed);
   } catch (error) {
-    if (error instanceof KiokukoError) throw error;
-    integrity();
+    if (error instanceof SyntaxError) integrity();
+    throw error;
   }
+  let canonical: string;
   try {
-    return canonicalJson(parsed);
-  } catch {
-    integrity();
+    canonical = canonicalJson(parsed);
+  } catch (error) {
+    canonicalIntegrityFailure(error);
   }
+  if (canonical !== value) integrity();
+  validator(parsed);
+  return value;
 }
 
 function anyJson(value: unknown): void {
   try {
     canonicalJson(value);
-  } catch {
-    integrity();
+  } catch (error) {
+    canonicalIntegrityFailure(error);
   }
 }
 
@@ -366,12 +383,13 @@ function commentValue(value: unknown): string | null {
 }
 
 function secretScan(record: ArchiveRecord): void {
-  let finding;
+  let serialized: string;
   try {
-    finding = findSecret(canonicalJson(record));
-  } catch {
-    integrity();
+    serialized = canonicalJson(record);
+  } catch (error) {
+    canonicalIntegrityFailure(error);
   }
+  const finding = findSecret(serialized);
   if (finding) fail('SECURITY_REJECTION', 'Ledger archive contains secret residue', { kind: finding.kind });
 }
 
@@ -490,7 +508,9 @@ function normalizeRecord(type: ArchiveRecordType, source: Row, workspace: string
       normalized.task_profile_hash = hashValue(raw.task_profile_hash) as string;
       normalized.query_hash = hashValue(raw.query_hash) as string;
       normalized.policy_version = stringValue(raw.policy_version, true, IDENTIFIER_MAX_LENGTH);
-      normalized.external_sync_summary_json = parsedJson(raw.external_sync_summary_json, objectJson);
+      const scoreSchemaVersion = integerValue(raw.score_schema_version, 1);
+      if (scoreSchemaVersion !== 1 && scoreSchemaVersion !== 2) integrity();
+      normalized.score_schema_version = scoreSchemaVersion;
       normalized.char_budget = integerValue(raw.char_budget);
       normalized.char_count = integerValue(raw.char_count);
       const truncated = integerValue(raw.truncated);
@@ -507,7 +527,7 @@ function normalizeRecord(type: ArchiveRecordType, source: Row, workspace: string
       normalized.rank = integerValue(raw.rank, 1);
       normalized.score_components_json = parsedJson(raw.score_components_json, scoreJson);
       normalized.selection_reason_json = parsedJson(raw.selection_reason_json, tagsJson);
-      normalized.origin_scope = enumValue(raw.origin_scope ?? 'project', new Set(['project', 'ecosystem', 'global']));
+      normalized.origin_scope = enumValue(raw.origin_scope, new Set(['project', 'ecosystem', 'global']));
       break;
     case 'contextFeedback':
       normalized.feedback_id = stringValue(raw.feedback_id, true, IDENTIFIER_MAX_LENGTH);
@@ -566,14 +586,14 @@ function normalizeRecord(type: ArchiveRecordType, source: Row, workspace: string
 function rows(database: SqliteDatabase, sql: string, ...parameters: SqliteValue[]): Row[] {
   try {
     return database.prepare(sql).all<Row>(...parameters);
-  } catch {
-    databaseFailure();
+  } catch (error) {
+    if (isSqliteCorruptionError(error)) integrity();
+    throw error;
   }
 }
 
 function queryRows(database: SqliteDatabase, type: ArchiveRecordType, workspace: string): ArchiveRecord[] {
   const fields = TABLE_FIELDS[type].join(', ');
-  const table = TABLE_NAMES[type];
   const scoped: Record<ArchiveRecordType, { sql: string; parameters: SqliteValue[] }> = {
     runs: { sql: `SELECT ${fields} FROM ledger_runs WHERE workspace = ? ORDER BY run_id ASC`, parameters: [workspace] },
     sessions: { sql: `SELECT s.${TABLE_FIELDS.sessions.join(', s.')} FROM akinator_sessions AS s JOIN run_intakes AS ri ON ri.session_id = s.id JOIN ledger_runs AS lr ON lr.run_id = ri.run_id WHERE lr.workspace = ? ORDER BY s.id ASC`, parameters: [workspace] },
@@ -644,15 +664,16 @@ function parseLine(line: string, fields: readonly string[]): Row {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
-  } catch {
-    integrity();
+  } catch (error) {
+    if (error instanceof SyntaxError) integrity();
+    throw error;
   }
   assertObject(parsed);
   assertFields(parsed, fields);
   try {
     if (canonicalJson(parsed) !== line) integrity();
-  } catch {
-    integrity();
+  } catch (error) {
+    canonicalIntegrityFailure(error);
   }
   return parsed;
 }
@@ -686,8 +707,9 @@ function parseArchive(content: string): { workspace: string; counts: LedgerArchi
     let raw: unknown;
     try {
       raw = JSON.parse(line);
-    } catch {
-      integrity();
+    } catch (error) {
+      if (error instanceof SyntaxError) integrity();
+      throw error;
     }
     assertObject(raw);
     if (raw.type === 'manifest' || raw.type === 'checksum') integrity();
@@ -986,10 +1008,20 @@ function compareExisting(database: SqliteDatabase, type: ArchiveRecordType, reco
 }
 
 function insertRecord(database: SqliteDatabase, type: ArchiveRecordType, record: ArchiveRecord): void {
-  const fields = TABLE_FIELDS[type];
+  const fields = [...TABLE_FIELDS[type]];
   const values = fields.map((field) => record[field] as SqliteValue);
+  if (type === 'deliveries') {
+    fields.push('external_sync_summary_json');
+    values.push('{}');
+  }
   const placeholders = fields.map(() => '?').join(', ');
-  database.prepare(`INSERT INTO ${TABLE_NAMES[type]} (${fields.join(', ')}) VALUES (${placeholders})`).run(...values);
+  try {
+    database.prepare(`INSERT INTO ${TABLE_NAMES[type]} (${fields.join(', ')}) VALUES (${placeholders})`).run(...values);
+  } catch (error) {
+    if (isSqliteUniqueConstraintError(error, UNIQUE_CONSTRAINT_TARGETS[type])) conflict();
+    if (isSqliteCorruptionError(error)) integrity();
+    throw error;
+  }
 }
 
 function orderedForImport(records: Map<ArchiveRecordType, ArchiveRecord[]>): ArchiveRecord[] {
@@ -1060,8 +1092,8 @@ export function importLedgerArchive(database: SqliteDatabase | undefined, option
     });
   } catch (error) {
     if (error instanceof KiokukoError) throw error;
-    if (error instanceof Error && /unique|constraint/i.test(error.message)) conflict();
-    databaseFailure();
+    if (isSqliteCorruptionError(error)) integrity();
+    throw error;
   }
   return { workspace: parsed.workspace, dryRun: false, counts: parsed.counts, imported, duplicates, conflicts };
 }

@@ -2,9 +2,10 @@ import { randomBytes } from 'node:crypto';
 import { type IncomingMessage, type RequestListener, type Server, type ServerResponse } from 'node:http';
 import { KiokukoError } from '../errors.js';
 import type { SqliteDatabase } from '../db/adapter.js';
+import { rollbackFailedTransaction } from '../db/transaction.js';
 import { readEntry, updateCandidateEntry, type EntryRecord } from '../memory/entries.js';
 import { searchEntries } from '../memory/retrieval.js';
-import { ENTRY_KINDS, ENTRY_STATUSES, requireWorkspace, type EntryKind, type EntryStatus } from '../serialization/validate.js';
+import { compareCanonicalStrings, ENTRY_KINDS, ENTRY_STATUSES, requireWorkspace, type EntryKind, type EntryStatus } from '../serialization/validate.js';
 import { AgentGatewayService } from '../gateway/agent-service.js';
 import { ContextBroker } from '../context/broker.js';
 import { listContextFeedback, listIntakeFeedback, listRunFeedback } from '../context/feedback.js';
@@ -19,6 +20,15 @@ import type { KnowledgeEvidenceTier } from '../akinator/knowledge-path.js';
 import { GLOBAL_WORKSPACE } from '../memory/workspaces.js';
 import { recallScopedMemory } from '../memory/scoped-memory.js';
 import type { ResolvedProjectWorkspace } from '../memory/workspaces.js';
+import { documentsFromSkillSnapshot } from '../skills/import-preparation.js';
+import { readSkillDiscoveryConfig } from '../skills/config.js';
+import { GitHubSkillSourceFetcher } from '../skills/source/github-fetcher.js';
+import { SkillSourceError } from '../skills/source/errors.js';
+import { externalSkillRequirement, externalSkillSourceFetchRequest, listExternalSkills, listExternalSkillsPage, markExternalSkillRefreshFailure, readExternalSkill, refreshExternalSkillSnapshot, setExternalSkillState, type ExternalSkillRecord, type ExternalSkillState } from '../skills/store.js';
+import type { SkillCandidate } from '../skills/types.js';
+import { createSkillRegistryProvider } from '../skills/find.js';
+import { parseStrictJson } from '../setup/strict-json.js';
+import { fetchMaterializableSkillSnapshot } from '../skills/materialization-service.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 4173;
@@ -26,6 +36,14 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_WEB_ENTRIES = 200;
 
 type JsonRecord = Record<string, unknown>;
+
+function hasUtf8Bom(bytes: Uint8Array): boolean {
+  return bytes.byteLength >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+}
+
+function isInvalidUtf8EncodingError(error: unknown): boolean {
+  return error instanceof TypeError && 'code' in error && error.code === 'ERR_ENCODING_INVALID_ENCODED_DATA';
+}
 
 export type WebServerHttpOptions = Omit<
   HttpServerOptions,
@@ -49,6 +67,11 @@ interface WorkspaceSummary {
   workspace: string;
   displayName: string;
   count: number;
+}
+
+interface ExternalSkillRefreshFlights {
+  readonly database: SqliteDatabase;
+  readonly operations: Map<string, Promise<unknown>>;
 }
 
 function jsonResponse(response: ServerResponse, status: number, value: unknown): void {
@@ -84,23 +107,31 @@ function cookieValue(request: IncomingMessage, name: string): string | undefined
   return undefined;
 }
 
-function requireUiSession(request: IncomingMessage, sessionToken: string): void {
-  if (cookieValue(request, UI_SESSION_COOKIE) !== sessionToken) {
-    throw new KiokukoError('AUTHENTICATION_ERROR', 'Authorization is invalid');
+function requireTrustedWebOrigin(request: IncomingMessage, trustedOrigin: string | undefined): void {
+  if (trustedOrigin === undefined) {
+    throw new KiokukoError('AUTHENTICATION_ERROR', 'Origin is invalid');
+  }
+  const expectedHost = new URL(trustedOrigin).host;
+  if (request.headers.host !== expectedHost) {
+    throw new KiokukoError('AUTHENTICATION_ERROR', 'Origin is invalid');
   }
   const origin = request.headers.origin;
-  const host = request.headers.host;
-  const expectedOrigin = host === undefined ? undefined : `http://${host}`;
-  if (origin !== undefined && (expectedOrigin === undefined || origin !== expectedOrigin)) {
+  if (origin !== undefined && origin !== trustedOrigin) {
     throw new KiokukoError('AUTHENTICATION_ERROR', 'Origin is invalid');
   }
   const referer = request.headers.referer;
   if (referer !== undefined) {
     try {
-      if (expectedOrigin === undefined || new URL(referer).origin !== expectedOrigin) throw new Error('origin');
+      if (new URL(referer).origin !== trustedOrigin) throw new Error('origin');
     } catch {
       throw new KiokukoError('AUTHENTICATION_ERROR', 'Origin is invalid');
     }
+  }
+}
+
+function requireUiSession(request: IncomingMessage, sessionToken: string): void {
+  if (cookieValue(request, UI_SESSION_COOKIE) !== sessionToken) {
+    throw new KiokukoError('AUTHENTICATION_ERROR', 'Authorization is invalid');
   }
 }
 
@@ -110,16 +141,34 @@ function errorStatus(error: unknown): number {
   if (error.code === 'VALIDATION_ERROR' || error.code === 'USAGE_ERROR') return 400;
   if (error.code === 'NOT_FOUND') return 404;
   if (error.code === 'CONFLICT') return 409;
+  if (error.code === 'BACKPRESSURE') return 429;
   if (error.code === 'SECURITY_REJECTION') return 422;
+  if (error.code === 'SERVICE_UNAVAILABLE' || error.code === 'DATABASE_ERROR') return 503;
+  if (error.code === 'NOT_IMPLEMENTED') return 501;
   return 500;
 }
 
+function boundedRetryAfterSeconds(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 1;
+  return Math.min(60, Math.max(1, Math.trunc(value)));
+}
+
 function errorBody(error: unknown): { error: { code: string; message: string; details: Record<string, unknown> } } {
-  if (error instanceof KiokukoError) {
-    if (error.code === 'AUTHENTICATION_ERROR') return { error: { code: error.code, message: 'Authorization is invalid', details: {} } };
-    return { error: { code: error.code, message: error.message, details: error.details } };
+  if (!(error instanceof KiokukoError)) {
+    return { error: { code: 'INTEGRITY_ERROR', message: 'Unexpected server error', details: {} } };
   }
-  return { error: { code: 'DATABASE_ERROR', message: 'Unexpected server error', details: {} } };
+  if (error.code === 'AUTHENTICATION_ERROR') return { error: { code: error.code, message: 'Authorization is invalid', details: {} } };
+  if (error.code === 'VALIDATION_ERROR' || error.code === 'USAGE_ERROR') return { error: { code: error.code, message: 'Request is invalid', details: {} } };
+  if (error.code === 'NOT_FOUND') return { error: { code: error.code, message: 'Resource not found', details: {} } };
+  if (error.code === 'CONFLICT') return { error: { code: error.code, message: 'Request conflicts with current state', details: {} } };
+  if (error.code === 'BACKPRESSURE') return { error: { code: error.code, message: 'Service is busy', details: { retryAfterSeconds: boundedRetryAfterSeconds(error.details.retryAfterSeconds) } } };
+  if (error.code === 'DATABASE_ERROR') return { error: { code: error.code, message: 'Database unavailable', details: {} } };
+  if (error.code === 'SERVICE_UNAVAILABLE') return { error: { code: error.code, message: 'Service unavailable', details: {} } };
+  if (error.code === 'SECURITY_REJECTION') return { error: { code: error.code, message: 'Request rejected', details: {} } };
+  if (error.code === 'INTEGRITY_ERROR') return { error: { code: error.code, message: 'Internal integrity error', details: {} } };
+  if (error.code === 'PARTIAL_FAILURE') return { error: { code: error.code, message: 'Operation partially failed', details: {} } };
+  if (error.code === 'NOT_IMPLEMENTED') return { error: { code: error.code, message: 'Operation is not implemented', details: {} } };
+  return { error: { code: 'INTEGRITY_ERROR', message: 'Unexpected server error', details: {} } };
 }
 
 function asRecord(value: unknown, label: string): JsonRecord {
@@ -152,16 +201,114 @@ function limitQuery(value: string | null): number {
   return limit;
 }
 
+type ExternalSkillListCursor = readonly [
+  version: 1,
+  listVersion: number,
+  state: ExternalSkillState | null,
+  sourceLocator: string,
+  slug: string,
+  provider: string,
+  skillId: string,
+];
+
+function invalidExternalSkillCursor(): never {
+  throw new KiokukoError('VALIDATION_ERROR', 'cursor is invalid');
+}
+
+function externalSkillCursor(record: ExternalSkillRecord, listVersion: number, state: ExternalSkillState | undefined): string {
+  const value: ExternalSkillListCursor = [
+    1,
+    listVersion,
+    state ?? null,
+    record.sourceLocator,
+    record.slug,
+    record.provider,
+    record.skillId,
+  ];
+  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+}
+
+function externalSkillCursorQuery(url: URL): ExternalSkillListCursor | undefined {
+  const values = url.searchParams.getAll('cursor');
+  if (values.length === 0) return undefined;
+  if (values.length !== 1 || !/^[A-Za-z0-9_-]{1,4096}$/u.test(values[0]!)) invalidExternalSkillCursor();
+  let decoded: Buffer;
+  let parsed: unknown;
+  try {
+    decoded = Buffer.from(values[0]!, 'base64url');
+    if (decoded.toString('base64url') !== values[0] || decoded.byteLength > 3_000 || hasUtf8Bom(decoded)) invalidExternalSkillCursor();
+    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(decoded)) as unknown;
+  } catch (error) {
+    if (error instanceof KiokukoError) throw error;
+    if (error instanceof SyntaxError || isInvalidUtf8EncodingError(error)) invalidExternalSkillCursor();
+    throw error;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 7 || parsed[0] !== 1
+    || typeof parsed[1] !== 'number' || !Number.isSafeInteger(parsed[1]) || parsed[1] < 0
+    || parsed[2] !== null && (typeof parsed[2] !== 'string'
+      || !['discovered', 'imported', 'blocked', 'stale', 'disabled'].includes(parsed[2]))
+    || parsed.slice(3).some((value) => typeof value !== 'string' || value.length < 1 || value.length > 2_000 || /\p{Cc}/u.test(value))) {
+    invalidExternalSkillCursor();
+  }
+  return parsed as unknown as ExternalSkillListCursor;
+}
+
+function externalSkillListItem(record: ExternalSkillRecord): Omit<ExternalSkillRecord, 'metadata'> & { metadata: { documents: number; technology: string | null } } {
+  const metadata = record.metadata as Record<string, unknown>;
+  const documents = record.sourceCommit === null ? 0 : metadata.documents;
+  const technology = record.sourceCommit === null ? null : metadata.technology;
+  if (typeof documents !== 'number' || !Number.isSafeInteger(documents) || documents < 0 || documents > 64
+    || technology !== null && (typeof technology !== 'string' || technology.length < 1 || technology.length > 500)) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'External skill list metadata is invalid');
+  }
+  return { ...record, metadata: { documents, technology } };
+}
+
 function listQuery(url: URL, name: string, max = 50): string[] {
   const values = url.searchParams.getAll(name).map((value) => value.trim()).filter(Boolean);
   if (values.length > max || values.some((value) => value.length > 300)) throw new KiokukoError('VALIDATION_ERROR', `${name} contains too many or too-large values`);
   return [...new Set(values)];
 }
 
+function requireExactJsonMediaType(request: IncomingMessage): void {
+  const contentTypes: string[] = [];
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === 'content-type') {
+      contentTypes.push(request.rawHeaders[index + 1] ?? '');
+    }
+  }
+  if (contentTypes.length !== 1 || contentTypes[0]!.trim().toLowerCase() !== 'application/json') {
+    request.resume();
+    throw new KiokukoError('VALIDATION_ERROR', 'Content-Type must be exactly application/json');
+  }
+}
+
+function decodeJsonBody(bytes: Buffer): string {
+  if (hasUtf8Bom(bytes)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Request body must not contain a byte-order mark');
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch (error) {
+    if (isInvalidUtf8EncodingError(error)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Request body must be valid UTF-8');
+    }
+    throw error;
+  }
+}
+
+function requireOnlyJsonFields(payload: JsonRecord, allowed: readonly string[], label: string): void {
+  const allowedFields = new Set(allowed);
+  if (Object.keys(payload).some((field) => !allowedFields.has(field))) {
+    throw new KiokukoError('VALIDATION_ERROR', `${label} contains an unknown field`);
+  }
+}
+
 async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
+  requireExactJsonMediaType(request);
   const chunks: Buffer[] = [];
   let size = 0;
-  const text = await new Promise<string>((resolve, reject) => {
+  const bytes = await new Promise<Buffer>((resolve, reject) => {
     request.on('data', (chunk: Buffer | string) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += buffer.byteLength;
@@ -172,29 +319,55 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
       }
       chunks.push(buffer);
     });
-    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    request.on('end', () => resolve(Buffer.concat(chunks)));
     request.on('error', reject);
+    request.on('aborted', () => reject(new KiokukoError('VALIDATION_ERROR', 'Request body is incomplete')));
   });
-  if (text.trim().length === 0) throw new KiokukoError('VALIDATION_ERROR', 'Request body must contain JSON');
-  try {
-    return asRecord(JSON.parse(text) as unknown, 'Request body');
-  } catch (error) {
-    if (error instanceof KiokukoError) throw error;
-    throw new KiokukoError('VALIDATION_ERROR', 'Request body is not valid JSON');
+  const parsed = parseStrictJson(
+    decodeJsonBody(bytes),
+    { allowTrailingComma: false, disallowComments: true, allowEmptyContent: false },
+    'Request body is not valid strict JSON',
+  );
+  return asRecord(parsed, 'Request body');
+}
+
+function requireNoQueryParameters(url: URL): void {
+  if (url.searchParams.entries().next().done !== true) {
+    throw new KiokukoError('VALIDATION_ERROR', 'This endpoint does not accept query parameters');
   }
 }
 
+async function requireEmptyBody(request: IncomingMessage): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    request.once('data', () => {
+      request.resume();
+      reject(new KiokukoError('VALIDATION_ERROR', 'Request body must be empty'));
+    });
+    request.once('end', resolve);
+    request.once('error', reject);
+    request.once('aborted', () => reject(new KiokukoError('VALIDATION_ERROR', 'Request body is incomplete')));
+  });
+}
+
 function workspaceSummaries(database: SqliteDatabase): WorkspaceSummary[] {
-  const summaries = new Map<string, WorkspaceSummary>();
-  for (const row of database.prepare('SELECT workspace, display_name FROM repositories ORDER BY workspace ASC').all<{ workspace: string; display_name: string }>()) {
-    summaries.set(row.workspace, { workspace: row.workspace, displayName: row.display_name, count: 0 });
+  database.exec('BEGIN DEFERRED');
+  try {
+    const externalWorkspaces = new Set(listExternalSkills(database).map((skill) => skill.sourceWorkspace));
+    const summaries = new Map<string, WorkspaceSummary>();
+    for (const row of database.prepare('SELECT workspace, display_name FROM repositories ORDER BY workspace ASC').all<{ workspace: string; display_name: string }>()) {
+      if (!externalWorkspaces.has(row.workspace)) summaries.set(row.workspace, { workspace: row.workspace, displayName: row.display_name, count: 0 });
+    }
+    for (const row of database.prepare("SELECT workspace, COUNT(*) AS count FROM entries WHERE status <> 'superseded' GROUP BY workspace").all<{ workspace: string; count: number }>()) {
+      if (externalWorkspaces.has(row.workspace)) continue;
+      const existing = summaries.get(row.workspace);
+      if (existing) existing.count = Number(row.count);
+      else summaries.set(row.workspace, { workspace: row.workspace, displayName: '', count: Number(row.count) });
+    }
+    database.exec('COMMIT');
+    return [...summaries.values()].sort((left, right) => compareCanonicalStrings(left.workspace, right.workspace));
+  } catch (error) {
+    rollbackFailedTransaction(database, error);
   }
-  for (const row of database.prepare("SELECT workspace, COUNT(*) AS count FROM entries WHERE status <> 'superseded' GROUP BY workspace").all<{ workspace: string; count: number }>()) {
-    const existing = summaries.get(row.workspace);
-    if (existing) existing.count = Number(row.count);
-    else summaries.set(row.workspace, { workspace: row.workspace, displayName: '', count: Number(row.count) });
-  }
-  return [...summaries.values()].sort((left, right) => left.workspace.localeCompare(right.workspace));
 }
 
 function workspaceTags(database: SqliteDatabase, workspace: string): Array<{ tag: string; count: number }> {
@@ -260,6 +433,122 @@ function entryIdFromPath(pathname: string): string {
   } catch {
     throw new KiokukoError('VALIDATION_ERROR', 'entry id is not valid URL encoding');
   }
+}
+
+function externalSkillIdFromPath(pathname: string): string | undefined {
+  const prefix = '/api/skills/';
+  if (!pathname.startsWith(prefix)) return undefined;
+  const encoded = pathname.slice(prefix.length);
+  if (encoded.length === 0 || encoded.includes('/')) throw new KiokukoError('NOT_FOUND', 'Endpoint not found');
+  try {
+    const skillId = decodeURIComponent(encoded);
+    if (skillId.length === 0 || skillId.length > 500) throw new Error('invalid');
+    return skillId;
+  } catch {
+    throw new KiokukoError('VALIDATION_ERROR', 'skill id is not valid URL encoding');
+  }
+}
+
+function externalSkillSourceFailure(
+  error: SkillSourceError,
+  code: 'CONFLICT' | 'SECURITY_REJECTION' | 'SERVICE_UNAVAILABLE',
+  message: string,
+): KiokukoError {
+  const failure = new KiokukoError(code, message, {
+    failureCode: error.code,
+    ...(error.retryAfterSeconds === null ? {} : { retryAfterSeconds: error.retryAfterSeconds }),
+  });
+  Object.defineProperty(failure, 'cause', {
+    value: error,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return failure;
+}
+
+function refreshExternalSkill(
+  context: HttpApplicationContext,
+  skillId: string,
+  flights: ExternalSkillRefreshFlights,
+): Promise<unknown> {
+  if (flights.database !== context.database) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'External skill refresh coordinator is bound to another database');
+  }
+  const detail = readExternalSkill(context.database, skillId);
+  if (!detail) throw new KiokukoError('NOT_FOUND', 'External skill not found');
+  if (detail.skill.sourceType !== 'github') throw new KiokukoError('NOT_IMPLEMENTED', 'Only GitHub external skills can be refreshed automatically');
+  const candidate: SkillCandidate = {
+    id: detail.skill.skillId,
+    provider: detail.skill.provider,
+    name: detail.skill.name,
+    slug: detail.skill.slug,
+    source: detail.skill.sourceLocator,
+    sourceType: 'github',
+    installUrl: detail.skill.installUrl,
+    installs: detail.skill.installs,
+    duplicate: detail.skill.duplicate,
+    officialStatus: detail.skill.officialStatus as SkillCandidate['officialStatus'],
+    auditStatus: detail.skill.auditStatus,
+  };
+  const expected = { generation: detail.skill.generation, sourceCommit: detail.skill.sourceCommit, snapshotHash: detail.skill.snapshotHash, state: detail.skill.state, lastCheckedAt: detail.skill.lastCheckedAt };
+  const flightKey = JSON.stringify([
+    skillId,
+    expected.generation,
+    expected.sourceCommit,
+    expected.snapshotHash,
+    expected.state,
+    expected.lastCheckedAt,
+  ]);
+  const existing = flights.operations.get(flightKey);
+  if (existing !== undefined) return existing;
+
+  const operation = Promise.resolve().then(async () => {
+    try {
+      const materialized = await fetchMaterializableSkillSnapshot(context.database, candidate, {
+        provider: createSkillRegistryProvider(),
+        sourceFetcher: new GitHubSkillSourceFetcher({ token: readSkillDiscoveryConfig().githubToken }),
+        sourceRequest: externalSkillSourceFetchRequest(detail),
+        cacheWrite: (operation) => context.enqueueWrite(operation),
+      });
+      const snapshot = materialized.snapshot;
+      if (!snapshot.files.some((file) => file.primary)) throw new KiokukoError('VALIDATION_ERROR', 'Skill snapshot has no primary document');
+      const requirement = externalSkillRequirement(context.database, skillId);
+      return await context.enqueueWrite(() => refreshExternalSkillSnapshot(
+        context.database,
+        skillId,
+        snapshot,
+        documentsFromSkillSnapshot(snapshot),
+        requirement,
+        expected,
+        undefined,
+        materialized.authorization,
+      ));
+    } catch (error) {
+      if (!(error instanceof SkillSourceError)) throw error;
+      if (error.code === 'source_missing' || error.code === 'candidate_not_found_at_source') {
+        await context.enqueueWrite(() => markExternalSkillRefreshFailure(context.database, skillId, 'stale', expected));
+        throw externalSkillSourceFailure(error, 'CONFLICT', 'External skill source is stale');
+      }
+      if (error.code === 'skill_disabled_for_model_invocation' || error.code === 'skill_secret_detected' || error.code === 'skill_blocked') {
+        await context.enqueueWrite(() => markExternalSkillRefreshFailure(context.database, skillId, 'blocked', expected));
+        throw externalSkillSourceFailure(error, 'SECURITY_REJECTION', 'External skill snapshot was blocked');
+      }
+      if (error.code === 'source_rate_limited' || error.code === 'source_unavailable') {
+        throw externalSkillSourceFailure(error, 'SERVICE_UNAVAILABLE', 'External skill source is temporarily unavailable');
+      }
+      if (error.code === 'source_tree_truncated' || error.code === 'skill_too_large' || error.code === 'skill_validation_failed') {
+        throw externalSkillSourceFailure(error, 'SECURITY_REJECTION', 'External skill source failed validation');
+      }
+      throw error;
+    }
+  });
+  flights.operations.set(flightKey, operation);
+  const cleanup = (): void => {
+    if (flights.operations.get(flightKey) === operation) flights.operations.delete(flightKey);
+  };
+  void operation.then(cleanup, cleanup);
+  return operation;
 }
 
 function operatorRunIdFromPath(pathname: string): string | undefined {
@@ -350,7 +639,13 @@ function operatorRunDetail(context: HttpApplicationContext, runId: string): unkn
   };
 }
 
-async function handleRequest(request: IncomingMessage, response: ServerResponse, context: HttpApplicationContext, sessionToken: string): Promise<void> {
+async function handleRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  context: HttpApplicationContext,
+  sessionToken: string,
+  externalSkillRefreshFlights: ExternalSkillRefreshFlights,
+): Promise<void> {
   if (request.method === 'OPTIONS') {
     response.writeHead(204, { 'cache-control': 'no-store' });
     response.end();
@@ -366,6 +661,69 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     return;
   }
   requireUiSession(request, sessionToken);
+  if (request.method === 'GET' && url.pathname === '/api/skills') {
+    if ([...url.searchParams.keys()].some((key) => key !== 'state' && key !== 'limit' && key !== 'cursor')
+      || url.searchParams.getAll('state').length > 1 || url.searchParams.getAll('limit').length > 1) {
+      throw new KiokukoError('VALIDATION_ERROR', 'External skill list query is invalid');
+    }
+    const state = enumQuery(url.searchParams.get('state'), ['discovered', 'imported', 'blocked', 'stale', 'disabled'] as const, 'state');
+    const limit = limitQuery(url.searchParams.get('limit'));
+    const cursor = externalSkillCursorQuery(url);
+    const normalizedState = state as ExternalSkillState | undefined;
+    if (cursor !== undefined && cursor[2] !== (normalizedState ?? null)) {
+      throw new KiokukoError('CONFLICT', 'External skill list filter changed; restart pagination');
+    }
+    const page = listExternalSkillsPage(context.database, {
+      ...(normalizedState === undefined ? {} : { state: normalizedState }),
+      limit,
+      ...(cursor === undefined ? {} : {
+        expectedVersion: cursor[1],
+        after: { sourceLocator: cursor[3], slug: cursor[4], provider: cursor[5], skillId: cursor[6] },
+      }),
+    });
+    const skills = page.skills.map(externalSkillListItem);
+    jsonResponse(response, 200, {
+      skills,
+      count: skills.length,
+      truncated: page.truncated,
+      nextCursor: page.truncated ? externalSkillCursor(page.skills.at(-1)!, page.version, normalizedState) : null,
+      untrusted: true,
+    });
+    return;
+  }
+  const isExternalSkillAction = url.pathname.endsWith('/refresh') || url.pathname.endsWith('/disable') || url.pathname.endsWith('/enable');
+  const externalSkillId = isExternalSkillAction ? undefined : externalSkillIdFromPath(url.pathname);
+  if (externalSkillId !== undefined && request.method === 'GET') {
+    requireNoQueryParameters(url);
+    const detail = readExternalSkill(context.database, externalSkillId);
+    if (!detail) throw new KiokukoError('NOT_FOUND', 'External skill not found');
+    jsonResponse(response, 200, {
+      skill: externalSkillListItem(detail.skill),
+      entries: detail.entries.slice(0, MAX_WEB_ENTRIES),
+      entriesTruncated: detail.entries.length > MAX_WEB_ENTRIES,
+      untrusted: true,
+    });
+    return;
+  }
+  if (request.method === 'POST' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/refresh')) {
+    const skillId = externalSkillIdFromPath(url.pathname.slice(0, -'/refresh'.length));
+    if (skillId === undefined) throw new KiokukoError('NOT_FOUND', 'Endpoint not found');
+    requireNoQueryParameters(url);
+    await requireEmptyBody(request);
+    jsonResponse(response, 200, await refreshExternalSkill(context, skillId, externalSkillRefreshFlights));
+    return;
+  }
+  if (request.method === 'POST' && url.pathname.startsWith('/api/skills/') && (url.pathname.endsWith('/disable') || url.pathname.endsWith('/enable'))) {
+    const suffix = url.pathname.endsWith('/disable') ? '/disable' : '/enable';
+    const skillId = externalSkillIdFromPath(url.pathname.slice(0, -suffix.length));
+    if (skillId === undefined) throw new KiokukoError('NOT_FOUND', 'Endpoint not found');
+    requireNoQueryParameters(url);
+    await requireEmptyBody(request);
+    const state = suffix === '/disable' ? 'disabled' : 'imported';
+    const skill = await context.enqueueWrite(() => setExternalSkillState(context.database, skillId, state));
+    jsonResponse(response, 200, { skill, untrusted: true });
+    return;
+  }
   if (request.method === 'GET' && url.pathname === '/api/operator/runs') {
     jsonResponse(response, 200, operatorRunList(context, url));
     return;
@@ -447,6 +805,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
   }
   if (request.method === 'POST' && url.pathname === '/api/curator/globalize') {
     const payload = await readJsonBody(request);
+    requireOnlyJsonFields(payload, ['workspace', 'entryId', 'expectedRevision', 'actor'], 'Curator globalize request');
     const workspace = requireWorkspace(url.searchParams.get('workspace') ?? (typeof payload.workspace === 'string' ? payload.workspace : ''));
     const result = await context.enqueueWrite(() => globalizeCuratorCandidate(context.database, {
       workspace,
@@ -477,6 +836,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       return;
     }
     const payload = await readJsonBody(request);
+    requireOnlyJsonFields(payload, ['expectedRevision', 'kind', 'title', 'body', 'summary', 'scope', 'provenance', 'tags', 'actor'], 'Entry update request');
     const expectedRevision = payload.expectedRevision;
     const input: Parameters<typeof updateCandidateEntry>[1] = {
       workspace,
@@ -502,16 +862,26 @@ function isSharedServerPath(pathname: string): boolean {
   return pathname.startsWith('/health/') || pathname === '/api/v1' || pathname.startsWith('/api/v1/');
 }
 
-function createLegacyApplication(context: HttpApplicationContext): RequestListener {
+function createLegacyApplication(context: HttpApplicationContext, trustedOrigin: () => string | undefined): RequestListener {
   const sharedApplication = context.createAuthenticatedApp(createAgentV1Handler(context));
   const sessionToken = randomBytes(32).toString('base64url');
+  const externalSkillRefreshFlights: ExternalSkillRefreshFlights = {
+    database: context.database,
+    operations: new Map(),
+  };
   return (request, response) => {
+    try {
+      requireTrustedWebOrigin(request, trustedOrigin());
+    } catch (error) {
+      jsonResponse(response, errorStatus(error), errorBody(error));
+      return;
+    }
     const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     if (isSharedServerPath(pathname)) {
       sharedApplication(request, response);
       return;
     }
-    void handleRequest(request, response, context, sessionToken).catch((error: unknown) => {
+    void handleRequest(request, response, context, sessionToken, externalSkillRefreshFlights).catch((error: unknown) => {
       if (!response.headersSent) jsonResponse(response, errorStatus(error), errorBody(error));
       else response.destroy();
     });
@@ -519,13 +889,15 @@ function createLegacyApplication(context: HttpApplicationContext): RequestListen
 }
 
 export async function startWebServer(options: WebServerOptions = {}): Promise<WebServerHandle> {
+  let trustedOrigin: string | undefined;
   const runtime = await startHttpServer({
     ...(options.httpOptions ?? {}),
     ...(options.databasePath === undefined ? {} : { databasePath: options.databasePath }),
     host: options.host ?? DEFAULT_HOST,
     port: options.port ?? DEFAULT_PORT,
-    applicationFactory: createLegacyApplication,
+    applicationFactory: (context) => createLegacyApplication(context, () => trustedOrigin),
   });
+  trustedOrigin = new URL(runtime.url).origin;
   return {
     server: runtime.server,
     url: runtime.url,

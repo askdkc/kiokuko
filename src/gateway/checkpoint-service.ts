@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isProxy } from 'node:util/types';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
@@ -10,7 +11,13 @@ import { validateEventBatch, validateTimestamp } from '../ledger/validate.js';
 import type { JsonObject, JsonValue, LedgerEventInput, LedgerEventType } from '../ledger/types.js';
 import { executeIdempotentInTransaction } from '../server/idempotency.js';
 import { buildRecommendations, type Recommendation } from '../context/recommendations.js';
-import { recordContextFeedbackInTransaction, recordIntakeFeedbackInTransaction, recordRunFeedbackInTransaction } from '../context/feedback.js';
+import { readContextRunRetrievalState } from '../context/run-state.js';
+import {
+  recordContextFeedbackInTransaction,
+  recordIntakeFeedbackInTransaction,
+  recordRunFeedbackInTransaction,
+  validateFeedbackTimestamp,
+} from '../context/feedback.js';
 
 const CHECKPOINT_EVENT_TYPES: readonly LedgerEventType[] = [
   'step.started', 'step.completed', 'step.failed', 'file.changed', 'error.recorded',
@@ -34,6 +41,7 @@ export interface CheckpointResponse {
   sourceSequences: Array<number | null>;
   eventIds: string[];
   runStatus: 'active';
+  intakeStatus: 'ready' | 'exhausted';
   taskProfile: {
     taskType: string | null;
     target: string | null;
@@ -58,7 +66,7 @@ function conflict(message = 'Checkpoint requires an active run'): never {
 }
 
 function assertPlainObject(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) validation();
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || isProxy(value)) validation();
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) validation();
   return value as Record<string, unknown>;
@@ -149,7 +157,11 @@ function normalizeRequest(raw: unknown, workspace: string, now: string): Checkpo
   return { events, contextFeedback, characterBudget };
 }
 
-function projectionFor(database: SqliteDatabase, runId: string, acceptedThrough: number): LedgerProjection {
+function projectionFor(
+  database: SqliteDatabase,
+  runId: string,
+  acceptedThrough: number,
+): { intakeStatus: CheckpointResponse['intakeStatus']; projection: LedgerProjection } {
   const store = new LedgerStore(database);
   const run = store.readRun(runId);
   if (!run) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
@@ -163,20 +175,26 @@ function projectionFor(database: SqliteDatabase, runId: string, acceptedThrough:
     ...(row.outcome === null ? {} : { outcome: row.outcome }),
     ...(row.payload_json === null ? {} : { payload: JSON.parse(row.payload_json) as JsonValue }),
   }));
-  return projectLedger({
-    initialProfile: session.profile,
+  return {
     intakeStatus: session.status,
-    coverage: run.coverage,
-    throughSequence: acceptedThrough,
-    events,
-  });
+    projection: projectLedger({
+      initialProfile: session.profile,
+      intakeStatus: session.status,
+      coverage: run.coverage,
+      throughSequence: acceptedThrough,
+      events,
+    }),
+  };
 }
 
 function responseValue(database: SqliteDatabase, runId: string, request: CheckpointRequest, idempotencyKey: string, now: string): CheckpointResponse {
-  const store = new LedgerStore(database);
-  const run = store.readRun(runId);
-  if (!run) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
+  // The route's broker validates this state again after checkpoint persistence.
+  // Validate the exact same authoritative run/intake/event chain before the
+  // first mutation so a corrupt pre-existing state cannot commit a checkpoint.
+  const state = readContextRunRetrievalState(database, runId);
+  const run = state.run;
   if (run.status !== 'active') conflict(run.status === 'intake' ? 'Checkpoint is not allowed during intake' : 'Checkpoint is not allowed for a terminal run');
+  const store = new LedgerStore(database);
   const ack = store.appendBatchInTransaction(runId, { events: request.events });
   for (let index = 0; index < request.contextFeedback.length; index += 1) {
     const feedback = assertPlainObject(request.contextFeedback[index]);
@@ -184,16 +202,17 @@ function responseValue(database: SqliteDatabase, runId: string, request: Checkpo
       ...feedback,
       workspace: run.workspace,
       runId,
-      actor: typeof feedback.actor === 'string' ? feedback.actor : 'kiokuko-checkpoint',
+      actor: Object.hasOwn(feedback, 'actor') ? feedback.actor : 'kiokuko-checkpoint',
       idempotencyKey: `${idempotencyKey}:context:${index}`,
-      createdAt: typeof feedback.createdAt === 'string' ? feedback.createdAt : now,
+      createdAt: Object.hasOwn(feedback, 'createdAt') ? validateFeedbackTimestamp(feedback.createdAt) : now,
     });
   }
-  const projection = projectionFor(database, runId, ack.acceptedThrough);
+  const { intakeStatus, projection } = projectionFor(database, runId, ack.acceptedThrough);
   const recommendations = buildRecommendations({ projection, broker: {} });
   return {
     ...ack,
     runStatus: 'active',
+    intakeStatus,
     taskProfile: { ...projection.taskProfile, source: 'akinator+ledger-revisions' },
     profileHash: projection.profileHash,
     projection,
@@ -229,7 +248,16 @@ export interface FeedbackResponse {
 }
 
 function feedbackRequest(raw: unknown): Record<string, unknown> {
-  const value = assertPlainObject(raw);
+  const input = assertPlainObject(raw);
+  const keys = Reflect.ownKeys(input);
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const value: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of keys) {
+    if (typeof key !== 'string') validation();
+    const descriptor = descriptors[key];
+    if (!descriptor || !('value' in descriptor) || descriptor.enumerable !== true) validation();
+    value[key] = descriptor.value;
+  }
   if (value.apiVersion !== '1' || typeof value.category !== 'string' || !['context', 'recommendation', 'intake', 'run'].includes(value.category)) validation();
   const categoryFields = value.category === 'context'
     ? ['deliveryId', 'entryId', 'verdict']
@@ -237,7 +265,9 @@ function feedbackRequest(raw: unknown): Record<string, unknown> {
       ? ['sessionId', 'questionId', 'profileField', 'verdict']
       : ['outcome', 'recommendationCode', 'recommendationVerdict', 'rating'];
   const allowed = new Set(['apiVersion', 'category', 'feedbackId', 'actor', 'createdAt', 'comment', ...categoryFields]);
-  if (Object.keys(value).some((field) => !allowed.has(field))) validation();
+  if (keys.some((field) => typeof field !== 'string' || !allowed.has(field))) validation();
+  if (Object.hasOwn(value, 'createdAt')) validateFeedbackTimestamp(value.createdAt);
+  if (value.category === 'intake' && Object.hasOwn(value, 'sessionId')) boundedString(value.sessionId, 256);
   return value;
 }
 
@@ -245,14 +275,14 @@ function feedbackField(value: Record<string, unknown>, field: string): unknown {
   return Object.hasOwn(value, field) ? value[field] : undefined;
 }
 
-function feedbackValue(database: SqliteDatabase, runId: string, key: string, raw: unknown, now: string): FeedbackResponse {
+function feedbackValue(database: SqliteDatabase, runId: string, key: string, value: Record<string, unknown>, now: string): FeedbackResponse {
   const run = new LedgerStore(database).readRun(runId);
   if (!run) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
-  const value = feedbackRequest(raw);
   const category = value.category as FeedbackResponse['category'];
-  const actor = value.actor === undefined ? 'kiokuko-feedback' : boundedString(value.actor);
+  const actor = Object.hasOwn(value, 'actor') ? boundedString(value.actor) : 'kiokuko-feedback';
   const feedbackId = boundedString(value.feedbackId, 256);
-  const common = { workspace: run.workspace, feedbackId, actor, createdAt: typeof value.createdAt === 'string' ? value.createdAt : now, idempotencyKey: key };
+  const createdAt = Object.hasOwn(value, 'createdAt') ? validateFeedbackTimestamp(value.createdAt) : now;
+  const common = { workspace: run.workspace, feedbackId, actor, createdAt, idempotencyKey: key };
   let record: unknown;
   if (category === 'context') {
     record = recordContextFeedbackInTransaction(database, {
@@ -268,7 +298,7 @@ function feedbackValue(database: SqliteDatabase, runId: string, key: string, raw
     record = recordIntakeFeedbackInTransaction(database, {
       ...common,
       runId,
-      sessionId: value.sessionId ?? link.sessionId,
+      sessionId: Object.hasOwn(value, 'sessionId') ? boundedString(value.sessionId, 256) : link.sessionId,
       questionId: value.questionId ?? null,
       profileField: value.profileField ?? null,
       verdict: feedbackField(value, 'verdict'),
@@ -297,11 +327,11 @@ export class FeedbackService {
     const run = new LedgerStore(this.database).readRun(value.runId);
     if (!run) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
     const now = validateTimestamp(this.now(), 'createdAt');
-    feedbackRequest(value.request);
+    const request = feedbackRequest(value.request);
     return withImmediateTransaction(this.database, () => executeIdempotentInTransaction(
       this.database,
-      { scope: `agent.feedback.${value.runId}`, key: value.idempotencyKey, request: value.request, createdAt: now },
-      () => feedbackValue(this.database, value.runId as string, value.idempotencyKey as string, value.request, now) as unknown as JsonValue,
+      { scope: `agent.feedback.${value.runId}`, key: value.idempotencyKey, request, createdAt: now },
+      () => feedbackValue(this.database, value.runId as string, value.idempotencyKey as string, request, now) as unknown as JsonValue,
     ) as unknown as FeedbackResponse);
   }
 }

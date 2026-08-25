@@ -4,11 +4,11 @@ import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { KiokukoError } from '../../src/errors.js';
 import {
   getClaudeConfigDirectory,
   getClaudeInstructionsPath,
   getClaudeMcpConfigPath,
-  getClaudeSettingsPath,
   getClaudeSkillsDirectory,
   getCodexConfigPath,
   getCodexInstructionsPath,
@@ -17,9 +17,10 @@ import {
   getGlobalDatabasePath,
   getHermesConfigPath,
   getHermesHome,
+  getLegacyClaudePromptHookSettingsPath,
+  getLegacyOpenCodeLoopGuardPath,
   getOpenCodeConfigDirectory,
   getOpenCodeInstructionsPath,
-  getOpenCodeLoopGuardPath,
   getOpenCodeSkillsDirectory,
   getHermesSkillsDirectory,
   getRuntimeDescriptorPath,
@@ -127,16 +128,15 @@ test('derives documented global Codex, OpenCode, and Claude paths without touchi
   assert.equal(getCodexSkillsDirectory(options), '/tmp/fake-home/.agents/skills');
   assert.equal(getOpenCodeConfigDirectory(options), '/tmp/fake-config/opencode');
   assert.equal(getOpenCodeInstructionsPath(options), '/tmp/fake-config/opencode/AGENTS.md');
-  assert.equal(getOpenCodeLoopGuardPath(options), '/tmp/fake-config/opencode/plugins/kiokuko-loop-guard.js');
   assert.equal(getOpenCodeSkillsDirectory(options), '/tmp/fake-config/opencode/skills');
   assert.equal(getClaudeConfigDirectory(options), '/tmp/fake-home/.claude');
   assert.equal(getClaudeMcpConfigPath(options), '/tmp/fake-home/.claude.json');
-  assert.equal(getClaudeSettingsPath(options), '/tmp/fake-home/.claude/settings.json');
   assert.equal(getClaudeInstructionsPath(options), '/tmp/fake-home/.claude/CLAUDE.md');
   assert.equal(getClaudeSkillsDirectory(options), '/tmp/fake-home/.claude/skills');
+  assert.equal(getLegacyClaudePromptHookSettingsPath(options), '/tmp/fake-home/.claude/settings.json');
+  assert.equal(getLegacyOpenCodeLoopGuardPath(options), '/tmp/fake-config/opencode/plugins/kiokuko-loop-guard.js');
   assert.equal(getCodexConfigPath({ ...options, env: { ...options.env, CODEX_HOME: '/tmp/custom-codex' } }), '/tmp/custom-codex/config.toml');
   assert.equal(getClaudeMcpConfigPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/.claude.json');
-  assert.equal(getClaudeSettingsPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/settings.json');
   assert.equal(getClaudeInstructionsPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/CLAUDE.md');
   assert.equal(getClaudeSkillsDirectory({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/skills');
 });
@@ -159,6 +159,8 @@ test('derives native standard-skill directories on macOS, Linux, and Windows', a
   assert.equal(getCodexSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.agents\skills`);
   assert.equal(getOpenCodeSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\AppData\Roaming\opencode\skills`);
   assert.equal(getClaudeSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Claude\skills`);
+  assert.equal(getLegacyClaudePromptHookSettingsPath({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Claude\settings.json`);
+  assert.equal(getLegacyOpenCodeLoopGuardPath({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\AppData\Roaming\opencode\plugins\kiokuko-loop-guard.js`);
   assert.equal(await getHermesSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Hermes\profiles\work\skills`);
 });
 
@@ -238,4 +240,55 @@ test('uses hermes config path output when no active_profile marker exists', asyn
     }),
     profileHome + '/config.yaml',
   );
+});
+
+test('rejects a Hermes CLI path that disagrees with a sticky active profile', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-hermes-sticky-disagreement-'));
+  const home = path.join(root, 'home');
+  const hermesRoot = path.join(home, '.hermes');
+  const expectedHome = path.join(hermesRoot, 'profiles', 'work');
+  const otherHome = path.join(hermesRoot, 'profiles', 'other');
+  const bin = path.join(root, 'bin');
+  await mkdir(expectedHome, { recursive: true });
+  await mkdir(otherHome, { recursive: true });
+  await mkdir(bin, { recursive: true });
+  await writeFile(path.join(hermesRoot, 'active_profile'), 'work\n');
+  const hermes = path.join(bin, 'hermes');
+  await writeFile(hermes, '#!/bin/sh\nprintf "%s\\n" "$HERMES_CONFIG_PATH"\n');
+  await chmod(hermes, 0o755);
+
+  await assert.rejects(
+    getHermesHome({
+      platform: 'linux',
+      env: { HOME: home, PATH: bin, HERMES_CONFIG_PATH: path.join(otherHome, 'config.yaml') },
+    }),
+    (error: unknown) => error instanceof KiokukoError
+      && error.code === 'CONFLICT'
+      && !error.message.includes(root),
+  );
+});
+
+test('Hermes config path command failures and malformed output fail explicitly', async () => {
+  for (const [name, script] of [
+    ['nonzero', '#!/bin/sh\nexit 7\n'],
+    ['malformed', '#!/bin/sh\nprintf "relative/config.yaml\\n"\n'],
+    ['multiline', '#!/bin/sh\nprintf "/tmp/one/config.yaml\\n/tmp/two/config.yaml\\n"\n'],
+  ] as const) {
+    const root = await mkdtemp(path.join(tmpdir(), `kiokuko-hermes-cli-${name}-`));
+    const home = path.join(root, 'home');
+    const bin = path.join(root, 'bin');
+    await mkdir(path.join(home, '.hermes'), { recursive: true });
+    await mkdir(bin, { recursive: true });
+    const hermes = path.join(bin, 'hermes');
+    await writeFile(hermes, script);
+    await chmod(hermes, 0o755);
+
+    await assert.rejects(
+      getHermesHome({ platform: 'linux', env: { HOME: home, PATH: bin } }),
+      (error: unknown) => error instanceof Error
+        && 'code' in error
+        && error.code === 'VALIDATION_ERROR'
+        && !error.message.includes(root),
+    );
+  }
 });

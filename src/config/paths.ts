@@ -83,7 +83,7 @@ function requireHome(options: PathEnvironment): { home: string; join: typeof pat
 
 /** Global Codex configuration directory. CODEX_HOME intentionally takes precedence. */
 export function getCodexHome(options: PathEnvironment = {}): string {
-  const { platform, env } = selectedEnvironment(options);
+  const { env } = selectedEnvironment(options);
   if (env.CODEX_HOME) return env.CODEX_HOME;
   const { home, join } = requireHome(options);
   return join(home, '.codex');
@@ -130,12 +130,6 @@ export function getClaudeMcpConfigPath(options: PathEnvironment = {}): string {
   return join(home, '.claude.json');
 }
 
-export function getClaudeSettingsPath(options: PathEnvironment = {}): string {
-  const { platform } = selectedEnvironment(options);
-  const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  return join(getClaudeConfigDirectory(options), 'settings.json');
-}
-
 export function getClaudeInstructionsPath(options: PathEnvironment = {}): string {
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
@@ -146,6 +140,13 @@ export function getClaudeSkillsDirectory(options: PathEnvironment = {}): string 
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(getClaudeConfigDirectory(options), 'skills');
+}
+
+/** Exact one-way upgrade target for the retired managed Claude prompt hook. */
+export function getLegacyClaudePromptHookSettingsPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getClaudeConfigDirectory(options), 'settings.json');
 }
 
 /** OpenCode's documented global configuration directory. */
@@ -167,16 +168,17 @@ export function getOpenCodeInstructionsPath(options: PathEnvironment = {}): stri
   return join(getOpenCodeConfigDirectory(options), 'AGENTS.md');
 }
 
-export function getOpenCodeLoopGuardPath(options: PathEnvironment = {}): string {
-  const { platform } = selectedEnvironment(options);
-  const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-loop-guard.js');
-}
-
 export function getOpenCodeSkillsDirectory(options: PathEnvironment = {}): string {
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(getOpenCodeConfigDirectory(options), 'skills');
+}
+
+/** Exact one-way upgrade target for the retired managed OpenCode loop guard. */
+export function getLegacyOpenCodeLoopGuardPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-loop-guard.js');
 }
 
 function getHermesRoot(options: PathEnvironment): string {
@@ -207,21 +209,46 @@ function isProfileShapedHermesHome(home: string, platform: NodeJS.Platform): boo
 async function getHermesHomeFromCli(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Promise<string | undefined> {
   if (!env.PATH) return undefined;
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  let result: Awaited<ReturnType<typeof execFile>>;
   try {
-    const result = await execFile('hermes', ['config', 'path'], {
+    result = await execFile('hermes', ['config', 'path'], {
       env,
       encoding: 'utf8',
       timeout: 2000,
       maxBuffer: 64 * 1024,
       windowsHide: true,
     });
-    const output = String(result.stdout).trim();
-    if (output.length === 0 || output.includes('\0') || /[\r\n]/u.test(output)) return undefined;
-    if (!platformPath.isAbsolute(output) || platformPath.basename(output) !== 'config.yaml') return undefined;
-    return platformPath.dirname(platformPath.normalize(output));
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new KiokukoError('VALIDATION_ERROR', 'Hermes config path command failed');
   }
+  const output = String(result.stdout).trim();
+  if (output.length === 0 || output.includes('\0') || /[\r\n]/u.test(output)
+    || !platformPath.isAbsolute(output) || platformPath.basename(output) !== 'config.yaml') {
+    throw new KiokukoError('VALIDATION_ERROR', 'Hermes config path command returned invalid output');
+  }
+  return platformPath.dirname(platformPath.normalize(output));
+}
+
+function sameHermesHome(left: string, right: string, platform: NodeJS.Platform): boolean {
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  const normalize = (value: string): string => {
+    const normalized = platformPath.resolve(value);
+    return platform === 'win32' ? normalized.toLowerCase() : normalized;
+  };
+  return normalize(left) === normalize(right);
+}
+
+async function requireCliMatchesStickyHermesHome(
+  expectedHome: string,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const cliHome = await getHermesHomeFromCli(platform, env);
+  if (cliHome !== undefined && !sameHermesHome(cliHome, expectedHome, platform)) {
+    throw new KiokukoError('CONFLICT', 'Hermes config path disagrees with the active profile marker');
+  }
+  return expectedHome;
 }
 
 /** Resolve the effective Hermes profile home without consulting or mutating the active Hermes profile. */
@@ -244,27 +271,49 @@ export async function getHermesHome(options: PathEnvironment = {}): Promise<stri
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(activeProfile)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile marker is invalid');
   }
-  if (activeProfile === 'default') return await getHermesHomeFromCli(platform, env) ?? root;
+  if (activeProfile === 'default') return requireCliMatchesStickyHermesHome(root, platform, env);
 
   const profileHome = join(root, 'profiles', activeProfile);
   try {
-    if (!(await lstat(profileHome)).isDirectory()) throw new Error('not a directory');
-  } catch {
-    throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile directory is unavailable');
+    if (!(await lstat(profileHome)).isDirectory()) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile directory is unavailable');
+    }
+  } catch (error) {
+    if (error instanceof KiokukoError) throw error;
+    if (error instanceof Error
+      && 'code' in error
+      && ['ENOENT', 'ENOTDIR'].includes(String((error as NodeJS.ErrnoException).code))) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Hermes active profile directory is unavailable');
+    }
+    throw error;
   }
-  return await getHermesHomeFromCli(platform, env) ?? profileHome;
+  return requireCliMatchesStickyHermesHome(profileHome, platform, env);
+}
+
+export interface HermesProfilePaths {
+  home: string;
+  configPath: string;
+  skillsDirectory: string;
+}
+
+/** Resolve the active Hermes profile once and bind every setup destination to it. */
+export async function resolveHermesProfilePaths(options: PathEnvironment = {}): Promise<HermesProfilePaths> {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  const home = await getHermesHome(options);
+  return {
+    home,
+    configPath: join(home, 'config.yaml'),
+    skillsDirectory: join(home, 'skills'),
+  };
 }
 
 export async function getHermesConfigPath(options: PathEnvironment = {}): Promise<string> {
-  const { platform } = selectedEnvironment(options);
-  const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  return join(await getHermesHome(options), 'config.yaml');
+  return (await resolveHermesProfilePaths(options)).configPath;
 }
 
 export async function getHermesSkillsDirectory(options: PathEnvironment = {}): Promise<string> {
-  const { platform } = selectedEnvironment(options);
-  const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  return join(await getHermesHome(options), 'skills');
+  return (await resolveHermesProfilePaths(options)).skillsDirectory;
 }
 
 export async function ensurePlatformDataDirectory(options: PathEnvironment = {}): Promise<string> {

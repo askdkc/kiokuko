@@ -1,7 +1,7 @@
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
-import { requireWorkspace, type EntryKind, type JsonObject } from '../serialization/validate.js';
+import { canonicalJson, canonicalTagOrder, compareCanonicalStrings, requireWorkspace, type EntryKind, type JsonObject } from '../serialization/validate.js';
 import { recordEntryInTransaction, readEntry, type EntryRecord } from './entries.js';
 import {
   buildStructuredScope,
@@ -15,6 +15,8 @@ import {
 import { ensureGlobalWorkspace, GLOBAL_WORKSPACE, resolveProjectWorkspace } from './workspaces.js';
 import { readKnowledgeEvidence, type KnowledgeEvidence, type KnowledgeEvidenceTier } from '../akinator/knowledge-path.js';
 import { analyzePortability, containsProjectSpecificData as containsPortableProjectSpecificData } from './portability.js';
+import { isExternalSkillReference } from '../skills/store.js';
+import { normalizeSearchSignal } from './retrieval-query.js';
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
@@ -135,12 +137,27 @@ interface CuratorRow extends SqliteRow {
   updatedAt: string;
 }
 
+type StructuredMetadataField = 'applicability' | 'signals';
+
 function hasValues(value: object | undefined): boolean {
   return value !== undefined && Object.values(value).some((item) => Array.isArray(item) && item.length > 0);
 }
 
+function storedMetadataIntegrityError(error: unknown, entry: EntryRecord, field: StructuredMetadataField): never {
+  if (!(error instanceof KiokukoError) || (error.code !== 'VALIDATION_ERROR' && error.code !== 'SECURITY_REJECTION')) throw error;
+  throw new KiokukoError('INTEGRITY_ERROR', `Stored scope.${field} metadata is invalid`, {
+    workspace: entry.workspace,
+    entryId: entry.id,
+    revision: entry.revision,
+    field,
+  });
+}
+
 function readStructuredMetadata(entry: EntryRecord): StructuredMetadata {
   const raw = entry.scope as Record<string, unknown>;
+  // Released schema v2 remains readable, including published global rows, but
+  // Curator's current structured filters require an explicit v3 contract.
+  if (raw.schemaVersion !== 3) return {};
   const metadata: StructuredMetadata = {};
   if (typeof raw.memoryClass === 'string' && MEMORY_CLASSES.includes(raw.memoryClass as MemoryClass)) {
     metadata.memoryClass = raw.memoryClass as MemoryClass;
@@ -148,15 +165,15 @@ function readStructuredMetadata(entry: EntryRecord): StructuredMetadata {
   if (raw.applicability !== undefined) {
     try {
       metadata.applicability = validateApplicability(raw.applicability);
-    } catch {
-      // Legacy entries may contain arbitrary scope JSON. Curator ignores invalid metadata.
+    } catch (error) {
+      storedMetadataIntegrityError(error, entry, 'applicability');
     }
   }
   if (raw.signals !== undefined) {
     try {
       metadata.signals = validateSignals(raw.signals);
-    } catch {
-      // Legacy entries may contain arbitrary scope JSON. Curator ignores invalid metadata.
+    } catch (error) {
+      storedMetadataIntegrityError(error, entry, 'signals');
     }
   }
   return metadata;
@@ -337,6 +354,7 @@ function scoreEntry(entry: EntryRecord): CuratorScore {
 
 function candidateFromEntry(database: SqliteDatabase, entry: EntryRecord): CuratorCandidate | null {
   if (entry.workspace === GLOBAL_WORKSPACE || entry.status !== 'candidate') return null;
+  if (isExternalSkillReference(entry)) return null;
   const scored = scoreEntry(entry);
   const evidence = readKnowledgeEvidence(database, entry);
   const portableEvidence = evidence.independentWorkspaces >= 2 || hasValues(scored.metadata.applicability);
@@ -409,9 +427,9 @@ function decodeCuratorCursor(value: string | undefined): { ready: number; score:
 function compareCuratorCandidates(left: CuratorCandidate, right: CuratorCandidate): number {
   return Number(right.knowledge.skillReady) - Number(left.knowledge.skillReady)
     || right.score - left.score
-    || right.updatedAt.localeCompare(left.updatedAt)
-    || left.workspace.localeCompare(right.workspace)
-    || left.entryId.localeCompare(right.entryId);
+    || compareCanonicalStrings(right.updatedAt, left.updatedAt)
+    || compareCanonicalStrings(left.workspace, right.workspace)
+    || compareCanonicalStrings(left.entryId, right.entryId);
 }
 
 function candidateAfterCursor(candidate: CuratorCandidate, cursor: ReturnType<typeof decodeCuratorCursor>): boolean {
@@ -428,6 +446,7 @@ function scanCuratorRows(
   clauses: string[],
   parameters: Array<string | number>,
 ): CuratorRow[] {
+  const maximumRows = 5_000;
   const rows: CuratorRow[] = [];
   let cursor: CuratorRow | undefined;
   const batchSize = 500;
@@ -442,15 +461,18 @@ function scanCuratorRows(
     const cursorParameters = cursor === undefined
       ? []
       : [cursor.updatedAt, cursor.updatedAt, cursor.workspace, cursor.updatedAt, cursor.workspace, cursor.id];
+    const remaining = maximumRows - rows.length;
     const batch = database.prepare(`
       SELECT e.workspace, e.id, e.updated_at AS updatedAt
         FROM entries AS e
-        JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
        WHERE ${clauses.join(' AND ')}
          ${cursorClause}
        ORDER BY e.updated_at DESC, e.workspace ASC, e.id ASC
        LIMIT ?
-    `).all<CuratorRow>(...parameters, ...cursorParameters, batchSize);
+    `).all<CuratorRow>(...parameters, ...cursorParameters, Math.min(batchSize, remaining + 1));
+    if (batch.length > remaining) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Curator scan exceeds the bounded candidate limit; narrow the filters');
+    }
     rows.push(...batch);
     if (batch.length < batchSize) break;
     cursor = batch.at(-1);
@@ -467,44 +489,34 @@ function listCuratorCandidates(
   if (workspace === GLOBAL_WORKSPACE) return { candidates: [], truncated: false, nextCursor: null, totalApproximate: 0 };
   const workspaces = input.workspaces?.length ? [...new Set(input.workspaces)] : workspace === null ? undefined : [workspace];
   const parameters: Array<string | number> = [GLOBAL_WORKSPACE];
-  const clauses = ["e.workspace <> ?", "e.status = 'candidate'"];
+  const clauses = ['e.workspace <> ?', "e.status = 'candidate'"];
   if (workspaces !== undefined) {
     clauses.push(`e.workspace IN (${workspaces.map(() => '?').join(', ')})`);
     parameters.push(...workspaces);
   }
-  if (input.search !== undefined && input.search.trim().length > 0) {
-    const pattern = `%${input.search.trim()}%`;
-    clauses.push("(r.title LIKE ? OR COALESCE(r.summary, '') LIKE ? OR r.body LIKE ? OR EXISTS (SELECT 1 FROM entry_revision_tags search_tags WHERE search_tags.entry_id = e.id AND search_tags.revision = e.current_revision AND search_tags.tag LIKE ?))");
-    parameters.push(pattern, pattern, pattern, pattern);
-  }
   const tags = [...new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean))];
-  if (tags.length > 0) {
-    const exists = tags.map(() => 'EXISTS (SELECT 1 FROM entry_revision_tags filter_tags WHERE filter_tags.entry_id = e.id AND filter_tags.revision = e.current_revision AND filter_tags.tag = ?)');
-    clauses.push(input.tagMode === 'all' ? exists.join(' AND ') : `(${exists.join(' OR ')})`);
-    parameters.push(...tags);
-  }
-  const scopeNeedles = [
-    ...(input.frameworks ?? []).map((value) => `"name":"${value.replaceAll('"', '')}"`),
-    ...(input.languages ?? []).map((value) => `"${value.replaceAll('"', '')}"`),
-    ...(input.memoryClasses ?? []).map((value) => `"memoryClass":"${value}"`),
-  ];
-  for (const needle of scopeNeedles) {
-    clauses.push('r.scope_json LIKE ?');
-    parameters.push(`%${needle}%`);
-  }
-  if (input.includeGlobalized !== true) {
-    clauses.push("NOT EXISTS (SELECT 1 FROM entries AS g JOIN entry_revisions AS gr ON gr.entry_id = g.id AND gr.revision = g.current_revision WHERE g.workspace = 'global' AND gr.provenance_json LIKE '%' || e.id || '@' || e.current_revision || '#deterministic-v1%')");
-  }
   const rows = scanCuratorRows(database, clauses, parameters);
+  const globalEntries = input.includeGlobalized === true ? [] : entriesInWorkspace(database, GLOBAL_WORKSPACE);
+  const search = input.search?.trim().normalize('NFKC').toLowerCase();
+  const frameworks = (input.frameworks ?? []).map(normalizeSearchSignal);
+  const languages = (input.languages ?? []).map(normalizeSearchSignal);
   const candidates = rows
     .map((row) => {
       const entry = readEntry(database, { workspace: row.workspace, entryId: row.id });
       const metadata = readStructuredMetadata(entry);
-      if (input.frameworks?.length && !(metadata.applicability?.frameworks ?? []).some((item) => input.frameworks!.some((framework) => item.name.toLocaleLowerCase() === framework.toLocaleLowerCase()))) return null;
-      if (input.languages?.length && !(metadata.applicability?.languages ?? []).some((language) => input.languages!.some((expected) => language.toLocaleLowerCase() === expected.toLocaleLowerCase()))) return null;
+      if (entry.status !== 'candidate' || isExternalSkillReference(entry)) return null;
+      if (search !== undefined && search.length > 0 && ![
+        entry.title, entry.summary ?? '', entry.body, ...entry.tags,
+      ].some((value) => value.normalize('NFKC').toLowerCase().includes(search))) return null;
+      if (tags.length > 0) {
+        const matched = tags.map((tag) => entry.tags.includes(tag));
+        if (input.tagMode === 'all' ? matched.some((value) => !value) : matched.every((value) => !value)) return null;
+      }
+      if (frameworks.length > 0 && !(metadata.applicability?.frameworks ?? []).some((item) => frameworks.includes(normalizeSearchSignal(item.name)))) return null;
+      if (languages.length > 0 && !(metadata.applicability?.languages ?? []).some((language) => languages.includes(normalizeSearchSignal(language)))) return null;
       if (input.memoryClasses?.length && (metadata.memoryClass === undefined || !input.memoryClasses.includes(metadata.memoryClass))) return null;
       const candidate = candidateFromEntry(database, entry);
-      if (candidate !== null && input.includeGlobalized !== true && existingGlobalEntry(database, curatedReference(entry)) !== undefined) return null;
+      if (candidate !== null && globalEntries.some((global) => globalizesSource(global, entry))) return null;
       return candidate;
     })
     .filter((candidate): candidate is CuratorCandidate => candidate !== null)
@@ -553,41 +565,51 @@ export async function curateMemoryCandidates(database: SqliteDatabase, input: Cu
 
 export function curatorFacets(database: SqliteDatabase, input: { includeGlobalized?: boolean; workspace?: string; workspaces?: string[] } = {}): CuratorFacetResult {
   const parameters: Array<string | number> = [GLOBAL_WORKSPACE];
-  const clauses = ["e.workspace <> ?", "e.status = 'candidate'"];
+  const clauses = ['e.workspace <> ?', "e.status = 'candidate'"];
   const workspaces = input.workspaces?.length ? [...new Set(input.workspaces)] : input.workspace === undefined ? undefined : [input.workspace];
   if (workspaces !== undefined) {
     clauses.push(`e.workspace IN (${workspaces.map(() => '?').join(', ')})`);
     parameters.push(...workspaces);
   }
-  if (input.includeGlobalized !== true) {
-    clauses.push("NOT EXISTS (SELECT 1 FROM entries AS g JOIN entry_revisions AS gr ON gr.entry_id = g.id AND gr.revision = g.current_revision WHERE g.workspace = 'global' AND gr.provenance_json LIKE '%' || e.id || '@' || e.current_revision || '#deterministic-v1%')");
+  const globalEntries = input.includeGlobalized === true ? [] : entriesInWorkspace(database, GLOBAL_WORKSPACE);
+  const decoded = scanCuratorRows(database, clauses, parameters).map((row) => {
+    const entry = readEntry(database, { workspace: row.workspace, entryId: row.id });
+    const metadata = readStructuredMetadata(entry);
+    return { entry, metadata };
+  }).filter(({ entry }) => entry.status === 'candidate'
+    && !isExternalSkillReference(entry)
+    && !globalEntries.some((global) => globalizesSource(global, entry)));
+
+  const projectCounts = new Map<string, number>();
+  const tagCounts = new Map<string, number>();
+  const frameworkCounts = new Map<string, number>();
+  const languageCounts = new Map<string, number>();
+  const memoryClassCounts = new Map<MemoryClass, number>();
+  for (const { entry, metadata } of decoded) {
+    projectCounts.set(entry.workspace, (projectCounts.get(entry.workspace) ?? 0) + 1);
+    for (const tag of entry.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+    for (const value of new Set((metadata.applicability?.frameworks ?? []).map((framework) => normalizeSearchSignal(framework.name)))) {
+      frameworkCounts.set(value, (frameworkCounts.get(value) ?? 0) + 1);
+    }
+    for (const value of new Set((metadata.applicability?.languages ?? []).map(normalizeSearchSignal))) {
+      languageCounts.set(value, (languageCounts.get(value) ?? 0) + 1);
+    }
+    if (metadata.memoryClass !== undefined) memoryClassCounts.set(metadata.memoryClass, (memoryClassCounts.get(metadata.memoryClass) ?? 0) + 1);
   }
-  const where = clauses.join(' AND ');
-  const projects = database.prepare(`
-    SELECT e.workspace, COALESCE(rp.display_name, e.workspace) AS name, COUNT(*) AS count
-      FROM entries AS e LEFT JOIN repositories AS rp ON rp.workspace = e.workspace
-     WHERE ${where}
-     GROUP BY e.workspace, rp.display_name ORDER BY count DESC, e.workspace ASC
-  `).all<{ workspace: string; name: string; count: number }>(...parameters).map((row) => ({ workspace: row.workspace, name: row.name, count: Number(row.count) }));
-  const tags = database.prepare(`
-    SELECT t.tag AS value, COUNT(DISTINCT e.id) AS count
-      FROM entries AS e JOIN entry_revision_tags AS t ON t.entry_id = e.id AND t.revision = e.current_revision
-     WHERE ${where}
-     GROUP BY t.tag ORDER BY count DESC, value ASC
-  `).all<{ value: string; count: number }>(...parameters).map((row) => ({ value: row.value, count: Number(row.count) }));
-  const signals = (type: 'framework' | 'language') => database.prepare(`
-    SELECT s.normalized_value AS value, COUNT(DISTINCT e.id) AS count
-      FROM entries AS e JOIN entry_search_signals AS s ON s.entry_id = e.id
-     WHERE ${where} AND s.signal_type = ?
-     GROUP BY s.normalized_value ORDER BY count DESC, value ASC
-  `).all<{ value: string; count: number }>(...parameters, type).map((row) => ({ value: row.value, count: Number(row.count) }));
-  const memoryClasses = database.prepare(`
-    SELECT json_extract(r.scope_json, '$.memoryClass') AS value, COUNT(*) AS count
-      FROM entries AS e JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
-     WHERE ${where} AND json_extract(r.scope_json, '$.memoryClass') IS NOT NULL
-     GROUP BY value ORDER BY count DESC, value ASC
-  `).all<{ value: MemoryClass; count: number }>(...parameters).map((row) => ({ value: row.value, count: Number(row.count) }));
-  return { projects, tags, frameworks: signals('framework'), languages: signals('language'), memoryClasses };
+  const facets = <T extends string>(values: Map<T, number>): Array<{ value: T; count: number }> => [...values]
+    .map(([value, count]) => ({ value, count }))
+    .sort((left, right) => right.count - left.count || compareCanonicalStrings(left.value, right.value));
+  const projects = [...projectCounts].map(([workspace, count]) => {
+    const repository = database.prepare('SELECT display_name FROM repositories WHERE workspace = ?').get<{ display_name: string }>(workspace);
+    return { workspace, name: repository?.display_name ?? workspace, count };
+  }).sort((left, right) => right.count - left.count || compareCanonicalStrings(left.workspace, right.workspace));
+  return {
+    projects,
+    tags: facets(tagCounts),
+    frameworks: facets(frameworkCounts),
+    languages: facets(languageCounts),
+    memoryClasses: facets(memoryClassCounts),
+  };
 }
 
 function safeGlobalScope(entry: EntryRecord, metadata: StructuredMetadata): JsonObject {
@@ -601,6 +623,7 @@ function safeGlobalScope(entry: EntryRecord, metadata: StructuredMetadata): Json
   const memoryClass = metadata.memoryClass ?? (entry.kind === 'lesson' ? 'troubleshooting' : 'workflow');
   return buildStructuredScope({
     visibility: 'global',
+    retrievalScope: 'global',
     memoryClass,
     ...(applicability === undefined ? {} : { applicability }),
     ...(signals === undefined || Object.keys(signals).length === 0 ? {} : { signals }),
@@ -609,30 +632,100 @@ function safeGlobalScope(entry: EntryRecord, metadata: StructuredMetadata): Json
 }
 
 function safeGlobalTags(entry: EntryRecord): string[] {
-  return [...new Set([
+  return canonicalTagOrder([
     ...entry.tags.filter((tag) => !containsProjectSpecificData(tag, entry)),
     'global',
     'skill:curated',
     `curator:${CURATOR_DRAFT_VERSION}`,
-  ])];
+  ]);
 }
 
 function curatedReference(entry: EntryRecord): string {
   return `${entry.id}@${entry.revision}#${CURATOR_DRAFT_VERSION}`;
 }
 
-function existingGlobalEntry(database: SqliteDatabase, reference: string): EntryRecord | undefined {
-  const row = database.prepare(`
+function entriesInWorkspace(database: SqliteDatabase, workspace: string): EntryRecord[] {
+  const maximumRows = 5_000;
+  const rows = database.prepare(`
     SELECT id
-      FROM entries AS e
-      JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
-     WHERE e.workspace = ? AND e.status <> 'superseded'
-       AND json_extract(r.provenance_json, '$.type') = 'curator_globalize'
-       AND json_extract(r.provenance_json, '$.reference') = ?
-     ORDER BY e.current_revision DESC, e.id ASC
-     LIMIT 1
-  `).get<{ id: string }>(GLOBAL_WORKSPACE, reference);
-  return row ? readEntry(database, { workspace: GLOBAL_WORKSPACE, entryId: row.id }) : undefined;
+      FROM entries
+     WHERE workspace = ? AND status <> 'superseded'
+     ORDER BY id
+     LIMIT ?
+  `).all<{ id: string }>(workspace, maximumRows + 1);
+  if (rows.length > maximumRows) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Curator global-entry scan exceeds the bounded limit');
+  }
+  return rows.map(({ id }) => readEntry(database, { workspace, entryId: id }));
+}
+
+function claimsGlobalization(global: EntryRecord, source: EntryRecord): boolean {
+  const provenance = global.provenance as Record<string, unknown>;
+  return provenance.type === 'curator_globalize'
+    && provenance.reference === curatedReference(source)
+    && provenance.sourceWorkspace === source.workspace;
+}
+
+function globalizesSource(global: EntryRecord, source: EntryRecord): boolean {
+  return global.status !== 'superseded' && claimsGlobalization(global, source);
+}
+
+function expectedGlobalProvenance(
+  source: EntryRecord,
+  clientKind: string,
+  timestamp: string,
+): JsonObject {
+  const sourceProvenance = source.provenance as Record<string, unknown>;
+  return {
+    type: 'curator_globalize',
+    reference: curatedReference(source),
+    sourceWorkspace: source.workspace,
+    ...(typeof sourceProvenance.sourceRepositoryId === 'string' ? { sourceRepositoryId: sourceProvenance.sourceRepositoryId } : {}),
+    ...(typeof sourceProvenance.sourceCommit === 'string' ? { sourceCommit: sourceProvenance.sourceCommit } : {}),
+    clientKind,
+    timestamp,
+  };
+}
+
+function assertGlobalProjection(
+  global: EntryRecord,
+  source: EntryRecord,
+  candidate: CuratorCandidate,
+  metadata: StructuredMetadata,
+): void {
+  const expectedProvenance = expectedGlobalProvenance(source, global.createdBy, global.createdAt);
+  if (global.workspace !== GLOBAL_WORKSPACE
+    || global.kind !== source.kind
+    || global.status !== 'candidate'
+    || global.title !== candidate.draft.title
+    || global.body !== candidate.draft.body
+    || global.summary !== candidate.draft.summary
+    || canonicalJson(global.scope) !== canonicalJson(safeGlobalScope(source, metadata))
+    || canonicalJson(global.provenance) !== canonicalJson(expectedProvenance)
+    || global.trustLevel !== 'untrusted'
+    || global.confidence !== Math.min(source.confidence, 0.8)
+    || canonicalJson(global.tags) !== canonicalJson(safeGlobalTags(source))
+    || global.revision !== 1
+    || global.supersededBy !== null
+    || global.verifiedAt !== null
+    || global.updatedAt !== global.createdAt) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored curator globalization does not match its deterministic source projection');
+  }
+}
+
+function existingGlobalEntry(
+  database: SqliteDatabase,
+  source: EntryRecord,
+  candidate: CuratorCandidate,
+  metadata: StructuredMetadata,
+): EntryRecord | undefined {
+  const matches = entriesInWorkspace(database, GLOBAL_WORKSPACE).filter((entry) => claimsGlobalization(entry, source));
+  if (matches.length > 1) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored curator globalization is ambiguous');
+  }
+  const existing = matches[0];
+  if (existing !== undefined) assertGlobalProjection(existing, source, candidate, metadata);
+  return existing;
 }
 
 export function globalizeCuratorCandidate(database: SqliteDatabase, input: GlobalizeCuratorInput): GlobalizeCuratorResult {
@@ -646,23 +739,14 @@ export function globalizeCuratorCandidate(database: SqliteDatabase, input: Globa
   return withImmediateTransaction(database, () => {
     const source = readEntry(database, { workspace, entryId: input.entryId });
     if (source.status !== 'candidate') throw new KiokukoError('CONFLICT', 'Only candidate entries can be Global化候補になります');
+    if (isExternalSkillReference(source)) throw new KiokukoError('CONFLICT', 'External skill references cannot be Global化候補になります');
     if (source.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
     const candidate = candidateFromEntry(database, source);
     if (candidate === null) throw new KiokukoError('CONFLICT', 'This entry is not recommended for Global化 by curator');
-    const reference = curatedReference(source);
-    const existing = existingGlobalEntry(database, reference);
-    if (existing) return { candidate, global: existing, idempotent: true };
     const metadata = scoreEntry(source).metadata;
-    const sourceProvenance = source.provenance as Record<string, unknown>;
-    const provenance = {
-      type: 'curator_globalize',
-      reference,
-      sourceWorkspace: source.workspace,
-      ...(typeof sourceProvenance.sourceRepositoryId === 'string' ? { sourceRepositoryId: sourceProvenance.sourceRepositoryId } : {}),
-      ...(typeof sourceProvenance.sourceCommit === 'string' ? { sourceCommit: sourceProvenance.sourceCommit } : {}),
-      clientKind: actor,
-      timestamp: now,
-    };
+    const existing = existingGlobalEntry(database, source, candidate, metadata);
+    if (existing) return { candidate, global: existing, idempotent: true };
+    const provenance = expectedGlobalProvenance(source, actor, now);
     const global = recordEntryInTransaction(database, {
       workspace: GLOBAL_WORKSPACE,
       kind: source.kind,
@@ -677,7 +761,12 @@ export function globalizeCuratorCandidate(database: SqliteDatabase, input: Globa
       tags: safeGlobalTags(source),
       createdBy: actor,
       actor,
-    });
+    }, { now });
+    assertGlobalProjection(global, source, candidate, metadata);
+    const persisted = existingGlobalEntry(database, source, candidate, metadata);
+    if (persisted?.id !== global.id) {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Curator globalization was not persisted exactly once');
+    }
     return { candidate, global, idempotent: false };
   });
 }

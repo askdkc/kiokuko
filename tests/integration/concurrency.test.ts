@@ -53,6 +53,12 @@ test('concurrent use creates one binding and one managed block without losing us
   await import('node:fs/promises').then(({ writeFile }) => writeFile(path.join(root, 'AGENTS.md'), 'human header\n'));
   const data = await temp('concurrency-use-data');
   const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const initialized = openConnection(databasePath);
+  try {
+    migrateDatabase(initialized);
+  } finally {
+    initialized.close();
+  }
   const workerPath = path.resolve('tests/fixtures/concurrent-use.ts');
   await Promise.all(Array.from({ length: 2 }, () => runWorker(workerPath, {
     KIOKUKO_TEST_ROOT: root,

@@ -3,6 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import type { SqliteDatabase } from '../../src/db/adapter.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import {
@@ -95,7 +96,7 @@ test('accepts context delivery selection reasons as a JSON array', async () => {
     }, { now: '2026-08-20T00:00:00.000Z', idFactory: () => 'entry-selection-reasons' });
     database.prepare(`
       INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at)
-      VALUES ('delivery-selection-reasons', 'run-1', 1, NULL, ?, ?, 'v1', '{}', 100, 10, 0, ?)
+      VALUES ('delivery-selection-reasons', 'run-1', 1, NULL, ?, ?, 'v1', 'not-json-legacy-artifact', 100, 10, 0, ?)
     `).run('a'.repeat(64), 'b'.repeat(64), '2026-08-20T00:00:00.000Z');
     database.prepare(`
       INSERT INTO context_delivery_entries (delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json)
@@ -503,6 +504,64 @@ test('reports a fixed healthy schema for an empty ledger without mutating the da
         (SELECT COUNT(*) FROM ledger_events) AS events,
         (SELECT COUNT(*) FROM ledger_purge_audit) AS tombstones
     `).get<{ runs: number; events: number; tombstones: number }>(), before);
+  } finally {
+    database.close();
+  }
+});
+
+test('inspection preserves programmer and schema faults but classifies SQLite corruption', () => {
+  const failingDatabase = (failure: Error): SqliteDatabase => ({
+    filePath: ':memory:',
+    exec: () => undefined,
+    prepare: () => { throw failure; },
+    close: () => undefined,
+  });
+  const programmerError = new TypeError('maintenance programmer sentinel');
+  assert.throws(() => inspectLedger(failingDatabase(programmerError)), (error: unknown) => error === programmerError);
+
+  const schemaError = Object.assign(new Error('schema changed sentinel'), { code: 'ERR_SQLITE_ERROR', errcode: 17 });
+  assert.throws(() => inspectLedger(failingDatabase(schemaError)), (error: unknown) => error === schemaError);
+
+  for (const errcode of [11, 26]) {
+    const corruption = Object.assign(new Error('maintenance corruption secret sentinel'), { code: 'ERR_SQLITE_ERROR', errcode });
+    assert.throws(
+      () => inspectLedger(failingDatabase(corruption)),
+      (error: unknown) => {
+        assert.equal((error as { code?: unknown }).code, 'INTEGRITY_ERROR');
+        assert.doesNotMatch((error as Error).message, /maintenance corruption secret sentinel/u);
+        return true;
+      },
+    );
+  }
+});
+
+test('purge propagates an unexpected trigger failure without reclassifying its text', async () => {
+  const database = await setup();
+  try {
+    const { LedgerStore } = await import('../../src/ledger/store.js');
+    new LedgerStore(database).createRun(runInput());
+    database.exec(`
+      CREATE TRIGGER purge_conflict_spoof
+      BEFORE INSERT ON ledger_purge_audit
+      BEGIN
+        SELECT RAISE(ABORT, 'UNIQUE constraint failed: ledger_purge_audit.purge_id');
+      END;
+    `);
+
+    assert.throws(
+      () => purgeLedgerTarget(database, {
+        workspace: 'workspace-a', targetType: 'run', targetId: 'run-1', actor: 'operator',
+        createdAt: '2026-08-20T00:00:00.000Z', purgeId: 'purge-trigger-spoof', confirmed: true,
+      }),
+      (error: unknown) => {
+        const sqlite = error as { code?: unknown; errcode?: unknown };
+        assert.equal(sqlite.code, 'ERR_SQLITE_ERROR');
+        assert.equal(sqlite.errcode, 1811);
+        return true;
+      },
+    );
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{ count: number }>()?.count, 1);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM ledger_purge_audit').get<{ count: number }>()?.count, 0);
   } finally {
     database.close();
   }

@@ -50,7 +50,7 @@ function isProfileField(value: string): value is keyof TaskProfile {
 }
 
 function normalizeTaskTypeValue(value: string): TaskType | null {
-  const normalized = value.trim().toLocaleLowerCase();
+  const normalized = value.trim().toLowerCase();
   const aliases: Record<string, TaskType> = {
     implement: 'build', implementation: 'build', feature: 'build', 実装: 'build', 開発: 'build',
     bug: 'debug', debugging: 'debug', fix: 'debug', 修正: 'debug', デバッグ: 'debug',
@@ -72,7 +72,7 @@ export function normalizeTaskType(value: unknown): TaskType {
 }
 
 function inferTaskType(task: string): TaskType | null {
-  const normalized = task.toLocaleLowerCase();
+  const normalized = task.toLowerCase();
   if (/debug|bug|fix|修正|不具合|エラー|障害/u.test(normalized)) return 'debug';
   if (/review|audit|レビュー|監査|検証/u.test(normalized)) return 'review';
   if (/research|調査|研究|比較|検索/u.test(normalized)) return 'research';

@@ -109,3 +109,136 @@ test('Web memory uses only the current immutable revision for editing, filters, 
     database.close();
   }
 });
+
+test('Web JSON mutations fail closed on bytes, syntax, media type, and closed body schemas', async () => {
+  const data = await fixture();
+  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0, httpOptions: { runtimeDirectory: path.join(path.dirname(data.databasePath), 'runtime') } });
+  const cookie = await session(web.url);
+  const target = `/api/entries/${data.entry.id}?workspace=project%3Aweb-revisions`;
+  const validUpdate = JSON.stringify({
+    expectedRevision: 1,
+    kind: 'lesson',
+    title: 'must not persist',
+    body: 'must not persist',
+    summary: null,
+    scope: {},
+    provenance: {},
+    tags: [],
+  });
+  const cases: Array<{ name: string; contentType?: string; body?: BodyInit }> = [
+    { name: 'invalid UTF-8 bytes', contentType: 'application/json', body: Uint8Array.from([0xff]) },
+    { name: 'UTF-8 BOM', contentType: 'application/json', body: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(validUpdate)]) },
+    { name: 'duplicate expectedRevision', contentType: 'application/json', body: '{"expectedRevision":999,"expectedRevision":1,"kind":"lesson","title":"forged revision","body":"must not persist","summary":null,"scope":{},"provenance":{},"tags":[]}' },
+    { name: 'duplicate nested scope key', contentType: 'application/json', body: '{"expectedRevision":1,"kind":"lesson","title":"forged scope","body":"must not persist","summary":null,"scope":{"identity":"first","identity":"last"},"provenance":{},"tags":[]}' },
+    { name: 'non-finite nested number', contentType: 'application/json', body: '{"expectedRevision":1,"kind":"lesson","title":"non-finite","body":"must not persist","summary":null,"scope":{"weight":1e400},"provenance":{},"tags":[]}' },
+    { name: 'unknown entry-update field', contentType: 'application/json', body: validUpdate.slice(0, -1) + ',"unexpected":true}' },
+    { name: 'array body', contentType: 'application/json', body: '[]' },
+    { name: 'empty body', contentType: 'application/json' },
+    { name: 'absent media type', body: Uint8Array.from(Buffer.from(validUpdate)) },
+    { name: 'wrong media type', contentType: 'text/plain', body: validUpdate },
+    { name: 'structured JSON suffix', contentType: 'application/merge-patch+json', body: validUpdate },
+    { name: 'media type parameter', contentType: 'application/json; charset=utf-8', body: validUpdate },
+  ];
+
+  try {
+    for (const invalid of cases) {
+      const headers = new Headers({ cookie });
+      if (invalid.contentType !== undefined) headers.set('content-type', invalid.contentType);
+      const response = await fetch(`${web.url}${target}`, {
+        method: 'PUT',
+        headers,
+        ...(invalid.body === undefined ? {} : { body: invalid.body }),
+      });
+      assert.equal(response.status, 400, invalid.name);
+      assert.deepEqual(await response.json(), {
+        error: { code: 'VALIDATION_ERROR', message: 'Request is invalid', details: {} },
+      }, invalid.name);
+      const detail = await fetch(`${web.url}${target}`, { headers: { cookie } }).then((value) => value.json()) as { entry: { revision: number; kind: string; title: string; body: string; scope: Record<string, unknown> } };
+      assert.deepEqual(detail.entry, {
+        ...detail.entry,
+        revision: 1,
+        kind: 'reference',
+        title: 'PostgreSQL',
+        body: 'PostgreSQL PGroonga',
+        scope: {},
+      }, `${invalid.name} must not mutate the entry`);
+    }
+
+    const unknownCuratorField = await fetch(`${web.url}/api/curator/globalize`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workspace: 'project:web-revisions',
+        entryId: data.entry.id,
+        expectedRevision: 1,
+        actor: 'web-contract-test',
+        unexpected: true,
+      }),
+    });
+    assert.equal(unknownCuratorField.status, 400);
+    assert.deepEqual(await unknownCuratorField.json(), {
+      error: { code: 'VALIDATION_ERROR', message: 'Request is invalid', details: {} },
+    });
+  } finally {
+    await web.close();
+  }
+
+  const database = openConnection(data.databasePath);
+  try {
+    assert.deepEqual(database.prepare('SELECT revision FROM entry_revisions WHERE entry_id = ? ORDER BY revision').all<{ revision: number }>(data.entry.id).map((row) => row.revision), [1]);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM entries WHERE workspace = 'global'").get<{ count: number }>()?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('Web JSON parsing does not misclassify unexpected parser failures as request validation', async () => {
+  const data = await fixture();
+  const web = await startWebServer({ databasePath: data.databasePath, host: '127.0.0.1', port: 0, httpOptions: { runtimeDirectory: path.join(path.dirname(data.databasePath), 'runtime') } });
+  const cookie = await session(web.url);
+  const originalParse = JSON.parse;
+  const sentinel = 'private-parser-programming-error';
+  const body = JSON.stringify({
+    expectedRevision: 1,
+    kind: 'lesson',
+    title: 'must not persist',
+    body: 'must not persist',
+    summary: null,
+    scope: {},
+    provenance: {},
+    tags: [],
+  });
+  try {
+    JSON.parse = (() => { throw new Error(sentinel); }) as typeof JSON.parse;
+    const response = await fetch(`${web.url}/api/entries/${data.entry.id}?workspace=project%3Aweb-revisions`, {
+      method: 'PUT',
+      headers: { cookie, 'content-type': 'application/json' },
+      body,
+    });
+    const responseText = await response.text();
+    assert.equal(response.status, 500);
+    assert.equal(responseText.includes(sentinel), false);
+    assert.deepEqual(originalParse(responseText), {
+      error: { code: 'INTEGRITY_ERROR', message: 'Unexpected server error', details: {} },
+    });
+
+    const cursor = Buffer.from('[1,0,null,"source","slug","provider","skill"]', 'utf8').toString('base64url');
+    const cursorResponse = await fetch(`${web.url}/api/skills?cursor=${cursor}`, { headers: { cookie } });
+    const cursorResponseText = await cursorResponse.text();
+    assert.equal(cursorResponse.status, 500);
+    assert.equal(cursorResponseText.includes(sentinel), false);
+    assert.deepEqual(originalParse(cursorResponseText), {
+      error: { code: 'INTEGRITY_ERROR', message: 'Unexpected server error', details: {} },
+    });
+  } finally {
+    JSON.parse = originalParse;
+    await web.close();
+  }
+
+  const database = openConnection(data.databasePath);
+  try {
+    assert.deepEqual(database.prepare('SELECT revision FROM entry_revisions WHERE entry_id = ? ORDER BY revision').all<{ revision: number }>(data.entry.id).map((row) => row.revision), [1]);
+  } finally {
+    database.close();
+  }
+});

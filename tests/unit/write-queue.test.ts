@@ -163,6 +163,25 @@ test('executes queued operations in FIFO order with one operation running at a t
   assert.equal(maximumActive, 1);
 });
 
+test('settles the completed write for its caller before starting the next queued mutation', async () => {
+  const queue = new WriteQueue<string>(2);
+  const releaseFirst = deferred<void>();
+  let secondStarted = false;
+  const first = queue.enqueue(async () => {
+    await releaseFirst.promise;
+    return 'first';
+  });
+  const second = queue.enqueue(async () => {
+    secondStarted = true;
+    return 'second';
+  });
+
+  releaseFirst.resolve();
+  assert.equal(await first, 'first');
+  assert.equal(secondStarted, false, 'the caller must be able to attest its committed state first');
+  assert.equal(await second, 'second');
+});
+
 test('rejects immediately at waiting capacity without running the rejected operation', async () => {
   const queue = new WriteQueue<string>(1);
   const started = deferred<void>();

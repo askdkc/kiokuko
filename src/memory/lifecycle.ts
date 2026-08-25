@@ -40,16 +40,17 @@ export function promoteEntry(database: SqliteDatabase, input: PromoteInput): Ent
   ensureRevision(input.expectedRevision);
   const now = input.now ?? new Date().toISOString();
   const actor = input.actor ?? 'kiokuko-cli';
-  withImmediateTransaction(database, () => {
-    const current = database.prepare('SELECT status, current_revision FROM entries WHERE id = ? AND workspace = ?').get<{ status: string; current_revision: number }>(input.entryId, input.workspace);
-    if (!current) throw new KiokukoError('NOT_FOUND', 'Entry not found');
-    if (Number(current.current_revision) !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
+  return withImmediateTransaction(database, () => {
+    const current = readEntry(database, { workspace: input.workspace, entryId: input.entryId });
+    const managedExternal = database.prepare('SELECT 1 AS present FROM external_skill_entries WHERE entry_id = ? LIMIT 1').get<{ present: number }>(input.entryId);
+    if (managedExternal) throw new KiokukoError('CONFLICT', 'Managed external Skill entries cannot be promoted');
+    if (current.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
     if (current.status !== 'candidate') throw new KiokukoError('CONFLICT', 'Only candidate entries can be promoted');
     database.prepare("UPDATE entries SET status = 'verified', verified_at = ?, updated_at = ? WHERE id = ? AND workspace = ? AND current_revision = ?")
       .run(now, now, input.entryId, input.workspace, input.expectedRevision);
     recordAuditEvent(database, { entryId: input.entryId, workspace: input.workspace, operation: 'promote', actor, details: { expectedRevision: input.expectedRevision }, createdAt: now });
+    return readEntry(database, { workspace: input.workspace, entryId: input.entryId });
   });
-  return readEntry(database, { workspace: input.workspace, entryId: input.entryId });
 }
 
 export function supersedeEntry(database: SqliteDatabase, input: SupersedeInput): EntryRecord {
@@ -57,17 +58,19 @@ export function supersedeEntry(database: SqliteDatabase, input: SupersedeInput):
   if (input.oldEntryId === input.replacementEntryId) throw new KiokukoError('VALIDATION_ERROR', 'An entry cannot supersede itself');
   const now = input.now ?? new Date().toISOString();
   const actor = input.actor ?? 'kiokuko-cli';
-  withImmediateTransaction(database, () => {
-    const oldEntry = database.prepare('SELECT status, current_revision FROM entries WHERE id = ? AND workspace = ?').get<{ status: string; current_revision: number }>(input.oldEntryId, input.workspace);
-    const replacement = database.prepare('SELECT id, status FROM entries WHERE id = ? AND workspace = ?').get<{ id: string; status: string }>(input.replacementEntryId, input.workspace);
-    if (!oldEntry || !replacement) throw new KiokukoError('NOT_FOUND', 'Entry not found');
-    if (Number(oldEntry.current_revision) !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
+  return withImmediateTransaction(database, () => {
+    const oldEntry = readEntry(database, { workspace: input.workspace, entryId: input.oldEntryId });
+    const replacement = readEntry(database, { workspace: input.workspace, entryId: input.replacementEntryId });
+    const managedExternal = database.prepare('SELECT 1 AS present FROM external_skill_entries WHERE entry_id IN (?, ?) LIMIT 1').get<{ present: number }>(input.oldEntryId, input.replacementEntryId);
+    if (managedExternal) throw new KiokukoError('CONFLICT', 'Managed external Skill entries cannot be superseded');
+    if (oldEntry.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
     if (oldEntry.status === 'superseded') throw new KiokukoError('CONFLICT', 'Entry is already superseded');
+    if (replacement.status === 'superseded') throw new KiokukoError('CONFLICT', 'A superseded entry cannot be a replacement');
     database.prepare("UPDATE entries SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ? AND workspace = ? AND current_revision = ?")
       .run(input.replacementEntryId, now, input.oldEntryId, input.workspace, input.expectedRevision);
     recordAuditEvent(database, { entryId: input.oldEntryId, workspace: input.workspace, operation: 'supersede', actor, details: { replacementEntryId: input.replacementEntryId, expectedRevision: input.expectedRevision }, createdAt: now });
+    return readEntry(database, { workspace: input.workspace, entryId: input.oldEntryId });
   });
-  return readEntry(database, { workspace: input.workspace, entryId: input.oldEntryId });
 }
 
 export function linkEntries(database: SqliteDatabase, input: LinkInput): void {

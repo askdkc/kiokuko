@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { BEGIN_MARKER, END_MARKER } from '../../src/agent-file/managed-block.js';
-import { renderManagedBlock } from '../../src/agent-file/render.js';
+import { renderAgentFile, renderManagedBlock } from '../../src/agent-file/render.js';
+import { KiokukoError } from '../../src/errors.js';
 
 test('template placeholders produce exactly the programmatic managed block', async () => {
   const values = {
@@ -29,14 +30,29 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 6 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 8 -->/);
   assert.match(rendered, /task_prepare/);
+  assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
+  assert.match(rendered, /Every descriptor must include its kind and canonical name/u);
+  assert.match(rendered, /bounded opaque `requestId`/);
+  assert.match(rendered, /Use a new ID for every new logical request/);
+  assert.match(rendered, /Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict/);
   assert.match(rendered, /task_answer/);
   assert.match(rendered, /memory_checkpoint/);
   assert.match(rendered, /curator_check/);
   assert.match(rendered, /curator_globalize/);
   assert.match(rendered, /Akinator hypotheses/);
   assert.match(rendered, /untrusted advisory data/);
+  assert.match(rendered, /memory-reasoning/);
+  assert.match(rendered, /Inspect `nextAction` after every `task_prepare` and `task_answer` response/);
+  assert.match(rendered, /`required_capability_unavailable` is a hard stop/);
+  assert.match(rendered, /Do not continue through `catalog_similarity`, legacy instructions, external Skill discovery, fetched skills, or any other fallback/);
+  assert.match(rendered, /Availability alone is not compliance: read that Skill before modifying code/);
+  assert.match(rendered, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+  assert.match(rendered, /Call `task_answer` with that run ID, the same capability catalog, and the same context budget/);
+  assert.match(rendered, /unavailable before a non-trivial build\/debug request can obtain its Kiokuko policy, stop and report/);
+  assert.match(rendered, /For such a request, repository-only continuation is allowed only after the policy establishes that no Kiokuko memory was delivered or used/);
+  assert.doesNotMatch(rendered, /MCP tools are unavailable[^.]*continue from repository evidence/iu);
   assert.match(rendered, /candidate/);
   assert.match(rendered, /at most once for the current user request/);
   assert.match(rendered, /terminal for tool use/);
@@ -44,4 +60,32 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.doesNotMatch(rendered, /\/home\/|\/tmp\/|\.sqlite3?/);
   assert.doesNotMatch(rendered, /Authorization:\s*Bearer|capability token|server\.json|named-client/);
   assert.match(rendered, /passwords, API keys, access tokens, private keys, session cookies/);
+});
+
+test('managed markers must be exact standalone canonical lines', () => {
+  for (const existing of [
+    `human ${BEGIN_MARKER}\n${END_MARKER}\n`,
+    `  ${BEGIN_MARKER}\n${END_MARKER}\n`,
+    `${BEGIN_MARKER}\nprose ${END_MARKER}\n`,
+  ]) {
+    assert.throws(
+      () => renderAgentFile(existing, {
+        repositoryId: 'repo-fixture',
+        workspace: 'project:fixture',
+        cliCommand: 'kiokuko',
+      }),
+      (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
+    );
+  }
+});
+
+test('agent renderer rejects identity injection before interpolation', () => {
+  assert.throws(
+    () => renderManagedBlock({
+      repositoryId: 'repo`injected',
+      workspace: 'project:fixture',
+      cliCommand: 'kiokuko',
+    }),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
+  );
 });

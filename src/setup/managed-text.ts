@@ -16,6 +16,13 @@ function positions(content: string, marker: string): number[] {
   }
 }
 
+function isStandaloneMarker(content: string, marker: string, position: number): boolean {
+  const before = position === 0 ? '' : content[position - 1];
+  const after = content.slice(position + marker.length, position + marker.length + 2);
+  return (position === 0 || before === '\n')
+    && (position + marker.length === content.length || after.startsWith('\n') || after === '\r\n');
+}
+
 function eolFor(content: string): '\n' | '\r\n' {
   return content.includes('\r\n') ? '\r\n' : '\n';
 }
@@ -29,7 +36,11 @@ export function upsertDelimitedBlock(
 ): DelimitedBlockResult {
   const begins = positions(existing, beginMarker);
   const ends = positions(existing, endMarker);
-  if ((begins.length === 0) !== (ends.length === 0) || begins.length > 1 || ends.length > 1) {
+  if ((begins.length === 0) !== (ends.length === 0)
+    || begins.length > 1
+    || ends.length > 1
+    || (begins[0] !== undefined && !isStandaloneMarker(existing, beginMarker, begins[0]))
+    || (ends[0] !== undefined && !isStandaloneMarker(existing, endMarker, ends[0]))) {
     throw new KiokukoError('VALIDATION_ERROR', `${label} contains malformed Kiokuko managed markers`);
   }
   const eol = eolFor(existing);

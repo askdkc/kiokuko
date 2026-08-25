@@ -1,13 +1,13 @@
 {
   "name": "@askdkc/kiokuko",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Model-agnostic external memory for AI coding agents",
   "type": "module",
   "bin": {
     "kiokuko": "dist/bin/kiokuko.js"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=24.16.0"
   },
   "publishConfig": {
     "access": "public"
@@ -24,7 +24,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "clean:dist": "node --input-type=module --eval \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\"",
+    "build": "npm run clean:dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test tests/**/*.test.ts",
     "test:unit": "node --import tsx --test tests/unit/**/*.test.ts",

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fingerprintRemoteUrl } from './remote-url.js';
+import { validateRepositoryBindingIdentity } from './identity-value.js';
 
 export interface ExistingBindingIdentity {
   repositoryId: string;
@@ -41,5 +42,6 @@ export function createRepositoryIdentity(options: RepositoryIdentityOptions): Re
   const workspace = options.existingBinding?.workspace
     ?? options.workspace
     ?? `project:${displayName}-${shortIdentityHash(repositoryId)}`;
+  validateRepositoryBindingIdentity(repositoryId, workspace);
   return { repositoryId, workspace, displayName, remoteFingerprint };
 }

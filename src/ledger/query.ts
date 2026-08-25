@@ -68,14 +68,6 @@ export interface LedgerRunView extends Omit<RunRecord, 'title' | 'metadata'> {
   untrusted: true;
 }
 
-export interface ListLedgerRunsInput {
-  workspace: string;
-  client?: string;
-  status?: RunStatus;
-  cursor?: string;
-  limit?: number;
-}
-
 export interface LedgerRunsPage {
   items: LedgerRunView[];
   nextCursor: string | null;
@@ -84,14 +76,6 @@ export interface LedgerRunsPage {
 export interface ReadLedgerRunInput {
   workspace: string;
   runId: string;
-}
-
-export interface ListLedgerEventsInput {
-  workspace: string;
-  runId: string;
-  after?: number;
-  type?: LedgerEventType;
-  limit?: number;
 }
 
 export interface LedgerEventView {

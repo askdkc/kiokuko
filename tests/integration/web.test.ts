@@ -7,7 +7,6 @@ import test from 'node:test';
 import { initializeDatabase } from '../../src/commands/init.js';
 import type { SqliteDatabase } from '../../src/db/adapter.js';
 import { openConnection } from '../../src/db/connection.js';
-import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import { startWebServer } from '../../src/web/server.js';
@@ -204,9 +203,8 @@ test('startWebServer composes one shared database lifetime and keeps its legacy 
   const runtimeDirectory = path.join(data.directory, 'runtime');
   const descriptorPath = path.join(runtimeDirectory, 'server.json');
   let opened = 0;
-  let migrated = 0;
+  let initialized = 0;
   let closed = 0;
-  let openedDatabase: SqliteDatabase | undefined;
   const web = await startWebServer({
     databasePath: data.databasePath,
     host: '127.0.0.1',
@@ -216,6 +214,11 @@ test('startWebServer composes one shared database lifetime and keeps its legacy 
       descriptorPath,
       instanceId: '123e4567-e89b-12d3-a456-426614174120',
       capabilityToken: 'a'.repeat(64),
+      initializeDatabase: async (options) => {
+        initialized += 1;
+        assert.equal(options.databasePath, data.databasePath);
+        await initializeDatabase(options);
+      },
       openDatabase: () => {
         opened += 1;
         const primary = openConnection(data.databasePath);
@@ -223,27 +226,19 @@ test('startWebServer composes one shared database lifetime and keeps its legacy 
           filePath: primary.filePath,
           exec: primary.exec.bind(primary),
           prepare: primary.prepare.bind(primary),
-          backup: primary.backup.bind(primary),
           close: () => {
             closed += 1;
             primary.close();
           },
         } satisfies SqliteDatabase;
-        openedDatabase = adapter;
         return adapter;
-      },
-      migrateDatabase: (database, migrationsDirectory) => {
-        migrated += 1;
-        assert.strictEqual(database, openedDatabase);
-        assert.equal(database.filePath, data.databasePath);
-        return migrateDatabase(database, migrationsDirectory);
       },
     },
   });
   try {
     assert.deepEqual(Object.keys(web).sort(), ['close', 'server', 'url']);
     assert.equal(opened, 1);
-    assert.equal(migrated, 1);
+    assert.equal(initialized, 1);
     const response = await webFetch(web.url, '/api/workspaces');
     assert.equal(response.status, 200);
     const update = await webFetch(web.url, `/api/entries/${data.candidate.id}?workspace=project%3Aweb-test`, {
@@ -368,10 +363,23 @@ test('legacy Web mounts the same known Agent v1 route before legacy handling', a
         coverage: { run: 'declared', tool: 'declared', command: 'declared', file: 'declared', approval: 'unavailable' },
       }),
     });
-    const body = await response.json() as { operation: string; data: { runStatus: string } };
+    const body = await response.json() as {
+      operation: string;
+      data: {
+        runStatus: string;
+        nextAction: string;
+        context: unknown;
+        capabilities: { recommendations: Array<{ name: string; required?: boolean; availability: string }> };
+      };
+    };
     assert.equal(response.status, 200);
     assert.equal(body.operation, 'agent.open');
     assert.equal(body.data.runStatus, 'active');
+    assert.equal(body.data.nextAction, 'required_capability_unavailable');
+    assert.equal(body.data.context, null);
+    assert.ok(body.data.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
+      && item.required === true
+      && item.availability === 'unknown'));
   } finally {
     await web.close();
   }
@@ -398,14 +406,13 @@ test('legacy mutations admitted before close drain through the shared queue and 
           filePath: primary.filePath,
           exec: primary.exec.bind(primary),
           prepare: primary.prepare.bind(primary),
-          backup: primary.backup.bind(primary),
           close: () => {
             closed += 1;
             primary.close();
           },
         } satisfies SqliteDatabase;
       },
-      migrateDatabase: (database, migrationsDirectory) => migrateDatabase(database, migrationsDirectory),
+      initializeDatabase,
     },
   });
   const uiCookie = await webSession(web.url);
@@ -421,6 +428,7 @@ test('legacy mutations admitted before close drain through the shared queue and 
   });
   const partialBody = body.slice(0, -1);
   const target = `/api/entries/${encodeURIComponent(data.candidate.id)}?workspace=project%3Aweb-test`;
+  const webAuthority = new URL(web.url).host;
   const requestAdmitted = deferred<void>();
   let socket: Socket | undefined;
   let closePromise: Promise<void> | undefined;
@@ -430,7 +438,7 @@ test('legacy mutations admitted before close drain through the shared queue and 
     const responsePromise = readRawResponse(socket);
     socket.write([
       `PUT ${target} HTTP/1.1`,
-      'Host: 127.0.0.1',
+      `Host: ${webAuthority}`,
       'Content-Type: application/json',
       `Cookie: ${uiCookie}`,
       `Content-Length: ${Buffer.byteLength(body)}`,

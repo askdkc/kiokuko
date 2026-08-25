@@ -4,9 +4,12 @@ import {
   MAX_CAPABILITY_ITEMS,
   MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS,
   MAX_RAW_CAPABILITY_DESCRIPTION_CHARS,
+  MEMORY_REASONING_SKILL_NAME,
   compactCapabilityDescription,
+  deriveMemoryUseSignal,
+  memoryReasoningCapabilityAvailability,
   normalizeCapabilityCatalog,
-  resolveCapabilities,
+  resolveCapabilities as resolveCapabilitiesCore,
 } from '../../src/akinator/capabilities.js';
 
 const buildProfile = {
@@ -15,6 +18,40 @@ const buildProfile = {
   expected: 'The test suite passes',
   constraints: null,
 };
+
+type CapabilityTestInput = Omit<Parameters<typeof resolveCapabilitiesCore>[0], 'memoryUse'> & {
+  memoryUse?: 'none' | 'actionable';
+};
+
+function resolveCapabilities(input: CapabilityTestInput) {
+  const { memoryUse = 'none', ...resolutionInput } = input;
+  return resolveCapabilitiesCore({
+    ...resolutionInput,
+    memoryUse,
+  });
+}
+
+test('classifies only strongly matched delivered context as actionable memory', () => {
+  assert.equal(deriveMemoryUseSignal(null), 'none');
+  assert.equal(deriveMemoryUseSignal({ deliveryId: null, items: [{ selectionReasons: ['word_match'] }] }), 'none');
+  assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: ['literal_fallback_match'] }] }), 'none');
+  for (const reason of [
+    'exact_signal_match',
+    'word_match',
+    'lexical_match',
+    'applicability_match',
+    'tag_match',
+    'changed_path_match',
+    'error_signature_match',
+    'helpful_feedback',
+  ]) {
+    assert.equal(
+      deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: [reason] }] }),
+      'actionable',
+      `${reason} must make delivered memory actionable`,
+    );
+  }
+});
 
 test('compacts capability descriptions deterministically without splitting Unicode code points', () => {
   const below = compactCapabilityDescription('a'.repeat(1_999));
@@ -62,11 +99,11 @@ test('normalizes catalog entries individually and preserves catalog availability
   ];
   const normalized = normalizeCapabilityCatalog(raw);
 
-  assert.equal(normalized.availability, 'known-nonempty');
+  assert.equal(normalized.availability, 'unknown');
   assert.deepEqual(normalized.skills.map((item) => item.name), ['keep-this-name']);
-  assert.deepEqual(normalized.tools.map((item) => item.name), ['keep-tool']);
+  assert.deepEqual(normalized.tools, []);
   assert.equal(normalized.skills[0]?.description, undefined);
-  assert.deepEqual(normalized.diagnostics, { received: 4, accepted: 2, truncated: 2, dropped: 2 });
+  assert.deepEqual(normalized.diagnostics, { received: 4, accepted: 1, truncated: 1, dropped: 3 });
   assert.deepEqual(raw[0], { kind: 'skill', name: 'keep-this-name', description: 'x'.repeat(64_001) });
 });
 
@@ -88,7 +125,7 @@ test('keeps a valid recommendation when malformed catalog items are adjacent', (
     && item.source === 'akinator_policy'));
 });
 
-test('preserves nonempty fallback semantics at catalog item boundaries', () => {
+test('fails closed when catalog items are invalid or omitted at processing boundaries', () => {
   const twoHundred = Array.from({ length: MAX_CAPABILITY_ITEMS }, (_, index) => ({ kind: 'mcp_tool', name: `tool-${index}` }));
   const below = normalizeCapabilityCatalog(twoHundred.slice(0, 199));
   const exact = normalizeCapabilityCatalog(twoHundred);
@@ -97,7 +134,8 @@ test('preserves nonempty fallback semantics at catalog item boundaries', () => {
   assert.deepEqual(below.diagnostics, { received: 199, accepted: 199, truncated: 0, dropped: 0 });
   assert.deepEqual(exact.diagnostics, { received: 200, accepted: 200, truncated: 0, dropped: 0 });
   assert.deepEqual(over.diagnostics, { received: 201, accepted: 200, truncated: 0, dropped: 1 });
-  assert.equal(invalid.availability, 'known-nonempty');
+  assert.equal(over.availability, 'unknown');
+  assert.equal(invalid.availability, 'unknown');
   assert.deepEqual(invalid.diagnostics, { received: 1, accepted: 0, truncated: 0, dropped: 1 });
 });
 
@@ -126,7 +164,7 @@ test('enforces aggregate capability budget at minus-one, exact, and plus-one bou
   assert.equal(below.budgetExceeded, false);
   assert.equal(exact.budgetExceeded, false);
   assert.deepEqual(exact.diagnostics, { received: 8, accepted: 8, truncated: 8, dropped: 0 });
-  assert.equal(over.availability, 'known-nonempty');
+  assert.equal(over.availability, 'unknown');
   assert.equal(over.budgetExceeded, true);
   assert.deepEqual(over.skills, [{ kind: 'skill', name: 'y' }]);
   assert.deepEqual(over.diagnostics, { received: 9, accepted: 8, truncated: 8, dropped: 1 });
@@ -148,7 +186,6 @@ test('reports a fixed budget warning without echoing omitted catalog content', (
   assert.ok(result.warnings.some((warning) => warning.code === 'CAPABILITY_CATALOG_BUDGET_EXCEEDED'
     && warning.message === 'Some capability catalog data was omitted because the catalog exceeded its processing budget.'));
   assert.equal(JSON.stringify(result).includes('b'.repeat(2_001)), false);
-  assert.equal(result.externalSkillFallback.eligible, false);
 });
 
 test('reports Akinator skill recommendations as unknown without a client catalog', () => {
@@ -160,11 +197,6 @@ test('reports Akinator skill recommendations as unknown without a client catalog
 
   assert.equal(result.catalogProvided, false);
   assert.equal(result.availableSkillCount, null);
-  assert.deepEqual(result.externalSkillFallback, {
-    eligible: false,
-    source: 'https://github.com/mattpocock/skills',
-    reason: 'capability_catalog_unknown',
-  });
   assert.deepEqual(result.recommendations.map(({ kind, name, availability, source }) => ({ kind, name, availability, source })), [{
     kind: 'skill',
     name: 'tdd',
@@ -179,7 +211,7 @@ test('matches available skills and relevant MCP tools without treating missing s
     profile: buildProfile,
     recommendedTags: ['skill:tdd'],
     capabilities: [
-      { kind: 'skill', name: 'mattpocock-skills:tdd', description: 'Test-first implementation' },
+      { kind: 'skill', name: 'catalog:tdd', description: 'Test-first implementation' },
       { kind: 'skill', name: 'repository-explorer', description: 'Inspect repository code and tests' },
       { kind: 'mcp_tool', name: 'github_search_code', description: 'Search repository code and tests' },
       { kind: 'mcp_tool', name: 'calendar_list_events', description: 'List calendar events' },
@@ -187,16 +219,14 @@ test('matches available skills and relevant MCP tools without treating missing s
   });
 
   assert.equal(result.availableSkillCount, 2);
-  assert.equal(result.externalSkillFallback.reason, 'skills_available');
-  assert.equal(result.externalSkillFallback.eligible, false);
-  assert.ok(result.recommendations.some((item) => item.name === 'mattpocock-skills:tdd' && item.availability === 'available' && item.source === 'akinator_policy'));
+  assert.ok(result.recommendations.some((item) => item.name === 'catalog:tdd' && item.availability === 'available' && item.source === 'akinator_policy'));
   assert.ok(result.recommendations.some((item) => item.name === 'repository-explorer' && item.availability === 'available' && item.source === 'catalog_similarity'));
   assert.ok(result.recommendations.some((item) => item.name === 'github_search_code' && item.kind === 'mcp_tool'));
   assert.ok(!result.recommendations.some((item) => item.name === 'calendar_list_events'));
   assert.equal(result.recommendations.filter((item) => item.name.endsWith('tdd')).length, 1);
 });
 
-test('does not enable external fallback for a non-empty catalog without skills', () => {
+test('classifies a non-empty catalog without any installed Skills', () => {
   const result = resolveCapabilities({
     task: 'Implement repository tests for the beacon',
     profile: buildProfile,
@@ -206,14 +236,9 @@ test('does not enable external fallback for a non-empty catalog without skills',
 
   assert.equal(result.catalogProvided, true);
   assert.equal(result.availableSkillCount, 0);
-  assert.deepEqual(result.externalSkillFallback, {
-    eligible: false,
-    source: 'https://github.com/mattpocock/skills',
-    reason: 'capability_catalog_nonempty',
-  });
 });
 
-test('enables external fallback only for an explicitly empty catalog', () => {
+test('classifies an explicitly empty catalog', () => {
   const result = resolveCapabilities({
     task: 'Implement repository tests for the beacon',
     profile: buildProfile,
@@ -222,11 +247,9 @@ test('enables external fallback only for an explicitly empty catalog', () => {
   });
 
   assert.equal(result.availability, 'known-empty');
-  assert.equal(result.externalSkillFallback.eligible, true);
-  assert.equal(result.externalSkillFallback.reason, 'no_skills_available');
 });
 
-test('does not enable external fallback for an unclassifiable catalog', () => {
+test('classifies an unclassifiable catalog as unknown', () => {
   const result = resolveCapabilities({
     task: 'Implement repository tests for the beacon',
     profile: buildProfile,
@@ -235,8 +258,6 @@ test('does not enable external fallback for an unclassifiable catalog', () => {
   });
 
   assert.equal(result.availability, 'unknown');
-  assert.equal(result.externalSkillFallback.eligible, false);
-  assert.equal(result.externalSkillFallback.reason, 'capability_catalog_unknown');
   assert.equal(result.warnings[0]?.code, 'CAPABILITY_CATALOG_UNAVAILABLE');
 });
 
@@ -251,7 +272,6 @@ test('does not echo long or secret-like descriptions in capability warnings', ()
 
   assert.equal(result.availability, 'known-nonempty');
   assert.equal(result.diagnostics.truncated, 1);
-  assert.equal(result.externalSkillFallback.eligible, false);
   assert.equal(result.warnings.some((warning) => warning.message.includes(secret)), false);
   assert.equal(JSON.stringify(result).includes(secret), false);
 });
@@ -292,5 +312,186 @@ test('does not recommend the UI skill for generic design, backend-only, or image
       capabilities,
     });
     assert.ok(!result.recommendations.some((item) => item.name === 'kiokuko-ui-design-soul'));
+  }
+});
+
+test('requires memory-reasoning for actionable build memory and fails closed when unavailable', () => {
+  const missing = resolveCapabilities({
+    task: 'Implement repository tests for the beacon',
+    profile: buildProfile,
+    recommendedTags: [],
+    capabilities: [],
+    memoryUse: 'actionable',
+  });
+  const recommendation = missing.recommendations.find((item) => item.required === true);
+  assert.deepEqual(recommendation && {
+    name: recommendation.name,
+    availability: recommendation.availability,
+    source: recommendation.source,
+    required: recommendation.required,
+  }, {
+    name: MEMORY_REASONING_SKILL_NAME,
+    availability: 'missing',
+    source: 'akinator_policy',
+    required: true,
+  });
+
+  const available = resolveCapabilities({
+    task: 'Implement repository tests for the beacon',
+    profile: buildProfile,
+    recommendedTags: [],
+    capabilities: [{ kind: 'skill', name: MEMORY_REASONING_SKILL_NAME }],
+    memoryUse: 'actionable',
+  });
+  assert.ok(available.recommendations.some((item) => item.name === MEMORY_REASONING_SKILL_NAME
+    && item.availability === 'available'
+    && item.required === true));
+});
+
+test('requires memory-reasoning for actionable debug memory', () => {
+  const result = resolveCapabilities({
+    task: 'Debug the failing beacon test',
+    profile: { ...buildProfile, taskType: 'debug' },
+    recommendedTags: [],
+    capabilities: [],
+    memoryUse: 'actionable',
+  });
+  const recommendation = result.recommendations.find((item) => item.required === true);
+  assert.equal(recommendation?.name, MEMORY_REASONING_SKILL_NAME);
+  assert.equal(recommendation?.availability, 'missing');
+});
+
+test('reports required memory-reasoning as unknown for an absent or malformed catalog', () => {
+  for (const capabilities of [undefined, { skills: [] }, [{ kind: 'invalid', name: 'memory-reasoning' }]]) {
+    const result = resolveCapabilities({
+      task: 'Implement repository tests for the beacon',
+      profile: buildProfile,
+      recommendedTags: [],
+      ...(capabilities === undefined ? {} : { capabilities }),
+      memoryUse: 'actionable',
+    });
+    const recommendation = result.recommendations.find((item) => item.required === true);
+    assert.equal(recommendation?.name, MEMORY_REASONING_SKILL_NAME);
+    assert.equal(recommendation?.availability, 'unknown');
+  }
+});
+
+test('does not request memory-reasoning for no memory or non-repair tasks', () => {
+  const cases = [
+    { memoryUse: 'none' as const, profile: buildProfile },
+    { memoryUse: 'actionable' as const, profile: { ...buildProfile, taskType: 'research' as const } },
+  ];
+  for (const input of cases) {
+    const result = resolveCapabilities({
+      task: 'Review stored project context',
+      profile: input.profile,
+      recommendedTags: [],
+      capabilities: [],
+      memoryUse: input.memoryUse,
+    });
+    assert.equal(result.recommendations.some((item) => item.name === MEMORY_REASONING_SKILL_NAME), false);
+  }
+});
+
+test('does not expose memory-reasoning through catalog similarity', () => {
+  const result = resolveCapabilities({
+    task: 'Explain memory reasoning for repository changes',
+    profile: { ...buildProfile, taskType: 'analysis' },
+    recommendedTags: [],
+    capabilities: [{ kind: 'skill', name: MEMORY_REASONING_SKILL_NAME, description: 'Reason over memory' }],
+    memoryUse: 'none',
+  });
+  assert.equal(result.recommendations.some((item) => item.name === MEMORY_REASONING_SKILL_NAME), false);
+});
+
+test('does not treat a same-named MCP tool as the required memory-reasoning Skill', () => {
+  const result = resolveCapabilities({
+    task: 'Implement repository memory reasoning changes',
+    profile: buildProfile,
+    recommendedTags: [],
+    capabilities: [{
+      kind: 'mcp_tool',
+      name: MEMORY_REASONING_SKILL_NAME,
+      description: 'Reason over repository memory changes',
+    }],
+    memoryUse: 'actionable',
+  });
+  const matching = result.recommendations.filter((item) => item.name === MEMORY_REASONING_SKILL_NAME);
+  assert.equal(matching.length, 1);
+  assert.deepEqual(matching.map(({ kind, name, availability, source, required }) => ({
+    kind, name, availability, source, required,
+  })), [{
+    kind: 'skill',
+    name: MEMORY_REASONING_SKILL_NAME,
+    availability: 'missing',
+    source: 'akinator_policy',
+    required: true,
+  }]);
+});
+
+test('does not satisfy required memory-reasoning with a namespaced or fetched Skill alias', () => {
+  for (const name of [
+    'external-skills:memory-reasoning',
+    'skills-sh/memory-reasoning',
+    'legacy_memory_reasoning',
+    'Memory-Reasoning',
+    'ｍｅｍｏｒｙ－ｒｅａｓｏｎｉｎｇ',
+  ]) {
+    const result = resolveCapabilities({
+      task: 'Implement repository tests for the beacon',
+      profile: buildProfile,
+      recommendedTags: [],
+      capabilities: [{ kind: 'skill', name }],
+      memoryUse: 'actionable',
+    });
+    const recommendation = result.recommendations.find((item) => item.required === true);
+    assert.equal(recommendation?.name, MEMORY_REASONING_SKILL_NAME);
+    assert.equal(recommendation?.availability, 'missing');
+  }
+});
+
+test('rejects capability names with surrounding whitespace instead of normalizing identity', () => {
+  for (const name of [' memory-reasoning', 'memory-reasoning ', '\tmemory-reasoning']) {
+    const normalized = normalizeCapabilityCatalog([{ kind: 'skill', name }]);
+    assert.equal(normalized.availability, 'unknown');
+    assert.deepEqual(normalized.skills, []);
+    assert.equal(memoryReasoningCapabilityAvailability([{ kind: 'skill', name }]), 'unknown');
+  }
+});
+
+test('does not accept a fetched memory-reasoning descriptor through an undocumented source field', () => {
+  const result = resolveCapabilities({
+    task: 'Implement repository tests for the beacon',
+    profile: buildProfile,
+    recommendedTags: [],
+    capabilities: [{ kind: 'skill', name: MEMORY_REASONING_SKILL_NAME, source: 'fetched' }],
+    memoryUse: 'actionable',
+  });
+  const recommendation = result.recommendations.find((item) => item.required === true);
+  assert.equal(result.availability, 'unknown');
+  assert.equal(recommendation?.name, MEMORY_REASONING_SKILL_NAME);
+  assert.equal(recommendation?.availability, 'unknown');
+});
+
+test('does not accept memory-reasoning from a partially malformed catalog', () => {
+  for (const malformed of [
+    { kind: 'skill', name: 'malformed', source: 'fetched' },
+    { kind: 'skill', name: 'malformed', description: { text: 'not a string' } },
+  ]) {
+    const capabilities = [
+      { kind: 'skill', name: MEMORY_REASONING_SKILL_NAME },
+      malformed,
+    ];
+    assert.equal(memoryReasoningCapabilityAvailability(capabilities), 'unknown');
+    const result = resolveCapabilities({
+      task: 'Implement repository tests for the beacon',
+      profile: buildProfile,
+      recommendedTags: [],
+      capabilities,
+      memoryUse: 'actionable',
+    });
+    const recommendation = result.recommendations.find((item) => item.required === true);
+    assert.equal(result.availability, 'unknown');
+    assert.equal(recommendation?.availability, 'unknown');
   }
 });

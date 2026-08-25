@@ -57,3 +57,13 @@ test('detects only supported clients whose executables are on PATH', async () =>
 
   assert.deepEqual(await detectInstalledClients({ platform: 'linux', env: { PATH: bin } }), ['codex', 'claude']);
 });
+
+test('client detection propagates unexpected filesystem failures', async () => {
+  const sentinel = Object.assign(new Error('programmer-bug-sentinel'), { code: 'EIO' });
+  await assert.rejects(
+    detectInstalledClients({ platform: 'linux', env: { PATH: '/bounded/bin' } }, {
+      stat: async () => { throw sentinel; },
+    }),
+    (error: unknown) => error === sentinel,
+  );
+});

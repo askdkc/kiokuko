@@ -293,6 +293,22 @@ test('orders selection reasons by the fixed policy rather than object insertion 
   ]);
 });
 
+test('preserves retrieval reasons as one canonical de-duplicated reason set', () => {
+  const result = rankContextCandidates(input([
+    candidate({
+      origin: 'project',
+      selectionReasons: ['word_match', 'project_origin', 'word_match', 'exact_signal_match'],
+    }),
+  ]));
+  assert.deepEqual(result[0]?.selectionReasons.slice(0, 4), [
+    'project_origin',
+    'exact_signal_match',
+    'word_match',
+    'candidate',
+  ]);
+  assert.equal(result[0]?.selectionReasons.filter((reason) => reason === 'word_match').length, 1);
+});
+
 test('returns owned output snapshots when callers mutate their original input', () => {
   const original = candidate({ tags: ['stable'], scope: { paths: ['src/original.ts'] } });
   const result = rankContextCandidates(input([original]));

@@ -79,9 +79,3 @@ export function parseRetrievalQuery(input: unknown): ParsedRetrievalQuery {
 export function normalizeSearchSignal(value: string): string {
   return normalizedSignal(value);
 }
-
-export const RETRIEVAL_LIMITS = Object.freeze({
-  maxQueryBytes: MAX_QUERY_BYTES,
-  maxTerms: MAX_TERMS,
-  maxTermLength: MAX_TERM_LENGTH,
-});

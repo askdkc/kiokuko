@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { answerAkinatorService, getAkinatorContextService, startAkinatorService } from '../../src/akinator/service.js';
 import { openConnection } from '../../src/db/connection.js';
@@ -299,7 +299,6 @@ test('conflicts on a different answer for an already-answered question without m
 
 test('returns the exact empty context shape while intake still needs an answer', async () => {
   const database = await temporaryDatabase('akinator-service-context-needs-answer');
-  let fetchCalls = 0;
   try {
     const started = await startAkinatorService(database, {
       workspace: 'project:service-context-needs-answer',
@@ -310,28 +309,21 @@ test('returns the exact empty context shape while intake still needs an answer',
     const context = await getAkinatorContextService(database, {
       workspace: 'project:service-context-needs-answer',
       sessionId: started.session.id,
-      fetchImpl: (async () => {
-        fetchCalls += 1;
-        throw new Error('network must not run while intake needs an answer');
-      }) as typeof fetch,
     });
 
     assert.equal(context.status, 'needs_answer');
     assert.equal(context.question?.id, 'target');
     assert.deepEqual(context.entries, []);
-    assert.deepEqual(context.externalSync, { attempted: false, imported: 0, sources: [] });
     assert.deepEqual(Object.keys(context).sort(), [
-      'entries', 'externalSync', 'instructions', 'missingFields', 'question', 'recommendedTags', 'session', 'status',
+      'entries', 'instructions', 'missingFields', 'question', 'recommendedTags', 'session', 'status',
     ]);
-    assert.equal(fetchCalls, 0);
   } finally {
     database.close();
   }
 });
 
-test('uses local finalized entries before attempting official source sync', async () => {
+test('uses local finalized entries for stored context', async () => {
   const database = await temporaryDatabase('akinator-service-context-local');
-  let fetchCalls = 0;
   try {
     const local = recordEntry(database, {
       workspace: 'project:service-context-local',
@@ -364,24 +356,17 @@ test('uses local finalized entries before attempting official source sync', asyn
     const context = await getAkinatorContextService(database, {
       workspace: 'project:service-context-local',
       sessionId: started.session.id,
-      fetchImpl: (async () => {
-        fetchCalls += 1;
-        throw new Error('network must not run when local context exists');
-      }) as typeof fetch,
     });
 
     assert.equal(context.status, 'ready');
-    assert.equal(context.externalSync.attempted, false);
     assert.ok(context.entries.some((entry) => entry.id === local.id));
-    assert.equal(fetchCalls, 0);
   } finally {
     database.close();
   }
 });
 
-test('does not fetch external skills unless the caller explicitly confirms that no client skills are available', async () => {
+test('returns empty stored context when no local entry is available', async () => {
   const database = await temporaryDatabase('akinator-service-no-skill-fallback');
-  let fetchCalls = 0;
   try {
     const started = await startAkinatorService(database, {
       workspace: 'project:service-no-skill-fallback',
@@ -395,25 +380,23 @@ test('does not fetch external skills unless the caller explicitly confirms that 
     const context = await getAkinatorContextService(database, {
       workspace: 'project:service-no-skill-fallback',
       sessionId: started.session.id,
-      fetchImpl: (async () => {
-        fetchCalls += 1;
-        throw new Error('network must not run without explicit zero-skill confirmation');
-      }) as typeof fetch,
     });
 
     assert.equal(context.status, 'ready');
     assert.deepEqual(context.entries, []);
-    assert.deepEqual(context.externalSync, { attempted: false, imported: 0, sources: [] });
-    assert.equal(fetchCalls, 0);
+    assert.equal('externalSync' in context, false);
   } finally {
     database.close();
   }
 });
 
-test('keeps the orchestrator as a compatibility facade without policy, SQL, retrieval, or transaction logic', () => {
+test('keeps the orchestrator limited to intake mutation without a task-memory compatibility facade', () => {
   const source = readFileSync(new URL('../../src/akinator/orchestrator.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /database\.prepare|TASK_TYPES|inferTaskType|nextQuestion|recommendedTags|searchEntries|syncOfficialSources|withImmediateTransaction|Akinator is waiting/u);
+  assert.doesNotMatch(source, /database\.prepare|TASK_TYPES|inferTaskType|nextQuestion|recommendedTags|searchEntries|getAkinatorContextService|withImmediateTransaction|Akinator is waiting/u);
   assert.match(source, /startAkinatorService/);
   assert.match(source, /answerAkinatorService/);
-  assert.match(source, /getAkinatorContextService/);
+});
+
+test('removes the fixed-source compatibility adapter', () => {
+  assert.equal(existsSync(new URL('../../src/knowledge/sources.ts', import.meta.url)), false);
 });

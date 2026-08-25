@@ -1,6 +1,13 @@
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { types as utilTypes } from 'node:util';
 import { KiokukoError } from '../errors.js';
+import {
+  validateRepositoryBindingIdentity,
+  validateRepositoryId,
+  validateWorkspace,
+} from '../repository/identity-value.js';
+import { readRegularFile } from '../agent-file/atomic-write.js';
+import { assertStrictJsonSyntax } from '../setup/strict-json.js';
 
 export interface ProjectConfig {
   schemaVersion: 1;
@@ -11,19 +18,62 @@ export interface ProjectConfig {
 }
 
 // Binding validation is deliberately strict: unknown fields are rejected rather than ignored.
-const REQUIRED_FIELDS = new Set(['schemaVersion', 'repositoryId', 'workspace', 'agentFile', 'templateVersion']);
+const REQUIRED_FIELD_NAMES = ['schemaVersion', 'repositoryId', 'workspace', 'agentFile', 'templateVersion'] as const;
+const REQUIRED_FIELDS = new Set<string>(REQUIRED_FIELD_NAMES);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || utilTypes.isProxy(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function snapshotProjectConfig(value: Record<string, unknown>): Record<(typeof REQUIRED_FIELD_NAMES)[number], unknown> {
+  for (const field of Reflect.ownKeys(value)) {
+    if (typeof field !== 'string' || !REQUIRED_FIELDS.has(field)) {
+      throw new KiokukoError('VALIDATION_ERROR', `Unknown binding field: ${String(field)}`);
+    }
+  }
+  const snapshot = {} as Record<(typeof REQUIRED_FIELD_NAMES)[number], unknown>;
+  for (const field of REQUIRED_FIELD_NAMES) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) {
+      throw new KiokukoError('VALIDATION_ERROR', `Binding field must be an enumerable data property: ${field}`);
+    }
+    snapshot[field] = descriptor.value;
+  }
+  return snapshot;
 }
 
 function validateAgentFile(agentFile: unknown): asserts agentFile is string {
-  if (typeof agentFile !== 'string' || agentFile.length === 0 || agentFile.includes('\0')) {
+  if (typeof agentFile !== 'string'
+    || agentFile.length === 0
+    || agentFile.includes('\0')
+    || /[\u0000-\u001f\u007f]/u.test(agentFile)) {
     throw new KiokukoError('VALIDATION_ERROR', 'agentFile must be a non-empty relative path');
   }
   const normalized = agentFile.replaceAll('\\', '/');
-  if (path.posix.isAbsolute(normalized) || /^[A-Za-z]:\//.test(normalized) || normalized.split('/').includes('..')) {
+  const components = normalized.split('/');
+  if (normalized !== agentFile
+    || path.posix.isAbsolute(normalized)
+    || /^[A-Za-z]:\//.test(normalized)
+    || path.posix.normalize(normalized) !== normalized
+    || components.some((component) => {
+      const portableStem = component.split('.', 1)[0]?.replace(/[ .]+$/u, '').toUpperCase();
+      return component === ''
+        || component === '..'
+        || component === '.'
+        || component.includes(':')
+        || /[ .]$/u.test(component)
+        || portableStem === undefined
+        || /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]|CONIN\$|CONOUT\$)$/u.test(portableStem);
+    })) {
     throw new KiokukoError('VALIDATION_ERROR', 'agentFile must remain inside the repository root');
+  }
+  const lower = normalized.toLowerCase();
+  if (lower === '.kiokuko.json' || lower.startsWith('.kiokuko.json/')) {
+    throw new KiokukoError('VALIDATION_ERROR', 'agentFile must not alias the repository binding file');
   }
 }
 
@@ -31,39 +81,38 @@ export function parseProjectConfig(value: unknown): ProjectConfig {
   if (!isPlainObject(value)) {
     throw new KiokukoError('VALIDATION_ERROR', 'binding must be a JSON object');
   }
-  for (const field of Object.keys(value)) {
-    if (!REQUIRED_FIELDS.has(field)) {
-      throw new KiokukoError('VALIDATION_ERROR', `Unknown binding field: ${field}`);
-    }
-  }
-  if (value.schemaVersion !== 1) {
+  const snapshot = snapshotProjectConfig(value);
+  if (snapshot.schemaVersion !== 1) {
     throw new KiokukoError('VALIDATION_ERROR', 'Unsupported binding schemaVersion');
   }
-  if (typeof value.repositoryId !== 'string' || value.repositoryId.length === 0) {
-    throw new KiokukoError('VALIDATION_ERROR', 'repositoryId must be a non-empty string');
-  }
-  if (typeof value.workspace !== 'string' || value.workspace.length === 0) {
-    throw new KiokukoError('VALIDATION_ERROR', 'workspace must be a non-empty string');
-  }
-  validateAgentFile(value.agentFile);
-  const templateVersion = value.templateVersion;
-  if (typeof templateVersion !== 'number' || !Number.isInteger(templateVersion) || templateVersion < 1) {
-    throw new KiokukoError('VALIDATION_ERROR', 'templateVersion must be a positive integer');
+  validateRepositoryId(snapshot.repositoryId);
+  validateWorkspace(snapshot.workspace);
+  validateRepositoryBindingIdentity(snapshot.repositoryId, snapshot.workspace);
+  validateAgentFile(snapshot.agentFile);
+  const templateVersion = snapshot.templateVersion;
+  if (typeof templateVersion !== 'number' || !Number.isSafeInteger(templateVersion) || templateVersion < 1) {
+    throw new KiokukoError('VALIDATION_ERROR', 'templateVersion must be a positive safe integer');
   }
   return {
     schemaVersion: 1,
-    repositoryId: value.repositoryId,
-    workspace: value.workspace,
-    agentFile: value.agentFile,
+    repositoryId: snapshot.repositoryId,
+    workspace: snapshot.workspace,
+    agentFile: snapshot.agentFile,
     templateVersion,
   };
 }
 
+export function parseProjectConfigText(source: string): ProjectConfig {
+  assertStrictJsonSyntax(
+    source,
+    { allowTrailingComma: false, disallowComments: true },
+    'Project binding is not valid JSON with unique keys',
+  );
+  return parseProjectConfig(JSON.parse(source) as unknown);
+}
+
 export async function readProjectConfig(filePath: string): Promise<ProjectConfig> {
-  try {
-    return parseProjectConfig(JSON.parse(await readFile(filePath, 'utf8')) as unknown);
-  } catch (error) {
-    if (error instanceof KiokukoError) throw error;
-    throw new KiokukoError('VALIDATION_ERROR', 'Unable to read project binding JSON');
-  }
+  const snapshot = await readRegularFile(filePath);
+  if (snapshot === undefined) throw new KiokukoError('VALIDATION_ERROR', 'Project binding file is unavailable');
+  return parseProjectConfigText(snapshot.content);
 }

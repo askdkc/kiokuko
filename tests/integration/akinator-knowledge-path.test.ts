@@ -21,6 +21,7 @@ test('counts only verified independent Akinator runs and makes repeated portable
     let workspace = '';
     for (const sessionId of ['client-run-a', 'client-run-b']) {
       const prepared = await prepareAgentTask(database, {
+        requestId: `knowledge-path-${sessionId}`,
         cwd: root,
         task: 'SQLite migration failuresを安全に復旧する',
         profileHints: {
@@ -77,6 +78,7 @@ test('does not qualify retrieval-free runs without fresh verification or a passi
   const database = openConnection(databasePath);
   try {
     const prepared = await prepareAgentTask(database, {
+      requestId: 'knowledge-path-unverified',
       cwd: root,
       task: '設定手順を実装する',
       profileHints: { taskType: 'build', target: '設定', expected: '設定が反映される' },

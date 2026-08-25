@@ -7,10 +7,15 @@ import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordContextDelivery, recordContextDeliveryInTransaction, readContextDelivery, listContextDeliveries } from '../../src/context/delivery.js';
 import { recordEntry } from '../../src/memory/entries.js';
+import { buildStructuredScope } from '../../src/memory/structured-memory.js';
+import { canonicalContentHash, canonicalJson, type JsonObject } from '../../src/serialization/validate.js';
 
 const migrationsDirectory = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-20T00:00:00.000Z';
 const workspace = 'workspace-delivery';
+const taskProfile = { taskType: 'build', target: 'Delivery target', expected: 'Delivery expected', constraints: null } as const;
+const taskProfileHash = canonicalContentHash(taskProfile);
+const genericDeliveryPolicyVersion = 'context-ranking-v1+recommendations.v1';
 
 async function temporaryDatabase(prefix: string) {
   const directory = await mkdtemp(path.join(tmpdir(), `kiokuko-${prefix}-`));
@@ -24,9 +29,35 @@ function seedDeliveryTarget(database: ReturnType<typeof openConnection>): void {
     INSERT INTO ledger_runs (
       run_id, workspace, client_kind, client_version, source_session_id, parent_run_id,
       protocol_version, capture_profile, coverage_json, status, title, task_hash,
-      metadata_json, last_sequence, last_source_sequence, started_at, ended_at, created_at, updated_at
-    ) VALUES (?, ?, 'generic', '1.0.0', NULL, NULL, '1', 'standard', '{}', 'active', 'Delivery task', NULL, '{}', 3, NULL, ?, NULL, ?, ?)
+    metadata_json, last_sequence, last_source_sequence, started_at, ended_at, created_at, updated_at
+    ) VALUES (?, ?, 'generic', '1.0.0', NULL, NULL, '1', 'standard', '{"approval":"unavailable","command":"unavailable","file":"unavailable","run":"declared","tool":"unavailable"}', 'active', 'Delivery task', NULL, '{}', 0, NULL, ?, NULL, ?, ?)
   `).run('run-delivery-1', workspace, now, now, now);
+  database.prepare(`
+    INSERT INTO akinator_sessions (
+      id, workspace, task_text, profile_json, status, question_count, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'ready', 0, ?, ?)
+  `).run(
+    'session-delivery-1',
+    workspace,
+    'Delivery task',
+    canonicalJson(taskProfile),
+    now,
+    now,
+  );
+  database.prepare(`
+    INSERT INTO run_intakes (
+      run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+      initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+    ) VALUES (?, ?, 'v2', 1, ?, ?, ?, ?, ?)
+  `).run(
+    'run-delivery-1',
+    'session-delivery-1',
+    canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+    taskProfileHash,
+    canonicalJson(['bot:builder', 'skill:tdd']),
+    now,
+    now,
+  );
   recordEntry(database, {
     workspace,
     kind: 'lesson',
@@ -36,6 +67,7 @@ function seedDeliveryTarget(database: ReturnType<typeof openConnection>): void {
     title: 'Private delivery title',
     body: 'Private delivery body',
     summary: 'Private delivery summary',
+    tags: ['delivery-tag-sentinel'],
     createdBy: 'test',
   }, { idFactory: () => 'entry-delivery-1', now });
 }
@@ -45,12 +77,11 @@ function deliveryInput(deliveryId: string, createdAt = now) {
     workspace,
     deliveryId,
     runId: 'run-delivery-1',
-    throughSequence: 3,
-    intakeSessionId: null,
-    taskProfileHash: 'a'.repeat(64),
+    throughSequence: 0,
+    intakeSessionId: 'session-delivery-1',
+    taskProfileHash,
     queryHash: 'b'.repeat(64),
-    policyVersion: 'context-policy-v1',
-    externalSyncSummary: { attempted: false, imported: 0, sources: [] },
+    policyVersion: genericDeliveryPolicyVersion,
     charBudget: 8000,
     charCount: 42,
     truncated: false,
@@ -84,12 +115,11 @@ test('records a context delivery with metadata-only item views', async () => {
       workspace,
       deliveryId: 'delivery-1',
       runId: 'run-delivery-1',
-      throughSequence: 3,
-      intakeSessionId: null,
-      taskProfileHash: 'a'.repeat(64),
+      throughSequence: 0,
+      intakeSessionId: 'session-delivery-1',
+      taskProfileHash,
       queryHash: 'b'.repeat(64),
-      policyVersion: 'context-policy-v1',
-      externalSyncSummary: { attempted: false, imported: 0, sources: [] },
+      policyVersion: genericDeliveryPolicyVersion,
       charBudget: 8000,
       charCount: 42,
       truncated: false,
@@ -118,12 +148,11 @@ test('records a context delivery with metadata-only item views', async () => {
       workspace,
       deliveryId: 'delivery-1',
       runId: 'run-delivery-1',
-      throughSequence: 3,
-      intakeSessionId: null,
-      taskProfileHash: 'a'.repeat(64),
+      throughSequence: 0,
+      intakeSessionId: 'session-delivery-1',
+      taskProfileHash,
       queryHash: 'b'.repeat(64),
-      policyVersion: 'context-policy-v1',
-      externalSyncSummary: { attempted: false, imported: 0, sources: [] },
+      policyVersion: genericDeliveryPolicyVersion,
       charBudget: 8000,
       charCount: 42,
       truncated: false,
@@ -162,12 +191,11 @@ test('replays an identical canonical delivery without inserting a duplicate', as
       workspace,
       deliveryId: 'delivery-replay-1',
       runId: 'run-delivery-1',
-      throughSequence: 3,
-      intakeSessionId: null,
-      taskProfileHash: 'a'.repeat(64),
+      throughSequence: 0,
+      intakeSessionId: 'session-delivery-1',
+      taskProfileHash,
       queryHash: 'b'.repeat(64),
-      policyVersion: 'context-policy-v1',
-      externalSyncSummary: { attempted: false, imported: 0, sources: [] },
+      policyVersion: genericDeliveryPolicyVersion,
       charBudget: 8000,
       charCount: 42,
       truncated: false,
@@ -321,7 +349,7 @@ test('rejects malformed delivery input with one fixed non-echoing validation err
       { ...base, items: [{ ...base.items[0]!, rank: 2 }] },
       { ...base, items: [{ ...base.items[0]!, scoreComponents: { ...base.items[0]!.scoreComponents, extra: 1 } }] },
       { ...base, items: [{ ...base.items[0]!, selectionReasons: ['recent', 'verified'] }] },
-      { ...base, externalSyncSummary: { attempted: false, imported: 1, sources: [] } },
+      { ...base, externalSyncSummary: { attempted: false, imported: 0, sources: [] } },
       new Date(),
     ];
     for (const input of invalidInputs) {
@@ -348,7 +376,7 @@ test('conflicts on changed replay bodies but allows semantically identical bodie
     seedDeliveryTarget(database);
     const input = deliveryInput('delivery-conflict-1');
     const first = recordContextDelivery(database, input);
-    assert.deepEqual(recordContextDelivery(database, { ...input, externalSyncSummary: { attempted: false, imported: 0, sources: [] } }), first);
+    assert.deepEqual(recordContextDelivery(database, { ...input, items: input.items.map((item) => ({ ...item })) }), first);
     assert.throws(
       () => recordContextDelivery(database, { ...input, charCount: 43 }),
       (error: unknown) => (error as { code?: string }).code === 'CONFLICT' && (error as Error).message === 'Context delivery conflicts with existing record',
@@ -399,7 +427,7 @@ test('caller-owned delivery transactions preserve outer writes and roll back tog
   }
 });
 
-test('rolls back the header, earlier children, and trigger side effects when a later child fails', async () => {
+test('rolls back the header, earlier children, and trigger side effects while propagating an unexpected trigger failure', async () => {
   const database = await temporaryDatabase('context-delivery-rollback');
   try {
     seedDeliveryTarget(database);
@@ -431,7 +459,13 @@ test('rolls back the header, earlier children, and trigger side effects when a l
     ];
     assert.throws(
       () => recordContextDelivery(database, input),
-      (error: unknown) => (error as { code?: string }).code === 'DATABASE_ERROR' && (error as Error).message === 'Context delivery database operation failed',
+      (error: unknown) => {
+        const failure = error as { code?: unknown; errcode?: unknown; message?: unknown };
+        assert.equal(failure.code, 'ERR_SQLITE_ERROR');
+        assert.equal(failure.errcode, 1_811);
+        assert.equal(failure.message, 'intentional child failure');
+        return true;
+      },
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_delivery_entries').get<{ count: number }>()?.count, 0);
@@ -441,41 +475,95 @@ test('rolls back the header, earlier children, and trigger side effects when a l
   }
 });
 
-test('stores only bounded sanitized external sync metadata and rejects dynamic summary keys', async () => {
-  const database = await temporaryDatabase('context-delivery-sync-summary');
+test('classifies only exact native delivery failures and never infers from error text', async () => {
+  const database = await temporaryDatabase('context-delivery-error-classification');
   try {
     seedDeliveryTarget(database);
-    const rawSecret = 'Authorization: Bearer ' + 'a'.repeat(16);
-    const rawPath = path.join(process.env.HOME ?? '/home/ubuntu', 'raw-secret-path-sentinel.txt');
-    const input = {
-      ...deliveryInput('delivery-sync-summary-1'),
-      externalSyncSummary: {
-        attempted: true,
-        imported: 2,
-        sources: [
-          { sourceId: 'source-one', commit: 'abc123', documents: 3, imported: 2, error: rawSecret },
-          { sourceId: 'source-two', commit: null, documents: 0, imported: 0, error: rawPath },
-        ],
-      },
-    };
-    const record = recordContextDelivery(database, input);
-    assert.equal(record.externalSyncSummary.attempted, true);
-    assert.equal(record.externalSyncSummary.imported, 2);
-    assert.equal(record.externalSyncSummary.sources[0]?.error, '[REDACTED:authorization_header]');
-    assert.equal(record.externalSyncSummary.sources[1]?.error, '<HOME>/raw-secret-path-sentinel.txt');
-    const stored = database.prepare('SELECT external_sync_summary_json FROM context_deliveries WHERE delivery_id = ?').get<{ external_sync_summary_json: string }>('delivery-sync-summary-1')?.external_sync_summary_json ?? '';
-    assert.doesNotMatch(stored, new RegExp(`${(process.env.HOME ?? '/home/ubuntu').replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}/raw-secret-path-sentinel`));
-    assert.doesNotMatch(stored, /Authorization|aaaaaaaaaaaaaaaa/);
-    assert.ok(Buffer.byteLength(stored, 'utf8') <= 16 * 1024);
-
-    const invalid = deliveryInput('delivery-sync-summary-invalid');
-    invalid.externalSyncSummary = {
-      attempted: true,
-      imported: 0,
-      sources: [{ sourceId: 'source-invalid', commit: null, documents: 0, imported: 0, password: 'raw-password-sentinel' }],
-    } as never;
+    database.exec(`
+      CREATE TRIGGER duplicate_delivery_before_insert
+      BEFORE INSERT ON context_deliveries
+      WHEN NEW.delivery_id = 'delivery-native-duplicate'
+      BEGIN
+        INSERT INTO context_deliveries (
+          delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
+          policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+          score_schema_version
+        ) VALUES (
+          NEW.delivery_id, NEW.run_id, NEW.through_sequence, NEW.intake_session_id,
+          NEW.task_profile_hash, NEW.query_hash, NEW.policy_version, NEW.external_sync_summary_json,
+          NEW.char_budget, NEW.char_count, NEW.truncated, NEW.created_at, NEW.score_schema_version
+        );
+      END;
+    `);
     assert.throws(
-      () => recordContextDelivery(database, invalid),
+      () => recordContextDelivery(database, deliveryInput('delivery-native-duplicate')),
+      (error: unknown) => (error as { code?: unknown }).code === 'CONFLICT'
+        && (error as Error).message === 'Context delivery conflicts with existing record',
+    );
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 0);
+
+    database.exec(`
+      DROP TRIGGER duplicate_delivery_before_insert;
+      CREATE TABLE unrelated_delivery_unique (value TEXT NOT NULL UNIQUE);
+      INSERT INTO unrelated_delivery_unique (value) VALUES ('occupied');
+      CREATE TRIGGER unrelated_delivery_unique_failure
+      BEFORE INSERT ON context_deliveries
+      WHEN NEW.delivery_id = 'delivery-unrelated-unique'
+      BEGIN
+        INSERT INTO unrelated_delivery_unique (value) VALUES ('occupied');
+      END;
+    `);
+    assert.throws(
+      () => recordContextDelivery(database, deliveryInput('delivery-unrelated-unique')),
+      (error: unknown) => {
+        const failure = error as { code?: unknown; errcode?: unknown; message?: unknown };
+        assert.equal(failure.code, 'ERR_SQLITE_ERROR');
+        assert.equal(failure.errcode, 2_067);
+        assert.equal(failure.message, 'UNIQUE constraint failed: unrelated_delivery_unique.value');
+        return true;
+      },
+    );
+
+    const programmerFailure = new Error('programmer failure mentioning UNIQUE constraint');
+    const failingDatabase = {
+      filePath: database.filePath,
+      exec: database.exec.bind(database),
+      prepare: () => { throw programmerFailure; },
+      close: () => {},
+    };
+    assert.throws(
+      () => readContextDelivery(failingDatabase, { workspace, deliveryId: 'delivery-any' }),
+      (error: unknown) => error === programmerFailure,
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test('rejects the removed external sync contract and ignores the legacy storage column', async () => {
+  const database = await temporaryDatabase('context-delivery-legacy-sync-column');
+  try {
+    seedDeliveryTarget(database);
+    const input = deliveryInput('delivery-legacy-sync-column-1');
+    const record = recordContextDelivery(database, input);
+    assert.equal('externalSyncSummary' in record, false);
+    assert.equal(
+      database.prepare('SELECT external_sync_summary_json FROM context_deliveries WHERE delivery_id = ?').get<{ external_sync_summary_json: string }>(input.deliveryId)?.external_sync_summary_json,
+      '{}',
+    );
+
+    database.prepare('UPDATE context_deliveries SET external_sync_summary_json = ? WHERE delivery_id = ?')
+      .run('not-json-and-not-a-summary', input.deliveryId);
+    const reread = readContextDelivery(database, { workspace, deliveryId: input.deliveryId });
+    assert.equal(reread.deliveryId, input.deliveryId);
+    assert.equal('externalSyncSummary' in reread, false);
+    assert.deepEqual(recordContextDelivery(database, input), reread);
+
+    assert.throws(
+      () => recordContextDelivery(database, {
+        ...deliveryInput('delivery-removed-sync-contract'),
+        externalSyncSummary: { attempted: false, imported: 0, sources: [] },
+      }),
       (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR' && (error as Error).message === 'Context delivery input is invalid',
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 1);
@@ -488,23 +576,12 @@ test('enforces run, intake, workspace, sequence, and historical entry revision r
   const database = await temporaryDatabase('context-delivery-relations');
   try {
     seedDeliveryTarget(database);
-    database.prepare(`
-      INSERT INTO akinator_sessions (id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
-      VALUES (?, ?, 'Delivery task', '{}', 'ready', 1, ?, ?)
-    `).run('session-delivery-1', workspace, now, now);
-    database.prepare(`
-      INSERT INTO run_intakes (
-        run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
-        recommended_tags_json, linked_at
-      ) VALUES (?, ?, 'context-policy-v1', 1, '{}', '[]', ?)
-    `).run('run-delivery-1', 'session-delivery-1', now);
-
     const linked = recordContextDelivery(database, { ...deliveryInput('delivery-linked-1'), intakeSessionId: 'session-delivery-1' });
     assert.equal(linked.intakeSessionId, 'session-delivery-1');
     assert.equal(linked.items[0]?.entryRevision, 1);
 
     assert.throws(
-      () => recordContextDelivery(database, { ...deliveryInput('delivery-sequence-1'), throughSequence: 4 }),
+      () => recordContextDelivery(database, { ...deliveryInput('delivery-sequence-1'), throughSequence: 1 }),
       (error: unknown) => (error as { code?: string }).code === 'CONFLICT' && (error as Error).message === 'Context delivery conflicts with existing record',
     );
     for (const input of [
@@ -548,11 +625,112 @@ test('enforces run, intake, workspace, sequence, and historical entry revision r
   }
 });
 
+test('authorizes cross-scope deliveries from canonical structured scope, not nested decoy strings', async () => {
+  const database = await temporaryDatabase('context-delivery-cross-scope');
+  try {
+    seedDeliveryTarget(database);
+    const recordCrossScopeEntry = (entryId: string, entryWorkspace: string, scope: JsonObject): void => {
+      recordEntry(database, {
+        workspace: entryWorkspace,
+        kind: 'reference',
+        status: 'candidate',
+        trustLevel: 'untrusted',
+        confidence: 0.5,
+        title: entryId,
+        body: `Stored body for ${entryId}`,
+        scope,
+        createdBy: 'test',
+      }, { idFactory: () => entryId, now });
+    };
+    const deliveryFor = (deliveryId: string, entryId: string, origin: 'global' | 'ecosystem') => ({
+      ...deliveryInput(deliveryId),
+      items: [{ ...deliveryInput(deliveryId).items[0]!, entryId, origin }],
+    });
+    database.exec('DROP TRIGGER entry_revisions_immutable_update');
+    const recordCorruptScopeEntry = (entryId: string, entryWorkspace: string, scope: JsonObject | string): void => {
+      recordCrossScopeEntry(entryId, entryWorkspace, {});
+      database.prepare('UPDATE entry_revisions SET scope_json = ? WHERE entry_id = ? AND revision = 1')
+        .run(typeof scope === 'string' ? scope : canonicalJson(scope), entryId);
+    };
+
+    recordCrossScopeEntry('entry-valid-global', 'global', buildStructuredScope({
+      visibility: 'global',
+      portableReason: 'Applies across repositories.',
+    }));
+    recordCrossScopeEntry('entry-valid-ecosystem', 'source-workspace', buildStructuredScope({
+      visibility: 'project',
+      retrievalScope: 'ecosystem',
+      applicability: { languages: ['TypeScript'] },
+    }));
+    assert.equal(recordContextDelivery(database, deliveryFor('delivery-valid-global', 'entry-valid-global', 'global')).items[0]?.origin, 'global');
+    assert.equal(recordContextDelivery(database, deliveryFor('delivery-valid-ecosystem', 'entry-valid-ecosystem', 'ecosystem')).items[0]?.origin, 'ecosystem');
+
+    recordCorruptScopeEntry('entry-global-decoy', 'global', {
+      schemaVersion: 3,
+      visibility: 'project',
+      decoy: { visibility: 'global' },
+    });
+    assert.throws(
+      () => recordContextDelivery(database, deliveryFor('delivery-global-decoy', 'entry-global-decoy', 'global')),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR'
+        && (error as Error).message === 'Stored context delivery is invalid',
+    );
+    database.prepare("UPDATE entry_revisions SET scope_json = '{}' WHERE entry_id = ? AND revision = 1").run('entry-global-decoy');
+
+    recordCorruptScopeEntry('entry-ecosystem-decoy', 'source-workspace', {
+      schemaVersion: 3,
+      visibility: 'project',
+      retrievalScope: 'project-only',
+      decoy: { applicability: { languages: ['TypeScript'] } },
+    });
+    assert.throws(
+      () => recordContextDelivery(database, deliveryFor('delivery-ecosystem-decoy', 'entry-ecosystem-decoy', 'ecosystem')),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR'
+        && (error as Error).message === 'Stored context delivery is invalid',
+    );
+    database.prepare("UPDATE entry_revisions SET scope_json = '{}' WHERE entry_id = ? AND revision = 1").run('entry-ecosystem-decoy');
+
+    recordCorruptScopeEntry('entry-malformed-scope', 'global', '{"schemaVersion":3,"visibility":"global",}');
+    assert.throws(
+      () => recordContextDelivery(database, deliveryFor('delivery-malformed-scope', 'entry-malformed-scope', 'global')),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR'
+        && (error as Error).message === 'Stored context delivery is invalid',
+    );
+    database.prepare("UPDATE entry_revisions SET scope_json = '{}' WHERE entry_id = ? AND revision = 1").run('entry-malformed-scope');
+
+    recordCorruptScopeEntry('entry-no-explicit-applicability', 'source-workspace', {
+      schemaVersion: 3,
+      visibility: 'project',
+      retrievalScope: 'ecosystem',
+    });
+    assert.throws(
+      () => recordContextDelivery(database, deliveryFor('delivery-no-applicability', 'entry-no-explicit-applicability', 'ecosystem')),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR'
+        && (error as Error).message === 'Stored context delivery is invalid',
+    );
+    database.prepare("UPDATE entry_revisions SET scope_json = '{}' WHERE entry_id = ? AND revision = 1").run('entry-no-explicit-applicability');
+
+    recordCorruptScopeEntry('entry-unknown-applicability', 'source-workspace', {
+      schemaVersion: 3,
+      visibility: 'project',
+      retrievalScope: 'ecosystem',
+      applicability: { inventedDimension: ['TypeScript'] },
+    });
+    assert.throws(
+      () => recordContextDelivery(database, deliveryFor('delivery-unknown-applicability', 'entry-unknown-applicability', 'ecosystem')),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR'
+        && (error as Error).message === 'Stored context delivery is invalid',
+    );
+    database.prepare("UPDATE entry_revisions SET scope_json = '{}' WHERE entry_id = ? AND revision = 1").run('entry-unknown-applicability');
+  } finally {
+    database.close();
+  }
+});
+
 test('owns input and output snapshots and does not mutate memory, run, intake, or feedback state', async () => {
   const database = await temporaryDatabase('context-delivery-nonmutation');
   try {
     seedDeliveryTarget(database);
-    database.prepare('INSERT INTO entry_revision_tags (entry_id, revision, tag) VALUES (?, ?, ?)').run('entry-delivery-1', 1, 'delivery-tag-sentinel');
     const before = {
       entries: database.prepare('SELECT e.id, e.status, e.trust_level, e.current_revision, r.body, r.summary FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision ORDER BY e.id').all(),
       tags: database.prepare('SELECT entry_id, revision, tag FROM entry_revision_tags ORDER BY entry_id, revision, tag').all(),
@@ -567,11 +745,9 @@ test('owns input and output snapshots and does not mutate memory, run, intake, o
     input.items[0]!.scoreComponents.status = -999;
     input.items[0]!.selectionReasons.push('recent');
     record.items[0]!.scoreComponents.status = -999;
-    record.externalSyncSummary.sources.push({ sourceId: 'caller-mutation', commit: null, documents: 0, imported: 0 });
     const reread = readContextDelivery(database, { workspace, deliveryId: 'delivery-nonmutation-1' });
     assert.equal(reread.items[0]?.scoreComponents.status, 100);
     assert.deepEqual(reread.items[0]?.selectionReasons, ['verified', 'source_verified_trust']);
-    assert.deepEqual(reread.externalSyncSummary.sources, []);
 
     assert.deepEqual(database.prepare('SELECT e.id, e.status, e.trust_level, e.current_revision, r.body, r.summary FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision ORDER BY e.id').all(), before.entries);
     assert.deepEqual(database.prepare('SELECT entry_id, revision, tag FROM entry_revision_tags ORDER BY entry_id, revision, tag').all(), before.tags);
@@ -590,6 +766,111 @@ test('owns input and output snapshots and does not mutate memory, run, intake, o
   }
 });
 
+test('refuses to persist a delivery from a tampered exact current revision', async () => {
+  const database = await temporaryDatabase('context-delivery-current-tamper');
+  try {
+    seedDeliveryTarget(database);
+    database.exec('DROP TRIGGER entry_revisions_immutable_update');
+    database.prepare('UPDATE entry_revisions SET body = ? WHERE entry_id = ? AND revision = 1')
+      .run('Private delivery bodz', 'entry-delivery-1');
+
+    assert.throws(
+      () => recordContextDelivery(database, deliveryInput('delivery-current-tamper-1')),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR'
+        && (error as Error).message === 'Stored context delivery is invalid',
+    );
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('refuses an active delivery run without its exact finalized intake', async () => {
+  const database = await temporaryDatabase('context-delivery-finalized-intake');
+  try {
+    seedDeliveryTarget(database);
+    database.prepare('DELETE FROM run_intakes WHERE run_id = ?').run('run-delivery-1');
+
+    assert.throws(
+      () => recordContextDelivery(database, deliveryInput('delivery-missing-finalized-intake-1')),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR'
+        && (error as Error).message === 'Stored context delivery is invalid',
+    );
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('binds generic and scoped deliveries to the authoritative profile projection and closed policy schema', async () => {
+  const database = await temporaryDatabase('context-delivery-profile-policy-binding');
+  try {
+    seedDeliveryTarget(database);
+    assert.throws(
+      () => recordContextDelivery(database, {
+        ...deliveryInput('delivery-wrong-profile-binding'),
+        taskProfileHash: 'f'.repeat(64),
+      }),
+      (error: unknown) => (error as { code?: unknown }).code === 'CONFLICT',
+    );
+    const forgedScopedProfile = 'f'.repeat(64);
+    const forgedScopedBody = {
+      workspace,
+      runId: 'run-delivery-1',
+      throughSequence: 0,
+      intakeSessionId: 'session-delivery-1',
+      taskProfileHash: forgedScopedProfile,
+      queryHash: 'c'.repeat(64),
+      policyVersion: 'context-ranking-v4',
+      charBudget: 8_000,
+      charCount: 0,
+      truncated: false,
+      createdAt: now,
+      scoreSchemaVersion: 2,
+      items: [],
+    } as const;
+    const forgedScopedDeliveryId = `context-${canonicalContentHash({
+      kind: 'scoped-context-delivery-v1',
+      ...forgedScopedBody,
+    })}`;
+    assert.throws(
+      () => recordContextDelivery(database, {
+        deliveryId: forgedScopedDeliveryId,
+        ...forgedScopedBody,
+      }),
+      (error: unknown) => (error as { code?: unknown }).code === 'CONFLICT',
+    );
+    for (const input of [
+      { ...deliveryInput('delivery-unknown-policy'), policyVersion: 'unknown-policy' },
+      { ...deliveryInput('delivery-crossed-policy'), policyVersion: 'context-ranking-v4' },
+      { ...deliveryInput('delivery-unknown-score-schema'), scoreSchemaVersion: 3 },
+    ]) {
+      assert.throws(
+        () => recordContextDelivery(database, input),
+        (error: unknown) => (error as { code?: unknown }).code === 'VALIDATION_ERROR',
+      );
+    }
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 0);
+    database.prepare('UPDATE run_intakes SET initial_profile_hash = ? WHERE run_id = ?')
+      .run('e'.repeat(64), 'run-delivery-1');
+    assert.throws(
+      () => recordContextDelivery(database, deliveryInput('delivery-corrupt-intake-profile')),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR',
+    );
+    database.prepare('UPDATE run_intakes SET initial_profile_hash = ? WHERE run_id = ?')
+      .run(taskProfileHash, 'run-delivery-1');
+    const stored = recordContextDelivery(database, deliveryInput('delivery-stored-profile-binding'));
+    database.prepare('UPDATE run_intakes SET initial_profile_hash = ? WHERE run_id = ?')
+      .run('e'.repeat(64), 'run-delivery-1');
+    assert.throws(
+      () => readContextDelivery(database, { workspace, deliveryId: stored.deliveryId }),
+      (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR',
+    );
+  } finally {
+    database.close();
+  }
+});
+
 test('maps corrupt stored scalars, canonical metadata, revisions, and joins to fixed integrity errors', async () => {
   const database = await temporaryDatabase('context-delivery-integrity');
   try {
@@ -598,12 +879,18 @@ test('maps corrupt stored scalars, canonical metadata, revisions, and joins to f
     recordContextDelivery(database, input);
     const originalScore = database.prepare('SELECT score_components_json FROM context_delivery_entries WHERE delivery_id = ?').get<{ score_components_json: string }>(input.deliveryId)?.score_components_json ?? '';
     const originalReasons = database.prepare('SELECT selection_reason_json FROM context_delivery_entries WHERE delivery_id = ?').get<{ selection_reason_json: string }>(input.deliveryId)?.selection_reason_json ?? '';
+    const overDeepJson = `${'{"nested":'.repeat(129)}null${'}'.repeat(129)}`;
     database.exec('PRAGMA foreign_keys = OFF; PRAGMA ignore_check_constraints = ON;');
     const corruptions = [
       () => database.prepare('UPDATE context_deliveries SET task_profile_hash = ? WHERE delivery_id = ?').run('BAD-HASH', input.deliveryId),
+      () => database.prepare('UPDATE context_deliveries SET task_profile_hash = ? WHERE delivery_id = ?').run('f'.repeat(64), input.deliveryId),
+      () => database.prepare('UPDATE context_deliveries SET policy_version = ? WHERE delivery_id = ?').run('context-ranking-v4', input.deliveryId),
+      () => database.prepare('UPDATE context_deliveries SET score_schema_version = ? WHERE delivery_id = ?').run(3, input.deliveryId),
       () => database.prepare('UPDATE context_deliveries SET created_at = ? WHERE delivery_id = ?').run('not-a-timestamp', input.deliveryId),
       () => database.prepare('UPDATE context_deliveries SET truncated = ? WHERE delivery_id = ?').run(2, input.deliveryId),
       () => database.prepare('UPDATE context_delivery_entries SET score_components_json = ? WHERE delivery_id = ?').run('{}', input.deliveryId),
+      () => database.prepare('UPDATE context_delivery_entries SET score_components_json = ? WHERE delivery_id = ?').run(overDeepJson, input.deliveryId),
+      () => database.prepare('UPDATE context_delivery_entries SET score_components_json = ? WHERE delivery_id = ?').run('{"status":"\\ud800"}', input.deliveryId),
       () => database.prepare('UPDATE context_delivery_entries SET selection_reason_json = ? WHERE delivery_id = ?').run('["recent","verified"]', input.deliveryId),
       () => database.prepare('UPDATE context_delivery_entries SET entry_revision = ? WHERE delivery_id = ?').run(3, input.deliveryId),
       () => database.prepare('UPDATE context_delivery_entries SET rank = ? WHERE delivery_id = ?').run(2, input.deliveryId),
@@ -620,7 +907,8 @@ test('maps corrupt stored scalars, canonical metadata, revisions, and joins to f
           return true;
         },
       );
-      database.prepare('UPDATE context_deliveries SET task_profile_hash = ?, created_at = ?, truncated = ? WHERE delivery_id = ?').run('a'.repeat(64), now, 0, input.deliveryId);
+      database.prepare('UPDATE context_deliveries SET task_profile_hash = ?, policy_version = ?, score_schema_version = ?, created_at = ?, truncated = ? WHERE delivery_id = ?')
+        .run(taskProfileHash, genericDeliveryPolicyVersion, 1, now, 0, input.deliveryId);
       database.prepare('UPDATE context_delivery_entries SET score_components_json = ?, selection_reason_json = ?, entry_revision = ?, rank = ? WHERE delivery_id = ?').run(originalScore, originalReasons, 1, 1, input.deliveryId);
       database.prepare('UPDATE entries SET workspace = ? WHERE id = ?').run(workspace, 'entry-delivery-1');
     }

@@ -9,6 +9,7 @@ import {
   runIdSegment,
   type AgentRouteContext,
 } from './agent-runs.js';
+import { agentRequestBindingHash } from './request-binding.js';
 
 const EVENTS_SUFFIX = 'events';
 
@@ -21,12 +22,18 @@ export function createAgentEventsRoute(context: AgentRouteContext): V1RouteHandl
     if (request.method === 'POST') {
       requireNoQuery(request.url);
       const idempotencyKey = requireIdempotencyKey(request);
+      const requestBindingHash = agentRequestBindingHash({
+        operation: 'agent.events',
+        pathRunId: runId,
+        idempotencyKey,
+        requestBody: request.body,
+      });
       const data = await context.enqueueWrite(() => context.service.appendEvents({
         runId,
         idempotencyKey,
         request: request.body,
       }));
-      return successEnvelope('agent.events', data);
+      return successEnvelope('agent.events', { ...data, requestBindingHash });
     }
 
     if (request.method === 'GET') {

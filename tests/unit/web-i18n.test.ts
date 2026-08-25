@@ -70,6 +70,8 @@ test('generated Web UI exposes locale detection, persistence, selection, and tra
   assert.match(WEB_HTML, /navigator\.languages/);
   assert.match(WEB_HTML, /localStorage\.getItem\(localeStorageKey\)/);
   assert.match(WEB_HTML, /localStorage\.setItem\(localeStorageKey, state\.locale\)/);
+  assert.match(WEB_HTML, /error instanceof DOMException/);
+  assert.match(WEB_HTML, /if \(!isStorageAccessError\(error\)\) throw error/);
   assert.match(WEB_HTML, /document\.documentElement\.lang = state\.locale/);
   assert.match(WEB_HTML, /data-i18n-placeholder="searchPlaceholder"/);
   assert.match(WEB_HTML, /<button id="curator-button"[^>]+data-i18n="curator"/);

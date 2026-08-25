@@ -20,13 +20,35 @@ Migration 004 adds the Agent Gateway execution ledger described in `execution-le
 
 `akinator_reasoning_paths` links one proposed entry revision to one run and its intake session. The unique `(run_id, entry_id, entry_revision)` key blocks same-run duplication. `qualified` is set only by the checkpoint service for completed actionable paths with fresh verification or a passing test. Concept aggregation uses a server-derived normalized hash; no user-supplied concept key or retrieval counter can increase it.
 
+Migration 009 adds the external-Skill tables and completes the revision-hash
+clean break in the same upgrade transaction. It accepts only a canonical hash
+or the one exact released preimage recoverable from that revision's persisted
+tag order and structured scope, rewrites accepted rows to canonical scope and
+locale-independent UTF-16 tag order, and then records the hash-format
+singleton. A forged preimage or canonical identity collision aborts the entire
+migration. Runtime reads, writes, replay detection, doctor, export, and import
+use only the canonical hash; there is no post-migration legacy fallback.
+
 For databases that use the supported migration history, before any command applies pending migrations to an existing database,
 Kiokuko opens it read-only, validates that its migration history is a contiguous
 checksum-matching prefix, and creates a verified SQLite backup in the adjacent
 `backups/` directory. The backup filename records the source and target schema
-versions. Migration does not start if backup creation or `integrity_check` fails.
+versions. The exact already-open read-only connection is serialized in memory,
+validated with `integrity_check` and `foreign_key_check`, and handed to a
+directory-identity-bound worker that uses a create-only filename. The returned
+directory identity, file identity, size, mode, and SHA-256 digest are rebound and
+held through migration. Migration does not start if any check fails.
 Each migration remains individually transactional, and a failed migration leaves
 the verified pre-upgrade backup in place.
+
+Supported concurrency means cooperative Kiokuko/SQLite processes using SQLite's
+locking protocol. A malicious process running as the same OS user is outside the
+filesystem trust boundary: Node's pathname-only SQLite constructor cannot make
+opening a database inode atomic with a later pathname check, and SQLite commit
+cannot be made atomic with an external file hash check. Kiokuko fails closed on
+every path, inode, mode, size, or hash mismatch it can observe, but it does not
+claim protection from a peer that can rename or rewrite this user's files between
+individual instructions. Isolate untrusted peers under a different OS account.
 
 A database containing a migration version newer than the running Kiokuko binary
 is rejected before it is opened for writes. The user must upgrade Kiokuko; an
@@ -36,16 +58,29 @@ older binary never attempts a downgrade or silently ignores unknown schema.
 
 ## Server ownership
 
-The foreground HTTP server keeps one primary connection for its lifetime and serializes ledger writes through a bounded FIFO. Generic execution-ledger clients never open SQLite. The stdio MCP process opens a short-lived connection per high-level memory tool call, as do existing direct memory CLI operations; WAL and the busy timeout support concurrent same-user processes.
+The foreground HTTP server keeps one primary connection for its lifetime and serializes ledger writes through a bounded FIFO. Generic execution-ledger clients never open SQLite. The stdio MCP process opens a short-lived connection per gated task or lifecycle tool call. Human/operator memory-management CLI operations also use short-lived connections; WAL and the busy timeout support concurrent same-user processes.
 
 The `repositories` table includes a reserved `kiokuko_global`/`global` row.
 Project locations remain separate. Default scoped recall queries only the current
 project workspace and the reserved global workspace.
 
-All write requests carry an idempotency key. An acknowledged canonical request can be replayed; a different body under the same scope/key conflicts. Event batches are atomic and local sequence allocation occurs inside the transaction.
+External Skill discovery stores provider search outcomes in
+`skill_discovery_cache` and typed GitHub/source transport failures in
+`skill_source_failure_cache`. Typed provider-audit rate limits and availability
+failures use the separate `skill_audit_failure_cache`, keyed by provider,
+normalized repository identity, and case-sensitive Skill slug. Expiry
+timestamps are strict; cache pruning validates all three tables and commits
+their deletions atomically.
+`external_skills.generation` is allocated from a durable AUTOINCREMENT
+high-water mark and participates in refresh and list-snapshot compare-and-swap
+checks. Only tokens referenced by live Skill rows are retained, so repeated
+updates do not create an unbounded tombstone table; the singleton clock and
+SQLite sequence must agree before reads or writes proceed.
+
+All write requests carry an idempotency key. `gateway_idempotency` stores the atomic mutation acknowledgement, not the later capability-gated context enrichment. An acknowledged canonical request can be replayed without repeating its mutation; a different body under the same scope/key conflicts. Post-commit capability gating and retrieval are re-evaluated against current retrievable revisions and feedback, so the full HTTP response may change across an exact replay while the stored acknowledgement remains unchanged. Event batches are atomic and local sequence allocation occurs inside the transaction.
 
 ## Backup, export, and integrity
 
-A full SQLite backup uses SQLite's supported backup API and includes curated memory, all immutable revisions, memory audit, execution ledger, deliveries, and feedback. Automatic pre-migration backups use the same API, are stored under the current user's data directory with restrictive POSIX modes, and are created only when an existing database has pending migrations. Existing workspace memory export exports current semantic state only and does not silently include ledger data or full revision history. Ledger archive has its own deterministic manifest/checksum and preserves exact delivery revisions.
+A full SQLite backup serializes the exact already-open read-only connection, validates the standalone image in memory, and installs it through the same create-only, directory-identity-bound writer used for automatic backups. It includes curated memory, all immutable revisions, memory audit, execution ledger, deliveries, and feedback. The backup command never initializes or migrates its source; a missing source is `NOT_FOUND`, and an existing output is `CONFLICT` and remains byte-for-byte unchanged. Its final output component must be portable and cannot use an alternate-stream colon, a trailing dot/space, or a Windows device name. Automatic pre-migration backups use the serialized exact inspection connection, are stored under the current user's data directory, use restrictive `0700`/`0600` modes on POSIX, and are created only when an existing database has pending migrations. Windows uses create-only and inode/file-identity checks without pretending its mode bits provide POSIX ACL semantics. Workspace archive v2 exports current semantic state only, does not include ledger data or revision history, and accepts only workspaces whose current entries are all at revision 1. Export and import fail explicitly for a higher current revision; use a full SQLite backup when history exists. Import idempotency requires the same entry IDs and exact record metadata; matching content under a different ID is a conflict and is never remapped. Both directions enforce the same 64 MiB total, 10,000-line, and 512 KiB-per-line limits and reject secret-like persisted text. Database-backed dry runs execute the same complete collision preflight without writing. Export reads one SQLite snapshot, commits it before filesystem work, and installs output atomically as a create-only file; an existing target is a conflict and is never overwritten. Ledger archive has its own deterministic manifest/checksum and preserves exact delivery revisions.
 
 `doctor` checks database integrity, migration checksums, FTS synchronization, dangling references, ledger contiguous sequence/hash/cursor invariants, secret residue counts, and server descriptor/lock consistency. Purge uses services rather than manual SQL and preserves content-free ledger tombstones.

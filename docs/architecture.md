@@ -16,7 +16,11 @@ Kiokuko is a model-agnostic local control plane with three deliberately separate
   without replacing the existing word FTS index.
 - Akinator intake owns task-profile inference, at most three high-value discriminating questions, and `ready`/`exhausted` transitions. Its reasoning projection starts with competing action families and narrows them through intent, target, observable success, selected action, verification, and stop conditions. It is not a retrieval-hit counter.
 - The Agent Event Gateway owns authenticated HTTP/JSON lifecycle, idempotency, event collection, projection, context delivery, and deterministic recommendations.
-- Codex/OpenCode/Claude Code task preparation and ordinary memory access use a stdio MCP server and the existing Akinator/memory services directly. Generic execution-ledger commands still call the gateway over HTTP; they never open SQLite for agent-event operations.
+- Codex/OpenCode/Claude Code task preparation uses the stdio MCP
+  `task_prepare` / `task_answer` boundary. Human/operator CLI and Web memory
+  inspection is management-only, not a model-facing task entry. Generic
+  execution-ledger commands still call the gateway over HTTP; they never open
+  SQLite for agent-event operations.
 - The loopback Web UI reads the same server/service composition and preserves legacy memory routes.
 
 The gateway is not a transparent provider-traffic reverse proxy. Provider credentials and model APIs are outside the v1 boundary.
@@ -47,10 +51,11 @@ Routes contain no ad-hoc SQLite statements. Gateway run-open and intake-answer u
 
 ## Compatibility seams
 
-- `src/akinator/orchestrator.ts` remains the facade exporting `startAkinator`, `answerAkinator`, and `getAkinatorContext` with their existing shapes.
+- `src/akinator/orchestrator.ts` exposes intake-only `startAkinator` and `answerAkinator`; the ungated context facade was removed.
 - `startWebServer(options)`, `/api/health`, `/api/workspaces`, `/api/tags`, and `/api/entries` remain available through the shared server composition.
-- Existing CLI commands, JSON envelopes, and exit codes remain stable. `serve`, `server`, and `agent` are additive command registrations.
-- `setup` and `mcp` are additive. Existing explicit workspaces remain valid; `use` is optional for the MCP path.
+- Human/operator memory commands, JSON envelopes, and exit codes remain stable.
+  Ungated model-facing compatibility aliases are removed rather than retained.
+- Existing explicit workspaces remain valid; `use` is optional for the MCP path.
 - Existing memory CRUD/lifecycle/export semantics do not absorb ledger records.
 
 ## Runtime
@@ -63,9 +68,41 @@ A run opens with the shared Akinator intake. Memory is withheld while intake nee
 
 Curator aggregates qualified paths by a server-derived generalized concept key. Two or more independent successful runs, high silo completeness, and either cross-workspace evidence or explicit structured applicability produce `skill-ready`. Lower-evidence candidates remain inspectable for manual judgment. Automated client guidance calls `curator_check` before the terminal checkpoint and always asks the user before `curator_globalize`.
 
-External skill lookup is not a general context backfill. The MCP task path may
-consult the single allowlisted `mattpocock/skills` source only when its ephemeral
-client capability catalog explicitly contains zero skills. Unknown catalogs and
-catalogs with one or more skills keep network fallback disabled.
+External skill lookup is not a general context backfill. Task preparation uses
+`official` discovery by default; `KIOKUKO_SKILL_DISCOVERY=community` broadens
+the search and `KIOKUKO_SKILL_DISCOVERY=off` disables it. Task preparation derives
+technology gaps from the project fingerprint and uses the provider boundary in
+`src/skills` to search and validate commit-pinned GitHub snapshots. The result
+is stored once in a dedicated external workspace as candidate/untrusted
+reference memory, then included only through explicit Ecosystem applicability.
+Community mode additionally requires a GitHub source, a safe repository/skill
+path, and a non-duplicate candidate before automatic import. Every candidate
+outside Kiokuko's exact locally reviewed source/slug/path catalog requires a
+fresh provider audit result with `passed` status; missing or failed audit
+results fail closed. Provider-supplied `curated`, `catalog-verified`, or
+`owner-verified` labels are ranking metadata, not materialization authority.
+Interactive setup keeps `official` as the default and asks before persisting
+`community` into each selected client's MCP subprocess environment. Batch setup
+uses `--skill-discovery`; omitting it preserves an existing managed mode.
+The default is `official`. Legacy fixed-source network sync and guessed-source
+fallbacks have been removed; bounded exact verification of a reviewed,
+catalog-pinned source remains.
+Normal `task_prepare` and `kiokuko skills find` use the shared provider-backed
+discovery path. ContextBroker retrieval is exposed to task-aware clients only
+through the capability-gated task and Agent routes.
+
+Provider search outcomes and typed source transport failures use separate,
+provider/source-bound persistent caches. Search, source, and provider-audit
+caches have strict canonical expiry timestamps and are pruned together; a
+malformed row aborts the entire prune instead of being skipped.
+
+Discovery never starts `npx` or arbitrary child processes, never installs or
+executes fetched skills, and never registers MCP servers. Provider failures
+degrade to ordinary Kiokuko retrieval. The migration-owned tables
+`external_skills`, `external_skill_entries`, `external_skill_generation_clock`,
+`external_skill_generation_tokens`, `skill_discovery_cache`, and
+`skill_source_failure_cache`, plus `skill_audit_failure_cache` keep source state,
+bounded mutation generations, snapshot mappings, search results, source
+backoff, and provider-audit backoff separate from ordinary project memory.
 
 All delivered memory/event text is untrusted stored data. The agent must independently verify current files, APIs, versions, and runtime state. Normal MCP task preparation persists a scoped project/global delivery with a versioned ranking schema; a terminal checkpoint can close the linked run while recording bounded evidence, feedback, and candidate-memory ledger links.

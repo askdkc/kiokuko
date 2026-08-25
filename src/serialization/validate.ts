@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { KiokukoError } from '../errors.js';
+import { cloneBoundaryJson, stringifyBoundaryJson } from './boundary-json.js';
 
 export const ENTRY_KINDS = ['fact', 'decision', 'lesson', 'preference', 'reference'] as const;
 export const ENTRY_STATUSES = ['candidate', 'verified', 'superseded'] as const;
@@ -27,6 +28,11 @@ export interface ValidatedRecordInput {
   actor: string;
 }
 
+export type EntryRevisionHashInput = Pick<
+  ValidatedRecordInput,
+  'kind' | 'title' | 'body' | 'summary' | 'scope' | 'provenance' | 'tags'
+>;
+
 const RECORD_FIELDS = new Set([
   'workspace',
   'kind',
@@ -48,6 +54,10 @@ const PROVENANCE_FIELDS = new Set([
   'sourceRepositoryId',
   'sourceWorkspace',
   'sourceCommit',
+  'sourcePath',
+  'sourceChunkIndex',
+  'externalSkillId',
+  'requirementScopeHash',
   'runId',
   'deliveryId',
   'evidenceIds',
@@ -104,26 +114,43 @@ function enumValue<T extends readonly string[]>(value: unknown, allowed: T, fiel
   return value as T[number];
 }
 
-function cloneAndSort(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(cloneAndSort);
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, cloneAndSort(value[key] as JsonValue)]),
-    ) as JsonObject;
-  }
-  return value;
+/** Compare strings by ECMAScript UTF-16 code units, independent of the host locale. */
+export function compareCanonicalStrings(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+/** Return the de-duplicated persisted tag order used by all new revision hashes. */
+export function canonicalTagOrder(tags: readonly string[]): string[] {
+  return [...new Set(tags)].sort(compareCanonicalStrings);
 }
 
 /** Serialize JSON values with recursively sorted object keys and no insignificant whitespace. */
 export function canonicalJson(value: unknown): string {
-  assertJsonValue(value, 'value');
-  return JSON.stringify(cloneAndSort(value)) as string;
+  return stringifyBoundaryJson(cloneBoundaryJson(value, {
+    failure: () => new KiokukoError('VALIDATION_ERROR', 'value must be JSON-compatible'),
+  }));
 }
 
 export function canonicalContentHash(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
+}
+
+function entryRevisionHashPayload(input: EntryRevisionHashInput, tags: readonly string[]): JsonObject {
+  return {
+    kind: input.kind,
+    title: input.title,
+    body: input.body,
+    summary: input.summary,
+    scope: input.scope,
+    provenance: input.provenance,
+    tags: [...tags],
+  };
+}
+
+/** Hash revision content with the current locale-independent persisted tag order. */
+export function canonicalEntryRevisionContentHash(input: EntryRevisionHashInput): string {
+  return canonicalContentHash(entryRevisionHashPayload(input, canonicalTagOrder(input.tags)));
 }
 
 export function requireWorkspace(value: unknown): string {
@@ -143,10 +170,29 @@ function validateProvenance(value: unknown): JsonObject {
   if (Object.keys(provenance).length > 0) {
     if (!isNonEmptyString(provenance.type)) validation('provenance.type must be a non-empty string');
     if (!isNonEmptyString(provenance.reference)) validation('provenance.reference must be a non-empty string');
-    for (const field of ['sourceRepositoryId', 'sourceWorkspace', 'sourceCommit', 'runId', 'deliveryId', 'clientKind', 'timestamp'] as const) {
+    for (const field of [
+      'sourceRepositoryId',
+      'sourceWorkspace',
+      'sourceCommit',
+      'sourcePath',
+      'externalSkillId',
+      'requirementScopeHash',
+      'runId',
+      'deliveryId',
+      'clientKind',
+      'timestamp',
+    ] as const) {
       if (provenance[field] !== undefined && !isNonEmptyString(provenance[field])) {
         validation(`provenance.${field} must be a non-empty string`);
       }
+    }
+    for (const field of ['requirementScopeHash'] as const) {
+      if (provenance[field] !== undefined && !/^[0-9a-f]{64}$/u.test(provenance[field] as string)) {
+        validation(`provenance.${field} must be a lowercase SHA-256 hash`);
+      }
+    }
+    if (provenance.sourceChunkIndex !== undefined && (typeof provenance.sourceChunkIndex !== 'number' || !Number.isSafeInteger(provenance.sourceChunkIndex) || provenance.sourceChunkIndex < 0)) {
+      validation('provenance.sourceChunkIndex must be a non-negative integer');
     }
     for (const field of ['evidenceIds', 'sourcePaths'] as const) {
       const values = provenance[field];
@@ -167,7 +213,7 @@ function validateTags(value: unknown): string[] {
     if (!isNonEmptyString(tag) || tag.length > 200) validation(`tags[${index}] must be a non-empty string of at most 200 characters`);
     return tag;
   });
-  return [...new Set(tags)].sort((left, right) => left.localeCompare(right));
+  return canonicalTagOrder(tags);
 }
 
 export function validateRecordInput(value: unknown): ValidatedRecordInput {

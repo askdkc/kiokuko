@@ -16,6 +16,36 @@ export function findSecret(value: string): SecretFinding | undefined {
   return undefined;
 }
 
+/** Scan structured persisted input without relying on JSON punctuation around field names. */
+export function findSecretInValue(value: unknown): SecretFinding | undefined {
+  const seen = new WeakSet<object>();
+  const visit = (current: unknown): SecretFinding | undefined => {
+    if (typeof current === 'string') return findSecret(current);
+    if (typeof current !== 'object' || current === null) return undefined;
+    if (seen.has(current)) return undefined;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        const finding = visit(item);
+        if (finding !== undefined) return finding;
+      }
+      return undefined;
+    }
+    for (const [key, child] of Object.entries(current as Record<string, unknown>)) {
+      const keyFinding = findSecret(key);
+      if (keyFinding !== undefined) return keyFinding;
+      if (typeof child === 'string') {
+        const assignmentFinding = findSecret(`${key}: ${child}`);
+        if (assignmentFinding !== undefined) return assignmentFinding;
+      }
+      const childFinding = visit(child);
+      if (childFinding !== undefined) return childFinding;
+    }
+    return undefined;
+  };
+  return visit(value);
+}
+
 export function containsSecret(value: string): boolean {
   return findSecret(value) !== undefined;
 }

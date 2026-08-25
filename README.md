@@ -12,7 +12,7 @@ Users do not need to paste past context into every prompt or search for memories
 
 ## Get started quickly
 
-Node.js 24 or newer is required.
+Node.js 24.16 or newer is required.
 Get started easily with these two commands 💕
 
 ```bash
@@ -21,8 +21,10 @@ kiokuko setup
 ```
 
 `setup` detects supported clients that are installed and automatically configures the SQLite database and MCP connection.
-For Claude Code, setup also installs a hook that automatically performs a small related-memory pre-recall; see the [client compatibility policy](docs/client-compatibility.md) for details.
-To verify that Claude accepted it, open Claude Code's `/hooks` screen and confirm that the `UserPromptSubmit` `kiokuko` / `claude_prompt_context` hook is enabled.
+Interactive setup asks whether audited community Skills may also be used as reference material; the default answer is no.
+Model-facing memory enters a task only through the capability-gated `task_prepare`
+and `task_answer` MCP tools. Kiokuko installs no client hook or plugin that
+silently recalls memory before those calls.
 
 After setup, launch the target AI client and use it as usual. If it is already running, quit it once and restart it.
 
@@ -92,6 +94,30 @@ http://127.0.0.1:4173
 ```
 
 The Web UI runs only in the local environment and is not exposed to external networks.
+The Web UI and explicit memory CLI commands are human/operator management
+surfaces. They are not model task-entry fallbacks for `task_prepare` and
+`task_answer`.
+
+## External Skills
+
+External skill discovery is reference-only and uses `official` mode by default
+during Akinator task preparation. Kiokuko verifies the current GitHub commit,
+stores bounded content as untrusted candidate memory, and never installs or
+executes it. Set `KIOKUKO_SKILL_DISCOVERY=off` to disable automatic discovery;
+`community` remains explicit opt-in. Interactive `kiokuko setup` asks before
+enabling it; batch setup can use `--skill-discovery community`.
+
+Example commands:
+
+```bash
+kiokuko skills find svelte --official-only --json
+kiokuko skills list
+kiokuko skills disable sveltejs/ai-tools/svelte-code-writer
+kiokuko skills refresh sveltejs/ai-tools/svelte-code-writer
+```
+
+The Web UI's External Skills screen can inspect source state and disable or
+re-enable imported mappings. It has no install, script, or MCP registration action.
 
 ## Security
 
@@ -100,6 +126,12 @@ Kiokuko does not store full conversations.
 It refuses to store content that looks like a secret, such as passwords, API keys, tokens, or private keys.
 
 Saved memories are always treated as reference information. Current code, configuration, and execution results take precedence over past memories.
+
+External skill discovery is a reference-only feature. Akinator uses `official`
+mode by default; set `KIOKUKO_SKILL_DISCOVERY=off` to disable it or `community`
+to include audited community candidates. External skills are commit-pinned,
+stored as untrusted candidate references, and are never installed or executed
+automatically.
 
 ## Note
 

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isProxy } from 'node:util/types';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
@@ -7,6 +8,7 @@ import { canonicalContentHash } from '../serialization/validate.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin } from './origin.js';
 
 export const MAX_FEEDBACK_COMMENT_BYTES = 4 * 1024;
+export const MAX_FEEDBACK_OUTCOME_BYTES = 4 * 1024;
 export const MAX_FEEDBACK_IDENTIFIER_LENGTH = 256;
 
 export const CONTEXT_FEEDBACK_VERDICTS = ['helpful', 'irrelevant', 'stale', 'conflicting'] as const;
@@ -28,17 +30,40 @@ export interface ContextFeedbackRecord {
   createdAt: string;
 }
 
+export interface ContextFeedbackSignal {
+  verdict: ContextFeedbackVerdict;
+  distinctRuns: number;
+  boundedInfluence: number;
+}
+
+/** Shared cross-run feedback evidence for retrieval policy consumers. */
+export function contextFeedbackSignals(database: SqliteDatabase, entryId: string): ContextFeedbackSignal[] {
+  const rows = database.prepare(`
+    SELECT verdict, COUNT(DISTINCT run_id) AS distinctRuns
+      FROM context_feedback
+     WHERE entry_id = ?
+     GROUP BY verdict
+  `).all<{ verdict: unknown; distinctRuns: unknown }>(entryId);
+  const byVerdict = new Map<ContextFeedbackVerdict, number>();
+  for (const row of rows) {
+    if (typeof row.verdict !== 'string'
+      || !CONTEXT_FEEDBACK_VERDICTS.includes(row.verdict as ContextFeedbackVerdict)
+      || typeof row.distinctRuns !== 'number'
+      || !Number.isSafeInteger(row.distinctRuns)
+      || row.distinctRuns < 1) {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Stored context feedback aggregate is invalid');
+    }
+    byVerdict.set(row.verdict as ContextFeedbackVerdict, row.distinctRuns);
+  }
+  return CONTEXT_FEEDBACK_VERDICTS.flatMap((verdict) => {
+    const distinctRuns = byVerdict.get(verdict);
+    return distinctRuns === undefined ? [] : [{ verdict, distinctRuns, boundedInfluence: Math.min(2, distinctRuns) }];
+  });
+}
+
 export interface FeedbackListPage<T> {
   records: T[];
   truncated: boolean;
-}
-
-export interface ContextFeedbackListInput {
-  workspace: string;
-  runId?: string;
-  deliveryId?: string;
-  entryId?: string;
-  limit?: number;
 }
 
 export interface RunFeedbackRecord {
@@ -54,12 +79,6 @@ export interface RunFeedbackRecord {
   /** The idempotency key is stored as this lowercase SHA-256 digest; the raw key is never returned. */
   idempotencyKeyHash: string;
   createdAt: string;
-}
-
-export interface RunFeedbackListInput {
-  workspace: string;
-  runId?: string;
-  limit?: number;
 }
 
 interface ValidatedContextFeedbackInput {
@@ -152,19 +171,77 @@ function databaseFailure(): never {
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || isProxy(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function inputFields(value: unknown, allowed: ReadonlySet<string>, exact = false): Record<string, unknown> {
+  if (!isPlainObject(value)) validation();
+  const keys = Reflect.ownKeys(value);
+  if (exact && keys.length !== allowed.size) validation();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of keys) {
+    if (typeof key !== 'string' || !allowed.has(key)) validation();
+    const descriptor = descriptors[key];
+    if (!descriptor || !('value' in descriptor) || descriptor.enumerable !== true) validation();
+    result[key] = descriptor.value;
+  }
+  return result;
 }
 
 function isKiokukoError(error: unknown): error is KiokukoError {
   return error instanceof KiokukoError;
 }
 
-function normalizeDatabaseError(error: unknown): never {
+interface NodeSqliteFailure extends Error {
+  readonly code?: unknown;
+  readonly errcode?: unknown;
+}
+
+const SQLITE_CONSTRAINT_PRIMARY_KEY = 1_555;
+const SQLITE_CONSTRAINT_UNIQUE = 2_067;
+const NO_UNIQUENESS_FAILURES = new Set<string>();
+const SQLITE_OPERATIONAL_PRIMARY_CODES = new Set([5, 6, 7, 8, 9, 10, 13, 14, 15, 22, 23]);
+const SQLITE_INTEGRITY_PRIMARY_CODES = new Set([11, 24, 26]);
+const CONTEXT_FEEDBACK_UNIQUENESS_FAILURES = new Set([
+  'UNIQUE constraint failed: context_feedback.feedback_id',
+  'UNIQUE constraint failed: context_feedback.run_id, context_feedback.actor, context_feedback.idempotency_key',
+]);
+const RUN_FEEDBACK_UNIQUENESS_FAILURES = new Set([
+  'UNIQUE constraint failed: run_feedback.feedback_id',
+  'UNIQUE constraint failed: run_feedback.run_id, run_feedback.actor, run_feedback.idempotency_key',
+]);
+const INTAKE_FEEDBACK_UNIQUENESS_FAILURES = new Set([
+  'UNIQUE constraint failed: intake_feedback.feedback_id',
+  'UNIQUE constraint failed: intake_feedback.run_id, intake_feedback.actor, intake_feedback.idempotency_key',
+]);
+
+function nodeSqliteFailure(error: unknown): NodeSqliteFailure | null {
+  if (!(error instanceof Error)) return null;
+  const failure = error as NodeSqliteFailure;
+  if (
+    failure.code !== 'ERR_SQLITE_ERROR'
+    || typeof failure.errcode !== 'number'
+    || !Number.isSafeInteger(failure.errcode)
+    || failure.errcode < 0
+  ) return null;
+  return failure;
+}
+
+function normalizeDatabaseError(error: unknown, uniquenessFailures: ReadonlySet<string> = NO_UNIQUENESS_FAILURES): never {
   if (isKiokukoError(error)) throw error;
-  if (error instanceof Error && /unique|constraint/i.test(error.message)) conflict();
-  databaseFailure();
+  const failure = nodeSqliteFailure(error);
+  if (failure === null) throw error;
+  if (
+    (failure.errcode === SQLITE_CONSTRAINT_PRIMARY_KEY || failure.errcode === SQLITE_CONSTRAINT_UNIQUE)
+    && uniquenessFailures.has(failure.message)
+  ) conflict();
+  const primaryResultCode = (failure.errcode as number) & 0xff;
+  if (SQLITE_INTEGRITY_PRIMARY_CODES.has(primaryResultCode)) integrity();
+  if (SQLITE_OPERATIONAL_PRIMARY_CODES.has(primaryResultCode)) databaseFailure();
+  throw error;
 }
 
 function requiredString(value: unknown): string {
@@ -178,23 +255,28 @@ function optionalText(value: unknown, maximum: number): string | null {
   return value;
 }
 
-function normalizeTimestamp(value: unknown): string {
-  if (typeof value !== 'string' || value.length === 0) validation();
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) validation();
-  return date.toISOString();
+function optionalUtf8Text(value: unknown, maximumBytes: number): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > maximumBytes) validation();
+  return value;
+}
+
+function isCanonicalFeedbackTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+export function validateFeedbackTimestamp(value: unknown): string {
+  if (!isCanonicalFeedbackTimestamp(value)) validation();
+  return value;
 }
 
 function normalizeComment(value: unknown, workspace: string): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== 'string') validation();
   if (value.trim().length === 0) return null;
-  let sanitized: unknown;
-  try {
-    sanitized = sanitizeJson(value, { workspace }).value;
-  } catch {
-    validation();
-  }
+  const sanitized = sanitizeJson(value, { workspace }).value;
   if (typeof sanitized !== 'string') validation();
   if (sanitized.trim().length === 0) return null;
   if (Buffer.byteLength(sanitized, 'utf8') > MAX_FEEDBACK_COMMENT_BYTES) validation();
@@ -235,44 +317,36 @@ function runBodyHash(input: Pick<RunFeedbackRecord, 'feedbackId' | 'workspace' |
 }
 
 function validateContextFeedbackInput(value: unknown): ValidatedContextFeedbackInput {
-  try {
-    if (!isPlainObject(value)) validation();
-    for (const field of Object.keys(value)) {
-      if (!CONTEXT_INPUT_FIELDS.has(field)) validation();
-    }
-    const workspace = requiredString(value.workspace);
-    const feedbackId = requiredString(value.feedbackId);
-    const deliveryId = requiredString(value.deliveryId);
-    const entryId = requiredString(value.entryId);
-    const entryRevision = value.entryRevision === undefined
-      ? undefined
-      : typeof value.entryRevision === 'number' && Number.isSafeInteger(value.entryRevision) && value.entryRevision > 0
-        ? value.entryRevision
-        : validation();
-    const runId = requiredString(value.runId);
-    if (typeof value.verdict !== 'string' || !CONTEXT_FEEDBACK_VERDICTS.includes(value.verdict as ContextFeedbackVerdict)) validation();
-    const verdict = value.verdict as ContextFeedbackVerdict;
-    const actor = requiredString(value.actor);
-    const idempotencyKey = requiredString(value.idempotencyKey);
-    const createdAt = normalizeTimestamp(value.createdAt);
-    const comment = normalizeComment(value.comment, workspace);
-    return {
-      feedbackId,
-      workspace,
-      deliveryId,
-      entryId,
-      ...(entryRevision === undefined ? {} : { entryRevision }),
-      runId,
-      verdict,
-      comment,
-      actor,
-      idempotencyKeyHash: hashIdempotencyKey(idempotencyKey),
-      createdAt,
-    };
-  } catch (error) {
-    if (isKiokukoError(error) && error.code === 'VALIDATION_ERROR') validation();
-    validation();
-  }
+  const fields = inputFields(value, CONTEXT_INPUT_FIELDS);
+  const workspace = requiredString(fields.workspace);
+  const feedbackId = requiredString(fields.feedbackId);
+  const deliveryId = requiredString(fields.deliveryId);
+  const entryId = requiredString(fields.entryId);
+  const entryRevision = fields.entryRevision === undefined
+    ? undefined
+    : typeof fields.entryRevision === 'number' && Number.isSafeInteger(fields.entryRevision) && fields.entryRevision > 0
+      ? fields.entryRevision
+      : validation();
+  const runId = requiredString(fields.runId);
+  if (typeof fields.verdict !== 'string' || !CONTEXT_FEEDBACK_VERDICTS.includes(fields.verdict as ContextFeedbackVerdict)) validation();
+  const verdict = fields.verdict as ContextFeedbackVerdict;
+  const actor = requiredString(fields.actor);
+  const idempotencyKey = requiredString(fields.idempotencyKey);
+  const createdAt = validateFeedbackTimestamp(fields.createdAt);
+  const comment = normalizeComment(fields.comment, workspace);
+  return {
+    feedbackId,
+    workspace,
+    deliveryId,
+    entryId,
+    ...(entryRevision === undefined ? {} : { entryRevision }),
+    runId,
+    verdict,
+    comment,
+    actor,
+    idempotencyKeyHash: hashIdempotencyKey(idempotencyKey),
+    createdAt,
+  };
 }
 
 interface ValidatedContextFeedbackListInput {
@@ -284,28 +358,20 @@ interface ValidatedContextFeedbackListInput {
 }
 
 function validateContextFeedbackListInput(value: unknown): ValidatedContextFeedbackListInput {
-  try {
-    if (!isPlainObject(value)) validation();
-    for (const field of Object.keys(value)) {
-      if (!CONTEXT_LIST_FIELDS.has(field)) validation();
-    }
-    const workspace = requiredString(value.workspace);
-    const runId = value.runId === undefined ? undefined : requiredString(value.runId);
-    const deliveryId = value.deliveryId === undefined ? undefined : requiredString(value.deliveryId);
-    const entryId = value.entryId === undefined ? undefined : requiredString(value.entryId);
-    const limit = value.limit === undefined ? 100 : value.limit;
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) validation();
-    return {
-      workspace,
-      ...(runId === undefined ? {} : { runId }),
-      ...(deliveryId === undefined ? {} : { deliveryId }),
-      ...(entryId === undefined ? {} : { entryId }),
-      limit,
-    };
-  } catch (error) {
-    if (isKiokukoError(error) && error.code === 'VALIDATION_ERROR') validation();
-    validation();
-  }
+  const fields = inputFields(value, CONTEXT_LIST_FIELDS);
+  const workspace = requiredString(fields.workspace);
+  const runId = fields.runId === undefined ? undefined : requiredString(fields.runId);
+  const deliveryId = fields.deliveryId === undefined ? undefined : requiredString(fields.deliveryId);
+  const entryId = fields.entryId === undefined ? undefined : requiredString(fields.entryId);
+  const limit = fields.limit === undefined ? 100 : fields.limit;
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) validation();
+  return {
+    workspace,
+    ...(runId === undefined ? {} : { runId }),
+    ...(deliveryId === undefined ? {} : { deliveryId }),
+    ...(entryId === undefined ? {} : { entryId }),
+    limit,
+  };
 }
 
 interface ValidatedRunFeedbackListInput {
@@ -315,20 +381,12 @@ interface ValidatedRunFeedbackListInput {
 }
 
 function validateRunFeedbackListInput(value: unknown): ValidatedRunFeedbackListInput {
-  try {
-    if (!isPlainObject(value)) validation();
-    for (const field of Object.keys(value)) {
-      if (!RUN_LIST_FIELDS.has(field)) validation();
-    }
-    const workspace = requiredString(value.workspace);
-    const runId = value.runId === undefined ? undefined : requiredString(value.runId);
-    const limit = value.limit === undefined ? 100 : value.limit;
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) validation();
-    return { workspace, ...(runId === undefined ? {} : { runId }), limit };
-  } catch (error) {
-    if (isKiokukoError(error) && error.code === 'VALIDATION_ERROR') validation();
-    validation();
-  }
+  const fields = inputFields(value, RUN_LIST_FIELDS);
+  const workspace = requiredString(fields.workspace);
+  const runId = fields.runId === undefined ? undefined : requiredString(fields.runId);
+  const limit = fields.limit === undefined ? 100 : fields.limit;
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) validation();
+  return { workspace, ...(runId === undefined ? {} : { runId }), limit };
 }
 
 interface ValidatedRunFeedbackInput {
@@ -346,51 +404,43 @@ interface ValidatedRunFeedbackInput {
 }
 
 function validateRunFeedbackInput(value: unknown): ValidatedRunFeedbackInput {
-  try {
-    if (!isPlainObject(value)) validation();
-    for (const field of Object.keys(value)) {
-      if (!RUN_INPUT_FIELDS.has(field)) validation();
-    }
-    const workspace = requiredString(value.workspace);
-    const feedbackId = requiredString(value.feedbackId);
-    const runId = requiredString(value.runId);
-    const outcome = optionalText(value.outcome, MAX_FEEDBACK_COMMENT_BYTES);
-    const recommendationCode = optionalText(value.recommendationCode, MAX_FEEDBACK_IDENTIFIER_LENGTH);
-    const rawRecommendationVerdict = value.recommendationVerdict;
-    const recommendationVerdict = rawRecommendationVerdict === undefined || rawRecommendationVerdict === null
-      ? null
-      : typeof rawRecommendationVerdict === 'string' && RUN_FEEDBACK_RECOMMENDATION_VERDICTS.includes(rawRecommendationVerdict as RunFeedbackRecommendationVerdict)
-        ? rawRecommendationVerdict as RunFeedbackRecommendationVerdict
-        : validation();
-    if ((recommendationCode === null) !== (recommendationVerdict === null)) validation();
-    const rawRating = value.rating;
-    const rating = rawRating === undefined || rawRating === null
-      ? null
-      : typeof rawRating === 'number' && Number.isInteger(rawRating) && rawRating >= 1 && rawRating <= 5
-        ? rawRating
-        : validation();
-    if (outcome === null && recommendationCode === null && rating === null) validation();
-    const actor = requiredString(value.actor);
-    const idempotencyKey = requiredString(value.idempotencyKey);
-    const createdAt = normalizeTimestamp(value.createdAt);
-    const comment = normalizeComment(value.comment, workspace);
-    return {
-      feedbackId,
-      workspace,
-      runId,
-      outcome,
-      recommendationCode,
-      recommendationVerdict,
-      rating,
-      comment,
-      actor,
-      idempotencyKeyHash: hashIdempotencyKey(idempotencyKey),
-      createdAt,
-    };
-  } catch (error) {
-    if (isKiokukoError(error) && error.code === 'VALIDATION_ERROR') validation();
-    validation();
-  }
+  const fields = inputFields(value, RUN_INPUT_FIELDS);
+  const workspace = requiredString(fields.workspace);
+  const feedbackId = requiredString(fields.feedbackId);
+  const runId = requiredString(fields.runId);
+  const outcome = optionalUtf8Text(fields.outcome, MAX_FEEDBACK_OUTCOME_BYTES);
+  const recommendationCode = optionalText(fields.recommendationCode, MAX_FEEDBACK_IDENTIFIER_LENGTH);
+  const rawRecommendationVerdict = fields.recommendationVerdict;
+  const recommendationVerdict = rawRecommendationVerdict === undefined || rawRecommendationVerdict === null
+    ? null
+    : typeof rawRecommendationVerdict === 'string' && RUN_FEEDBACK_RECOMMENDATION_VERDICTS.includes(rawRecommendationVerdict as RunFeedbackRecommendationVerdict)
+      ? rawRecommendationVerdict as RunFeedbackRecommendationVerdict
+      : validation();
+  if ((recommendationCode === null) !== (recommendationVerdict === null)) validation();
+  const rawRating = fields.rating;
+  const rating = rawRating === undefined || rawRating === null
+    ? null
+    : typeof rawRating === 'number' && Number.isInteger(rawRating) && rawRating >= 1 && rawRating <= 5
+      ? rawRating
+      : validation();
+  if (outcome === null && recommendationCode === null && rating === null) validation();
+  const actor = requiredString(fields.actor);
+  const idempotencyKey = requiredString(fields.idempotencyKey);
+  const createdAt = validateFeedbackTimestamp(fields.createdAt);
+  const comment = normalizeComment(fields.comment, workspace);
+  return {
+    feedbackId,
+    workspace,
+    runId,
+    outcome,
+    recommendationCode,
+    recommendationVerdict,
+    rating,
+    comment,
+    actor,
+    idempotencyKeyHash: hashIdempotencyKey(idempotencyKey),
+    createdAt,
+  };
 }
 
 function assertContextTarget(database: SqliteDatabase, input: ValidatedContextFeedbackInput): void {
@@ -457,11 +507,7 @@ function storedHash(value: unknown): string {
 }
 
 function storedTimestamp(value: unknown): string {
-  if (typeof value !== 'string') integrity();
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) integrity();
-  const normalized = date.toISOString();
-  if (normalized !== value) integrity();
+  if (!isCanonicalFeedbackTimestamp(value)) integrity();
   return value;
 }
 
@@ -488,12 +534,7 @@ function rowToContextFeedback(row: ContextFeedbackRow, workspace: string): Conte
     comment = null;
   } else if (typeof row.comment === 'string') {
     if (row.comment.length === 0 || Buffer.byteLength(row.comment, 'utf8') > MAX_FEEDBACK_COMMENT_BYTES) integrity();
-    let sanitized: string | null;
-    try {
-      sanitized = normalizeComment(row.comment, workspace);
-    } catch {
-      integrity();
-    }
+    const sanitized = normalizeComment(row.comment, workspace);
     if (sanitized !== row.comment) integrity();
     comment = row.comment;
   } else {
@@ -513,7 +554,10 @@ function rowToContextFeedback(row: ContextFeedbackRow, workspace: string): Conte
   };
 }
 
-function writeContextFeedback(database: SqliteDatabase, input: ValidatedContextFeedbackInput): ContextFeedbackRecord {
+function preflightContextFeedbackWrite(
+  database: SqliteDatabase,
+  input: ValidatedContextFeedbackInput,
+): ContextFeedbackRecord | undefined {
   assertContextTarget(database, input);
   const existingByKey = selectContextByKey(database, input);
   if (existingByKey) {
@@ -522,6 +566,22 @@ function writeContextFeedback(database: SqliteDatabase, input: ValidatedContextF
     conflict();
   }
   if (hasContextFeedbackId(database, input.feedbackId)) conflict();
+  return undefined;
+}
+
+/** Validate a context-feedback write and its exact persisted target without mutating state. */
+export function assertContextFeedbackRecordable(database: SqliteDatabase, input: unknown): void {
+  const validated = validateContextFeedbackInput(input);
+  try {
+    preflightContextFeedbackWrite(database, validated);
+  } catch (error) {
+    normalizeDatabaseError(error, CONTEXT_FEEDBACK_UNIQUENESS_FAILURES);
+  }
+}
+
+function writeContextFeedback(database: SqliteDatabase, input: ValidatedContextFeedbackInput): ContextFeedbackRecord {
+  const existing = preflightContextFeedbackWrite(database, input);
+  if (existing !== undefined) return existing;
   database.prepare(`
     INSERT INTO context_feedback (
       feedback_id, delivery_id, entry_id, run_id, verdict, comment, actor, idempotency_key, created_at
@@ -547,7 +607,7 @@ export function recordContextFeedbackInTransaction(database: SqliteDatabase, inp
   try {
     return writeContextFeedback(database, validated);
   } catch (error) {
-    normalizeDatabaseError(error);
+    normalizeDatabaseError(error, CONTEXT_FEEDBACK_UNIQUENESS_FAILURES);
   }
 }
 
@@ -556,7 +616,7 @@ export function recordContextFeedback(database: SqliteDatabase, input: unknown):
   try {
     return withImmediateTransaction(database, () => writeContextFeedback(database, validated));
   } catch (error) {
-    normalizeDatabaseError(error);
+    normalizeDatabaseError(error, CONTEXT_FEEDBACK_UNIQUENESS_FAILURES);
   }
 }
 
@@ -566,15 +626,16 @@ function runOptionalStoredText(value: unknown, maximum: number): string | null {
   return value;
 }
 
+function runOptionalStoredUtf8Text(value: unknown, maximumBytes: number): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > maximumBytes) integrity();
+  return value;
+}
+
 function runStoredComment(value: unknown, workspace: string): string | null {
   if (value === null) return null;
   if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > MAX_FEEDBACK_COMMENT_BYTES) integrity();
-  let sanitized: string | null;
-  try {
-    sanitized = normalizeComment(value, workspace);
-  } catch {
-    integrity();
-  }
+  const sanitized = normalizeComment(value, workspace);
   if (sanitized !== value) integrity();
   return value;
 }
@@ -609,7 +670,7 @@ function rowToRunFeedback(row: RunFeedbackRow, workspace: string): RunFeedbackRe
   const runId = storedString(row.run_id);
   const runWorkspace = storedString(row.run_workspace);
   if (runWorkspace !== workspace) integrity();
-  const outcome = runOptionalStoredText(row.outcome, MAX_FEEDBACK_COMMENT_BYTES);
+  const outcome = runOptionalStoredUtf8Text(row.outcome, MAX_FEEDBACK_OUTCOME_BYTES);
   const recommendationCode = runOptionalStoredText(row.recommendation_code, MAX_FEEDBACK_IDENTIFIER_LENGTH);
   let recommendationVerdict: RunFeedbackRecommendationVerdict | null;
   if (row.recommendation_verdict === null) {
@@ -679,7 +740,7 @@ export function recordRunFeedbackInTransaction(database: SqliteDatabase, input: 
   try {
     return writeRunFeedback(database, validated);
   } catch (error) {
-    normalizeDatabaseError(error);
+    normalizeDatabaseError(error, RUN_FEEDBACK_UNIQUENESS_FAILURES);
   }
 }
 
@@ -688,7 +749,7 @@ export function recordRunFeedback(database: SqliteDatabase, input: unknown): Run
   try {
     return withImmediateTransaction(database, () => writeRunFeedback(database, validated));
   } catch (error) {
-    normalizeDatabaseError(error);
+    normalizeDatabaseError(error, RUN_FEEDBACK_UNIQUENESS_FAILURES);
   }
 }
 
@@ -791,46 +852,15 @@ const INTAKE_FEEDBACK_FIELDS = new Set([
 ]);
 const INTAKE_PROFILE_FIELDS = new Set(['taskType', 'target', 'expected', 'constraints']);
 
-function initialInputFields(value: unknown): Record<string, unknown> {
-  try {
-    if (!isPlainObject(value)) validation();
-    const keys = Reflect.ownKeys(value);
-    if (keys.length !== INTAKE_FEEDBACK_FIELDS.size || keys.some((key) => typeof key !== 'string' || !INTAKE_FEEDBACK_FIELDS.has(key))) validation();
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const result: Record<string, unknown> = {};
-    for (const field of INTAKE_FEEDBACK_FIELDS) {
-      const descriptor = descriptors[field];
-      if (!descriptor || !('value' in descriptor) || descriptor.enumerable !== true) validation();
-      result[field] = descriptor.value;
-    }
-    structuredClone(value);
-    return result;
-  } catch {
-    validation();
-  }
-}
-
 function initialInputIdentifier(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > MAX_FEEDBACK_IDENTIFIER_LENGTH || /\p{Cc}/u.test(value)) validation();
-  return value;
-}
-
-function initialInputTimestamp(value: unknown): string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) validation();
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime()) || date.toISOString() !== value) validation();
   return value;
 }
 
 function initialInputComment(value: unknown, workspace: string): string | null {
   if (value === null) return null;
   if (typeof value !== 'string' || value.length === 0) validation();
-  let sanitized: unknown;
-  try {
-    sanitized = sanitizeJson(value, { workspace }).value;
-  } catch {
-    validation();
-  }
+  const sanitized = sanitizeJson(value, { workspace }).value;
   if (typeof sanitized !== 'string' || sanitized.length === 0 || Buffer.byteLength(sanitized, 'utf8') > MAX_FEEDBACK_COMMENT_BYTES) validation();
   return sanitized;
 }
@@ -848,7 +878,7 @@ function validateInitialIntakeFeedbackInput(value: unknown): {
   idempotencyKeyHash: string;
   createdAt: string;
 } {
-  const fields = initialInputFields(value);
+  const fields = inputFields(value, INTAKE_FEEDBACK_FIELDS, true);
   const workspace = initialInputIdentifier(fields.workspace);
   const feedbackId = initialInputIdentifier(fields.feedbackId);
   const runId = initialInputIdentifier(fields.runId);
@@ -878,7 +908,7 @@ function validateInitialIntakeFeedbackInput(value: unknown): {
     comment: initialInputComment(fields.comment, workspace),
     actor,
     idempotencyKeyHash: hashIdempotencyKey(idempotencyKey),
-    createdAt: initialInputTimestamp(fields.createdAt),
+    createdAt: validateFeedbackTimestamp(fields.createdAt),
   };
 }
 
@@ -984,22 +1014,10 @@ function initialStoredHash(value: unknown): string {
   return value;
 }
 
-function initialStoredTimestamp(value: unknown): string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) integrity();
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime()) || date.toISOString() !== value) integrity();
-  return value;
-}
-
 function initialStoredComment(value: unknown, workspace: string): string | null {
   if (value === null) return null;
   if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > MAX_FEEDBACK_COMMENT_BYTES) integrity();
-  let sanitized: string | null;
-  try {
-    sanitized = normalizeComment(value, workspace);
-  } catch {
-    integrity();
-  }
+  const sanitized = initialInputComment(value, workspace);
   if (sanitized !== value) integrity();
   return value;
 }
@@ -1040,7 +1058,7 @@ function rowToInitialIntakeFeedback(row: InitialIntakeFeedbackRow, workspace: st
     comment: initialStoredComment(row.comment, workspace),
     actor,
     idempotencyKeyHash: initialStoredHash(row.idempotency_key),
-    createdAt: initialStoredTimestamp(row.created_at),
+    createdAt: storedTimestamp(row.created_at),
   };
 }
 
@@ -1079,7 +1097,7 @@ export function recordIntakeFeedback(database: SqliteDatabase, input: unknown): 
   try {
     return withImmediateTransaction(database, () => recordInitialIntakeFeedback(database, validated));
   } catch (error) {
-    normalizeDatabaseError(error);
+    normalizeDatabaseError(error, INTAKE_FEEDBACK_UNIQUENESS_FAILURES);
   }
 }
 
@@ -1088,7 +1106,7 @@ export function recordIntakeFeedbackInTransaction(database: SqliteDatabase, inpu
   try {
     return recordInitialIntakeFeedback(database, validated);
   } catch (error) {
-    normalizeDatabaseError(error);
+    normalizeDatabaseError(error, INTAKE_FEEDBACK_UNIQUENESS_FAILURES);
   }
 }
 
@@ -1103,28 +1121,8 @@ interface ValidatedInitialIntakeFeedbackListInput {
 
 const INTAKE_FEEDBACK_LIST_FIELDS = new Set(['workspace', 'runId', 'sessionId', 'questionId', 'profileField', 'limit']);
 
-function initialListInputFields(value: unknown): Record<string, unknown> {
-  try {
-    if (!isPlainObject(value)) validation();
-    const keys = Reflect.ownKeys(value);
-    if (keys.some((key) => typeof key !== 'string' || !INTAKE_FEEDBACK_LIST_FIELDS.has(key))) validation();
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const result: Record<string, unknown> = {};
-    for (const key of keys) {
-      if (typeof key !== 'string') validation();
-      const descriptor = descriptors[key];
-      if (!descriptor || !('value' in descriptor) || descriptor.enumerable !== true) validation();
-      result[key] = descriptor.value;
-    }
-    structuredClone(value);
-    return result;
-  } catch {
-    validation();
-  }
-}
-
 function validateInitialIntakeFeedbackListInput(value: unknown): ValidatedInitialIntakeFeedbackListInput {
-  const fields = initialListInputFields(value);
+  const fields = inputFields(value, INTAKE_FEEDBACK_LIST_FIELDS);
   const workspace = initialInputIdentifier(fields.workspace);
   const runId = fields.runId === undefined ? undefined : initialInputIdentifier(fields.runId);
   const sessionId = fields.sessionId === undefined ? undefined : initialInputIdentifier(fields.sessionId);

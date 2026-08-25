@@ -35,9 +35,26 @@ test('preserves the existing success and error JSON envelope shapes', () => {
   });
 });
 
+test('redacts arbitrary errors from the public JSON envelope', () => {
+  const sentinel = 'token=private-sentinel /Users/example/private/database.sqlite3';
+  const envelope = errorEnvelope('skills.list', new Error(sentinel));
+
+  assert.deepEqual(envelope, {
+    apiVersion: '1',
+    ok: false,
+    operation: 'skills.list',
+    error: {
+      code: 'INTEGRITY_ERROR',
+      message: 'Unexpected internal error',
+      details: {},
+    },
+  });
+  assert.equal(JSON.stringify(envelope).includes(sentinel), false);
+});
+
 test('preserves every existing CLI exit-code mapping when server errors are added', () => {
   for (const [code, expected] of legacyExitCodes) {
     assert.equal(exitCodeFor(new KiokukoError(code, 'test')), expected, code);
   }
-  assert.equal(exitCodeFor(new Error('unexpected')), 6);
+  assert.equal(exitCodeFor(new Error('unexpected')), 8);
 });

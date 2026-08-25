@@ -1,6 +1,8 @@
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError, type ErrorCode } from '../errors.js';
 import { canonicalJson, requireWorkspace } from '../serialization/validate.js';
+import { parseStrictJson } from '../setup/strict-json.js';
+import { evaluateProfile } from './domain.js';
 import { TASK_TYPES, type AkinatorSessionView, type TaskProfile, type TaskType } from './types.js';
 
 export interface InsertAkinatorSessionInput {
@@ -173,6 +175,39 @@ function conflict(): never {
   return fail('CONFLICT', 'Akinator store operation conflicts with existing data');
 }
 
+interface SqliteConstraintFailure {
+  readonly code?: unknown;
+  readonly errcode?: unknown;
+  readonly message?: unknown;
+}
+
+const SQLITE_CONSTRAINT_PRIMARY_KEY = 1_555;
+const SQLITE_CONSTRAINT_UNIQUE = 2_067;
+
+function isExpectedUniquenessFailure(error: unknown, constraints: ReadonlySet<string>): boolean {
+  if (!(error instanceof Error)) return false;
+  const failure = error as SqliteConstraintFailure;
+  if (failure.code !== 'ERR_SQLITE_ERROR' || !Number.isSafeInteger(failure.errcode)) return false;
+  if (failure.errcode !== SQLITE_CONSTRAINT_PRIMARY_KEY && failure.errcode !== SQLITE_CONSTRAINT_UNIQUE) return false;
+  return typeof failure.message === 'string' && constraints.has(failure.message);
+}
+
+function mapExpectedUniquenessFailure(error: unknown, constraints: ReadonlySet<string>): never {
+  if (isExpectedUniquenessFailure(error, constraints)) return conflict();
+  throw error;
+}
+
+const SESSION_UNIQUENESS_FAILURES = new Set([
+  'UNIQUE constraint failed: akinator_sessions.id',
+]);
+const ANSWER_UNIQUENESS_FAILURES = new Set([
+  'UNIQUE constraint failed: akinator_answers.session_id, akinator_answers.question_id',
+]);
+const INTAKE_LINK_UNIQUENESS_FAILURES = new Set([
+  'UNIQUE constraint failed: run_intakes.run_id',
+  'UNIQUE constraint failed: run_intakes.session_id',
+]);
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -232,6 +267,23 @@ function questionCount(value: unknown, onInvalid: () => never): number {
   return value;
 }
 
+function assertSessionEvaluation(
+  validatedProfile: TaskProfile,
+  status: SessionStatus,
+  count: number,
+  onInvalid: () => never,
+): void {
+  let evaluated: ReturnType<typeof evaluateProfile>;
+  try {
+    evaluated = evaluateProfile(validatedProfile, count);
+  } catch (error) {
+    if (error instanceof KiokukoError && error.code === 'VALIDATION_ERROR') return onInvalid();
+    throw error;
+  }
+  const expectedStatus: SessionStatus = evaluated.status === 'needs_answer' ? 'active' : evaluated.status;
+  if (status !== expectedStatus) return onInvalid();
+}
+
 function sessionInput(value: unknown): InsertAkinatorSessionInput {
   const input = objectWithFields(value, SESSION_INPUT_FIELDS);
   const id = stringValue(input.id);
@@ -240,6 +292,7 @@ function sessionInput(value: unknown): InsertAkinatorSessionInput {
   const validatedProfile = profile(input.profile, validation);
   const status = sessionStatus(input.status, validation);
   const count = questionCount(input.questionCount, validation);
+  assertSessionEvaluation(validatedProfile, status, count, validation);
   const createdAt = timestamp(input.createdAt);
   const updatedAt = timestamp(input.updatedAt);
   return { id, workspace, task, profile: validatedProfile, status, questionCount: count, createdAt, updatedAt };
@@ -380,6 +433,7 @@ function sessionUpdateInput(value: unknown): UpdateAkinatorSessionInput {
   const nextQuestionCount = questionCount(input.questionCount, validation);
   const validatedProfile = profile(input.profile, validation);
   const status = sessionStatus(input.status, validation);
+  assertSessionEvaluation(validatedProfile, status, nextQuestionCount, validation);
   const updatedAt = timestamp(input.updatedAt);
   return {
     workspace: requireWorkspace(input.workspace),
@@ -394,12 +448,19 @@ function sessionUpdateInput(value: unknown): UpdateAkinatorSessionInput {
 
 function parseStoredProfile(value: unknown): TaskProfile {
   if (typeof value !== 'string') return integrity();
+  let parsed: unknown;
   try {
-    return profile(JSON.parse(value) as unknown, integrity);
+    parsed = parseStrictJson(
+      value,
+      { allowTrailingComma: false, disallowComments: true, allowEmptyContent: false },
+      'Stored Akinator profile is invalid',
+    );
   } catch (error) {
-    if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') throw error;
-    return integrity();
+    if (error instanceof KiokukoError && error.code === 'VALIDATION_ERROR') return integrity();
+    throw error;
   }
+  if (canonicalStoredJson(parsed) !== value) return integrity();
+  return profile(parsed, integrity);
 }
 
 function storedString(value: unknown): string {
@@ -414,24 +475,38 @@ function storedQuestionCount(value: unknown): number {
 
 function parseStoredAnswer(value: unknown): unknown {
   if (typeof value !== 'string') return integrity();
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(value);
-    if (canonicalJson(parsed) !== value) return integrity();
-    return parsed;
-  } catch {
-    return integrity();
+    parsed = JSON.parse(value) as unknown;
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof RangeError) return integrity();
+    throw error;
+  }
+  if (canonicalStoredJson(parsed) !== value) return integrity();
+  return parsed;
+}
+
+function canonicalStoredJson(value: unknown): string {
+  try {
+    return canonicalJson(value);
+  } catch (error) {
+    if (error instanceof RangeError
+      || (error instanceof KiokukoError && error.code === 'VALIDATION_ERROR')) return integrity();
+    throw error;
   }
 }
 
 function parseStoredCanonicalJson(value: unknown): unknown {
   if (typeof value !== 'string') return integrity();
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(value);
-    if (canonicalJson(parsed) !== value) return integrity();
-    return parsed;
-  } catch {
-    return integrity();
+    parsed = JSON.parse(value) as unknown;
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof RangeError) return integrity();
+    throw error;
   }
+  if (canonicalStoredJson(parsed) !== value) return integrity();
+  return parsed;
 }
 
 function storedProfileSources(value: unknown): AkinatorProfileSources {
@@ -484,13 +559,17 @@ function mapIntakeLink(row: RunIntakeRow): RunIntakeLinkView {
 }
 
 function mapSession(row: SessionRow): AkinatorSessionView {
+  const validatedProfile = parseStoredProfile(row.profile_json);
+  const status = sessionStatus(row.status, integrity);
+  const count = storedQuestionCount(row.question_count);
+  assertSessionEvaluation(validatedProfile, status, count, integrity);
   return {
     id: storedString(row.id),
     workspace: storedString(row.workspace),
     task: storedString(row.task_text),
-    profile: parseStoredProfile(row.profile_json),
-    status: sessionStatus(row.status, integrity),
-    questionCount: storedQuestionCount(row.question_count),
+    profile: validatedProfile,
+    status,
+    questionCount: count,
     createdAt: storedTimestamp(row.created_at),
     updatedAt: storedTimestamp(row.updated_at),
   };
@@ -541,8 +620,8 @@ export function insertAkinatorSession(database: SqliteDatabase, value: unknown):
       input.createdAt,
       input.updatedAt,
     );
-  } catch {
-    return conflict();
+  } catch (error) {
+    return mapExpectedUniquenessFailure(error, SESSION_UNIQUENESS_FAILURES);
   }
   const row = selectSession(database, input.workspace, input.id);
   if (!row) return integrity();
@@ -564,23 +643,19 @@ export function updateAkinatorSession(database: SqliteDatabase, value: unknown):
   if (currentView.status !== 'active' || currentView.questionCount !== input.expectedQuestionCount) return conflict();
   if (input.questionCount !== input.expectedQuestionCount + 1 || input.questionCount > 3) return conflict();
 
-  try {
-    database.prepare(`
-      UPDATE akinator_sessions
-      SET profile_json = ?, status = ?, question_count = ?, updated_at = ?
-      WHERE id = ? AND workspace = ? AND status = 'active' AND question_count = ?
-    `).run(
-      canonicalJson(input.profile),
-      input.status,
-      input.questionCount,
-      input.updatedAt,
-      input.sessionId,
-      input.workspace,
-      input.expectedQuestionCount,
-    );
-  } catch {
-    return conflict();
-  }
+  database.prepare(`
+    UPDATE akinator_sessions
+    SET profile_json = ?, status = ?, question_count = ?, updated_at = ?
+    WHERE id = ? AND workspace = ? AND status = 'active' AND question_count = ?
+  `).run(
+    canonicalJson(input.profile),
+    input.status,
+    input.questionCount,
+    input.updatedAt,
+    input.sessionId,
+    input.workspace,
+    input.expectedQuestionCount,
+  );
   const changes = database.prepare('SELECT changes() AS changes').get<{ changes: unknown }>()?.changes;
   if (changes !== 1) return conflict();
   const updated = selectSession(database, input.workspace, input.sessionId);
@@ -611,8 +686,8 @@ export function insertAkinatorAnswer(database: SqliteDatabase, value: unknown): 
       INSERT INTO akinator_answers (session_id, question_id, answer_json, created_at)
       VALUES (?, ?, ?, ?)
     `).run(input.sessionId, input.questionId, answerJsonValue, input.createdAt);
-  } catch {
-    return conflict();
+  } catch (error) {
+    return mapExpectedUniquenessFailure(error, ANSWER_UNIQUENESS_FAILURES);
   }
   const inserted = selectAnswer(database, input.sessionId, input.questionId);
   if (!inserted) return integrity();
@@ -642,8 +717,8 @@ export function insertRunIntakeLink(database: SqliteDatabase, value: unknown): R
       input.linkedAt,
       input.finalizedAt,
     );
-  } catch {
-    return conflict();
+  } catch (error) {
+    return mapExpectedUniquenessFailure(error, INTAKE_LINK_UNIQUENESS_FAILURES);
   }
   const inserted = selectIntakeLink(database, input.workspace, input.runId);
   if (!inserted) return integrity();
@@ -672,20 +747,16 @@ export function finalizeRunIntakeLink(database: SqliteDatabase, value: unknown):
     return conflict();
   }
 
-  try {
-    database.prepare(`
-      UPDATE run_intakes
-      SET initial_profile_hash = ?, recommended_tags_json = ?, finalized_at = ?
-      WHERE run_id = ? AND finalized_at IS NULL
-    `).run(
-      input.profileHash,
-      canonicalJson(input.recommendedTags),
-      input.finalizedAt,
-      input.runId,
-    );
-  } catch {
-    return conflict();
-  }
+  database.prepare(`
+    UPDATE run_intakes
+    SET initial_profile_hash = ?, recommended_tags_json = ?, finalized_at = ?
+    WHERE run_id = ? AND finalized_at IS NULL
+  `).run(
+    input.profileHash,
+    canonicalJson(input.recommendedTags),
+    input.finalizedAt,
+    input.runId,
+  );
   const changes = database.prepare('SELECT changes() AS changes').get<{ changes: unknown }>()?.changes;
   if (changes !== 1) {
     const racedRow = selectIntakeLink(database, input.workspace, input.runId);
@@ -717,15 +788,11 @@ export function markRunIntakeProfileSource(database: SqliteDatabase, value: unkn
     ...current.profileSources,
     [input.field]: 'user_answer',
   };
-  try {
-    database.prepare(`
-      UPDATE run_intakes
-      SET profile_sources_json = ?
-      WHERE run_id = ? AND finalized_at IS NULL
-    `).run(canonicalJson(nextSources), input.runId);
-  } catch {
-    return conflict();
-  }
+  database.prepare(`
+    UPDATE run_intakes
+    SET profile_sources_json = ?
+    WHERE run_id = ? AND finalized_at IS NULL
+  `).run(canonicalJson(nextSources), input.runId);
   const changes = database.prepare('SELECT changes() AS changes').get<{ changes: unknown }>()?.changes;
   if (changes !== 1) return conflict();
   const updated = selectIntakeLink(database, input.workspace, input.runId);

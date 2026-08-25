@@ -1,4 +1,4 @@
-import { backup as sqliteBackup, DatabaseSync, type StatementSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
 export type SqliteValue = null | number | bigint | string | NodeJS.ArrayBufferView;
 export type SqliteRow = Record<string, unknown>;
@@ -13,8 +13,11 @@ export interface SqliteDatabase {
   readonly filePath: string;
   exec(sql: string): void;
   prepare(sql: string): SqliteStatement;
-  backup(destination: string): Promise<number>;
   close(): void;
+}
+
+export interface SqliteSerializationDatabase {
+  serializeDatabase(): Uint8Array;
 }
 
 class StatementAdapter implements SqliteStatement {
@@ -33,7 +36,7 @@ class StatementAdapter implements SqliteStatement {
   }
 }
 
-export class NodeSqliteAdapter implements SqliteDatabase {
+export class NodeSqliteAdapter implements SqliteDatabase, SqliteSerializationDatabase {
   constructor(
     readonly filePath: string,
     private readonly database: DatabaseSync,
@@ -47,8 +50,12 @@ export class NodeSqliteAdapter implements SqliteDatabase {
     return new StatementAdapter(this.database.prepare(sql));
   }
 
-  backup(destination: string): Promise<number> {
-    return sqliteBackup(this.database, destination);
+  serializeDatabase(): Uint8Array {
+    const database = this.database as DatabaseSync & { serialize?: () => Uint8Array };
+    if (typeof database.serialize !== 'function') {
+      throw new Error('SQLite serialization requires Node.js 24.16.0 or newer');
+    }
+    return database.serialize();
   }
 
   close(): void {

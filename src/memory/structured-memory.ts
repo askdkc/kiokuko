@@ -1,6 +1,6 @@
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
-import { canonicalJson, type JsonObject } from '../serialization/validate.js';
+import { canonicalTagOrder, compareCanonicalStrings, type JsonObject } from '../serialization/validate.js';
 import { findSecret } from './secrets.js';
 import { normalizeSearchSignal } from './retrieval-query.js';
 
@@ -40,9 +40,12 @@ export interface StructuredMemoryOptions {
   portableReason?: string;
 }
 
-/** Resolve the retrieval policy of legacy and current structured scopes. */
+/** Resolve the retrieval policy of a structured scope. */
 export function effectiveRetrievalScope(scope: Record<string, unknown>): RetrievalScope {
-  if (scope.retrievalScope !== undefined && RETRIEVAL_SCOPES.includes(scope.retrievalScope as RetrievalScope)) {
+  if (scope.retrievalScope !== undefined) {
+    if (!RETRIEVAL_SCOPES.includes(scope.retrievalScope as RetrievalScope)) {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Stored retrieval scope is invalid');
+    }
     return scope.retrievalScope as RetrievalScope;
   }
   return scope.visibility === 'global' ? 'global' : 'project-only';
@@ -51,7 +54,10 @@ export function effectiveRetrievalScope(scope: Record<string, unknown>): Retriev
 export function hasExplicitApplicability(scope: Record<string, unknown>): boolean {
   const applicability = scope.applicability;
   if (typeof applicability !== 'object' || applicability === null || Array.isArray(applicability)) return false;
-  return Object.values(applicability as Record<string, unknown>).some((value) => Array.isArray(value) && value.length > 0);
+  const values = Object.entries(applicability as Record<string, unknown>);
+  const dimensions = new Set(['languages', 'frameworks', 'databases', 'runtimes', 'tools', 'platforms']);
+  if (values.some(([key, value]) => !dimensions.has(key) || !Array.isArray(value))) return false;
+  return values.some(([, value]) => (value as unknown[]).length > 0);
 }
 
 const SIGNAL_TYPES = {
@@ -103,7 +109,7 @@ export function validateApplicability(value: unknown): Applicability {
         };
       });
       return [...new Map(normalized.map((item) => [`${item.name}\u0000${item.version ?? ''}`, item])).values()]
-        .sort((left, right) => `${left.name}\u0000${left.version ?? ''}`.localeCompare(`${right.name}\u0000${right.version ?? ''}`));
+        .sort((left, right) => compareCanonicalStrings(`${left.name}\u0000${left.version ?? ''}`, `${right.name}\u0000${right.version ?? ''}`));
     })();
   const result: Applicability = {};
   const languages = optionalStringList(input.languages);
@@ -142,6 +148,7 @@ export function buildStructuredScope(options: StructuredMemoryOptions): JsonObje
   if (options.visibility === 'project' && options.retrievalScope === 'global') invalid();
   const validatedApplicability = options.applicability === undefined ? undefined : validateApplicability(options.applicability);
   const hasApplicability = validatedApplicability !== undefined && Object.values(validatedApplicability).some((value) => Array.isArray(value) && value.length > 0);
+  if (options.visibility === 'project' && options.retrievalScope === 'ecosystem' && !hasApplicability) invalid();
   if (options.visibility === 'global' && !hasApplicability && options.portableReason === undefined) invalid();
   if (options.visibility === 'global' && options.portableReason !== undefined) cleanString(options.portableReason, 2_000);
   if (options.memoryClass !== undefined && !MEMORY_CLASSES.includes(options.memoryClass)) invalid();
@@ -172,8 +179,11 @@ export function extractEntrySearchSignals(input: {
 }): Array<{ type: string; value: string }> {
   const result: Array<{ type: string; value: string }> = [];
   const scope = input.scope as Record<string, unknown>;
-  const applicability = (scope.applicability ?? {}) as Record<string, unknown>;
-  const signals = (scope.signals ?? {}) as Record<string, unknown>;
+  // Unversioned scope is arbitrary legacy user JSON. Do not reinterpret
+  // colliding property names as structured search metadata.
+  const structuredScope = scope.schemaVersion === 2 || scope.schemaVersion === 3 ? scope : {};
+  const applicability = (structuredScope.applicability ?? {}) as Record<string, unknown>;
+  const signals = (structuredScope.signals ?? {}) as Record<string, unknown>;
   collect(input.tags, 'tag', result);
   collect(Array.isArray(applicability.languages) ? applicability.languages as string[] : undefined, 'language', result);
   collect(Array.isArray(applicability.databases) ? applicability.databases as string[] : undefined, 'database', result);
@@ -194,12 +204,40 @@ export function extractEntrySearchSignals(input: {
   }
   const dedupe = new Map<string, { type: string; value: string }>();
   for (const item of result) if (item.value.length > 0) dedupe.set(`${item.type}\u0000${item.value}`, item);
-  return [...dedupe.values()].sort((left, right) => `${left.type}:${left.value}`.localeCompare(`${right.type}:${right.value}`));
+  return [...dedupe.values()].sort((left, right) => compareCanonicalStrings(`${left.type}:${left.value}`, `${right.type}:${right.value}`));
+}
+
+const REQUIRED_PROJECTION_COLUMNS = {
+  entries_fts: ['title', 'body', 'summary', 'tags_text'],
+  entries_trigram: ['title', 'body', 'summary', 'tags_text'],
+  entry_search_signals: ['entry_id', 'signal_type', 'normalized_value'],
+} as const;
+
+/** Assert the complete search schema consumed by hybridSearch before mutating a projection. */
+export function requireHybridSearchProjectionSchema(database: SqliteDatabase): void {
+  const missing: string[] = [];
+  for (const [table, expectedColumns] of Object.entries(REQUIRED_PROJECTION_COLUMNS)) {
+    const definition = database.prepare('SELECT type, sql FROM sqlite_master WHERE name = ?').get<{ type: string; sql: string | null }>(table);
+    if (definition?.type !== 'table') {
+      missing.push(table);
+      continue;
+    }
+    const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>().map((column) => column.name));
+    for (const column of expectedColumns) if (!columns.has(column)) missing.push(`${table}.${column}`);
+    if (table === 'entries_fts' && !/CREATE\s+VIRTUAL\s+TABLE[\s\S]+USING\s+fts5\s*\([\s\S]+tokenize\s*=\s*'unicode61\s+remove_diacritics\s+2'/iu.test(definition.sql ?? '')) {
+      missing.push('entries_fts.fts5_unicode61');
+    }
+    if (table === 'entries_trigram' && !/CREATE\s+VIRTUAL\s+TABLE[\s\S]+USING\s+fts5\s*\([\s\S]+tokenize\s*=\s*'trigram'/iu.test(definition.sql ?? '')) {
+      missing.push('entries_trigram.fts5_trigram');
+    }
+  }
+  if (missing.length > 0) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Hybrid search projection schema is incomplete', { missing });
+  }
 }
 
 export function syncEntrySearchSignals(database: SqliteDatabase, input: Parameters<typeof extractEntrySearchSignals>[0]): void {
-  const table = database.prepare("SELECT 1 AS present FROM sqlite_master WHERE name = 'entry_search_signals'").get();
-  if (!table) return;
+  requireHybridSearchProjectionSchema(database);
   database.prepare('DELETE FROM entry_search_signals WHERE entry_id = ?').run(input.entryId);
   for (const signal of extractEntrySearchSignals(input)) {
     database.prepare('INSERT OR IGNORE INTO entry_search_signals (entry_id, signal_type, normalized_value) VALUES (?, ?, ?)').run(input.entryId, signal.type, signal.value);
@@ -208,18 +246,15 @@ export function syncEntrySearchSignals(database: SqliteDatabase, input: Paramete
 
 /** Refresh every search projection for the entry's current revision. */
 export function syncEntrySearchProjection(database: SqliteDatabase, input: Parameters<typeof extractEntrySearchSignals>[0]): void {
+  requireHybridSearchProjectionSchema(database);
   const row = database.prepare('SELECT rowid FROM entries WHERE id = ?').get<{ rowid: number }>(input.entryId);
   if (row === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Search projection entry is missing');
   const revision = database.prepare('SELECT current_revision FROM entries WHERE id = ?').get<{ current_revision: number }>(input.entryId);
   if (revision === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Search projection revision is missing');
   const revisionNumber = Number(revision.current_revision);
-  const tags = [...new Set(input.tags)].sort((left, right) => left.localeCompare(right));
-  const projectionTables = [
-    ['entries_fts', 'unicode61 remove_diacritics 2'],
-    ['entries_trigram', 'trigram'],
-  ] as const;
-  for (const [table] of projectionTables) {
-    if (!database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?").get(table)) continue;
+  const tags = canonicalTagOrder(input.tags);
+  const projectionTables = ['entries_fts', 'entries_trigram'] as const;
+  for (const table of projectionTables) {
     database.prepare(`DELETE FROM ${table} WHERE rowid = ?`).run(row.rowid);
     database.prepare(`
       INSERT INTO ${table}(rowid, title, body, summary, tags_text)
@@ -230,8 +265,4 @@ export function syncEntrySearchProjection(database: SqliteDatabase, input: Param
     `).run(tags.join(' '), input.entryId, revisionNumber);
   }
   syncEntrySearchSignals(database, { ...input, tags });
-}
-
-export function structuredMemoryHashFields(scope: JsonObject): string {
-  return canonicalJson(scope);
 }

@@ -66,7 +66,15 @@ test('promotion route is authenticated, queued, explicit, idempotent, and shared
     });
     assert.equal(appended.response.status, 200);
 
-    const body = { proposalEventId: 'proposal-7', actor: 'operator', createdAt, confirmed: true };
+    const body = { apiVersion: '1', proposalEventId: 'proposal-7', actor: 'operator', createdAt, confirmed: true };
+    const missingVersion = await agentRequest(data.agent.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/promotions`, {
+      method: 'POST', key: 'promote-missing-version', body: { proposalEventId: 'proposal-7', actor: 'operator', createdAt, confirmed: true },
+    });
+    assert.equal(missingVersion.response.status, 400);
+    const wrongVersion = await agentRequest(data.agent.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/promotions`, {
+      method: 'POST', key: 'promote-wrong-version', body: { ...body, apiVersion: '2' },
+    });
+    assert.equal(wrongVersion.response.status, 400);
     const promoted = await agentRequest(data.agent.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/promotions`, { method: 'POST', key: 'promote-7', body });
     assert.equal(promoted.response.status, 200);
     assert.equal(promoted.value.operation, 'agent.promotions');

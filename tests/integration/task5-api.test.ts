@@ -5,13 +5,15 @@ import path from 'node:path';
 import test from 'node:test';
 import { openConnection } from '../../src/db/connection.js';
 import { initializeDatabase } from '../../src/commands/init.js';
-import { recordEntry } from '../../src/memory/entries.js';
+import { ContextBroker } from '../../src/context/broker.js';
+import { readEntry, recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
 import { startAgentHttpServer } from '../../src/server/agent-application.js';
 
 const token = 'a'.repeat(64);
 const workspace = 'task5-api';
+const capabilities = [{ kind: 'skill', name: 'memory-reasoning' }];
 
-function openRequest() {
+function openRequest(capabilityCatalog: unknown = capabilities) {
   return {
     apiVersion: '1',
     workspace,
@@ -34,6 +36,7 @@ function openRequest() {
       file: 'declared',
       approval: 'unavailable',
     },
+    capabilities: capabilityCatalog,
   };
 }
 
@@ -51,6 +54,7 @@ async function fixture() {
         title: `Implement route context ${index}`,
         body: 'Implement this route and keep focused tests passing.',
         summary: 'Route implementation context',
+        tags: ['src/server/routes/task5.ts'],
       });
     }
   } finally {
@@ -62,7 +66,7 @@ async function fixture() {
     descriptorPath: path.join(runtimeDirectory, 'server.json'),
     capabilityToken: token,
   });
-  return runtime;
+  return { runtime, databasePath };
 }
 
 async function request(baseUrl: string, pathname: string, options: { method?: string; body?: unknown; key?: string } = {}) {
@@ -82,8 +86,8 @@ function dataOf(value: any): any {
   return value.data;
 }
 
-test('Task 5 checkpoint, feedback, context query and delivery-list routes share authenticated v1 composition', async () => {
-  const runtime = await fixture();
+test('Task 5 checkpoint and feedback enforce the run-bound capability catalog while ungated context routes stay removed', async () => {
+  const { runtime } = await fixture();
   try {
     const opened = await request(runtime.url, '/api/v1/agent/runs', {
       method: 'POST',
@@ -100,13 +104,10 @@ test('Task 5 checkpoint, feedback, context query and delivery-list routes share 
     const deliveryId = openedData.context.deliveryId as string;
     const entryId = openedData.context.items[0].entryId as string;
 
-    const deliveries = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/context-deliveries?limit=1`);
-    assert.equal(deliveries.response.status, 200);
-    assert.equal(deliveries.value.operation, 'agent.context-deliveries.list');
-    assert.equal(dataOf(deliveries.value).items.length, 1);
-    assert.equal(dataOf(deliveries.value).items[0].deliveryId, deliveryId);
-
-    const query = await request(runtime.url, '/api/v1/context/query', {
+    const removedDeliveries = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/context-deliveries?limit=1`);
+    assert.equal(removedDeliveries.response.status, 404);
+    assert.equal(removedDeliveries.value.operation, 'api.v1');
+    const removedQuery = await request(runtime.url, '/api/v1/context/query', {
       method: 'POST',
       body: {
         apiVersion: '1',
@@ -116,9 +117,8 @@ test('Task 5 checkpoint, feedback, context query and delivery-list routes share 
         limit: 1,
       },
     });
-    assert.equal(query.response.status, 200);
-    assert.equal(query.value.operation, 'context.query');
-    assert.equal(dataOf(query.value).context.items.length, 1);
+    assert.equal(removedQuery.response.status, 404);
+    assert.equal(removedQuery.value.operation, 'api.v1');
 
     const feedbackRequest = {
       apiVersion: '1',
@@ -144,22 +144,499 @@ test('Task 5 checkpoint, feedback, context query and delivery-list routes share 
     });
     assert.deepEqual(feedbackReplay.value, feedback.value);
 
+    const beforeMismatch = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}`);
+    const sequenceBeforeMismatch = dataOf(beforeMismatch.value).lastSequence;
+    const mismatchedCheckpoint = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-checkpoint-mismatched-catalog',
+      body: { apiVersion: '1', currentGoal: 'must not commit', characterBudget: 8000, capabilities: [] },
+    });
+    assert.equal(mismatchedCheckpoint.response.status, 409);
+    assert.equal(mismatchedCheckpoint.value.operation, 'agent.checkpoint');
+    assert.equal(mismatchedCheckpoint.value.error.code, 'CONFLICT');
+    const afterMismatch = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}`);
+    assert.equal(dataOf(afterMismatch.value).lastSequence, sequenceBeforeMismatch);
+
     const checkpoint = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/checkpoints`, {
       method: 'POST',
       key: 'task5-checkpoint-key',
-      body: { apiVersion: '1', currentGoal: 'verify route context', characterBudget: 8000 },
+      body: { apiVersion: '1', currentGoal: 'verify route context', characterBudget: 8000, capabilities },
     });
     assert.equal(checkpoint.response.status, 200);
     assert.equal(checkpoint.value.operation, 'agent.checkpoint');
     assert.equal(dataOf(checkpoint.value).taskProfile.source, 'akinator+ledger-revisions');
+    assert.equal(dataOf(checkpoint.value).intakeStatus, 'ready');
     assert.equal(typeof dataOf(checkpoint.value).acceptedThrough, 'number');
+    assert.equal(dataOf(checkpoint.value).nextAction, 'proceed');
+    assert.deepEqual(dataOf(checkpoint.value).memoryPolicy, { memoryReasoningRequired: true });
+    assert.notEqual(dataOf(checkpoint.value).context, null);
+  } finally {
+    await runtime.close();
+  }
+});
 
-    const invalid = await request(runtime.url, '/api/v1/context/query?unexpected=1', {
+test('checkpoint hard-stops actionable memory without persisting a delivery when the bound catalog lacks memory-reasoning', async () => {
+  const { runtime, databasePath } = await fixture();
+  let runId: string | undefined;
+  let deliveryCountBefore = -1;
+  try {
+    const opened = await request(runtime.url, '/api/v1/agent/runs', {
       method: 'POST',
-      body: { apiVersion: '1' },
+      key: 'task5-blocked-open',
+      body: openRequest([]),
     });
-    assert.equal(invalid.response.status, 400);
-    assert.equal(invalid.value.operation, 'context.query');
+    assert.equal(opened.response.status, 200);
+    const openedData = dataOf(opened.value);
+    runId = openedData.runId as string;
+    assert.equal(openedData.nextAction, 'required_capability_unavailable');
+    assert.deepEqual(openedData.memoryPolicy, { memoryReasoningRequired: true });
+    assert.equal(openedData.context, null);
+    assert.deepEqual(openedData.recommendations, []);
+    const before = openConnection(databasePath);
+    try {
+      recordEntry(before, {
+        workspace,
+        kind: 'lesson',
+        title: 'Implement route context checkpoint-only guidance',
+        body: 'Implement this route after verifying the current checkpoint evidence.',
+        summary: 'Checkpoint-only route context',
+        tags: ['src/server/routes/task5.ts'],
+      });
+      deliveryCountBefore = before.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count ?? -1;
+      assert.ok(deliveryCountBefore >= 0);
+    } finally {
+      before.close();
+    }
+
+    const checkpoint = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-blocked-checkpoint',
+      body: {
+        apiVersion: '1',
+        currentGoal: 'continue implementation',
+        changedPaths: ['src/server/routes/task5.ts'],
+        characterBudget: 8000,
+        capabilities: [],
+      },
+    });
+    assert.equal(checkpoint.response.status, 200);
+    const checkpointData = dataOf(checkpoint.value);
+    assert.equal(checkpointData.nextAction, 'required_capability_unavailable', JSON.stringify(checkpointData));
+    assert.deepEqual(checkpointData.memoryPolicy, { memoryReasoningRequired: true });
+    assert.equal(checkpointData.context, null);
+    assert.deepEqual(checkpointData.recommendations, []);
+    assert.ok(checkpointData.capabilities.recommendations.some((item: { name: string; required?: boolean; availability: string }) => item.name === 'memory-reasoning'
+      && item.required === true
+      && item.availability === 'missing'));
+  } finally {
+    await runtime.close();
+  }
+
+  assert.ok(runId);
+  const database = openConnection(databasePath);
+  try {
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count, deliveryCountBefore);
+  } finally {
+    database.close();
+  }
+});
+
+test('checkpoint fails instead of persisting a revision that changes after capability approval', async () => {
+  const { runtime, databasePath } = await fixture();
+  const prototype = ContextBroker.prototype as any;
+  const originalQueryGated = prototype.queryGated;
+  let persistenceAttempted = false;
+  let persistenceFailure: unknown;
+  let runId: string | undefined;
+  let deliveryCountBefore = -1;
+  try {
+    const opened = await request(runtime.url, '/api/v1/agent/runs', {
+      method: 'POST',
+      key: 'task5-revision-race-open',
+      body: openRequest(),
+    });
+    assert.equal(opened.response.status, 200);
+    runId = dataOf(opened.value).runId as string;
+    const before = openConnection(databasePath);
+    try {
+      recordEntry(before, {
+        workspace,
+        kind: 'lesson',
+        title: 'Checkpoint revision race guidance',
+        body: 'This entry is first eligible after the run opens.',
+        tags: ['src/server/routes/task5.ts'],
+      });
+      deliveryCountBefore = before.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+        .get<{ count: number }>(runId)?.count ?? -1;
+    } finally {
+      before.close();
+    }
+
+    prototype.queryGated = async function (this: ContextBroker, rawInput: unknown, decide: (candidate: unknown) => unknown, persistence: { enqueueWrite?: (operation: () => unknown) => unknown }) {
+      return originalQueryGated.call(this, rawInput, decide, {
+        enqueueWrite: async (operation: () => unknown) => {
+          persistenceAttempted = true;
+          try {
+            assert.equal(typeof persistence.enqueueWrite, 'function');
+            const brokerDatabase = (this as unknown as { database: ReturnType<typeof openConnection> }).database;
+            const selected = brokerDatabase.prepare('SELECT id FROM entries WHERE workspace = ? ORDER BY id LIMIT 1')
+              .get<{ id: string }>(workspace);
+            assert.ok(selected);
+            const entry = readEntry(brokerDatabase, { workspace, entryId: selected.id });
+            updateCandidateEntry(brokerDatabase, {
+              workspace,
+              entryId: entry.id,
+              expectedRevision: entry.revision,
+              kind: entry.kind,
+              title: entry.title,
+              body: `${entry.body} Concurrent revision.`,
+              summary: entry.summary,
+              scope: entry.scope,
+              provenance: entry.provenance,
+              tags: entry.tags,
+            });
+            return await persistence.enqueueWrite!(operation);
+          } catch (error) {
+            persistenceFailure = error;
+            throw error;
+          }
+        },
+      });
+    };
+
+    const checkpoint = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-revision-race-checkpoint',
+      body: {
+        apiVersion: '1',
+        currentGoal: 'reject a stale selected revision',
+        changedPaths: ['src/server/routes/task5.ts'],
+        characterBudget: 8000,
+        capabilities,
+      },
+    });
+    assert.equal(persistenceAttempted, true, JSON.stringify(checkpoint.value));
+    assert.ok(persistenceFailure instanceof Error, JSON.stringify(checkpoint.value));
+    assert.equal((persistenceFailure as { code?: unknown }).code, 'CONFLICT', `${persistenceFailure.name}: ${persistenceFailure.message}`);
+    assert.equal(checkpoint.response.status, 409);
+    assert.equal(checkpoint.value.operation, 'agent.checkpoint');
+    assert.equal(checkpoint.value.error.code, 'CONFLICT');
+  } finally {
+    prototype.queryGated = originalQueryGated;
+    await runtime.close();
+  }
+
+  assert.ok(runId);
+  const database = openConnection(databasePath);
+  try {
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+      .get<{ count: number }>(runId)?.count, deliveryCountBefore);
+  } finally {
+    database.close();
+  }
+});
+
+test('checkpoint replay keeps its mutation acknowledgement but gates with the current broker profile', async () => {
+  const { runtime, databasePath } = await fixture();
+  const body = {
+    ...openRequest([]),
+    task: {
+      title: 'Implement route context',
+      query: 'Implement this route',
+      profileHints: {
+        taskType: 'research' as const,
+        target: 'src/server/routes',
+        expected: 'document the current behavior',
+        constraints: null,
+      },
+    },
+  };
+  try {
+    const opened = await request(runtime.url, '/api/v1/agent/runs', {
+      method: 'POST',
+      key: 'task5-current-profile-open',
+      body,
+    });
+    assert.equal(opened.response.status, 200);
+    const openedData = dataOf(opened.value);
+    assert.equal(openedData.taskProfile.taskType, 'research');
+    assert.equal(openedData.nextAction, 'proceed');
+
+    const beforeFirstCheckpoint = openConnection(databasePath);
+    try {
+      recordEntry(beforeFirstCheckpoint, {
+        workspace,
+        kind: 'lesson',
+        title: 'Implement route context first checkpoint guidance',
+        body: 'Research the checkpoint response using current repository evidence.',
+        tags: ['src/server/routes/task5.ts'],
+      });
+    } finally {
+      beforeFirstCheckpoint.close();
+    }
+    const firstBody = {
+      apiVersion: '1',
+      currentGoal: 'research current checkpoint state',
+      capabilities: [],
+    };
+    const first = await request(runtime.url, `/api/v1/agent/runs/${openedData.runId}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-current-profile-first',
+      body: firstBody,
+    });
+    assert.equal(first.response.status, 200);
+    const firstData = dataOf(first.value);
+    assert.equal(firstData.taskProfile.taskType, 'research');
+    assert.equal(firstData.nextAction, 'proceed');
+
+    const beforeRevision = openConnection(databasePath);
+    try {
+      recordEntry(beforeRevision, {
+        workspace,
+        kind: 'lesson',
+        title: 'Implement route context revised build guidance',
+        body: 'Implement the revised route only after verifying its focused test.',
+        tags: ['src/server/routes/task5.ts', 'build'],
+      });
+    } finally {
+      beforeRevision.close();
+    }
+    const revised = await request(runtime.url, `/api/v1/agent/runs/${openedData.runId}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-current-profile-revision',
+      body: {
+        apiVersion: '1',
+        currentGoal: 'implement the revised route',
+        taskProfileRevision: { taskType: 'build' },
+        capabilities: [],
+      },
+    });
+    assert.equal(revised.response.status, 200);
+    assert.equal(dataOf(revised.value).taskProfile.taskType, 'build');
+    assert.equal(dataOf(revised.value).nextAction, 'required_capability_unavailable');
+
+    const beforeReplay = openConnection(databasePath);
+    const deliveriesBeforeReplay = beforeReplay.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+      .get<{ count: number }>(openedData.runId)?.count;
+    beforeReplay.close();
+    const replay = await request(runtime.url, `/api/v1/agent/runs/${openedData.runId}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-current-profile-first',
+      body: firstBody,
+    });
+    assert.equal(replay.response.status, 200);
+    const replayData = dataOf(replay.value);
+    assert.equal(replayData.acceptedThrough, firstData.acceptedThrough);
+    assert.equal(replayData.taskProfile.taskType, 'build');
+    assert.equal(replayData.nextAction, 'required_capability_unavailable');
+    assert.equal(replayData.context, null);
+
+    const verified = openConnection(databasePath);
+    try {
+      assert.equal(verified.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+        .get<{ count: number }>(openedData.runId)?.count, deliveriesBeforeReplay);
+    } finally {
+      verified.close();
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('exact checkpoint replay rejects a terminal run before broker delivery', async () => {
+  const { runtime, databasePath } = await fixture();
+  try {
+    const opened = await request(runtime.url, '/api/v1/agent/runs', {
+      method: 'POST',
+      key: 'task5-terminal-replay-open',
+      body: openRequest(),
+    });
+    assert.equal(opened.response.status, 200);
+    const runId = dataOf(opened.value).runId as string;
+    const checkpointBody = { apiVersion: '1', currentGoal: 'record the final checkpoint', capabilities };
+    const checkpoint = await request(runtime.url, `/api/v1/agent/runs/${runId}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-terminal-replay-checkpoint',
+      body: checkpointBody,
+    });
+    assert.equal(checkpoint.response.status, 200);
+    const before = openConnection(databasePath);
+    const deliveriesBefore = before.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+      .get<{ count: number }>(runId)?.count;
+    before.close();
+
+    const closed = await request(runtime.url, `/api/v1/agent/runs/${runId}/close`, {
+      method: 'POST',
+      key: 'task5-terminal-replay-close',
+      body: { apiVersion: '1', status: 'completed' },
+    });
+    assert.equal(closed.response.status, 200);
+    const replay = await request(runtime.url, `/api/v1/agent/runs/${runId}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-terminal-replay-checkpoint',
+      body: checkpointBody,
+    });
+    assert.equal(replay.response.status, 409);
+    assert.equal(replay.value.error.code, 'CONFLICT');
+
+    const verified = openConnection(databasePath);
+    try {
+      assert.equal(verified.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+        .get<{ count: number }>(runId)?.count, deliveriesBefore);
+    } finally {
+      verified.close();
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
+test('Task5 delivery persistence forwards the transaction-time capability assertion', async () => {
+  const { runtime, databasePath } = await fixture();
+  const prototype = ContextBroker.prototype as any;
+  const originalQueryGated = prototype.queryGated;
+  let assertionForwarded = false;
+  let assertionInvoked = false;
+  try {
+    const opened = await request(runtime.url, '/api/v1/agent/runs', {
+      method: 'POST',
+      key: 'task5-assertion-forward-open',
+      body: openRequest(),
+    });
+    assert.equal(opened.response.status, 200);
+    const runId = dataOf(opened.value).runId as string;
+    const database = openConnection(databasePath);
+    try {
+      recordEntry(database, {
+        workspace,
+        kind: 'lesson',
+        title: 'Task5 transaction assertion forwarding guidance',
+        body: 'Verify capability state inside the delivery transaction.',
+        tags: ['src/server/routes/task5.ts'],
+      });
+    } finally {
+      database.close();
+    }
+
+    prototype.queryGated = async function (
+      this: ContextBroker,
+      rawInput: unknown,
+      decide: (candidate: unknown) => unknown,
+      persistence: { enqueueWrite?: (operation: () => unknown) => unknown },
+    ) {
+      return originalQueryGated.call(this, rawInput, decide, {
+        enqueueWrite: async (operation: () => unknown) => {
+          assert.equal(typeof persistence.enqueueWrite, 'function');
+          assertionForwarded = true;
+          return persistence.enqueueWrite!(() => {
+              assertionInvoked = true;
+              return operation();
+          });
+        },
+      });
+    };
+    const checkpoint = await request(runtime.url, `/api/v1/agent/runs/${runId}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-assertion-forward-checkpoint',
+      body: {
+        apiVersion: '1',
+        currentGoal: 'verify assertion forwarding',
+        changedPaths: ['src/server/routes/task5.ts'],
+        capabilities,
+      },
+    });
+    assert.equal(checkpoint.response.status, 200, JSON.stringify(checkpoint.value));
+    assert.equal(assertionForwarded, true);
+    assert.equal(assertionInvoked, true);
+  } finally {
+    prototype.queryGated = originalQueryGated;
+    await runtime.close();
+  }
+});
+
+test('exact checkpoint replay re-evaluates current helpful feedback for its weak delivery', async () => {
+  const { runtime, databasePath } = await fixture();
+  const body = {
+    ...openRequest([]),
+    task: {
+      title: 'beacon',
+      query: 'beacon',
+      profileHints: {
+        taskType: 'research' as const,
+        target: 'beacon',
+        expected: 'document behavior',
+        constraints: null,
+      },
+    },
+  };
+  try {
+    const opened = await request(runtime.url, '/api/v1/agent/runs', {
+      method: 'POST',
+      key: 'task5-helpful-replay-open',
+      body,
+    });
+    assert.equal(opened.response.status, 200);
+    const runId = dataOf(opened.value).runId as string;
+    const database = openConnection(databasePath);
+    let entryId = '';
+    try {
+      entryId = recordEntry(database, {
+        workspace,
+        kind: 'reference',
+        title: 'xxbeaconzz historical note',
+        body: 'A prior observation with no actionable lexical token.',
+        tags: [],
+      }).id;
+    } finally {
+      database.close();
+    }
+    const checkpointBody = {
+      apiVersion: '1',
+      currentGoal: 'switch to implementation',
+      taskProfileRevision: { taskType: 'build' },
+      capabilities: [],
+    };
+    const checkpoint = await request(runtime.url, `/api/v1/agent/runs/${runId}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-helpful-replay-checkpoint',
+      body: checkpointBody,
+    });
+    assert.equal(checkpoint.response.status, 200);
+    const checkpointData = dataOf(checkpoint.value);
+    assert.equal(checkpointData.taskProfile.taskType, 'build');
+    assert.equal(checkpointData.nextAction, 'proceed', JSON.stringify(checkpointData));
+    assert.deepEqual(checkpointData.memoryPolicy, { memoryReasoningRequired: false });
+    const delivered = checkpointData.context?.items.find((item: any) => item.entryId === entryId);
+    assert.ok(delivered);
+    assert.equal(delivered.selectionReasons.includes('literal_fallback_match'), true);
+
+    const feedback = await request(runtime.url, `/api/v1/agent/runs/${runId}/feedback`, {
+      method: 'POST',
+      key: 'task5-helpful-replay-feedback',
+      body: {
+        apiVersion: '1',
+        category: 'context',
+        feedbackId: 'task5-helpful-replay-feedback-id',
+        deliveryId: checkpointData.context.deliveryId,
+        entryId,
+        verdict: 'helpful',
+      },
+    });
+    assert.equal(feedback.response.status, 200);
+
+    const replay = await request(runtime.url, `/api/v1/agent/runs/${runId}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-helpful-replay-checkpoint',
+      body: checkpointBody,
+    });
+    assert.equal(replay.response.status, 200);
+    const replayData = dataOf(replay.value);
+    assert.equal(replayData.nextAction, 'required_capability_unavailable');
+    assert.deepEqual(replayData.memoryPolicy, { memoryReasoningRequired: true });
+    assert.equal(replayData.context, null);
+    assert.ok(replayData.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
+      && item.required === true
+      && item.availability === 'missing'));
   } finally {
     await runtime.close();
   }

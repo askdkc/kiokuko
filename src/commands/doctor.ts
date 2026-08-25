@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { initializeDatabase } from './init.js';
 import { openConnection } from '../db/connection.js';
+import { KiokukoError } from '../errors.js';
 import { BEGIN_MARKER, END_MARKER } from '../agent-file/managed-block.js';
 import { readProjectConfig } from '../config/project-config.js';
 import { getDatabaseLockPath, getRuntimeDescriptorPath } from '../config/paths.js';
@@ -11,7 +12,7 @@ import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
 import { inspectLedger } from '../ledger/maintenance.js';
 import { findSecret } from '../memory/secrets.js';
 import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
-import { canonicalContentHash } from '../serialization/validate.js';
+import { readEntryRevision } from '../memory/revisions.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -45,6 +46,10 @@ export interface DoctorResult {
     runtime: DoctorCheck;
     hybridSearch: DoctorCheck;
   };
+}
+
+export interface DoctorDependencies {
+  openConnection?: typeof openConnection;
 }
 
 function count(database: ReturnType<typeof openConnection>, sql: string, ...parameters: string[]): number {
@@ -95,9 +100,15 @@ async function runtimeCheck(databasePath: string, descriptorPath = getRuntimeDes
   return { ok: findings === 0, count: findings, detail: `findings=${findings}` };
 }
 
-export async function runDoctor(options: { databasePath?: string; runtimeDescriptorPath?: string } = {}): Promise<DoctorResult> {
+export async function runDoctor(
+  options: { databasePath?: string; runtimeDescriptorPath?: string } = {},
+  dependencies: DoctorDependencies = {},
+): Promise<DoctorResult> {
   const initialized = await initializeDatabase(options);
-  const database = openConnection(initialized.databasePath);
+  const database = (dependencies.openConnection ?? openConnection)(initialized.databasePath);
+  let doctorResult: DoctorResult | undefined;
+  let operationFailed = false;
+  let operationError: unknown;
   try {
     const integrity = database.prepare('PRAGMA integrity_check').get<{ integrity_check: string }>()?.integrity_check ?? 'unknown';
     const foreignKeyRows = database.prepare('PRAGMA foreign_key_check').all();
@@ -120,7 +131,7 @@ export async function runDoctor(options: { databasePath?: string; runtimeDescrip
         if (!projected || projected.title !== row.title || projected.body !== row.body || projected.summary !== (row.summary ?? '') || projected.tags_text !== tags.join(' ')) ftsCurrentMismatches += 1;
       }
     }
-    const ftsCheck = { ok: !fts5 || (entryCount === ftsCount && ftsCurrentMismatches === 0), count: Math.abs(entryCount - ftsCount) + ftsCurrentMismatches, detail: `entries=${entryCount}, fts=${ftsCount}, currentMismatches=${ftsCurrentMismatches}` };
+    const ftsCheck = { ok: fts5 && entryCount === ftsCount && ftsCurrentMismatches === 0, count: Math.abs(entryCount - ftsCount) + ftsCurrentMismatches + (fts5 ? 0 : 1), detail: `present=${fts5}, entries=${entryCount}, fts=${ftsCount}, currentMismatches=${ftsCurrentMismatches}` };
     const missingCurrentRevisions = count(database, `
       SELECT COUNT(*) AS count FROM entries e
       LEFT JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
@@ -137,31 +148,55 @@ export async function runDoctor(options: { databasePath?: string; runtimeDescrip
       WHERE r.entry_id IS NULL
     `);
     const revisionRows = database.prepare(`
-      SELECT r.entry_id, r.revision, r.kind, r.title, r.body, r.summary,
-             r.scope_json, r.provenance_json, r.content_hash
+      SELECT r.entry_id, r.workspace, r.revision
         FROM entry_revisions AS r
-    `).all<{ entry_id: string; revision: number; kind: string; title: string; body: string; summary: string | null; scope_json: string; provenance_json: string; content_hash: string }>();
-    let revisionHashMismatches = 0;
+    `).all<{ entry_id: string; workspace: string; revision: number }>();
+    const hashFormatTable = database.prepare(`
+      SELECT type
+        FROM sqlite_schema
+       WHERE name = 'entry_revision_hash_format'
+    `).get<{ type: unknown }>();
+    const hashFormats = hashFormatTable?.type === 'table'
+      ? database.prepare('SELECT singleton, algorithm FROM entry_revision_hash_format')
+        .all<{ singleton: unknown; algorithm: unknown }>()
+      : [];
+    let revisionHashMismatches = hashFormats.length === 1
+      && hashFormats[0]?.singleton === 1
+      && hashFormats[0].algorithm === 'canonical-json-utf16-tags-v1'
+      ? 0
+      : 1;
     for (const row of revisionRows) {
       try {
-        // Match validateRecordInput/canonicalContentHash, which uses the
-        // JavaScript locale-aware tag ordering rather than SQLite's binary
-        // ORDER BY ordering.
-        const tags = database.prepare('SELECT tag FROM entry_revision_tags WHERE entry_id = ? AND revision = ?').all<{ tag: string }>(row.entry_id, row.revision)
-          .map((tag) => tag.tag)
-          .sort((left, right) => left.localeCompare(right));
-        const expected = canonicalContentHash({ kind: row.kind, title: row.title, body: row.body, summary: row.summary, scope: JSON.parse(row.scope_json), provenance: JSON.parse(row.provenance_json), tags });
-        if (expected !== row.content_hash) revisionHashMismatches += 1;
-      } catch {
-        revisionHashMismatches += 1;
+        // The shared decoder accepts only the canonical JSON preimage and the
+        // single locale-independent revision hash format.
+        readEntryRevision(database, {
+          entryId: row.entry_id,
+          workspace: row.workspace,
+          revision: row.revision,
+        });
+      } catch (error) {
+        if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
+          revisionHashMismatches += 1;
+          continue;
+        }
+        throw error;
       }
     }
-    const projection = hybridSearchProjectionStatus(database);
-    const hybridCheck = {
-      ok: projection.missingSignals === 0 && projection.extraSignals === 0 && projection.staleTrigram === 0,
-      count: projection.missingSignals + projection.extraSignals + projection.staleTrigram,
-      detail: `entries=${projection.entries}, trigram=${projection.trigram}, signals=${projection.signals}, missingSignals=${projection.missingSignals}, extraSignals=${projection.extraSignals}, staleTrigram=${projection.staleTrigram}`,
-    };
+    const hybridCheck = (() => {
+      try {
+        const projection = hybridSearchProjectionStatus(database);
+        return {
+          ok: projection.missingSignals === 0 && projection.extraSignals === 0 && projection.staleTrigram === 0,
+          count: projection.missingSignals + projection.extraSignals + projection.staleTrigram,
+          detail: `entries=${projection.entries}, trigram=${projection.trigram}, signals=${projection.signals}, missingSignals=${projection.missingSignals}, extraSignals=${projection.extraSignals}, staleTrigram=${projection.staleTrigram}`,
+        };
+      } catch (error) {
+        if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
+          return { ok: false, count: 1, detail: 'stored projection source is invalid' };
+        }
+        throw error;
+      }
+    })();
     const danglingLinks = count(database, `
       SELECT COUNT(*) AS count FROM entry_links l
       LEFT JOIN entries f ON f.id = l.from_entry_id
@@ -233,8 +268,25 @@ export async function runDoctor(options: { databasePath?: string; runtimeDescrip
       hybridSearch: hybridCheck,
     };
     const ok = Object.values(checks).every((check) => check.ok);
-    return { ok, databasePath: '<redacted>', currentVersion: initialized.currentVersion, capabilities: initialized.capabilities, integrity, fts5, checks };
-  } finally {
-    database.close();
+    doctorResult = { ok, databasePath: '<redacted>', currentVersion: initialized.currentVersion, capabilities: initialized.capabilities, integrity, fts5, checks };
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
   }
+  try {
+    database.close();
+  } catch (closeError) {
+    if (operationFailed) {
+      throw new AggregateError(
+        [operationError, closeError],
+        'Doctor checks failed and closing the database connection also failed',
+      );
+    }
+    throw closeError;
+  }
+  if (operationFailed) throw operationError;
+  if (doctorResult === undefined) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Doctor checks produced no result');
+  }
+  return doctorResult;
 }

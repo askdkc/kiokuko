@@ -343,7 +343,7 @@ test('sanitizes injected status descriptors before JSON output', async () => {
   assert.equal('capabilityToken' in envelope.data.descriptor, false);
 });
 
-test('returns usage code 2 for Commander parsing failures without process.exit or JSON stdout', async () => {
+test('returns one JSON usage envelope for Commander parsing failures without process.exit', async () => {
   const capture = captureProcessOutput();
   const originalExit = process.exit;
   let exitCalls = 0;
@@ -361,6 +361,16 @@ test('returns usage code 2 for Commander parsing failures without process.exit o
   capture.restore();
   assert.equal(exitCode, 2);
   assert.equal(exitCalls, 0);
-  assert.equal(captured.stdout, '');
-  assert.match(captured.stderr, /commander\.unknownOption/);
+  assert.equal(captured.stderr, '');
+  assert.equal(captured.stdout.split('\n').filter(Boolean).length, 1);
+  assert.deepEqual(JSON.parse(captured.stdout), {
+    apiVersion: '1',
+    ok: false,
+    operation: 'server.status',
+    error: {
+      code: 'USAGE_ERROR',
+      message: 'Invalid command-line usage',
+      details: { commanderCode: 'commander.unknownOption' },
+    },
+  });
 });
