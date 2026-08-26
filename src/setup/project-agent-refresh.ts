@@ -156,6 +156,7 @@ async function refreshRegisteredProject(
     allowDirectory: true,
     databasePath: options.databasePath,
     dryRun: options.dryRun === true,
+    ensureNewBindingIgnored: true,
     ...(options.migrationsDirectory === undefined
       ? {}
       : { migrationsDirectory: options.migrationsDirectory }),

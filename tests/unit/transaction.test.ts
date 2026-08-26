@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SqliteDatabase } from '../../src/db/adapter.js';
 import { isSqliteCorruptionError, isSqliteLockError, isSqliteUniqueConstraintError } from '../../src/db/sqlite-retry.js';
+import { KiokukoError } from '../../src/errors.js';
 import {
   TransactionCommitUncertainError,
   withImmediateTransaction,
@@ -74,7 +75,13 @@ test('bounds retries for a persistent SQLite lock', () => {
     throw locked;
   });
 
-  assert.throws(() => withImmediateTransaction(database, () => undefined), (error: unknown) => error === locked);
+  assert.throws(
+    () => withImmediateTransaction(database, () => undefined),
+    (error: unknown) => error instanceof KiokukoError
+      && error.code === 'BACKPRESSURE'
+      && error.message === 'SQLite remained busy after bounded retry'
+      && error.details.retryAfterSeconds === 1,
+  );
   assert.equal(beginAttempts, 5);
 });
 

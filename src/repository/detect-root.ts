@@ -17,9 +17,28 @@ export interface DetectRepositoryRootOptions {
 }
 
 export function canonicalDirectory(directory: string): string {
-  const resolved = realpathSync(directory);
-  if (!statSync(resolved).isDirectory()) throw new KiokukoError('VALIDATION_ERROR', 'Repository root must be a directory');
-  return resolved;
+  if (!path.isAbsolute(directory)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Directory path must be absolute');
+  }
+  try {
+    const resolved = realpathSync(directory);
+    if (!statSync(resolved).isDirectory()) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Repository root must be a directory');
+    }
+    return resolved;
+  } catch (error) {
+    if (error instanceof KiokukoError) throw error;
+    const code = error instanceof Error && 'code' in error
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw new KiokukoError('NOT_FOUND', 'Directory was not found');
+    }
+    if (code === 'EACCES' || code === 'EPERM') {
+      throw new KiokukoError('VALIDATION_ERROR', 'Directory is not accessible');
+    }
+    throw error;
+  }
 }
 
 function ancestorDirectories(start: string): string[] {

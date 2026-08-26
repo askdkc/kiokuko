@@ -266,6 +266,13 @@ configured path. The selected agent-file parent directory must already exist.
 Project bindings reject the reserved `kiokuko_global` repository ID and
 `global` workspace.
 
+When `kiokuko setup` materializes a missing `.kiokuko.json` for a registered
+live project, the same atomic project operation appends `.kiokuko.json` to the
+root `.gitignore` unless that file already contains `.kiokuko.json` or
+`/.kiokuko.json` as a complete line. Existing bytes, line endings, and file
+mode are preserved. Updating an existing binding does not add the entry, and
+plain `kiokuko use` retains its existing file contract.
+
 `--force-rebind` is valid only for an existing binding and must resolve to both
 a different repository ID and a different workspace. At least one value must be
 supplied; Kiokuko generates the other when it is omitted. A no-op force and a

@@ -36,6 +36,7 @@ import { detectRepositoryRoot } from '../repository/detect-root.js';
 import { createRepositoryIdentity } from '../repository/identity.js';
 import { KiokukoError } from '../errors.js';
 import { readGitOrigin } from '../repository/git-origin.js';
+import { renderProjectGitignore } from '../repository/gitignore.js';
 
 export interface UseOptions {
   cwd?: string;
@@ -49,6 +50,8 @@ export interface UseOptions {
   databasePath?: string;
   migrationsDirectory?: string;
   repositoryId?: string;
+  /** Setup-only policy: ignore a binding created by this use operation. */
+  ensureNewBindingIgnored?: boolean;
 }
 
 export interface UseCommandDependencies {
@@ -1046,6 +1049,20 @@ async function useRepositoryAttempt(
     ? undefined
     : removeManagedBlock(previousAgent.content);
   const nextBindingText = bindingText(nextBinding);
+  const gitignoreFile = path.join(repositoryRoot, '.gitignore');
+  const shouldIgnoreNewBinding = options.ensureNewBindingIgnored === true
+    && existingBinding === undefined;
+  const gitignoreSnapshot = shouldIgnoreNewBinding
+    ? await readStrictSettledTarget(
+        gitignoreFile,
+        repositoryRoot,
+        bindingParentIdentity,
+        'Project .gitignore',
+      )
+    : undefined;
+  const renderedGitignore = shouldIgnoreNewBinding
+    ? renderProjectGitignore(gitignoreSnapshot?.content)
+    : undefined;
   const rendered = options.noAgentFile
     ? undefined
     : renderAgentFile(existingAgent?.content, agentTemplateValues);
@@ -1144,6 +1161,48 @@ async function useRepositoryAttempt(
         expectation(bindingSnapshot, repositoryRoot, bindingParentIdentity),
       );
       resolvedBinding = bindingSnapshot;
+    }
+
+    let resolvedGitignore = gitignoreSnapshot;
+    if (renderedGitignore !== undefined && renderedGitignore.action !== 'unchanged') {
+      try {
+        const resolution = await writeOrConvergeIdentical(
+          dependencies,
+          gitignoreFile,
+          renderedGitignore.content,
+          gitignoreSnapshot,
+          gitignoreSnapshot?.mode ?? 0o644,
+          repositoryRoot,
+          bindingParentIdentity,
+        );
+        resolvedGitignore = resolution.snapshot;
+        if (resolution.owned) {
+          installed.push({
+            path: gitignoreFile,
+            original: gitignoreSnapshot,
+            installed: resolution.snapshot,
+            containmentRoot: repositoryRoot,
+            parentIdentity: bindingParentIdentity,
+          });
+        }
+        assertAtomicCleanupComplete(resolution);
+      } catch (error) {
+        if (error instanceof AtomicCommittedMutationError) {
+          installed.push({
+            path: gitignoreFile,
+            original: gitignoreSnapshot,
+            installed: error.outcome.installed,
+            containmentRoot: repositoryRoot,
+            parentIdentity: bindingParentIdentity,
+          });
+        }
+        throw error;
+      }
+    } else if (renderedGitignore !== undefined && gitignoreSnapshot !== undefined) {
+      await assertFileExpectation(
+        gitignoreFile,
+        expectation(gitignoreSnapshot, repositoryRoot, bindingParentIdentity),
+      );
     }
 
     let resolvedAgent = existingAgent;
@@ -1290,6 +1349,12 @@ async function useRepositoryAttempt(
       throw new KiokukoError('CONFLICT', 'Repository binding changed before registration', {
         target: bindingFile,
       });
+    }
+    if (renderedGitignore !== undefined) {
+      await assertFileExpectation(
+        gitignoreFile,
+        expectation(resolvedGitignore, repositoryRoot, bindingParentIdentity),
+      );
     }
     if (!options.noAgentFile) {
       await assertFileExpectation(

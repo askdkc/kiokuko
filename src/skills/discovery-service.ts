@@ -79,6 +79,7 @@ function sourceOrValidationFailureCode(error: unknown): Exclude<SkillSourceFailu
 function persistenceFailureCode(error: unknown): string | undefined {
   if (error instanceof KiokukoError) {
     if (error.code === 'CONFLICT') return 'persistence_conflict';
+    if (error.code === 'BACKPRESSURE') return 'persistence_failed';
     return undefined;
   }
   return isSqliteOperationalError(error) ? 'persistence_failed' : undefined;

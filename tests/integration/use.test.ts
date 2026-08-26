@@ -87,7 +87,72 @@ test('use creates binding and AGENTS.md, then is unchanged on repeat', async () 
   assert.equal(second.bindingAction, 'unchanged');
   assert.equal(await readFile(path.join(root, '.kiokuko.json'), 'utf8'), bindingBefore);
   assert.equal(await readFile(path.join(root, 'AGENTS.md'), 'utf8'), agentBefore);
+  await assert.rejects(access(path.join(root, '.gitignore')));
   await access(databasePath);
+});
+
+test('new-binding ignore policy appends .kiokuko.json while preserving content, line endings, and mode', async () => {
+  const root = await repository('gitignore-create');
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const gitignorePath = path.join(root, '.gitignore');
+  await writeFile(gitignorePath, 'node_modules/\r\n.env', { mode: 0o640 });
+
+  await useRepository({ root, databasePath, ensureNewBindingIgnored: true });
+
+  assert.equal(
+    await readFile(gitignorePath, 'utf8'),
+    'node_modules/\r\n.env\r\n.kiokuko.json\r\n',
+  );
+  assert.equal((await stat(gitignorePath)).mode & 0o777, 0o640);
+
+  await writeFile(gitignorePath, 'node_modules/\n');
+  await useRepository({ root, databasePath, ensureNewBindingIgnored: true });
+  assert.equal(await readFile(gitignorePath, 'utf8'), 'node_modules/\n');
+});
+
+test('new-binding ignore failure restores the binding and leaves user gitignore bytes unchanged', async () => {
+  const root = await repository('gitignore-rollback');
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const gitignorePath = path.join(root, '.gitignore');
+  await writeFile(gitignorePath, 'dist/\n');
+
+  await assert.rejects(
+    useRepository({ root, databasePath, ensureNewBindingIgnored: true }, {
+      atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+        if (path.basename(filePath) === '.gitignore') throw new Error('injected gitignore failure');
+        return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+      },
+    }),
+    /injected gitignore failure/u,
+  );
+
+  assert.equal(await readFile(gitignorePath, 'utf8'), 'dist/\n');
+  await assert.rejects(access(path.join(root, '.kiokuko.json')));
+  await assert.rejects(access(path.join(root, 'AGENTS.md')));
+});
+
+test('new-binding ignore update is restored when the later agent-file write fails', async () => {
+  const root = await repository('gitignore-later-rollback');
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const gitignorePath = path.join(root, '.gitignore');
+  await writeFile(gitignorePath, 'dist/\n');
+
+  await assert.rejects(
+    useRepository({ root, databasePath, ensureNewBindingIgnored: true }, {
+      atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+        if (path.basename(filePath) === 'AGENTS.md') throw new Error('injected agent failure');
+        return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+      },
+    }),
+    /injected agent failure/u,
+  );
+
+  assert.equal(await readFile(gitignorePath, 'utf8'), 'dist/\n');
+  await assert.rejects(access(path.join(root, '.kiokuko.json')));
+  await assert.rejects(access(path.join(root, 'AGENTS.md')));
 });
 
 test('use adopts one exact concurrent binding and converges on an exact agent-file result', async () => {

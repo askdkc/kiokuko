@@ -736,6 +736,8 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   await mkdir(staleRoot);
   await mkdir(locationOnlyRoot);
   await mkdir(missingRoot);
+  const locationOnlyGitignorePath = path.join(locationOnlyRoot, '.gitignore');
+  await writeFile(locationOnlyGitignorePath, 'node_modules/\r\n');
 
   const stale = await useRepository({
     root: staleRoot,
@@ -798,6 +800,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   ]);
   await assert.rejects(access(path.join(locationOnlyRoot, '.kiokuko.json')));
   await assert.rejects(access(path.join(locationOnlyRoot, 'AGENTS.md')));
+  assert.equal(await readFile(locationOnlyGitignorePath, 'utf8'), 'node_modules/\r\n');
   assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 9/u);
 
   const result = await setupGlobalClients({
@@ -845,6 +848,45 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     agentFile: 'AGENTS.md',
     templateVersion: 10,
   });
+  assert.equal(
+    await readFile(locationOnlyGitignorePath, 'utf8'),
+    'node_modules/\r\n.kiokuko.json\r\n',
+  );
+  await assert.rejects(access(path.join(stale.repositoryRoot, '.gitignore')));
+});
+
+test('setup creates a root gitignore when it materializes a registered project binding', async () => {
+  const temporary = await temporaryEnvironment('registered-project-gitignore');
+  const projectRoot = path.join(temporary.root, 'registered-project');
+  await mkdir(projectRoot);
+  await initializeDatabase({ databasePath: temporary.databasePath });
+  const canonicalRoot = await realpath(projectRoot);
+  const database = openConnection(temporary.databasePath);
+  try {
+    registerRepositoryAndLocation(database, {
+      repositoryId: 'repo_setup_gitignore_create',
+      workspace: 'project:setup-gitignore-create',
+      canonicalRoot,
+      displayName: 'registered-project',
+      remoteFingerprint: null,
+      bindingSchemaVersion: 1,
+      agentTemplateVersion: 0,
+      now: '2026-08-26T00:00:00.000Z',
+    });
+  } finally {
+    database.close();
+  }
+
+  const result = await setupGlobalClients({
+    clients: [],
+    standardSkills: false,
+    databasePath: temporary.databasePath,
+    platform: 'linux',
+    env: temporary.env,
+  });
+
+  assert.equal(result.projectAgentFiles[0]?.bindingAction, 'created');
+  assert.equal(await readFile(path.join(canonicalRoot, '.gitignore'), 'utf8'), '.kiokuko.json\n');
 });
 
 test('setup resolves a sticky named Hermes profile without crossing into another profile', async () => {

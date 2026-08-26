@@ -5,6 +5,12 @@ Claude Code's global `CLAUDE.md` with a Kiokuko global-memory block. `kiokuko
 use` optionally creates or updates the repository's `AGENTS.md` with a
 project-specific block.
 
+If setup creates a missing project binding for a registered project, it also
+adds `.kiokuko.json` to that project's root `.gitignore` when neither the plain
+nor root-anchored entry is already present. This setup-only addition participates
+in the same compare-and-swap and rollback boundary as the binding and project
+agent file.
+
 Existing bytes outside the block are preserved, including the human-authored
 header/footer, line-ending style, and file mode. Missing markers are appended;
 imbalanced, duplicated, nested, or reversed markers cause a validation error

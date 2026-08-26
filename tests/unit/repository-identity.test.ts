@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { detectRepositoryRoot } from '../../src/repository/detect-root.js';
+import { canonicalDirectory, detectRepositoryRoot } from '../../src/repository/detect-root.js';
+import { KiokukoError } from '../../src/errors.js';
 import { createRepositoryIdentity } from '../../src/repository/identity.js';
 import { fingerprintRemoteUrl, normalizeRemoteUrl } from '../../src/repository/remote-url.js';
 
@@ -36,6 +37,26 @@ test('requires allowDirectory when no binding or git root exists', async () => {
   const directory = await temp('directory');
   assert.throws(() => detectRepositoryRoot({ cwd: directory }), /allow-directory|repository root/i);
   assert.equal(detectRepositoryRoot({ cwd: directory, allowDirectory: true }).root, directory);
+});
+
+test('canonical directory rejects relative and missing paths with typed failures', async () => {
+  const directory = await temp('canonical-directory');
+  const missing = path.join(directory, 'missing');
+  const file = path.join(directory, 'file');
+  await writeFile(file, 'not a directory');
+
+  assert.throws(
+    () => canonicalDirectory('relative/repository'),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
+  );
+  assert.throws(
+    () => canonicalDirectory(missing),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'NOT_FOUND',
+  );
+  assert.throws(
+    () => canonicalDirectory(path.join(file, 'child')),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'NOT_FOUND',
+  );
 });
 
 test('normalizes HTTPS and SCP-like SSH remotes without credentials', () => {

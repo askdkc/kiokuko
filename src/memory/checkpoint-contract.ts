@@ -9,6 +9,7 @@ import {
   checkpointFeedbackSchema,
   hasCheckpointEvidenceContent,
 } from '../ledger/checkpoint-contract.js';
+import { absoluteCwdSchema } from '../repository/cwd-schema.js';
 
 const memoryKind = z.enum(ENTRY_KINDS);
 const memoryClass = z.enum([
@@ -83,7 +84,7 @@ function refineRunBoundCheckpoint(value: CheckpointContent & { outcome?: unknown
 }
 
 export const runBoundCheckpointSchema = z.object({
-  cwd: z.string().min(1).optional(),
+  cwd: absoluteCwdSchema.optional(),
   runId: checkpointRunId,
   deliveryId: checkpointDeliveryId.optional(),
   outcome: z.enum(CHECKPOINT_OUTCOMES),
@@ -93,7 +94,7 @@ export const runBoundCheckpointSchema = z.object({
 }).strict().superRefine((value, context) => refineRunBoundCheckpoint(value, context));
 
 export const standaloneMemoryCheckpointSchema = z.object({
-  cwd: z.string().min(1).optional(),
+  cwd: absoluteCwdSchema.optional(),
   memories: z.array(checkpointMemorySchema).min(1).max(MAX_CHECKPOINT_MEMORY_ITEMS),
 }).strict();
 
@@ -123,7 +124,7 @@ function refineCheckpointInput(value: CheckpointContent & {
 // advertised as an empty schema. This closed object retains the same runtime
 // cross-field contract while keeping the public property schema visible.
 export const memoryCheckpointInputSchema = z.object({
-  cwd: z.string().min(1).optional(),
+  cwd: absoluteCwdSchema.optional(),
   memories: z.array(checkpointMemorySchema).max(MAX_CHECKPOINT_MEMORY_ITEMS).optional(),
   runId: checkpointRunId.optional(),
   deliveryId: checkpointDeliveryId.optional(),

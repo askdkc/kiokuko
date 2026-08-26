@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 import {
   memoryCheckpointInputSchema,
@@ -60,4 +61,17 @@ test('checkpoint schemas reject empty lanes and cross-variant fields', () => {
     outcome: 'completed',
     evidence: { checks: [] },
   }).success, false);
+});
+
+test('checkpoint schemas accept only absolute supplied cwd values', () => {
+  const absoluteCwd = path.resolve('checkpoint-cwd');
+  const runBound = { runId: 'run-1', outcome: 'completed' as const, memories: [memory] };
+  const standalone = { memories: [memory] };
+
+  assert.equal(runBoundCheckpointSchema.safeParse({ ...runBound, cwd: absoluteCwd }).success, true);
+  assert.equal(standaloneMemoryCheckpointSchema.safeParse({ ...standalone, cwd: absoluteCwd }).success, true);
+  assert.equal(memoryCheckpointInputSchema.safeParse({ ...runBound, cwd: absoluteCwd }).success, true);
+  assert.equal(runBoundCheckpointSchema.safeParse({ ...runBound, cwd: 'relative/path' }).success, false);
+  assert.equal(standaloneMemoryCheckpointSchema.safeParse({ ...standalone, cwd: '$HOME/project' }).success, false);
+  assert.equal(memoryCheckpointInputSchema.safeParse({ ...runBound, cwd: '~/project' }).success, false);
 });

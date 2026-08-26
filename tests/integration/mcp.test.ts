@@ -18,6 +18,10 @@ import { MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS, MAX_RAW_CAPABILITY_DESCRIPTION_
 import { KiokukoError } from '../../src/errors.js';
 import { PACKAGE_VERSION } from '../../src/package-version.js';
 
+function sqliteError(errcode: number, message = 'sqlite operation failed'): Error {
+  return Object.assign(new Error(message), { code: 'ERR_SQLITE_ERROR', errcode });
+}
+
 test('MCP exposes only the gated task and lifecycle tools and persists candidate memory', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-repo-'));
   execFileSync('git', ['init', '-q', root]);
@@ -855,6 +859,116 @@ test('MCP tool failures redact arbitrary internal error messages', async () => {
     assert.doesNotMatch(serialized, /Database unavailable/u);
     assert.equal(serialized.includes(sentinel), false);
     assert.equal(serialized.includes(privateMigrationsPath), false);
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('MCP cwd-bearing tools reject relative paths without reporting an internal integrity error', async () => {
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-relative-cwd-'));
+  const server = createKiokukoMcpServer({ databasePath: path.join(data, 'kiokuko.sqlite3') });
+  const client = new Client({ name: 'kiokuko-relative-cwd-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const calls = [
+      {
+        name: 'task_prepare',
+        arguments: { requestId: 'relative-cwd-request', task: 'Review', cwd: 'Sites/project', capabilities: [] },
+      },
+      {
+        name: 'task_answer',
+        arguments: {
+          sessionId: 'relative-cwd-session',
+          runId: 'relative-cwd-run',
+          questionId: 'taskType',
+          value: 'review',
+          cwd: 'Sites/project',
+          capabilities: [],
+        },
+      },
+      { name: 'curator_check', arguments: { cwd: 'Sites/project' } },
+      {
+        name: 'memory_checkpoint',
+        arguments: {
+          cwd: 'Sites/project',
+          memories: [{ kind: 'lesson', title: 'Relative cwd rejection', body: 'Use an absolute cwd.' }],
+        },
+      },
+    ];
+
+    for (const call of calls) {
+      const result = await client.callTool(call);
+      const serialized = JSON.stringify(result);
+      assert.equal(result.isError, true, call.name);
+      assert.match(serialized, /cwd must be an absolute path|Request is invalid/u, call.name);
+      assert.doesNotMatch(serialized, /Internal integrity error/u, call.name);
+    }
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('task_prepare reports a missing absolute cwd as not found instead of an integrity error', async () => {
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-missing-cwd-'));
+  const missing = path.join(data, 'missing-worktree');
+  const server = createKiokukoMcpServer({ databasePath: path.join(data, 'kiokuko.sqlite3') });
+  const client = new Client({ name: 'kiokuko-missing-cwd-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const result = await client.callTool({
+      name: 'task_prepare',
+      arguments: { requestId: 'missing-cwd-request', task: 'Review', cwd: missing, capabilities: [] },
+    });
+    const serialized = JSON.stringify(result);
+    assert.equal(result.isError, true);
+    assert.match(serialized, /Resource not found/u);
+    assert.doesNotMatch(serialized, /Internal integrity error/u);
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('task_prepare reports exhausted SQLite locking as service backpressure', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-locked-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-locked-data-'));
+  let beginAttempts = 0;
+  const server = createKiokukoMcpServer({
+    databasePath: path.join(data, 'kiokuko.sqlite3'),
+    openConnection: (databasePath, options) => {
+      const database = openConnection(databasePath, options);
+      const exec = database.exec.bind(database);
+      database.exec = (sql: string): void => {
+        if (sql === 'BEGIN IMMEDIATE') {
+          beginAttempts += 1;
+          throw sqliteError(5);
+        }
+        exec(sql);
+      };
+      return database;
+    },
+  });
+  const client = new Client({ name: 'kiokuko-locked-database-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const result = await client.callTool({
+      name: 'task_prepare',
+      arguments: { requestId: 'locked-database-request', task: 'Review', cwd: root, capabilities: [] },
+    });
+    const serialized = JSON.stringify(result);
+    assert.equal(result.isError, true);
+    assert.match(serialized, /Service is busy/u);
+    assert.doesNotMatch(serialized, /Internal integrity error/u);
+    assert.equal(beginAttempts, 5);
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();

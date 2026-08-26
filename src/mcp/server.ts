@@ -23,6 +23,7 @@ import {
   TASK_ANSWER_CONTRACT_FRAGMENT,
 } from '../ledger/checkpoint-contract.js';
 import { memoryCheckpointInputSchema } from '../memory/checkpoint-contract.js';
+import { absoluteCwdSchema } from '../repository/cwd-schema.js';
 
 export interface McpServerDependencies {
   databasePath?: string;
@@ -207,7 +208,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     inputSchema: {
       requestId: requestId.describe('Opaque identity for this logical user request. Use a new value for every new request and reuse it only for an exact retry; the raw value is not stored'),
       task: z.string().trim().min(1).max(64 * 1024).describe('The user task, without hidden reasoning or full transcripts'),
-      cwd: z.string().min(1).optional().describe('Absolute current working directory; defaults to the MCP process cwd and is returned in canonical form through executionContext'),
+      cwd: absoluteCwdSchema.optional().describe('Absolute current working directory; defaults to the MCP process cwd and is returned in canonical form through executionContext'),
       profileHints: profileHints.optional().describe('Task type, target, success condition, and constraints inferred from current evidence'),
       capabilities: capabilityCatalog.optional().describe("Complete capability descriptors for every capability available in this client as Array<{kind:'skill'|'mcp_tool';name:string;description?:string}>. Every item must include its kind and canonical name; description is optional and bounded. An explicit empty array means known-empty; omission or any malformed/dropped item means unknown. The catalog is ephemeral and never stored"),
       client: z.object({ kind: z.string().trim().min(1).max(200).optional(), version: z.string().trim().min(1).max(100).optional(), sessionId: clientSessionId.optional() }).strict().optional().describe('Optional client identity used for the lightweight execution ledger run'),
@@ -245,7 +246,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
       runId: runId.describe('Required run ID returned by task_prepare'),
       questionId: profileField,
       value: z.string().trim().min(1).max(64 * 1024).describe(TASK_ANSWER_CONTRACT_FRAGMENT),
-      cwd: z.string().min(1).optional().describe('Absolute current working directory; defaults to the MCP process cwd and is returned in canonical form through executionContext'),
+      cwd: absoluteCwdSchema.optional().describe('Absolute current working directory; defaults to the MCP process cwd and is returned in canonical form through executionContext'),
       capabilities: capabilityCatalog.optional().describe("Complete current client capability catalog as Array<{kind:'skill'|'mcp_tool';name:string;description?:string}>. Repeat the exact list from task_prepare. Every item must include its kind and canonical name; description is optional and bounded. Any malformed or dropped item makes availability unknown. The catalog is ephemeral and never stored"),
       maxContextChars: z.number().int().min(1000).max(50_000).default(12_000).describe('Must match the context budget bound by task_prepare'),
     },
@@ -264,7 +265,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     title: 'Check skill-ready Kiokuko knowledge',
     description: 'Check for reusable knowledge supported by qualified Akinator paths from independent completed runs. Retrieval counts are not evidence. Returns the skill name and exactly three overview lines for user review. Call at most once near the end of substantial verified work and before memory_checkpoint; do not globalize automatically.',
     inputSchema: {
-      cwd: z.string().min(1).optional().describe('Absolute current working directory; defaults to the MCP process cwd'),
+      cwd: absoluteCwdSchema.optional().describe('Absolute current working directory; defaults to the MCP process cwd'),
       workspace: workspaceId.optional().describe('Exact project workspace; normally omit and resolve from cwd'),
       limit: z.number().int().min(1).max(20).default(5),
       includeUnready: z.boolean().default(false).describe('Include lower-evidence candidates for manual inspection; automated permission prompts should leave this false'),

@@ -1,3 +1,5 @@
+import { KiokukoError } from '../errors.js';
+
 const LOCK_ATTEMPT_LIMIT = 5;
 const SQLITE_BUSY = 5;
 const SQLITE_LOCKED = 6;
@@ -61,7 +63,14 @@ export function withSqliteLockRetry<T>(operation: () => T): T {
     try {
       return operation();
     } catch (error) {
-      if (!isSqliteLockError(error) || attempt >= LOCK_ATTEMPT_LIMIT) throw error;
+      if (!isSqliteLockError(error)) throw error;
+      if (attempt >= LOCK_ATTEMPT_LIMIT) {
+        throw new KiokukoError(
+          'BACKPRESSURE',
+          'SQLite remained busy after bounded retry',
+          { retryAfterSeconds: 1 },
+        );
+      }
       waitForRetry(attempt);
     }
   }
