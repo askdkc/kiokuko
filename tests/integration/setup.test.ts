@@ -819,13 +819,25 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryRoot: locationOnlyCanonicalRoot,
     status: 'created',
   }, {
-    repositoryRoot: missingCanonicalRoot,
-    status: 'skipped',
-    reason: 'missing_root',
-  }, {
     repositoryRoot: stale.repositoryRoot,
     status: 'updated',
   }]);
+
+  const afterCleanup = openConnection(temporary.databasePath);
+  try {
+    assert.equal(
+      Number(afterCleanup.prepare('SELECT COUNT(*) AS count FROM repository_locations WHERE canonical_root = ?')
+        .get<{ count: number }>(missingCanonicalRoot)?.count ?? 0),
+      0,
+    );
+    assert.equal(
+      Number(afterCleanup.prepare('SELECT COUNT(*) AS count FROM repositories WHERE repository_id = ?')
+        .get<{ count: number }>('repo_setup_refresh_missing')?.count ?? 0),
+      1,
+    );
+  } finally {
+    afterCleanup.close();
+  }
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);

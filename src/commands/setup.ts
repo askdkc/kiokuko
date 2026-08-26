@@ -57,6 +57,10 @@ import {
   type ProjectAgentRefreshResult,
   type RegisteredProjectLocation,
 } from '../setup/project-agent-refresh.js';
+import {
+  findMissingRepositoryLocations,
+  removeMissingRepositoryLocations,
+} from '../repository/binding.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
@@ -824,6 +828,8 @@ export async function setupGlobalClients(
   let workspaceInitializationFailed = false;
   let workspaceInitializationError: unknown;
   try {
+    const missingProjectLocations = findMissingRepositoryLocations(database);
+    removeMissingRepositoryLocations(database, missingProjectLocations);
     dependencies.ensureGlobalWorkspace(database);
     registeredProjectLocations = listRegisteredProjectLocations(database, {
       allowUnavailableRegistry: options.migrationsDirectory !== undefined,
