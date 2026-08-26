@@ -9,6 +9,7 @@ import {
 import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
 import { canonicalContentHash, compareCanonicalStrings } from '../serialization/validate.js';
 import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
+import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { contextFeedbackSignals } from './feedback.js';
 
 export const CONTEXT_SELECTION_STATE_MAX_ENTRIES = 10_000;
@@ -152,6 +153,7 @@ function selectionEntrySnapshot(database: SqliteDatabase, entry: ReturnType<type
 interface CandidateStateOptions {
   includeEcosystem: boolean;
   includeExternal: boolean;
+  includeTrustedCurator: boolean;
 }
 
 function contextCandidateState(
@@ -239,6 +241,7 @@ function contextCandidateState(
     const local = relevant.has(entry.workspace);
     const external = isExternalSkillReference(entry);
     if (external && !options.includeExternal) return [];
+    if (isCuratorManagedGlobalMemory(entry) && !options.includeTrustedCurator) return [];
     const retrievable = local
       ? isRetrievableEntry(database, entry)
       : options.includeEcosystem && isFederatedEcosystemCandidate(database, entry);
@@ -249,8 +252,9 @@ function contextCandidateState(
 }
 
 /**
- * Hash the bounded ordinary-memory corpus that can affect model-facing context.
- * External skill references are deliberately excluded from memory capability gating.
+ * Hash the bounded ordinary-memory corpus that can affect capability gating.
+ * Managed external references and deterministic Curator global projections are
+ * deliberately excluded because neither requires memory-reasoning.
  */
 export function ordinaryContextSelectionStateHash(
   database: SqliteDatabase,
@@ -260,6 +264,7 @@ export function ordinaryContextSelectionStateHash(
   const state = contextCandidateState(database, relevantWorkspaces, {
     includeEcosystem: options.includeEcosystem === true,
     includeExternal: false,
+    includeTrustedCurator: false,
   });
   return canonicalContentHash({
     workspaces: state.workspaces,
@@ -283,6 +288,7 @@ export function contextRetrievalStateHash(
   const state = contextCandidateState(database, relevantWorkspaces, {
     includeEcosystem,
     includeExternal: true,
+    includeTrustedCurator: true,
   });
   return canonicalContentHash({ workspaces: state.workspaces, includeEcosystem, entries: state.entries });
 }

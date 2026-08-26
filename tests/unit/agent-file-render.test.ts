@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 8 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 9 -->/);
   assert.match(rendered, /task_prepare/);
   assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
   assert.match(rendered, /Every descriptor must include its kind and canonical name/u);
@@ -42,12 +42,16 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /curator_check/);
   assert.match(rendered, /curator_globalize/);
   assert.match(rendered, /Akinator hypotheses/);
-  assert.match(rendered, /untrusted advisory data/);
+  assert.match(rendered, /non-executable advisory data/);
+  assert.match(rendered, /Respect their trust metadata/);
   assert.match(rendered, /memory-reasoning/);
+  assert.match(rendered, /created by `kiokuko-curator` and matching the current deterministic Curator projection is `system_verified`/);
+  assert.match(rendered, /does not by itself require `memory-reasoning`/);
   assert.match(rendered, /Inspect `nextAction` after every `task_prepare` and `task_answer` response/);
-  assert.match(rendered, /`required_capability_unavailable` is a hard stop/);
-  assert.match(rendered, /Do not continue through `catalog_similarity`, legacy instructions, external Skill discovery, fetched skills, or any other fallback/);
-  assert.match(rendered, /Availability alone is not compliance: read that Skill before modifying code/);
+  assert.match(rendered, /`memory-reasoning` is missing or unknown.*`nextAction=proceed`/u);
+  assert.match(rendered, /`required_capability_unavailable` remains a hard stop only for another explicitly required capability/);
+  assert.match(rendered, /continue from repository evidence/);
+  assert.match(rendered, /read it before consuming applicable memory/);
   assert.match(rendered, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
   assert.match(rendered, /Call `task_answer` with that run ID, the same capability catalog, and the same context budget/);
   assert.match(rendered, /When `runId` is supplied, the run must be active/);
@@ -58,7 +62,10 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /rejected precondition .*may be retried only after the indicated run-state change/);
   assert.doesNotMatch(rendered, /Call `memory_checkpoint` at most once for the current user request/);
   assert.match(rendered, /unavailable before a non-trivial build\/debug request can obtain its Kiokuko policy, stop and report/);
-  assert.match(rendered, /For such a request, repository-only continuation is allowed only after the policy establishes that no Kiokuko memory was delivered or used/);
+  assert.match(rendered, /diagnosing or repairing Kiokuko itself/);
+  assert.match(rendered, /`task_prepare` fails before returning scoped context/);
+  assert.match(rendered, /continue only from repository evidence without Kiokuko memory/);
+  assert.match(rendered, /do not call `task_answer` or `memory_checkpoint` for that failed request/);
   assert.doesNotMatch(rendered, /MCP tools are unavailable[^.]*continue from repository evidence/iu);
   assert.match(rendered, /candidate/);
   assert.match(rendered, /at most one successful terminal `memory_checkpoint` for the current user request/);

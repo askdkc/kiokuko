@@ -175,7 +175,7 @@ test('Task 5 checkpoint and feedback enforce the run-bound capability catalog wh
   }
 });
 
-test('checkpoint hard-stops actionable memory without persisting a delivery when the bound catalog lacks memory-reasoning', async () => {
+test('checkpoint withholds actionable memory and continues without persisting a delivery when memory-reasoning is unavailable', async () => {
   const { runtime, databasePath } = await fixture();
   let runId: string | undefined;
   let deliveryCountBefore = -1;
@@ -188,7 +188,7 @@ test('checkpoint hard-stops actionable memory without persisting a delivery when
     assert.equal(opened.response.status, 200);
     const openedData = dataOf(opened.value);
     runId = openedData.runId as string;
-    assert.equal(openedData.nextAction, 'required_capability_unavailable');
+    assert.equal(openedData.nextAction, 'proceed');
     assert.deepEqual(openedData.memoryPolicy, { memoryReasoningRequired: true });
     assert.equal(openedData.context, null);
     assert.deepEqual(openedData.recommendations, []);
@@ -221,7 +221,7 @@ test('checkpoint hard-stops actionable memory without persisting a delivery when
     });
     assert.equal(checkpoint.response.status, 200);
     const checkpointData = dataOf(checkpoint.value);
-    assert.equal(checkpointData.nextAction, 'required_capability_unavailable', JSON.stringify(checkpointData));
+    assert.equal(checkpointData.nextAction, 'proceed', JSON.stringify(checkpointData));
     assert.deepEqual(checkpointData.memoryPolicy, { memoryReasoningRequired: true });
     assert.equal(checkpointData.context, null);
     assert.deepEqual(checkpointData.recommendations, []);
@@ -413,7 +413,7 @@ test('checkpoint replay keeps its mutation acknowledgement but gates with the cu
     });
     assert.equal(revised.response.status, 200);
     assert.equal(dataOf(revised.value).taskProfile.taskType, 'build');
-    assert.equal(dataOf(revised.value).nextAction, 'required_capability_unavailable');
+    assert.equal(dataOf(revised.value).nextAction, 'proceed');
 
     const beforeReplay = openConnection(databasePath);
     const deliveriesBeforeReplay = beforeReplay.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
@@ -428,7 +428,7 @@ test('checkpoint replay keeps its mutation acknowledgement but gates with the cu
     const replayData = dataOf(replay.value);
     assert.equal(replayData.acceptedThrough, firstData.acceptedThrough);
     assert.equal(replayData.taskProfile.taskType, 'build');
-    assert.equal(replayData.nextAction, 'required_capability_unavailable');
+    assert.equal(replayData.nextAction, 'proceed');
     assert.equal(replayData.context, null);
 
     const verified = openConnection(databasePath);
@@ -631,7 +631,7 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
     });
     assert.equal(replay.response.status, 200);
     const replayData = dataOf(replay.value);
-    assert.equal(replayData.nextAction, 'required_capability_unavailable');
+    assert.equal(replayData.nextAction, 'proceed');
     assert.deepEqual(replayData.memoryPolicy, { memoryReasoningRequired: true });
     assert.equal(replayData.context, null);
     assert.ok(replayData.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'

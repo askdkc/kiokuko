@@ -8,11 +8,14 @@ import { readEntry } from '../../memory/entries.js';
 import { isRetrievableEntry } from '../../memory/hybrid-retrieval.js';
 import { effectiveRetrievalScope, hasExplicitApplicability } from '../../memory/structured-memory.js';
 import { isExternalSkillReference } from '../../skills/store.js';
+import { isCuratorManagedGlobalMemory } from '../../memory/curator-trust.js';
 import type { TaskProfile } from '../../akinator/types.js';
 import {
   deriveMemoryUseSignal,
+  hasBlockingRequiredCapability,
   memoryReasoningRequired,
   resolveCapabilities,
+  shouldWithholdMemoryContext,
   type CapabilityResolution,
   type CapabilityWarning,
   type MemoryPolicy,
@@ -67,7 +70,7 @@ function hasHelpfulFeedbackEvidence(
     .some((signal) => signal.verdict === 'helpful'));
 }
 
-function ordinaryBrokerItems(
+function capabilityGatedBrokerItems(
   context: Pick<AgentRouteContext, 'database'>,
   broker: Pick<ContextBrokerResult, 'context'>,
 ): ContextBrokerContextItem[] {
@@ -113,7 +116,7 @@ function ordinaryBrokerItems(
     if (entry.status === 'superseded') {
       throw new KiokukoError('CONFLICT', 'Model-facing context entry is no longer retrievable');
     }
-    return !isExternalSkillReference(entry);
+    return !isExternalSkillReference(entry) && !isCuratorManagedGlobalMemory(entry);
   });
 }
 
@@ -122,7 +125,7 @@ export function deriveBrokerMemoryUseSignal(
   broker: Pick<ContextBrokerResult, 'context'>,
 ): 'none' | 'actionable' {
   if (broker.context === null) return 'none';
-  const items = ordinaryBrokerItems(context, broker);
+  const items = capabilityGatedBrokerItems(context, broker);
   const derived = deriveMemoryUseSignal({ ...broker.context, items });
   if (derived === 'actionable') return derived;
   return items.length > 0 && hasHelpfulFeedbackEvidence(context, items)
@@ -158,7 +161,7 @@ function nextAction(
   capabilities: CapabilityResolution,
 ): AgentCapabilityNextAction {
   if (intakeStatus === 'needs_answer') return 'answer_from_evidence_or_ask_user';
-  return capabilities.recommendations.some((item) => item.required === true && item.availability !== 'available')
+  return hasBlockingRequiredCapability(capabilities)
     ? 'required_capability_unavailable'
     : 'proceed';
 }
@@ -182,9 +185,10 @@ export function applyAgentCapabilityGate(input: AgentCapabilityGateInput): Agent
     : 'none';
   const capabilities = resolution(input, memoryUse);
   const action = nextAction(input.intakeStatus, capabilities);
+  const withholdMemory = input.intakeStatus === 'ready' && shouldWithholdMemoryContext(capabilities);
   return {
-    context: action === 'required_capability_unavailable' ? null : input.broker.context,
-    recommendations: action === 'required_capability_unavailable' ? [] : input.broker.recommendations,
+    context: action === 'required_capability_unavailable' || withholdMemory ? null : input.broker.context,
+    recommendations: action === 'required_capability_unavailable' || withholdMemory ? [] : input.broker.recommendations,
     capabilities,
     memoryPolicy: { memoryReasoningRequired: memoryReasoningRequired(input.taskProfile, memoryUse) },
     warnings: capabilities.warnings,
@@ -215,7 +219,7 @@ export async function attachCapabilityGatedContext(
       memoryUseOverride: memoryUse,
     });
     return {
-      persist: result.nextAction !== 'required_capability_unavailable',
+      persist: result.context !== null || candidate.context === null,
       value: result,
       assertBeforePersist: () => {
         if (deriveBrokerMemoryUseSignal(context, candidate) !== memoryUse) {

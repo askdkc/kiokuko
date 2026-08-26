@@ -154,7 +154,7 @@ async function makePriorContextActionable(
   return (await request(baseUrl, '/api/v1/agent/runs', { key: openKey, body })).data;
 }
 
-test('generic Agent API withholds actionable repair memory and recommendations when the bound catalog is missing', async () => {
+test('generic Agent API withholds actionable repair memory but continues when the bound catalog is missing', async () => {
   const value = await fixture('missing');
   try {
     const body = openBody(value.workspace, []);
@@ -165,7 +165,7 @@ test('generic Agent API withholds actionable repair memory and recommendations w
     before.close();
 
     const stopped = await makePriorContextActionable(value.runtime.url, 'missing-open', body, first.data, value);
-    assert.equal(stopped.nextAction, 'required_capability_unavailable');
+    assert.equal(stopped.nextAction, 'proceed');
     assert.deepEqual(stopped.memoryPolicy, { memoryReasoningRequired: true });
     assert.equal(stopped.context, null);
     assert.deepEqual(stopped.recommendations, []);
@@ -277,7 +277,7 @@ test('exact open replay keeps one mutation acknowledgement but re-evaluates curr
     assert.equal(replay.response.status, 200);
     assert.equal(replay.data.runId, first.data.runId);
     assert.equal(replay.data.intakeSessionId, first.data.intakeSessionId);
-    assert.equal(replay.data.nextAction, 'required_capability_unavailable');
+    assert.equal(replay.data.nextAction, 'proceed');
     assert.equal(replay.data.context, null);
 
     const after = openConnection(databasePath);
@@ -342,7 +342,7 @@ test('exact open replay gates against the current broker profile after a checkpo
     });
     assert.equal(revised.response.status, 200);
     assert.equal(revised.data.taskProfile.taskType, 'build');
-    assert.equal(revised.data.nextAction, 'required_capability_unavailable');
+    assert.equal(revised.data.nextAction, 'proceed');
     assert.match(revised.data.profileHash, /^[0-9a-f]{64}$/);
     assert.notEqual(revised.data.profileHash, first.data.profileHash);
     const database = openConnection(value.databasePath);
@@ -358,7 +358,7 @@ test('exact open replay gates against the current broker profile after a checkpo
     assert.equal(replay.data.runId, first.data.runId);
     assert.equal(replay.data.taskProfile.taskType, 'build');
     assert.equal(replay.data.profileHash, revised.data.profileHash);
-    assert.equal(replay.data.nextAction, 'required_capability_unavailable');
+    assert.equal(replay.data.nextAction, 'proceed');
     assert.equal(replay.data.context, null);
     assert.ok(replay.data.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
       && item.required === true
@@ -517,13 +517,14 @@ test('generic Agent build does not treat managed external skill references as or
 test('generic Agent open and answer apply identical missing, unknown, and available capability gates', async () => {
   const value = await fixture('open-answer-parity');
   const scenarios = [
-    { label: 'missing', catalog: [] as unknown[], availability: 'missing', nextAction: 'required_capability_unavailable' },
-    { label: 'unknown', catalog: undefined, availability: 'unknown', nextAction: 'required_capability_unavailable' },
+    { label: 'missing', catalog: [] as unknown[], availability: 'missing', nextAction: 'proceed', withheld: true },
+    { label: 'unknown', catalog: undefined, availability: 'unknown', nextAction: 'proceed', withheld: true },
     {
       label: 'available',
       catalog: [{ kind: 'skill', name: 'memory-reasoning' }] as unknown[],
       availability: 'available',
       nextAction: 'proceed',
+      withheld: false,
     },
   ] as const;
   try {
@@ -562,7 +563,7 @@ test('generic Agent open and answer apply identical missing, unknown, and availa
         assert.ok(response.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
           && item.required === true
           && item.availability === scenario.availability));
-        if (scenario.nextAction === 'required_capability_unavailable') {
+        if (scenario.withheld) {
           assert.equal(response.context, null);
           assert.deepEqual(response.recommendations, []);
         } else {
@@ -598,7 +599,7 @@ test('exact open replay of the initial intake acknowledgement uses the current a
     });
     assert.equal(answered.response.status, 200);
     assert.equal(answered.data.intakeStatus, 'ready');
-    assert.equal(answered.data.nextAction, 'required_capability_unavailable');
+    assert.equal(answered.data.nextAction, 'proceed');
 
     const replay = await request(value.runtime.url, '/api/v1/agent/runs', {
       key: 'answered-open-replay-key',
@@ -609,7 +610,7 @@ test('exact open replay of the initial intake acknowledgement uses the current a
     assert.equal(replay.data.intakeStatus, 'ready');
     assert.equal(replay.data.intake.status, 'ready');
     assert.equal(replay.data.taskProfile.target, 'src/beacon.ts');
-    assert.equal(replay.data.nextAction, 'required_capability_unavailable');
+    assert.equal(replay.data.nextAction, 'proceed');
     assert.equal(replay.data.context, null);
   } finally {
     await value.runtime.close();

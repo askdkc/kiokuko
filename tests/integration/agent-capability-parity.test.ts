@@ -22,7 +22,7 @@ const profileHints = {
 };
 const requiredMemoryPolicy = { memoryReasoningRequired: true } as const;
 
-test('prior cross-run helpful feedback hard-stops the same weak memory in MCP and generic Agent paths', async () => {
+test('prior cross-run helpful feedback withholds the same weak memory without stopping MCP or generic Agent tasks', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-capability-feedback-parity-'));
   const repositoryRoot = path.join(directory, 'repository');
   const databasePath = path.join(directory, 'data.sqlite3');
@@ -86,7 +86,7 @@ test('prior cross-run helpful feedback hard-stops the same weak memory in MCP an
       client: { kind: 'test', sessionId: 'feedback-mcp-missing' },
       skillDiscoveryMode: 'off',
     });
-    assert.equal(mcp.nextAction, 'required_capability_unavailable');
+    assert.equal(mcp.nextAction, 'proceed');
     assert.deepEqual(mcp.memoryPolicy, requiredMemoryPolicy);
     assert.equal(mcp.context, null);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
@@ -130,7 +130,7 @@ test('prior cross-run helpful feedback hard-stops the same weak memory in MCP an
     assert.equal(response.status, 200);
     const envelope = await response.json() as { data: Record<string, any> };
     runId = envelope.data.runId as string;
-    assert.equal(envelope.data.nextAction, 'required_capability_unavailable');
+    assert.equal(envelope.data.nextAction, 'proceed');
     assert.deepEqual(envelope.data.memoryPolicy, requiredMemoryPolicy);
     assert.equal(envelope.data.context, null);
     assert.deepEqual(envelope.data.recommendations, []);

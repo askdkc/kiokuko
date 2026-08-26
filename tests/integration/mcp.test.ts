@@ -12,6 +12,7 @@ import { BoundedStdioServerTransport } from '../../src/mcp/bounded-stdio-transpo
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordEntry } from '../../src/memory/entries.js';
+import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
 import { MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS, MAX_RAW_CAPABILITY_DESCRIPTION_CHARS } from '../../src/akinator/capabilities.js';
 import { KiokukoError } from '../../src/errors.js';
@@ -32,7 +33,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     const instructions = client.getInstructions() ?? '';
     assert.match(instructions, /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(instructions, /Every descriptor must include its kind and canonical name/u);
-    assert.match(instructions, /Availability alone is not compliance: read that Skill before modifying code/);
+    assert.match(instructions, /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
+    assert.match(instructions, /read it before modifying code/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['curator_check', 'curator_globalize', 'memory_checkpoint', 'task_answer', 'task_prepare']);
@@ -41,6 +43,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.readOnlyHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_globalize')?.annotations?.idempotentHint, true);
+    assert.match(tools.tools.find((tool) => tool.name === 'curator_globalize')?.description ?? '', /stored as verified\/system_verified memory created by kiokuko-curator/);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, false);
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
@@ -49,18 +52,19 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
     assert.match(taskPrepareTool?.description ?? '', /Reusing an ID with changed bound input is a conflict/);
     assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction before proceeding/);
-    assert.match(taskPrepareTool?.description ?? '', /required_capability_unavailable is a hard stop/);
+    assert.match(taskPrepareTool?.description ?? '', /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
+    assert.match(taskPrepareTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
+    assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(taskPrepareTool?.description ?? '', /read that Skill before modifying code and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
-    assert.match(taskPrepareTool?.description ?? '', /availability alone is not compliance/);
+    assert.match(taskPrepareTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(taskAnswerTool?.description ?? '', /required run ID returned by task_prepare/);
     assert.match(taskAnswerTool?.description ?? '', /Repeat the same capability catalog and context budget/);
     assert.match(taskAnswerTool?.description ?? '', /changed context budget conflicts before intake mutation/);
     assert.match(taskAnswerTool?.description ?? '', /inspect the returned nextAction before proceeding/);
-    assert.match(taskAnswerTool?.description ?? '', /required_capability_unavailable is a hard stop/);
+    assert.match(taskAnswerTool?.description ?? '', /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
+    assert.match(taskAnswerTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskAnswerTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(taskAnswerTool?.description ?? '', /read that Skill before modifying code and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
-    assert.match(taskAnswerTool?.description ?? '', /availability alone is not compliance/);
+    assert.match(taskAnswerTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     type ToolInputSchema = {
       required?: string[];
       properties?: Record<string, { type?: string; description?: string }>;
@@ -285,7 +289,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
         nextAction: string;
       } & Record<string, unknown>;
       assert.equal(stoppedContent.intake.status, 'ready');
-      assert.equal(stoppedContent.nextAction, 'required_capability_unavailable');
+      assert.equal(stoppedContent.nextAction, 'proceed');
       assert.deepEqual(stoppedContent.memoryPolicy, { memoryReasoningRequired: true });
       assert.equal(stoppedContent.context, null);
       assert.equal('memory' in stoppedContent, false);
@@ -498,7 +502,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     assert.deepEqual(content.capabilities.diagnostics, { received: 3, accepted: 2, truncated: 2, dropped: 1 });
     assert.ok(content.capabilities.recommendations.some((item) => item.name === 'tdd' && item.availability === 'available'));
     assert.ok(content.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.availability === 'unknown'));
-    assert.equal(content.nextAction, 'required_capability_unavailable');
+    assert.equal(content.nextAction, 'proceed');
     assert.equal(content.capabilities.warnings.length, 3);
     assert.deepEqual(content.warnings, content.capabilities.warnings);
     assert.match(JSON.stringify(content), /CAPABILITY_CATALOG_UNAVAILABLE|could not be safely classified/u);
@@ -703,6 +707,75 @@ test('task_prepare accepts stored v2 curator memory whose legacy tag is not mana
     assert.equal(content.run.status, 'active');
     assert.equal(content.nextAction, 'proceed');
     assert.equal(content.context.items.some((item) => item.entryId === legacy.id), false);
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('task_prepare proceeds without memory-reasoning for managed curator global memory', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-curator-trust-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-curator-trust-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const database = openConnection(databasePath);
+  migrateDatabase(database);
+  const now = '2026-08-26T00:00:00.000Z';
+  const curated = recordEntry(database, {
+    workspace: GLOBAL_WORKSPACE,
+    kind: 'lesson',
+    status: 'verified',
+    title: 'Kiokuko intake capability repair workflow',
+    body: 'Repair Kiokuko intake capability failures with focused regression tests.',
+    scope: buildStructuredScope({
+      visibility: 'global',
+      retrievalScope: 'global',
+      memoryClass: 'troubleshooting',
+      portableReason: 'This Kiokuko repair workflow applies across repositories.',
+    }),
+    provenance: {
+      type: 'curator_globalize',
+      reference: 'source-entry@1#deterministic-v1',
+      sourceWorkspace: 'project:curator-source',
+      clientKind: 'kiokuko-curator',
+      timestamp: now,
+    },
+    trustLevel: 'system_verified',
+    confidence: 0.8,
+    tags: ['curator:deterministic-v1', 'global', 'kiokuko', 'skill:curated'],
+    createdBy: 'kiokuko-curator',
+    actor: 'kiokuko-curator',
+  }, { now });
+  database.close();
+
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'kiokuko-curator-trust-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const result = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        requestId: 'mcp-curator-trust-task-prepare',
+        task: 'Repair the Kiokuko intake capability failure',
+        profileHints: {
+          taskType: 'debug',
+          target: 'Kiokuko intake capability',
+          expected: 'The focused regression passes',
+        },
+        capabilities: [],
+      },
+    });
+    assert.equal(result.isError, undefined);
+    const content = result.structuredContent as {
+      nextAction: string;
+      memoryPolicy: { memoryReasoningRequired: boolean };
+      context: { items: Array<{ entryId: string }> };
+    };
+    assert.equal(content.nextAction, 'proceed');
+    assert.equal(content.memoryPolicy.memoryReasoningRequired, false);
+    assert.equal(content.context.items.some((item) => item.entryId === curated.id), true);
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();

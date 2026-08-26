@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, chmod, link, lstat, mkdtemp, mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, link, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -11,9 +11,12 @@ import {
   unlinkRegularFileIfUnchanged,
 } from '../../src/agent-file/atomic-write.js';
 import { buildCli } from '../../src/cli.js';
+import { useRepository } from '../../src/commands/use.js';
 import { setupGlobalClients } from '../../src/commands/setup.js';
+import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { GLOBAL_REPOSITORY_ID, GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
+import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import {
   LEGACY_CLAUDE_PROMPT_HOOK,
   legacyOpenCodeLoopGuardFixture,
@@ -389,9 +392,12 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /curator_globalize/);
     assert.match(instructions, /Optional external skill discovery is feature-flagged and reference-only/);
     assert.match(instructions, /Inspect `nextAction` after every `task_prepare` and `task_answer` response/);
-    assert.match(instructions, /`required_capability_unavailable` is a hard stop/);
-    assert.match(instructions, /Do not continue through `catalog_similarity`, legacy instructions, external Skill discovery, fetched skills, or any other fallback/);
-    assert.match(instructions, /Availability alone is not compliance: read that Skill before modifying code/);
+    assert.match(instructions, /`memory-reasoning` is missing or unknown.*`nextAction=proceed`/u);
+    assert.match(instructions, /`required_capability_unavailable` remains a hard stop only for another explicitly required capability/);
+    assert.match(instructions, /created by `kiokuko-curator` and matching the current deterministic Curator projection is `system_verified`/);
+    assert.match(instructions, /does not by itself require `memory-reasoning`/);
+    assert.match(instructions, /continue from repository evidence/);
+    assert.match(instructions, /read it before consuming applicable memory/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(instructions, /Call `task_answer` with the same capability catalog, run ID, and context budget/);
     assert.match(instructions, /When `runId` is supplied, the run must be active/);
@@ -402,7 +408,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /rejected precondition .*may be retried only after the indicated run-state change/);
     assert.doesNotMatch(instructions, /Call `memory_checkpoint` at most once for the current user request/);
     assert.match(instructions, /unavailable before a non-trivial build\/debug request can obtain its policy, stop and report/);
-    assert.match(instructions, /For such a request, repository-only continuation is allowed only after the policy establishes that no Kiokuko memory was delivered or used/);
+    assert.match(instructions, /diagnosing or repairing Kiokuko itself/);
+    assert.match(instructions, /`task_prepare` fails before returning scoped context/);
+    assert.match(instructions, /continue only from repository evidence without Kiokuko memory/);
+    assert.match(instructions, /do not call `task_answer` or `memory_checkpoint` for that failed request/);
     assert.doesNotMatch(instructions, /Kiokuko is unavailable[^.]*continue from current evidence/iu);
     assert.doesNotMatch(instructions, /legacy fallback|mattpocock\/skills|explicitly empty catalog/iu);
   }
@@ -713,6 +722,125 @@ test('setup without detected clients initializes only the database', async () =>
   await assert.rejects(access(path.join(temporary.home, '.claude.json')));
   await assert.rejects(access(path.join(temporary.home, '.claude', 'settings.json')));
   await assert.rejects(access(path.join(temporary.home, '.hermes', 'config.yaml')));
+});
+
+test('setup applies the use-managed AGENTS update to every registered live project', async () => {
+  const temporary = await temporaryEnvironment('registered-project-agents');
+  const staleRoot = path.join(temporary.root, 'stale-project');
+  const locationOnlyRoot = path.join(temporary.root, 'location-only-project');
+  const missingRoot = path.join(temporary.root, 'missing-project');
+  await mkdir(staleRoot);
+  await mkdir(locationOnlyRoot);
+  await mkdir(missingRoot);
+
+  const stale = await useRepository({
+    root: staleRoot,
+    allowDirectory: true,
+    databasePath: temporary.databasePath,
+    repositoryId: 'repo_setup_refresh_stale',
+    workspace: 'project:setup-refresh-stale',
+  });
+  const staleAgentPath = path.join(stale.repositoryRoot, 'AGENTS.md');
+  const staleBindingPath = path.join(stale.repositoryRoot, '.kiokuko.json');
+  const staleAgent = await readFile(staleAgentPath, 'utf8');
+  const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
+  await writeFile(
+    staleAgentPath,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 9', 'kiokuko-template-version: 8')}`,
+  );
+  await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 8 }, null, 2)}\n`);
+
+  await initializeDatabase({ databasePath: temporary.databasePath });
+  const locationOnlyCanonicalRoot = await realpath(locationOnlyRoot);
+  const missingCanonicalRoot = await realpath(missingRoot);
+  const database = openConnection(temporary.databasePath);
+  try {
+    for (const location of [{
+      repositoryId: 'repo_setup_refresh_location_only',
+      workspace: 'project:setup-refresh-location-only',
+      canonicalRoot: locationOnlyCanonicalRoot,
+      displayName: 'location-only-project',
+    }, {
+      repositoryId: 'repo_setup_refresh_missing',
+      workspace: 'project:setup-refresh-missing',
+      canonicalRoot: missingCanonicalRoot,
+      displayName: 'missing-project',
+    }]) {
+      registerRepositoryAndLocation(database, {
+        ...location,
+        remoteFingerprint: null,
+        bindingSchemaVersion: 1,
+        agentTemplateVersion: 0,
+        now: '2026-08-26T00:00:00.000Z',
+      });
+    }
+  } finally {
+    database.close();
+  }
+  await rename(missingRoot, path.join(temporary.root, 'missing-project-displaced'));
+
+  const dryRun = await setupGlobalClients({
+    clients: [],
+    standardSkills: false,
+    databasePath: temporary.databasePath,
+    platform: 'linux',
+    env: temporary.env,
+    dryRun: true,
+  });
+  assert.deepEqual(dryRun.projectAgentFiles.map((project) => project.status), [
+    'created',
+    'skipped',
+    'updated',
+  ]);
+  await assert.rejects(access(path.join(locationOnlyRoot, '.kiokuko.json')));
+  await assert.rejects(access(path.join(locationOnlyRoot, 'AGENTS.md')));
+  assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 8/u);
+
+  const result = await setupGlobalClients({
+    clients: [],
+    standardSkills: false,
+    databasePath: temporary.databasePath,
+    platform: 'linux',
+    env: temporary.env,
+  });
+
+  assert.deepEqual(result.projectAgentFiles.map((project) => ({
+    repositoryRoot: project.repositoryRoot,
+    status: project.status,
+    ...('reason' in project ? { reason: project.reason } : {}),
+  })), [{
+    repositoryRoot: locationOnlyCanonicalRoot,
+    status: 'created',
+  }, {
+    repositoryRoot: missingCanonicalRoot,
+    status: 'skipped',
+    reason: 'missing_root',
+  }, {
+    repositoryRoot: stale.repositoryRoot,
+    status: 'updated',
+  }]);
+
+  const refreshedAgent = await readFile(staleAgentPath, 'utf8');
+  assert.match(refreshedAgent, /^human project rule\n/u);
+  assert.match(refreshedAgent, /kiokuko-template-version: 9/u);
+  assert.equal(refreshedAgent.includes('kiokuko-template-version: 8'), false);
+  assert.equal(stale.agentFile, staleAgentPath);
+  const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
+  assert.equal(refreshedBinding.templateVersion, 9);
+
+  const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
+  assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
+  assert.match(locationOnlyAgent, /project:setup-refresh-location-only/u);
+  const locationOnlyBinding = JSON.parse(
+    await readFile(path.join(locationOnlyRoot, '.kiokuko.json'), 'utf8'),
+  ) as { repositoryId: string; workspace: string; templateVersion: number };
+  assert.deepEqual(locationOnlyBinding, {
+    schemaVersion: 1,
+    repositoryId: 'repo_setup_refresh_location_only',
+    workspace: 'project:setup-refresh-location-only',
+    agentFile: 'AGENTS.md',
+    templateVersion: 9,
+  });
 });
 
 test('setup resolves a sticky named Hermes profile without crossing into another profile', async () => {

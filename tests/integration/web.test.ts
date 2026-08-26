@@ -375,7 +375,7 @@ test('legacy Web mounts the same known Agent v1 route before legacy handling', a
     assert.equal(response.status, 200);
     assert.equal(body.operation, 'agent.open');
     assert.equal(body.data.runStatus, 'active');
-    assert.equal(body.data.nextAction, 'required_capability_unavailable');
+    assert.equal(body.data.nextAction, 'proceed');
     assert.equal(body.data.context, null);
     assert.ok(body.data.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.required === true

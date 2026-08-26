@@ -61,6 +61,20 @@ export interface CapabilityResolution {
 }
 
 export const MEMORY_REASONING_SKILL_NAME = 'memory-reasoning' as const;
+
+/** Missing memory-reasoning withholds actionable memory but never blocks the task itself. */
+export function hasBlockingRequiredCapability(resolution: Pick<CapabilityResolution, 'recommendations'>): boolean {
+  return resolution.recommendations.some((item) => item.required === true
+    && item.availability !== 'available'
+    && item.name !== MEMORY_REASONING_SKILL_NAME);
+}
+
+export function shouldWithholdMemoryContext(resolution: Pick<CapabilityResolution, 'recommendations'>): boolean {
+  return resolution.recommendations.some((item) => item.required === true
+    && item.name === MEMORY_REASONING_SKILL_NAME
+    && item.availability !== 'available');
+}
+
 export type MemoryUseSignal = 'none' | 'actionable';
 export type MemoryReasoningCapabilityAvailability = 'available' | 'missing' | 'unknown';
 

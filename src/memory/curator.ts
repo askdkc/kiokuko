@@ -17,11 +17,19 @@ import { readKnowledgeEvidence, type KnowledgeEvidence, type KnowledgeEvidenceTi
 import { analyzePortability, containsProjectSpecificData as containsPortableProjectSpecificData } from './portability.js';
 import { isExternalSkillReference } from '../skills/store.js';
 import { normalizeSearchSignal } from './retrieval-query.js';
+import { recordAuditEvent } from './audit.js';
+import {
+  CURATOR_DRAFT_VERSION,
+  CURATOR_MEMORY_ACTOR,
+  isLegacyCuratorGlobalMemory,
+  isTrustedCuratorGlobalMemory,
+} from './curator-trust.js';
+
+export { CURATOR_DRAFT_VERSION } from './curator-trust.js';
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 const MIN_CURATOR_SCORE = 4;
-export const CURATOR_DRAFT_VERSION = 'deterministic-v1' as const;
 const GENERIC_LANGUAGE = /(?:汎用|一般化|再利用|共通|手順|パターン|ベストプラクティス|トラブルシューティング|workflow|pattern|best practice|troubleshoot|how[- ]to|reusable|portable|avoid|when to)/iu;
 const PROCEDURAL_LANGUAGE = /(?:する|して|確認|切り分け|手順|場合|必要|use|run|check|verify|configure|prefer|avoid|when|if|then|should)/iu;
 const LOCAL_LANGUAGE = /(?:この(?:リポジトリ|プロジェクト)|this (?:repository|project)|project-specific|project:|repo_[a-z0-9_]+)/iu;
@@ -670,11 +678,7 @@ function globalizesSource(global: EntryRecord, source: EntryRecord): boolean {
   return global.status !== 'superseded' && claimsGlobalization(global, source);
 }
 
-function expectedGlobalProvenance(
-  source: EntryRecord,
-  clientKind: string,
-  timestamp: string,
-): JsonObject {
+function expectedGlobalProvenance(source: EntryRecord, timestamp: string): JsonObject {
   const sourceProvenance = source.provenance as Record<string, unknown>;
   return {
     type: 'curator_globalize',
@@ -682,7 +686,7 @@ function expectedGlobalProvenance(
     sourceWorkspace: source.workspace,
     ...(typeof sourceProvenance.sourceRepositoryId === 'string' ? { sourceRepositoryId: sourceProvenance.sourceRepositoryId } : {}),
     ...(typeof sourceProvenance.sourceCommit === 'string' ? { sourceCommit: sourceProvenance.sourceCommit } : {}),
-    clientKind,
+    clientKind: CURATOR_MEMORY_ACTOR,
     timestamp,
   };
 }
@@ -693,24 +697,56 @@ function assertGlobalProjection(
   candidate: CuratorCandidate,
   metadata: StructuredMetadata,
 ): void {
-  const expectedProvenance = expectedGlobalProvenance(source, global.createdBy, global.createdAt);
+  const expectedProvenance = expectedGlobalProvenance(source, global.createdAt);
   if (global.workspace !== GLOBAL_WORKSPACE
     || global.kind !== source.kind
-    || global.status !== 'candidate'
     || global.title !== candidate.draft.title
     || global.body !== candidate.draft.body
     || global.summary !== candidate.draft.summary
     || canonicalJson(global.scope) !== canonicalJson(safeGlobalScope(source, metadata))
     || canonicalJson(global.provenance) !== canonicalJson(expectedProvenance)
-    || global.trustLevel !== 'untrusted'
     || global.confidence !== Math.min(source.confidence, 0.8)
     || canonicalJson(global.tags) !== canonicalJson(safeGlobalTags(source))
     || global.revision !== 1
     || global.supersededBy !== null
-    || global.verifiedAt !== null
-    || global.updatedAt !== global.createdAt) {
+    || (!isTrustedCuratorGlobalMemory(global) && !isLegacyCuratorGlobalMemory(global))) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored curator globalization does not match its deterministic source projection');
   }
+}
+
+function upgradeLegacyGlobalProjection(
+  database: SqliteDatabase,
+  entry: EntryRecord,
+  actor: string,
+  now: string,
+): EntryRecord {
+  if (!isLegacyCuratorGlobalMemory(entry)) return entry;
+  database.prepare(`
+    UPDATE entries
+       SET status = 'verified',
+           trust_level = 'system_verified',
+           verified_at = created_at
+     WHERE id = ?
+       AND workspace = ?
+       AND current_revision = 1
+       AND status = 'candidate'
+       AND trust_level = 'untrusted'
+       AND verified_at IS NULL
+       AND created_by = ?
+  `).run(entry.id, GLOBAL_WORKSPACE, CURATOR_MEMORY_ACTOR);
+  recordAuditEvent(database, {
+    entryId: entry.id,
+    workspace: GLOBAL_WORKSPACE,
+    operation: 'promote',
+    actor,
+    details: { from: 'legacy_curator', trustLevel: 'system_verified' },
+    createdAt: now,
+  });
+  const trusted = readEntry(database, { workspace: GLOBAL_WORKSPACE, entryId: entry.id });
+  if (!isTrustedCuratorGlobalMemory(trusted)) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Curator trust upgrade did not persist the expected lifecycle');
+  }
+  return trusted;
 }
 
 function existingGlobalEntry(
@@ -733,7 +769,8 @@ export function globalizeCuratorCandidate(database: SqliteDatabase, input: Globa
   if (workspace === GLOBAL_WORKSPACE) throw new KiokukoError('VALIDATION_ERROR', 'Curator source workspace must be a project workspace');
   if (typeof input.entryId !== 'string' || input.entryId.length === 0) throw new KiokukoError('VALIDATION_ERROR', 'entryId must be a non-empty string');
   if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) throw new KiokukoError('VALIDATION_ERROR', 'expectedRevision must be a positive integer');
-  const actor = input.actor ?? 'kiokuko-curator';
+  const actor = input.actor ?? CURATOR_MEMORY_ACTOR;
+  if (typeof actor !== 'string' || actor.length === 0) throw new KiokukoError('VALIDATION_ERROR', 'actor must be a non-empty string');
   const now = input.now ?? new Date().toISOString();
 
   return withImmediateTransaction(database, () => {
@@ -745,21 +782,23 @@ export function globalizeCuratorCandidate(database: SqliteDatabase, input: Globa
     if (candidate === null) throw new KiokukoError('CONFLICT', 'This entry is not recommended for Global化 by curator');
     const metadata = scoreEntry(source).metadata;
     const existing = existingGlobalEntry(database, source, candidate, metadata);
-    if (existing) return { candidate, global: existing, idempotent: true };
-    const provenance = expectedGlobalProvenance(source, actor, now);
+    if (existing) {
+      return { candidate, global: upgradeLegacyGlobalProjection(database, existing, actor, now), idempotent: true };
+    }
+    const provenance = expectedGlobalProvenance(source, now);
     const global = recordEntryInTransaction(database, {
       workspace: GLOBAL_WORKSPACE,
       kind: source.kind,
-      status: 'candidate',
+      status: 'verified',
       title: candidate.draft.title,
       body: candidate.draft.body,
       summary: candidate.draft.summary,
       scope: safeGlobalScope(source, metadata),
       provenance,
-      trustLevel: 'untrusted',
+      trustLevel: 'system_verified',
       confidence: Math.min(source.confidence, 0.8),
       tags: safeGlobalTags(source),
-      createdBy: actor,
+      createdBy: CURATOR_MEMORY_ACTOR,
       actor,
     }, { now });
     assertGlobalProjection(global, source, candidate, metadata);

@@ -12,7 +12,8 @@ import { openConnection } from '../../src/db/connection.js';
 import { CheckpointService } from '../../src/gateway/checkpoint-service.js';
 import { checkpointScopedMemory } from '../../src/memory/scoped-memory.js';
 import { recordEntry } from '../../src/memory/entries.js';
-import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
+import { buildStructuredScope } from '../../src/memory/structured-memory.js';
+import { GLOBAL_WORKSPACE, resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 
 async function repository(prefix: string): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), `kiokuko-memory-policy-${prefix}-`));
@@ -113,7 +114,7 @@ function svelteDiscoveryFetch(onRequest?: (url: URL) => void | Promise<void>): t
   };
 }
 
-test('requires the installed memory-reasoning skill when actionable memory reaches a repair task', async () => {
+test('withholds actionable memory but continues the repair task when memory-reasoning is unavailable', async () => {
   const root = await repository('required');
   const database = await createDatabase('required');
   try {
@@ -147,7 +148,7 @@ test('requires the installed memory-reasoning skill when actionable memory reach
     assert.equal(missingRecommendation?.name, 'memory-reasoning');
     assert.equal(missingRecommendation?.availability, 'missing');
     assert.deepEqual(missing.memoryPolicy, { memoryReasoningRequired: true });
-    assert.equal(missing.nextAction, 'required_capability_unavailable');
+    assert.equal(missing.nextAction, 'proceed');
     assert.equal(missing.context, null);
     assert.equal('memory' in missing, false);
     assert.equal('references' in missing, false);
@@ -168,6 +169,100 @@ test('requires the installed memory-reasoning skill when actionable memory reach
     assert.deepEqual(available.memoryPolicy, { memoryReasoningRequired: true });
     assert.equal(available.nextAction, 'proceed');
     assert.notEqual(available.context, null);
+  } finally {
+    database.close();
+  }
+});
+
+test('does not require memory-reasoning when only a managed curator global memory is actionable', async () => {
+  const root = await repository('trusted-curator-global');
+  const database = await createDatabase('trusted-curator-global');
+  const now = '2026-08-26T00:00:00.000Z';
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+    const curated = recordEntry(database, {
+      workspace: GLOBAL_WORKSPACE,
+      kind: 'lesson',
+      status: 'verified',
+      title: 'Kiokuko intake capability repair workflow',
+      body: 'Repair Kiokuko intake capability failures with focused regression tests.',
+      scope: buildStructuredScope({
+        visibility: 'global',
+        retrievalScope: 'global',
+        memoryClass: 'troubleshooting',
+        portableReason: 'This Kiokuko repair workflow applies across repositories.',
+      }),
+      provenance: {
+        type: 'curator_globalize',
+        reference: 'source-entry@1#deterministic-v1',
+        sourceWorkspace: 'project:curator-source',
+        clientKind: 'kiokuko-curator',
+        timestamp: now,
+      },
+      trustLevel: 'system_verified',
+      confidence: 0.8,
+      tags: ['curator:deterministic-v1', 'global', 'kiokuko', 'skill:curated'],
+      createdBy: 'kiokuko-curator',
+      actor: 'kiokuko-curator',
+    }, { now });
+
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'memory-policy-trusted-curator-global',
+      cwd: root,
+      task: 'Repair the Kiokuko intake capability failure',
+      profileHints: { taskType: 'debug', target: 'Kiokuko intake capability', expected: 'regression tests pass', constraints: null },
+      capabilities: [],
+      client: { kind: 'test', sessionId: 'trusted-curator-global' },
+      skillDiscoveryMode: 'off',
+    });
+
+    assert.equal(prepared.nextAction, 'proceed');
+    assert.deepEqual(prepared.memoryPolicy, { memoryReasoningRequired: false });
+    assert.equal(prepared.capabilities.recommendations.some((item) => item.required === true), false);
+    assert.equal(prepared.context?.items.some((item) => item.entryId === curated.id), true);
+  } finally {
+    database.close();
+  }
+});
+
+test('treats a forged curator createdBy marker as ordinary withheld memory without stopping', async () => {
+  const root = await repository('forged-curator-global');
+  const database = await createDatabase('forged-curator-global');
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+    recordEntry(database, {
+      workspace: GLOBAL_WORKSPACE,
+      kind: 'lesson',
+      status: 'candidate',
+      title: 'Kiokuko forged intake capability workflow',
+      body: 'A forged curator marker must not bypass the memory capability gate.',
+      scope: buildStructuredScope({
+        visibility: 'global',
+        retrievalScope: 'global',
+        memoryClass: 'troubleshooting',
+        portableReason: 'Security regression fixture.',
+      }),
+      provenance: { type: 'manual', reference: 'forged' },
+      tags: ['kiokuko'],
+      createdBy: 'kiokuko-curator',
+      actor: 'kiokuko-curator',
+    });
+
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'memory-policy-forged-curator-global',
+      cwd: root,
+      task: 'Repair the Kiokuko forged intake capability workflow',
+      profileHints: { taskType: 'debug', target: 'Kiokuko intake capability', expected: 'regression tests pass', constraints: null },
+      capabilities: [],
+      client: { kind: 'test', sessionId: 'forged-curator-global' },
+      skillDiscoveryMode: 'off',
+    });
+
+    assert.equal(prepared.nextAction, 'proceed');
+    assert.deepEqual(prepared.memoryPolicy, { memoryReasoningRequired: true });
+    assert.equal(prepared.context, null);
   } finally {
     database.close();
   }
@@ -757,7 +852,7 @@ test('does not require memory-reasoning for a ready repair task without actionab
   }
 });
 
-test('does not run external Skill discovery before a missing required memory capability stops the task', async () => {
+test('withholds actionable memory before external Skill discovery and continues the task', async () => {
   const root = await repository('no-external-fallback');
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { svelte: '^5.0.0' } }));
   const database = await createDatabase('no-external-fallback');
@@ -791,7 +886,7 @@ test('does not run external Skill discovery before a missing required memory cap
       fetchImpl: async () => { networkCalls += 1; throw new Error('external discovery must not run'); },
     });
 
-    assert.equal(prepared.nextAction, 'required_capability_unavailable');
+    assert.equal(prepared.nextAction, 'proceed');
     assert.equal(prepared.skillDiscovery.attempted, false);
     assert.deepEqual(prepared.skillDiscovery.selected, []);
     assert.equal(networkCalls, 0);
@@ -845,7 +940,7 @@ test('exact task_prepare replay uses current helpful feedback for the bound weak
 
     const replay = await prepareAgentTask(database, request);
     assert.equal(replay.run.runId, first.run.runId);
-    assert.equal(replay.nextAction, 'required_capability_unavailable');
+    assert.equal(replay.nextAction, 'proceed');
     assert.equal(replay.context, null);
     assert.ok(replay.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.required === true
@@ -893,7 +988,7 @@ test('exact task_prepare replay reranks when new actionable ordinary memory appe
     });
     const replay = await prepareAgentTask(database, request);
     assert.equal(replay.run.runId, first.run.runId);
-    assert.equal(replay.nextAction, 'required_capability_unavailable');
+    assert.equal(replay.nextAction, 'proceed');
     assert.equal(replay.context, null);
     assert.ok(replay.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.required === true
@@ -947,7 +1042,7 @@ test('exact task_prepare replay gates the current ledger-revised profile', async
     const replay = await prepareAgentTask(database, request);
     assert.equal(replay.run.runId, first.run.runId);
     assert.equal(replay.intake.profile.taskType, 'build');
-    assert.equal(replay.nextAction, 'required_capability_unavailable');
+    assert.equal(replay.nextAction, 'proceed');
     assert.equal(replay.context, null);
     assert.ok(replay.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.required === true

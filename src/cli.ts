@@ -755,7 +755,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion}).${backupNotice}`);
   });
 
-  cli.command('setup').description('Configure global Kiokuko memory for Codex, OpenCode, Claude Code, and Hermes Agent')
+  cli.command('setup').description('Configure global Kiokuko memory and refresh managed instructions in registered projects for Codex, OpenCode, Claude Code, and Hermes Agent')
     .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes')
     .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
     .option('--dry-run', 'Validate and show planned changes without writing')
@@ -827,12 +827,19 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         }
       }
       const changed = data.files.filter((file) => file.action !== 'unchanged').length;
+      const projectChanged = data.projectAgentFiles.filter((file) => file.status === 'created' || file.status === 'updated').length;
+      const projectUnchanged = data.projectAgentFiles.filter((file) => file.status === 'unchanged').length;
+      const projectSkipped = data.projectAgentFiles.filter((file) => file.status === 'skipped').length;
+      const projectFailed = data.projectAgentFiles.filter((file) => file.status === 'failed').length;
+      const projectSummary = data.projectAgentFiles.length === 0
+        ? ''
+        : ` Registered project instructions: ${projectChanged} changed, ${projectUnchanged} unchanged, ${projectSkipped} skipped, ${projectFailed} failed.`;
       const clientLabel = data.clients.length === 0 ? 'no detected clients' : data.clients.join(', ');
       const message = options.dryRun
-        ? `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.`
+        ? `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.${projectSummary}`
         : data.clients.length === 0
-          ? `Kiokuko database initialized; no supported client executable was detected. Use --clients codex,opencode,claude,hermes to configure clients.`
-          : `Now you are ready to use Kiokuko! Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${data.databaseBackupPath === null ? '' : ` Pre-migration backup: ${data.databaseBackupPath}.`}${data.recoveredEntries === 0 ? '' : ` Recovered by excluding ${data.recoveredEntries} unreadable memor${data.recoveredEntries === 1 ? 'y' : 'ies'}; the pre-migration backup retains the original data.`} ${data.nextStep}`;
+          ? `Kiokuko database initialized; no supported client executable was detected. Use --clients codex,opencode,claude,hermes to configure clients.${projectSummary}`
+          : `Now you are ready to use Kiokuko! Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${data.databaseBackupPath === null ? '' : ` Pre-migration backup: ${data.databaseBackupPath}.`}${data.recoveredEntries === 0 ? '' : ` Recovered by excluding ${data.recoveredEntries} unreadable memor${data.recoveredEntries === 1 ? 'y' : 'ies'}; the pre-migration backup retains the original data.`}${projectSummary} ${data.nextStep}`;
       humanOrJson(options.json, 'setup', data, message);
     });
 

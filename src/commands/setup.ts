@@ -33,7 +33,7 @@ import {
   type PathEnvironment,
 } from '../config/paths.js';
 import { initializeDatabase } from './init.js';
-import { openConnection } from '../db/connection.js';
+import { databaseFileIdentity, openConnection } from '../db/connection.js';
 import { ensureGlobalWorkspace } from '../memory/workspaces.js';
 import { KiokukoError } from '../errors.js';
 import { isSkillDiscoveryMode, normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
@@ -51,6 +51,12 @@ import {
   loadBundledStandardSkillFiles,
   renderStandardSkillFile,
 } from '../setup/standard-skills.js';
+import {
+  listRegisteredProjectLocations,
+  refreshRegisteredProjectAgentFiles,
+  type ProjectAgentRefreshResult,
+  type RegisteredProjectLocation,
+} from '../setup/project-agent-refresh.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
@@ -102,6 +108,7 @@ export interface SetupCommandDependencies {
   beforeCommit?: () => void | Promise<void>;
   openConnection?: typeof openConnection;
   ensureGlobalWorkspace?: typeof ensureGlobalWorkspace;
+  refreshRegisteredProjectAgentFiles?: typeof refreshRegisteredProjectAgentFiles;
 }
 
 export interface SetupResult {
@@ -112,6 +119,7 @@ export interface SetupResult {
   appliedMigrations: number[];
   recoveredEntries: number;
   files: Array<Pick<PlannedFile, 'path' | 'action' | 'purpose' | 'client'>>;
+  projectAgentFiles: ProjectAgentRefreshResult[];
   standardSkills: boolean;
   dryRun: boolean;
   nextStep: string;
@@ -597,6 +605,55 @@ async function assertPlannedFiles(
   }
 }
 
+function setupFilesystemErrorCode(error: unknown): string | undefined {
+  if ((typeof error !== 'object' && typeof error !== 'function') || error === null) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+  return descriptor !== undefined && 'value' in descriptor && typeof descriptor.value === 'string'
+    ? descriptor.value
+    : undefined;
+}
+
+function readDryRunProjectLocations(
+  databasePath: string,
+  openDatabase: typeof openConnection,
+  allowUnavailableRegistry: boolean,
+): RegisteredProjectLocation[] {
+  let identity;
+  try {
+    identity = databaseFileIdentity(databasePath);
+  } catch (error) {
+    const code = setupFilesystemErrorCode(error);
+    if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+    throw error;
+  }
+  const database = openDatabase(databasePath, { readOnly: true, expectedFileIdentity: identity });
+  let locations: RegisteredProjectLocation[] | undefined;
+  let readFailed = false;
+  let readError: unknown;
+  try {
+    locations = listRegisteredProjectLocations(database, { allowUnavailableRegistry });
+  } catch (error) {
+    readFailed = true;
+    readError = error;
+  }
+  try {
+    database.close();
+  } catch (closeError) {
+    if (readFailed) {
+      throw new AggregateError(
+        [readError, closeError],
+        'Registered project discovery failed and closing the database connection also failed',
+      );
+    }
+    throw closeError;
+  }
+  if (readFailed) throw readError;
+  if (locations === undefined) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Registered project discovery produced no result');
+  }
+  return locations;
+}
+
 export async function setupGlobalClients(
   options: SetupOptions = {},
   dependencyOverrides: SetupCommandDependencies = {},
@@ -607,6 +664,8 @@ export async function setupGlobalClients(
     beforeCommit: dependencyOverrides.beforeCommit ?? (() => undefined),
     openConnection: dependencyOverrides.openConnection ?? openConnection,
     ensureGlobalWorkspace: dependencyOverrides.ensureGlobalWorkspace ?? ensureGlobalWorkspace,
+    refreshRegisteredProjectAgentFiles: dependencyOverrides.refreshRegisteredProjectAgentFiles
+      ?? refreshRegisteredProjectAgentFiles,
   };
   const pathEnvironment: PathEnvironment = {
     ...(options.platform === undefined ? {} : { platform: options.platform }),
@@ -729,11 +788,29 @@ export async function setupGlobalClients(
     files: files
       .filter((file) => file.report)
       .map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
+    projectAgentFiles: [],
     standardSkills,
     dryRun: options.dryRun ?? false,
     nextStep: setupNextStep(clients, standardSkills),
   };
-  if (options.dryRun) return result;
+  if (options.dryRun) {
+    const registeredProjectLocations = readDryRunProjectLocations(
+      databasePath,
+      dependencies.openConnection,
+      options.migrationsDirectory !== undefined,
+    );
+    result.projectAgentFiles = await dependencies.refreshRegisteredProjectAgentFiles(
+      registeredProjectLocations,
+      {
+        databasePath,
+        dryRun: true,
+        ...(options.migrationsDirectory === undefined
+          ? {}
+          : { migrationsDirectory: options.migrationsDirectory }),
+      },
+    );
+    return result;
+  }
 
   const initialized = await initializeDatabase({
     databasePath,
@@ -743,10 +820,14 @@ export async function setupGlobalClients(
   result.appliedMigrations = initialized.applied;
   result.recoveredEntries = initialized.recoveredEntries;
   const database = dependencies.openConnection(databasePath);
+  let registeredProjectLocations: RegisteredProjectLocation[] = [];
   let workspaceInitializationFailed = false;
   let workspaceInitializationError: unknown;
   try {
     dependencies.ensureGlobalWorkspace(database);
+    registeredProjectLocations = listRegisteredProjectLocations(database, {
+      allowUnavailableRegistry: options.migrationsDirectory !== undefined,
+    });
   } catch (error) {
     workspaceInitializationFailed = true;
     workspaceInitializationError = error;
@@ -824,5 +905,14 @@ export async function setupGlobalClients(
     }
     throw error;
   }
+  result.projectAgentFiles = await dependencies.refreshRegisteredProjectAgentFiles(
+    registeredProjectLocations,
+    {
+      databasePath,
+      ...(options.migrationsDirectory === undefined
+        ? {}
+        : { migrationsDirectory: options.migrationsDirectory }),
+    },
+  );
   return result;
 }

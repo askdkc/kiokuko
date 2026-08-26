@@ -77,13 +77,18 @@ test('curator identifies reusable candidates and globalizes only after explicit 
       workspace: 'project:curator-test',
       entryId: data.reusable.id,
       expectedRevision: data.reusable.revision,
+      actor: 'explicit-approver',
     });
     assert.equal(result.idempotent, false);
     assert.equal(result.global.workspace, 'global');
-    assert.equal(result.global.status, 'candidate');
+    assert.equal(result.global.status, 'verified');
+    assert.equal(result.global.trustLevel, 'system_verified');
+    assert.equal(result.global.verifiedAt, result.global.createdAt);
     assert.equal(result.global.scope.visibility, 'global');
     assert.equal(result.global.scope.retrievalScope, 'global');
     assert.equal(result.global.provenance.type, 'curator_globalize');
+    assert.equal(result.global.provenance.clientKind, 'kiokuko-curator');
+    assert.equal(result.global.createdBy, 'kiokuko-curator');
     assert.equal(result.global.provenance.reference, `${data.reusable.id}@${data.reusable.revision}#${CURATOR_DRAFT_VERSION}`);
     assert.equal(result.global.title, candidate.draft.title);
     assert.equal(result.global.summary, candidate.draft.summary);
@@ -93,13 +98,22 @@ test('curator identifies reusable candidates and globalizes only after explicit 
     assert.ok(result.global.tags.includes('skill:curated'));
     assert.ok(result.global.tags.includes(`curator:${CURATOR_DRAFT_VERSION}`));
 
+    data.database.prepare(`
+      UPDATE entries
+         SET status = 'candidate', trust_level = 'untrusted', verified_at = NULL
+       WHERE id = ?
+    `).run(result.global.id);
     const replay = globalizeCuratorCandidate(data.database, {
       workspace: 'project:curator-test',
       entryId: data.reusable.id,
       expectedRevision: data.reusable.revision,
+      actor: 'replay-approver',
     });
     assert.equal(replay.idempotent, true);
     assert.equal(replay.global.id, result.global.id);
+    assert.equal(replay.global.status, 'verified');
+    assert.equal(replay.global.trustLevel, 'system_verified');
+    assert.equal(replay.global.verifiedAt, replay.global.createdAt);
     assert.equal(data.database.prepare('SELECT COUNT(*) AS count FROM entries WHERE workspace = ?').get<{ count: number }>('global')?.count, 1);
   } finally {
     data.database.close();

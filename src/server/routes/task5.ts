@@ -98,7 +98,7 @@ export function createTask5Route(context: AgentRouteContext): V1RouteHandler {
             memoryUseOverride: memoryUse,
           });
           return {
-            persist: value.nextAction !== 'required_capability_unavailable',
+            persist: value.context !== null || candidate.context === null,
             value,
             assertBeforePersist: () => {
               if (deriveBrokerMemoryUseSignal(context, candidate) !== memoryUse) {
