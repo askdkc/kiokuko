@@ -13,7 +13,8 @@ import type { RecallResult } from './memory/retrieval.js';
 import { promoteEntry, supersedeEntry, linkEntries } from './memory/lifecycle.js';
 import { purgeEntry } from './commands/purge.js';
 import { createBackup } from './commands/backup.js';
-import { runDoctor } from './commands/doctor.js';
+import { findMissingRepositoryLocations, removeMissingRepositoryLocations } from './repository/binding.js';
+import { promptRemoveMissingRepositoryLocations, runDoctor } from './commands/doctor.js';
 import { writeExport } from './commands/export.js';
 import { importWorkspace } from './commands/import.js';
 import { openConnection } from './db/connection.js';
@@ -163,8 +164,11 @@ async function readJsonInput(filePath: string): Promise<unknown> {
   );
 }
 
-async function withDatabase<T>(operation: (database: SqliteDatabase) => T | Promise<T>): Promise<T> {
-  const result = await initializeDatabase();
+async function withDatabase<T>(
+  operation: (database: SqliteDatabase) => T | Promise<T>,
+  options: Parameters<typeof initializeDatabase>[0] = {},
+): Promise<T> {
+  const result = await initializeDatabase(options);
   const database = openConnection(result.databasePath);
   let operationResult: { value: T } | undefined;
   let operationFailed = false;
@@ -248,6 +252,10 @@ export interface CliDependencies {
   readonly setupEnvironment?: PathEnvironment;
   readonly setupInput?: NodeJS.ReadableStream;
   readonly setupOutput?: NodeJS.WritableStream;
+  readonly doctorInput?: NodeJS.ReadableStream;
+  readonly doctorOutput?: NodeJS.WritableStream;
+  readonly doctorDatabasePath?: string;
+  readonly doctorRuntimeDescriptorPath?: string;
 }
 
 const CALL_OPERATIONS = [
@@ -959,9 +967,38 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'backup', result, `Backup written to ${options.output}`);
   });
 
-  cli.command('doctor').description('Check runtime and database health').option('--json').action(async (options: { json?: boolean }) => {
-    const data = await runDoctor();
-    humanOrJson(options.json, 'doctor', data, data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED');
+  cli.command('doctor').description('Check runtime and database health; interactively clean missing repository locations').option('--json').action(async (options: { json?: boolean }) => {
+    const doctorOptions: Parameters<typeof runDoctor>[0] = {
+      ...(dependencies.doctorDatabasePath === undefined ? {} : { databasePath: dependencies.doctorDatabasePath }),
+      ...(dependencies.doctorRuntimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: dependencies.doctorRuntimeDescriptorPath }),
+    };
+    const databaseOptions: Parameters<typeof initializeDatabase>[0] = dependencies.doctorDatabasePath === undefined
+      ? {}
+      : { databasePath: dependencies.doctorDatabasePath };
+    let data = await runDoctor(doctorOptions);
+    let removed = 0;
+    const input = dependencies.doctorInput ?? process.stdin;
+    const output = dependencies.doctorOutput ?? process.stdout;
+    const interactive = options.json !== true
+      && (input as { isTTY?: boolean }).isTTY === true
+      && (output as { isTTY?: boolean }).isTTY === true;
+    if (interactive && data.checks.bindings.ok === false && (data.checks.bindings.count ?? 0) > 0) {
+      const missing = await withDatabase(
+        (database) => findMissingRepositoryLocations(database),
+        databaseOptions,
+      );
+      if (missing.length > 0 && await promptRemoveMissingRepositoryLocations(missing, { input, output })) {
+        removed = await withDatabase(
+          (database) => removeMissingRepositoryLocations(database, missing),
+          databaseOptions,
+        );
+        data = await runDoctor(doctorOptions);
+      }
+    }
+    const cleanupNotice = removed === 0
+      ? ''
+      : ` Removed ${removed} missing repository location${removed === 1 ? '' : 's'}.`;
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED'}${cleanupNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 

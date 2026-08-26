@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { KiokukoError } from '../errors.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -57,6 +58,45 @@ function validateRegistrationVersions(registration: RepositoryRegistration): voi
 interface StoredVersionMetadata {
   bindingSchemaVersion: unknown;
   agentTemplateVersion: unknown;
+}
+
+export interface RepositoryLocation extends Record<string, unknown> {
+  repositoryId: string;
+  canonicalRoot: string;
+}
+
+export function listRepositoryLocations(database: SqliteDatabase): RepositoryLocation[] {
+  return database.prepare(`
+    SELECT repository_id AS repositoryId, canonical_root AS canonicalRoot
+      FROM repository_locations
+     ORDER BY canonical_root
+  `).all<RepositoryLocation>();
+}
+
+export function findMissingRepositoryLocations(database: SqliteDatabase): RepositoryLocation[] {
+  return listRepositoryLocations(database).filter((location) => !existsSync(location.canonicalRoot));
+}
+
+/** Remove only confirmed location rows whose roots are still absent. */
+export function removeMissingRepositoryLocations(
+  database: SqliteDatabase,
+  candidates: readonly RepositoryLocation[],
+): number {
+  return withImmediateTransaction(database, () => {
+    let removed = 0;
+    for (const candidate of candidates) {
+      if (existsSync(candidate.canonicalRoot)) continue;
+      database
+        .prepare('DELETE FROM repository_locations WHERE repository_id = ? AND canonical_root = ?')
+        .run(candidate.repositoryId, candidate.canonicalRoot);
+      const changes = database.prepare('SELECT changes() AS changes').get<{ changes: unknown }>()?.changes;
+      if (changes !== 1 && changes !== 1n) {
+        throw new KiokukoError('CONFLICT', 'Repository location changed before missing binding cleanup');
+      }
+      removed += 1;
+    }
+    return removed;
+  });
 }
 
 function validateStoredVersions(metadata: StoredVersionMetadata): asserts metadata is {

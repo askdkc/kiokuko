@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { stdin, stdout } from 'node:process';
+import { createInterface } from 'node:readline/promises';
 import { initializeDatabase } from './init.js';
 import { openConnection } from '../db/connection.js';
 import { KiokukoError } from '../errors.js';
 import { BEGIN_MARKER, END_MARKER } from '../agent-file/managed-block.js';
 import { readProjectConfig } from '../config/project-config.js';
 import { getDatabaseLockPath, getRuntimeDescriptorPath } from '../config/paths.js';
+import { listRepositoryLocations, type RepositoryLocation } from '../repository/binding.js';
 import { isPidAlive } from '../server/instance-lock.js';
 import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
 import { inspectLedger } from '../ledger/maintenance.js';
@@ -50,6 +53,44 @@ export interface DoctorResult {
 
 export interface DoctorDependencies {
   openConnection?: typeof openConnection;
+}
+
+export interface DoctorPromptOptions {
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+}
+
+const MAX_DOCTOR_PROMPT_LOCATIONS = 20;
+
+/** Ask before removing registry rows for repository roots that no longer exist. */
+export async function promptRemoveMissingRepositoryLocations(
+  locations: readonly RepositoryLocation[],
+  options: DoctorPromptOptions = {},
+): Promise<boolean> {
+  if (locations.length < 1) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Missing repository locations must not be empty');
+  }
+  const input = options.input ?? stdin;
+  const output = options.output ?? stdout;
+  const prompt = createInterface({ input, output });
+  try {
+    const count = locations.length;
+    output.write(
+      `Doctor found ${count} repository location${count === 1 ? '' : 's'} with a missing root. `
+      + 'The following registry rows are candidates:\n',
+    );
+    for (const location of locations.slice(0, MAX_DOCTOR_PROMPT_LOCATIONS)) {
+      output.write(`  - ${location.canonicalRoot}\n`);
+    }
+    if (locations.length > MAX_DOCTOR_PROMPT_LOCATIONS) {
+      output.write(`  ... and ${locations.length - MAX_DOCTOR_PROMPT_LOCATIONS} more\n`);
+    }
+    output.write('This removes registry rows only; it does not delete files or memory.\n');
+    const answer = (await prompt.question('Remove these stale locations? [Y/n] ')).trim();
+    return answer.length === 0 || /^(?:y|yes|はい)$/iu.test(answer);
+  } finally {
+    prompt.close();
+  }
 }
 
 function count(database: ReturnType<typeof openConnection>, sql: string, ...parameters: string[]): number {
@@ -210,17 +251,17 @@ export async function runDoctor(
       WHERE l.relation = 'contradicts' AND f.status = 'verified' AND t.status = 'verified'
     `);
 
-    const bindingRows = database.prepare('SELECT repository_id, canonical_root FROM repository_locations ORDER BY canonical_root').all<{ repository_id: string; canonical_root: string }>();
-    const missingRoots = bindingRows.filter((row) => !existsSync(row.canonical_root)).length;
+    const bindingRows = listRepositoryLocations(database);
+    const missingRoots = bindingRows.filter((row) => !existsSync(row.canonicalRoot)).length;
     const bindingCheck = { ok: missingRoots === 0, count: missingRoots, detail: `locations=${bindingRows.length}` };
 
     let missingAgentFiles = 0;
     for (const row of bindingRows) {
-      if (!existsSync(row.canonical_root)) continue;
-      const configPath = `${row.canonical_root}/.kiokuko.json`;
+      if (!existsSync(row.canonicalRoot)) continue;
+      const configPath = `${row.canonicalRoot}/.kiokuko.json`;
       try {
         const config = await readProjectConfig(configPath);
-        const agentPath = `${row.canonical_root}/${config.agentFile}`;
+        const agentPath = `${row.canonicalRoot}/${config.agentFile}`;
         if (!existsSync(agentPath) || !balancedMarkers(readFileSync(agentPath, 'utf8'))) missingAgentFiles += 1;
       } catch {
         missingAgentFiles += 1;

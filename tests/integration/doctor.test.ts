@@ -1,0 +1,188 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { Readable, Writable } from 'node:stream';
+import test from 'node:test';
+import { buildCli } from '../../src/cli.js';
+import { openConnection } from '../../src/db/connection.js';
+import { migrateDatabase } from '../../src/db/migrate.js';
+import {
+  findMissingRepositoryLocations,
+  registerRepositoryAndLocation,
+  removeMissingRepositoryLocations,
+} from '../../src/repository/binding.js';
+
+async function temporaryDatabase(prefix: string) {
+  const directory = await mkdtemp(path.join(tmpdir(), `kiokuko-doctor-${prefix}-`));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  const database = openConnection(databasePath);
+  migrateDatabase(database);
+  return { database, databasePath, directory };
+}
+
+function register(database: ReturnType<typeof openConnection>, name: string, canonicalRoot: string): void {
+  registerRepositoryAndLocation(database, {
+    repositoryId: `repo_doctor_${name}`,
+    workspace: `project:doctor-${name}`,
+    displayName: name,
+    canonicalRoot,
+    remoteFingerprint: null,
+    bindingSchemaVersion: 1,
+    agentTemplateVersion: 1,
+  });
+}
+
+function locationCount(database: ReturnType<typeof openConnection>): number {
+  return Number(database.prepare('SELECT COUNT(*) AS count FROM repository_locations').get<{ count: number }>()?.count ?? 0);
+}
+
+function ttyInput(answer: string): Readable & { isTTY?: boolean } {
+  const input = Readable.from([answer]) as Readable & { isTTY?: boolean };
+  input.isTTY = true;
+  return input;
+}
+
+function ttyOutput(): Writable & { isTTY?: boolean; text: string } {
+  let text = '';
+  const output = new Writable({
+    write(chunk, _encoding, callback) {
+      text += chunk.toString();
+      callback();
+    },
+  }) as Writable & { isTTY?: boolean; text: string };
+  output.isTTY = true;
+  Object.defineProperty(output, 'text', { get: () => text });
+  return output;
+}
+
+async function invokeDoctor(
+  databasePath: string,
+  answer: string,
+  json = false,
+): Promise<{ stdout: string; prompt: string; response?: { data: Record<string, unknown>; ok: boolean } }> {
+  let stdout = '';
+  const originalWrite = process.stdout.write;
+  const previousExitCode = process.exitCode;
+  const output = ttyOutput();
+  process.exitCode = undefined;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await buildCli({
+      doctorDatabasePath: databasePath,
+      doctorInput: ttyInput(answer),
+      doctorOutput: output,
+    }).parseAsync(['node', 'kiokuko', 'doctor', ...(json ? ['--json'] : [])]);
+  } finally {
+    process.stdout.write = originalWrite;
+    process.exitCode = previousExitCode;
+  }
+  return {
+    stdout,
+    prompt: output.text,
+    ...(json ? { response: JSON.parse(stdout) as { data: Record<string, unknown>; ok: boolean } } : {}),
+  };
+}
+
+test('missing-location cleanup removes only absent location rows and preserves repositories', async () => {
+  const value = await temporaryDatabase('rows');
+  const liveRoot = path.join(value.directory, 'live');
+  const missingRoot = path.join(value.directory, 'missing');
+  await mkdir(liveRoot);
+  try {
+    register(value.database, 'live', liveRoot);
+    register(value.database, 'missing', missingRoot);
+    const candidates = findMissingRepositoryLocations(value.database);
+    assert.deepEqual(candidates.map((location) => location.canonicalRoot), [missingRoot]);
+
+    const removed = removeMissingRepositoryLocations(value.database, candidates);
+    assert.equal(removed, 1);
+    assert.equal(locationCount(value.database), 1);
+    assert.equal(
+      Number(value.database.prepare('SELECT COUNT(*) AS count FROM repositories').get<{ count: number }>()?.count ?? 0),
+      2,
+    );
+    assert.equal(findMissingRepositoryLocations(value.database).length, 0);
+  } finally {
+    value.database.close();
+  }
+});
+
+test('missing-location cleanup rechecks a root before deleting its registry row', async () => {
+  const value = await temporaryDatabase('race');
+  const root = path.join(value.directory, 'restored');
+  try {
+    register(value.database, 'restored', root);
+    const candidates = findMissingRepositoryLocations(value.database);
+    await mkdir(root);
+    assert.equal(removeMissingRepositoryLocations(value.database, candidates), 0);
+    assert.equal(locationCount(value.database), 1);
+  } finally {
+    value.database.close();
+  }
+});
+
+test('interactive doctor removes confirmed missing locations and reports the rerun result', async () => {
+  const value = await temporaryDatabase('confirm');
+  try {
+    register(value.database, 'missing', path.join(value.directory, 'missing'));
+  } finally {
+    value.database.close();
+  }
+
+  const result = await invokeDoctor(value.databasePath, '\n');
+  assert.match(result.prompt, /Remove these stale locations\? \[Y\/n\]/u);
+  assert.match(result.stdout, /Kiokuko doctor: OK/u);
+  assert.match(result.stdout, /Removed 1 missing repository location/u);
+
+  const database = openConnection(value.databasePath);
+  try {
+    assert.equal(locationCount(database), 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('declining interactive doctor cleanup preserves missing locations', async () => {
+  const value = await temporaryDatabase('decline');
+  try {
+    register(value.database, 'missing', path.join(value.directory, 'missing'));
+  } finally {
+    value.database.close();
+  }
+
+  const result = await invokeDoctor(value.databasePath, 'n\n');
+  assert.match(result.prompt, /Remove these stale locations\? \[Y\/n\]/u);
+  assert.match(result.stdout, /Kiokuko doctor: FAILED/u);
+
+  const database = openConnection(value.databasePath);
+  try {
+    assert.equal(locationCount(database), 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('JSON doctor never prompts or cleans missing locations', async () => {
+  const value = await temporaryDatabase('json');
+  try {
+    register(value.database, 'missing', path.join(value.directory, 'missing'));
+  } finally {
+    value.database.close();
+  }
+
+  const result = await invokeDoctor(value.databasePath, 'y\n', true);
+  assert.equal(result.prompt, '');
+  assert.equal(result.response?.ok, true);
+  assert.equal((result.response?.data.checks as { bindings: { ok: boolean } }).bindings.ok, false);
+
+  const database = openConnection(value.databasePath);
+  try {
+    assert.equal(locationCount(database), 1);
+  } finally {
+    database.close();
+  }
+});

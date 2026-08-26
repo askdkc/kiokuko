@@ -299,6 +299,23 @@ reports failures for both `COMMIT` and the following `ROLLBACK`, the transaction
 outcome is explicitly uncertain; `use` preserves its installed repository files
 because compensating them could split a database commit from its binding.
 
+## Doctor
+
+```bash
+kiokuko doctor [--json]
+```
+
+When an interactive terminal finds registered repository locations whose roots no
+longer exist, `doctor` asks `Remove these stale locations? [Y/n]`. The default
+answer is yes. Confirmation deletes only those still-missing rows from
+`repository_locations` in one immediate transaction; repository identities,
+workspaces, memories, and filesystem contents are preserved. The roots are
+rechecked inside the transaction, so a restored root is not selected for
+deletion by the confirmed snapshot.
+
+`--json`, MCP `call` requests, and non-interactive execution never prompt or
+perform cleanup. They report the existing health result unchanged.
+
 ## Server commands
 
 ```bash
