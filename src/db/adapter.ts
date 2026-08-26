@@ -1,4 +1,5 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
+import { KiokukoError } from '../errors.js';
 
 export type SqliteValue = null | number | bigint | string | NodeJS.ArrayBufferView;
 export type SqliteRow = Record<string, unknown>;
@@ -53,7 +54,10 @@ export class NodeSqliteAdapter implements SqliteDatabase, SqliteSerializationDat
   serializeDatabase(): Uint8Array {
     const database = this.database as DatabaseSync & { serialize?: () => Uint8Array };
     if (typeof database.serialize !== 'function') {
-      throw new Error('SQLite serialization requires Node.js 24.16.0 or newer');
+      throw new KiokukoError(
+        'INTEGRITY_ERROR',
+        'SQLite serialization requires Node.js 24.16.0 or newer; upgrade Node.js before backing up this database',
+      );
     }
     return database.serialize();
   }

@@ -5,6 +5,17 @@ export interface TomlDefinition {
   offset: number;
 }
 
+export interface TomlStatement {
+  startOffset: number;
+  endOffset: number;
+  definitions: readonly TomlDefinition[];
+}
+
+export interface StrictTomlDocument {
+  definitions: readonly TomlDefinition[];
+  statements: readonly TomlStatement[];
+}
+
 type TableKind = 'root' | 'implicit' | 'explicit' | 'dotted' | 'inline';
 
 interface TableNode {
@@ -43,8 +54,18 @@ function trimStatement(source: string): { text: string; leading: number } {
   };
 }
 
-function logicalStatements(source: string): Array<{ text: string; offset: number }> {
-  const result: Array<{ text: string; offset: number }> = [];
+function logicalStatements(source: string): Array<{
+  text: string;
+  offset: number;
+  startOffset: number;
+  endOffset: number;
+}> {
+  const result: Array<{
+    text: string;
+    offset: number;
+    startOffset: number;
+    endOffset: number;
+  }> = [];
   let start = 0;
   let quote: '"' | "'" | '"""' | "'''" | undefined;
   let escaped = false;
@@ -94,7 +115,12 @@ function logicalStatements(source: string): Array<{ text: string; offset: number
       const trimmed = trimStatement(raw);
       const text = trimmed.text;
       if (text.length > 0 && !text.startsWith('#')) {
-        result.push({ text, offset: start + trimmed.leading });
+        result.push({
+          text,
+          offset: start + trimmed.leading,
+          startOffset: start,
+          endOffset: Math.min(index + 1, source.length),
+        });
       }
       start = index + 1;
     }
@@ -405,16 +431,18 @@ function openTable(root: TableNode, path: readonly string[], arrayTable: boolean
   return existing;
 }
 
-/** Validate the complete TOML document and return every semantic table/key definition. */
-export function parseStrictTomlDefinitions(source: string): TomlDefinition[] {
+/** Validate the complete TOML document and retain statement boundaries for safe rewrites. */
+export function parseStrictTomlDocument(source: string): StrictTomlDocument {
   for (let index = 0; index < source.length; index += 1) {
     if (source[index] === '\r' && source[index + 1] !== '\n') invalidToml();
   }
   const definitions: TomlDefinition[] = [];
+  const statements: TomlStatement[] = [];
   const root = newTable('root');
   let currentTable: string[] = [];
   let currentNode = root;
   for (const raw of logicalStatements(source)) {
+    const definitionStart = definitions.length;
     const statement = withoutComments(raw.text);
     if (statement.length === 0) continue;
     const arrayTable = statement.startsWith('[[');
@@ -427,6 +455,11 @@ export function parseStrictTomlDefinitions(source: string): TomlDefinition[] {
       ).text);
       currentNode = openTable(root, currentTable, arrayTable);
       definitions.push({ path: currentTable, offset: raw.offset });
+      statements.push({
+        startOffset: raw.startOffset,
+        endOffset: raw.endOffset,
+        definitions: definitions.slice(definitionStart),
+      });
       continue;
     }
     const equals = equalsOutsideKeyQuotes(statement);
@@ -440,6 +473,16 @@ export function parseStrictTomlDefinitions(source: string): TomlDefinition[] {
     if (rawValue.length === 0) invalidToml();
     const node = validateValue(rawValue, fullPath, raw.offset + equals + 1, definitions);
     defineDottedKey(currentNode, localPath, node);
+    statements.push({
+      startOffset: raw.startOffset,
+      endOffset: raw.endOffset,
+      definitions: definitions.slice(definitionStart),
+    });
   }
-  return definitions;
+  return { definitions, statements };
+}
+
+/** Validate the complete TOML document and return every semantic table/key definition. */
+export function parseStrictTomlDefinitions(source: string): TomlDefinition[] {
+  return [...parseStrictTomlDocument(source).definitions];
 }

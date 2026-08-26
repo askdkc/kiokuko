@@ -9,7 +9,7 @@ import {
   createSerializedBackupArtifact,
   type SerializedBackupCreationHooks,
 } from '../db/upgrade-backup.js';
-import { KiokukoError } from '../errors.js';
+import { databaseBackupIntegrityError, KiokukoError } from '../errors.js';
 
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error
@@ -53,18 +53,23 @@ export async function createBackup(
   let operationFailed = false;
   let operationError: unknown;
   try {
-    await createSerializedBackupArtifact(database, output, {
-      ...hooks,
-      async validateDestination(canonicalOutput) {
-        if (reservedSqliteOutput(canonicalDatabasePath, canonicalOutput)) {
-          throw new KiokukoError(
-            'VALIDATION_ERROR',
-            'Backup destination conflicts with a reserved SQLite sidecar pathname',
-          );
-        }
-        await hooks.validateDestination?.(canonicalOutput);
-      },
-    });
+    try {
+      await createSerializedBackupArtifact(database, output, {
+        ...hooks,
+        async validateDestination(canonicalOutput) {
+          if (reservedSqliteOutput(canonicalDatabasePath, canonicalOutput)) {
+            throw new KiokukoError(
+              'VALIDATION_ERROR',
+              'Backup destination conflicts with a reserved SQLite sidecar pathname',
+            );
+          }
+          await hooks.validateDestination?.(canonicalOutput);
+        },
+      });
+    } catch (error) {
+      if (error instanceof KiokukoError) throw error;
+      throw databaseBackupIntegrityError(error);
+    }
     requireDatabaseFileIdentity(canonicalDatabasePath, expectedIdentity);
   } catch (error) {
     operationFailed = true;

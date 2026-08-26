@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile as execFileCallback } from 'node:child_process';
 import {
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -17,6 +18,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { createBackup } from '../../src/commands/backup.js';
 import { initializeDatabase } from '../../src/commands/init.js';
+import { migrateDatabase } from '../../src/db/migrate.js';
 import type { SqliteSerializationDatabase } from '../../src/db/adapter.js';
 import { openConnection } from '../../src/db/connection.js';
 import {
@@ -138,6 +140,44 @@ test('backup command reads the current database without initializing or migratin
     ).get(), undefined);
   } finally {
     unchanged.close();
+  }
+});
+
+test('backup command preserves a v0.1.17 schema-v8 database without running current migrations', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-backup-v017-'));
+  const migrationsDirectory = path.join(directory, 'migrations');
+  const sourcePath = path.join(directory, 'source.sqlite3');
+  const destinationPath = path.join(directory, 'destination.sqlite3');
+  const migrationNames = [
+    '001_initial.sql',
+    '002_fts.sql',
+    '003_akinator.sql',
+    '004_agent_gateway.sql',
+    '005_hybrid_search.sql',
+    '006_context_v2.sql',
+    '007_akinator_reasoning.sql',
+    '008_federated_memory.sql',
+  ];
+  await mkdir(migrationsDirectory);
+  for (const name of migrationNames) {
+    await cp(path.join('migrations', name), path.join(migrationsDirectory, name));
+  }
+  const source = openConnection(sourcePath);
+  try {
+    migrateDatabase(source, migrationsDirectory);
+  } finally {
+    source.close();
+  }
+
+  await createBackup(destinationPath, sourcePath);
+
+  const backup = openConnection(destinationPath, { readOnly: true });
+  try {
+    assert.equal(backup.prepare('SELECT MAX(version) AS version FROM schema_migrations').get<{ version: number }>()?.version, 8);
+    assert.equal(backup.prepare("SELECT 1 AS present FROM sqlite_schema WHERE name = 'external_skills'").get(), undefined);
+    assert.equal(backup.prepare('PRAGMA integrity_check').get<{ integrity_check: string }>()?.integrity_check, 'ok');
+  } finally {
+    backup.close();
   }
 });
 

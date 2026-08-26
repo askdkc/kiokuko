@@ -84,3 +84,15 @@ All write requests carry an idempotency key. `gateway_idempotency` stores the at
 A full SQLite backup serializes the exact already-open read-only connection, validates the standalone image in memory, and installs it through the same create-only, directory-identity-bound writer used for automatic backups. It includes curated memory, all immutable revisions, memory audit, execution ledger, deliveries, and feedback. The backup command never initializes or migrates its source; a missing source is `NOT_FOUND`, and an existing output is `CONFLICT` and remains byte-for-byte unchanged. Its final output component must be portable and cannot use an alternate-stream colon, a trailing dot/space, or a Windows device name. Automatic pre-migration backups use the serialized exact inspection connection, are stored under the current user's data directory, use restrictive `0700`/`0600` modes on POSIX, and are created only when an existing database has pending migrations. Windows uses create-only and inode/file-identity checks without pretending its mode bits provide POSIX ACL semantics. Workspace archive v2 exports current semantic state only, does not include ledger data or revision history, and accepts only workspaces whose current entries are all at revision 1. Export and import fail explicitly for a higher current revision; use a full SQLite backup when history exists. Import idempotency requires the same entry IDs and exact record metadata; matching content under a different ID is a conflict and is never remapped. Both directions enforce the same 64 MiB total, 10,000-line, and 512 KiB-per-line limits and reject secret-like persisted text. Database-backed dry runs execute the same complete collision preflight without writing. Export reads one SQLite snapshot, commits it before filesystem work, and installs output atomically as a create-only file; an existing target is a conflict and is never overwritten. Ledger archive has its own deterministic manifest/checksum and preserves exact delivery revisions.
 
 `doctor` checks database integrity, migration checksums, FTS synchronization, dangling references, ledger contiguous sequence/hash/cursor invariants, secret residue counts, and server descriptor/lock consistency. Purge uses services rather than manual SQL and preserves content-free ledger tombstones.
+
+To restore a full SQLite backup, stop Kiokuko processes first. Keep the current database as a rollback copy, then copy the backup to the original database pathname; do not use workspace `import` for a full SQLite backup:
+
+```sh
+DB="$HOME/Library/Application Support/kiokuko/kiokuko.sqlite3"
+BACKUP="<new-backup.sqlite3>"
+mv "$DB" "$DB.before-restore-<timestamp>"
+cp "$BACKUP" "$DB"
+kiokuko setup
+```
+
+On Linux, use `${XDG_DATA_HOME:-$HOME/.local/share}/kiokuko/kiokuko.sqlite3` for `DB`. On Windows, use `%LOCALAPPDATA%\kiokuko\kiokuko.sqlite3`. Choose an unused timestamp, keep the `.before-restore-*` file until the restored memory is verified, and move it back if the restore must be rolled back. If a pre-migration backup was created automatically, it is under the database directory's `backups/` directory.

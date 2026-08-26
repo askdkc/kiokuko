@@ -48,6 +48,102 @@ test('Codex setup rejects non-canonical marked blocks instead of migrating them'
   }
 });
 
+test('Codex setup replaces an unmanaged table only after explicit authorization', () => {
+  const existing = [
+    'model = "keep"',
+    '[mcp_servers.other]',
+    'command = "keep-other"',
+    '[mcp_servers.kiokuko]',
+    'command = "human-wrapper"',
+    'args = ["run", "kiokuko"]',
+    '[projects."/tmp/keep"]',
+    'trust_level = "trusted"',
+    '',
+  ].join('\n');
+
+  assert.throws(
+    () => renderCodexMcpConfig(existing),
+    (error: unknown) => error instanceof KiokukoError
+      && error.code === 'CONFLICT'
+      && Object.keys(error.details).length === 0,
+  );
+
+  const replaced = renderCodexMcpConfig(
+    existing,
+    '/opt/kiokuko',
+    'community',
+    { replaceConflictingIdentity: true },
+  );
+  assert.equal(replaced.action, 'created');
+  assert.match(replaced.content, /^model = "keep"/u);
+  assert.match(replaced.content, /\[mcp_servers\.other\]\ncommand = "keep-other"/u);
+  assert.match(replaced.content, /\[projects\."\/tmp\/keep"\]\ntrust_level = "trusted"/u);
+  assert.doesNotMatch(replaced.content, /human-wrapper/u);
+  assert.match(replaced.content, /command = "\/opt\/kiokuko"/u);
+  assert.match(replaced.content, /KIOKUKO_SKILL_DISCOVERY = "community"/u);
+});
+
+test('Codex setup replaces a legacy marked block and preserves unrelated TOML', () => {
+  const legacy = [
+    'model = "keep"',
+    '# BEGIN KIOKUKO MCP',
+    '# Managed by `kiokuko setup`.',
+    '[mcp_servers.kiokuko]',
+    'command = "old-kiokuko"',
+    'args = ["mcp"]',
+    'enabled = true',
+    '# END KIOKUKO MCP',
+    '[mcp_servers.other]',
+    'command = "keep-other"',
+    '',
+  ].join('\n');
+
+  const replaced = renderCodexMcpConfig(
+    legacy,
+    'kiokuko',
+    'official',
+    { replaceConflictingIdentity: true },
+  );
+  assert.match(replaced.content, /^model = "keep"/u);
+  assert.match(replaced.content, /\[mcp_servers\.other\]\ncommand = "keep-other"/u);
+  assert.doesNotMatch(replaced.content, /old-kiokuko/u);
+  assert.equal((replaced.content.match(/# BEGIN KIOKUKO MCP/gu) ?? []).length, 1);
+});
+
+test('Codex setup refuses automatic replacement when Kiokuko shares an inline table with unrelated config', () => {
+  const sharedStatement = 'mcp_servers = { kiokuko = { command = "custom" }, other = { command = "keep" } }\n';
+  assert.throws(
+    () => renderCodexMcpConfig(
+      sharedStatement,
+      'kiokuko',
+      'official',
+      { replaceConflictingIdentity: true },
+    ),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'CONFLICT',
+  );
+});
+
+test('Codex setup refuses to delete unrelated TOML copied inside Kiokuko markers', () => {
+  const mixedBlock = [
+    '# BEGIN KIOKUKO MCP',
+    '[mcp_servers.kiokuko]',
+    'command = "custom"',
+    '[projects."/tmp/keep"]',
+    'trust_level = "trusted"',
+    '# END KIOKUKO MCP',
+    '',
+  ].join('\n');
+  assert.throws(
+    () => renderCodexMcpConfig(
+      mixedBlock,
+      'kiokuko',
+      'official',
+      { replaceConflictingIdentity: true },
+    ),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'CONFLICT',
+  );
+});
+
 test('Codex setup rejects invalid requested state without rendering it', () => {
   assert.throws(
     () => renderCodexMcpConfig('', '   '),
@@ -55,6 +151,10 @@ test('Codex setup rejects invalid requested state without rendering it', () => {
   );
   assert.throws(
     () => renderCodexMcpConfig('', 'kiokuko', 'invalid' as never),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
+  );
+  assert.throws(
+    () => renderCodexMcpConfig('', 'kiokuko', 'official', { replaceConflictingIdentity: 'yes' as never }),
     (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
   );
 });
@@ -170,6 +270,40 @@ test('OpenCode setup rejects non-canonical or modified kiokuko servers as confli
   }
 });
 
+test('OpenCode setup replaces only the conflicting kiokuko server after authorization', () => {
+  const existing = [
+    '{',
+    '  // keep this comment',
+    '  "theme": "keep",',
+    '  "mcp": {',
+    '    "other": { "command": ["keep"] },',
+    '    "kiokuko": { "type": "remote", "environment": { "KIOKUKO_SKILL_DISCOVERY": "community" } }',
+    '  }',
+    '}',
+    '',
+  ].join('\n');
+
+  const replaced = renderOpenCodeConfig(
+    existing,
+    '/opt/kiokuko',
+    undefined,
+    { replaceConflictingIdentity: true },
+  );
+  const parsed = parse(replaced.content) as {
+    theme: string;
+    mcp: { other: unknown; kiokuko: unknown };
+  };
+  assert.equal(parsed.theme, 'keep');
+  assert.deepEqual(parsed.mcp.other, { command: ['keep'] });
+  assert.deepEqual(parsed.mcp.kiokuko, {
+    type: 'local',
+    command: ['/opt/kiokuko', 'mcp'],
+    enabled: true,
+    environment: { KIOKUKO_SKILL_DISCOVERY: 'official' },
+  });
+  assert.match(replaced.content, /keep this comment/u);
+});
+
 test('OpenCode setup rejects invalid MCP container and requested state without rewriting config', () => {
   for (const existing of ['{"mcp":[]}\n', '{"mcp":"custom"}\n']) {
     assert.throws(
@@ -179,6 +313,10 @@ test('OpenCode setup rejects invalid MCP container and requested state without r
   }
   assert.throws(
     () => renderOpenCodeConfig('{}\n', ''),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
+  );
+  assert.throws(
+    () => renderOpenCodeConfig('{}\n', 'kiokuko', 'official', { replaceConflictingIdentity: 'yes' as never }),
     (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
   );
 });

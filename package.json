@@ -25,12 +25,14 @@
   ],
   "scripts": {
     "clean:dist": "node --input-type=module --eval \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true });\"",
-    "build": "npm run clean:dist && tsc -p tsconfig.build.json",
+    "set-bin-permissions": "node --input-type=module --eval \"import { chmodSync } from 'node:fs'; chmodSync('dist/bin/kiokuko.js', 0o755);\"",
+    "build": "npm run clean:dist && tsc -p tsconfig.build.json && npm run set-bin-permissions",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test tests/**/*.test.ts",
     "test:unit": "node --import tsx --test tests/unit/**/*.test.ts",
     "test:integration": "node --import tsx --test tests/integration/**/*.test.ts",
     "pack:check": "npm pack --dry-run",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run pack:check"
   },
   "dependencies": {

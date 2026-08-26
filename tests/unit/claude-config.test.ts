@@ -87,6 +87,34 @@ test('rejects non-canonical or modified Claude kiokuko servers as conflicts', ()
   }
 });
 
+test('replaces only the conflicting Claude kiokuko server after authorization', () => {
+  const existing = `${JSON.stringify({
+    theme: 'keep',
+    mcpServers: {
+      other: { type: 'http', url: 'https://example.test/mcp' },
+      kiokuko: { command: 'human-wrapper', args: ['serve'] },
+    },
+  }, null, 2)}\n`;
+  const replaced = renderClaudeConfig(
+    existing,
+    '/opt/kiokuko',
+    'community',
+    { replaceConflictingIdentity: true },
+  );
+  const parsed = JSON.parse(replaced.content) as {
+    theme: string;
+    mcpServers: { other: unknown; kiokuko: unknown };
+  };
+  assert.equal(parsed.theme, 'keep');
+  assert.deepEqual(parsed.mcpServers.other, { type: 'http', url: 'https://example.test/mcp' });
+  assert.deepEqual(parsed.mcpServers.kiokuko, {
+    type: 'stdio',
+    command: '/opt/kiokuko',
+    args: ['mcp'],
+    env: { KIOKUKO_SKILL_DISCOVERY: 'community' },
+  });
+});
+
 test('rejects invalid Claude MCP container and requested state without rewriting config', () => {
   for (const existing of ['{"mcpServers":[]}\n', '{"mcpServers":"custom"}\n']) {
     assert.throws(
@@ -96,6 +124,10 @@ test('rejects invalid Claude MCP container and requested state without rewriting
   }
   assert.throws(
     () => renderClaudeConfig('{}\n', ''),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
+  );
+  assert.throws(
+    () => renderClaudeConfig('{}\n', 'kiokuko', 'official', { replaceConflictingIdentity: 'yes' as never }),
     (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
   );
 });

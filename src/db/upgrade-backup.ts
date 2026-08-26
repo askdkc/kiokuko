@@ -521,13 +521,24 @@ function normalizedSerializedSnapshot(database: SqliteSerializationDatabase): Bu
       serialize?: () => Uint8Array;
     };
     if (typeof methods.deserialize !== 'function' || typeof methods.serialize !== 'function') {
-      throw new Error('SQLite serialization requires Node.js 24.16.0 or newer');
+      throw new KiokukoError(
+        'INTEGRITY_ERROR',
+        'SQLite serialization requires Node.js 24.16.0 or newer; upgrade Node.js before backing up this database',
+      );
     }
     methods.deserialize(serialized);
     const integrity = verification.prepare('PRAGMA integrity_check').get() as { integrity_check?: unknown } | undefined;
-    if (integrity?.integrity_check !== 'ok') throw new Error('backup integrity check failed');
+    if (integrity?.integrity_check !== 'ok') {
+      throw new KiokukoError(
+        'INTEGRITY_ERROR',
+        'SQLite integrity check failed; the source database was not changed and must be preserved for recovery',
+      );
+    }
     if (verification.prepare('PRAGMA foreign_key_check').all().length > 0) {
-      throw new Error('backup foreign-key integrity check failed');
+      throw new KiokukoError(
+        'INTEGRITY_ERROR',
+        'SQLite foreign-key integrity check failed; the source database was not changed and must be preserved for recovery',
+      );
     }
     const normalized = Buffer.from(methods.serialize());
     if (normalized.length < 100 || normalized[18] !== 1 || normalized[19] !== 1) {

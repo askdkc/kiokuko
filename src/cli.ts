@@ -29,10 +29,13 @@ import {
   parseSetupClients,
   parseSetupSkillDiscoveryMode,
   promptCommunitySkillDiscovery,
+  promptReplaceConflictingMcp,
   promptSetupClients,
   promptSetupConfiguration,
   setupGlobalClients,
+  type SetupClient,
 } from './commands/setup.js';
+import { setupMcpIdentityConflictClient } from './setup/mcp-conflict.js';
 import { runMcpServer } from './mcp/server.js';
 import { runCuratorCommand } from './commands/curator.js';
 import { globalizeCuratorCandidate } from './memory/curator.js';
@@ -792,14 +795,37 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           skillDiscoveryMode = await promptCommunitySkillDiscovery({ input: setupInput, output: setupOutput });
         }
       }
-      const data = await setupGlobalClients({
+      const setupOptions = {
         ...setupEnvironment,
         clients,
         command: options.command,
         dryRun: options.dryRun === true,
         standardSkills: options.standardSkills,
         ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
-      });
+      };
+      let data: Awaited<ReturnType<typeof setupGlobalClients>>;
+      const replacementClients = new Set<SetupClient>();
+      for (;;) {
+        try {
+          data = await setupGlobalClients({
+            ...setupOptions,
+            replaceConflictingMcpServers: [...replacementClients],
+          });
+          break;
+        } catch (error) {
+          const conflictClient = setupMcpIdentityConflictClient(error);
+          if (!interactive
+            || conflictClient === undefined
+            || !clients.includes(conflictClient)
+            || replacementClients.has(conflictClient)) throw error;
+          const replace = await promptReplaceConflictingMcp(
+            conflictClient,
+            { input: setupInput, output: setupOutput },
+          );
+          if (!replace) throw error;
+          replacementClients.add(conflictClient);
+        }
+      }
       const changed = data.files.filter((file) => file.action !== 'unchanged').length;
       const clientLabel = data.clients.length === 0 ? 'no detected clients' : data.clients.join(', ');
       const message = options.dryRun

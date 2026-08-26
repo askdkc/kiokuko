@@ -1,5 +1,5 @@
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
-import { KiokukoError } from '../errors.js';
+import { KiokukoError, storedMemoryIntegrityError } from '../errors.js';
 import {
   canonicalContentHash,
   canonicalEntryRevisionContentHash,
@@ -140,7 +140,7 @@ function isExpectedRevisionConflict(error: unknown): boolean {
 }
 
 function storedIntegrity(): never {
-  throw new KiokukoError('INTEGRITY_ERROR', 'Stored entry or revision is invalid');
+  throw storedMemoryIntegrityError();
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

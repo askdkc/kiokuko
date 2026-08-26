@@ -93,6 +93,7 @@ export interface SetupOptions extends PathEnvironment {
   migrationsDirectory?: string;
   standardSkills?: boolean;
   skillDiscoveryMode?: SkillDiscoveryMode;
+  replaceConflictingMcpServers?: readonly SetupClient[];
 }
 
 export interface SetupCommandDependencies {
@@ -185,6 +186,18 @@ async function askCommunitySkillDiscovery(prompt: SetupQuestion, output: NodeJS.
   return /^(?:y|yes|はい)$/iu.test(answer) ? 'community' : 'official';
 }
 
+async function askReplaceConflictingMcp(
+  prompt: SetupQuestion,
+  output: NodeJS.WritableStream,
+  client: SetupClient,
+): Promise<boolean> {
+  const label = setupClientLabel(client);
+  output.write(`${label} already has a non-canonical or unmanaged Kiokuko MCP identity.\n`);
+  output.write('Kiokuko can remove that identity, install the managed configuration, and continue setup.\n');
+  const answer = (await prompt.question(`Replace the existing ${label} Kiokuko MCP identity and continue? [y/N] `)).trim();
+  return /^(?:y|yes|はい)$/iu.test(answer);
+}
+
 /** Ask which supported clients should receive configuration in an interactive terminal. */
 export async function promptSetupClients(detected: SetupClient[], options: SetupPromptOptions = {}): Promise<SetupClient[]> {
   const input = options.input ?? stdin;
@@ -207,6 +220,34 @@ export async function promptCommunitySkillDiscovery(options: SetupPromptOptions 
   } finally {
     prompt.close();
   }
+}
+
+/** Ask before replacing a client Kiokuko MCP identity that setup does not own. */
+export async function promptReplaceConflictingMcp(
+  client: SetupClient,
+  options: SetupPromptOptions = {},
+): Promise<boolean> {
+  const input = options.input ?? stdin;
+  const output = options.output ?? stdout;
+  const prompt = createInterface({ input, output });
+  try {
+    return await askReplaceConflictingMcp(prompt, output, client);
+  } finally {
+    prompt.close();
+  }
+}
+
+function replacementClientSet(value: readonly SetupClient[] | undefined): ReadonlySet<SetupClient> {
+  if (value === undefined) return new Set();
+  if (!Array.isArray(value)
+    || value.some((client) => !SETUP_CLIENTS.includes(client))
+    || new Set(value).size !== value.length) {
+    throw new KiokukoError(
+      'VALIDATION_ERROR',
+      `replaceConflictingMcpServers must be a unique subset of: ${SETUP_CLIENTS.join(', ')}`,
+    );
+  }
+  return new Set(value);
 }
 
 /** Ask both setup questions through one readline session so buffered input remains intact. */
@@ -573,6 +614,7 @@ export async function setupGlobalClients(
   if (options.skillDiscoveryMode !== undefined && !isSkillDiscoveryMode(options.skillDiscoveryMode)) {
     throw new KiokukoError('VALIDATION_ERROR', 'skill discovery must be off, official, or community');
   }
+  const replaceConflictingMcpServers = replacementClientSet(options.replaceConflictingMcpServers);
   const clients = options.clients ?? await detectInstalledClients(pathEnvironment);
   if (!Array.isArray(clients) || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
     throw new KiokukoError('VALIDATION_ERROR', `clients must be a subset of: ${SETUP_CLIENTS.join(', ')}`);
@@ -596,7 +638,18 @@ export async function setupGlobalClients(
     : undefined;
 
   if (clients.includes('codex')) {
-    files.push(await planFile(planning, getCodexConfigPath(pathEnvironment), 'codex', 'mcp-config', (existing) => renderCodexMcpConfig(existing ?? '', command, skillDiscoveryMode)));
+    files.push(await planFile(
+      planning,
+      getCodexConfigPath(pathEnvironment),
+      'codex',
+      'mcp-config',
+      (existing) => renderCodexMcpConfig(
+        existing ?? '',
+        command,
+        skillDiscoveryMode,
+        { replaceConflictingIdentity: replaceConflictingMcpServers.has('codex') },
+      ),
+    ));
     files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
   }
   if (clients.includes('opencode')) {
@@ -606,20 +659,47 @@ export async function setupGlobalClients(
       selectedConfig.path,
       'opencode',
       'mcp-config',
-      (existing) => renderOpenCodeConfig(existing, command, skillDiscoveryMode),
+      (existing) => renderOpenCodeConfig(
+        existing,
+        command,
+        skillDiscoveryMode,
+        { replaceConflictingIdentity: replaceConflictingMcpServers.has('opencode') },
+      ),
       selectedConfig.mustRemainAbsent,
     ));
     files.push(await planFile(planning, getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
     files.push(await planLegacyOpenCodeGuardCleanup(planning, pathEnvironment));
   }
   if (clients.includes('claude')) {
-    files.push(await planFile(planning, getClaudeMcpConfigPath(pathEnvironment), 'claude', 'mcp-config', (existing) => renderClaudeConfig(existing, command, skillDiscoveryMode)));
+    files.push(await planFile(
+      planning,
+      getClaudeMcpConfigPath(pathEnvironment),
+      'claude',
+      'mcp-config',
+      (existing) => renderClaudeConfig(
+        existing,
+        command,
+        skillDiscoveryMode,
+        { replaceConflictingIdentity: replaceConflictingMcpServers.has('claude') },
+      ),
+    ));
     files.push(await planFile(planning, getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
     files.push(await planLegacyClaudeHookCleanup(planning, pathEnvironment));
   }
   if (clients.includes('hermes')) {
     if (hermesProfile === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Hermes profile was not bound during setup planning');
-    files.push(await planFile(planning, hermesProfile.configPath, 'hermes', 'mcp-config', (existing) => renderHermesConfig(existing, command, skillDiscoveryMode)));
+    files.push(await planFile(
+      planning,
+      hermesProfile.configPath,
+      'hermes',
+      'mcp-config',
+      (existing) => renderHermesConfig(
+        existing,
+        command,
+        skillDiscoveryMode,
+        { replaceConflictingIdentity: replaceConflictingMcpServers.has('hermes') },
+      ),
+    ));
   }
 
   if (standardSkills) {

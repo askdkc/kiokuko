@@ -135,10 +135,40 @@ test('rejects an unmanaged or non-canonical kiokuko server as a conflict', () =>
   }
 });
 
+test('replaces only the conflicting Hermes kiokuko server after authorization', () => {
+  const existing = [
+    '# preserve top level',
+    'model: keep',
+    'mcp_servers:',
+    '  other:',
+    '    command: keep-other',
+    '  kiokuko:',
+    '    command: human-wrapper',
+    '    args: [serve]',
+    '',
+  ].join('\n');
+  const replaced = renderHermesConfig(
+    existing,
+    '/opt/kiokuko',
+    'community',
+    { replaceConflictingIdentity: true },
+  );
+
+  assert.match(replaced.content, /preserve top level/u);
+  assert.match(replaced.content, /model: keep/u);
+  assert.match(replaced.content, /command: keep-other/u);
+  assert.doesNotMatch(replaced.content, /human-wrapper|\[serve\]/u);
+  assert.match(replaced.content, /Managed by `kiokuko setup`\./u);
+  assert.match(replaced.content, /command: \/opt\/kiokuko/u);
+  assert.match(replaced.content, /KIOKUKO_SKILL_DISCOVERY: community/u);
+  assert.equal(renderHermesConfig(replaced.content, '/opt/kiokuko').action, 'unchanged');
+});
+
 test('rejects invalid requested Hermes state with typed validation errors', () => {
   for (const callback of [
     () => renderHermesConfig('', '   '),
     () => renderHermesConfig('', 'kiokuko', 'invalid' as never),
+    () => renderHermesConfig('', 'kiokuko', 'official', { replaceConflictingIdentity: 'yes' as never }),
   ]) {
     const identity = errorIdentity(callback);
     assert.equal(identity.code, 'VALIDATION_ERROR');

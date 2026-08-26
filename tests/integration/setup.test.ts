@@ -632,6 +632,29 @@ test('setup rejects a non-array client selection as validation before writing', 
   await assert.rejects(access(temporary.databasePath));
 });
 
+test('setup rejects malformed or duplicate conflict-replacement authorization before writing', async () => {
+  for (const replacementClients of [
+    'codex',
+    ['unknown'],
+    ['codex', 'codex'],
+  ]) {
+    const temporary = await temporaryEnvironment('invalid-replacement-clients');
+    await assert.rejects(
+      setupGlobalClients({
+        clients: [],
+        platform: 'linux',
+        env: temporary.env,
+        databasePath: temporary.databasePath,
+        replaceConflictingMcpServers: replacementClients as never,
+      }),
+      (error: unknown) => error instanceof Error
+        && 'code' in error
+        && error.code === 'VALIDATION_ERROR',
+    );
+    await assert.rejects(access(temporary.databasePath));
+  }
+});
+
 test('setup does not inspect or modify existing Claude settings', async () => {
   const temporary = await temporaryEnvironment('claude-settings-preserved');
   const claudeDirectory = path.join(temporary.home, '.claude');

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { KiokukoError, exitCodeFor, type ErrorCode } from '../../src/errors.js';
+import {
+  databaseBackupIntegrityError,
+  KiokukoError,
+  exitCodeFor,
+  storedMemoryIntegrityError,
+  type ErrorCode,
+} from '../../src/errors.js';
 import { errorEnvelope, successEnvelope } from '../../src/serialization/envelope.js';
 
 const legacyExitCodes: Array<[ErrorCode, number]> = [
@@ -50,6 +56,21 @@ test('redacts arbitrary errors from the public JSON envelope', () => {
     },
   });
   assert.equal(JSON.stringify(envelope).includes(sentinel), false);
+});
+
+test('provides recovery guidance for stored memory and backup integrity failures', () => {
+  const memory = errorEnvelope('setup', storedMemoryIntegrityError());
+  assert.match(memory.error.message, /not an MCP configuration problem/u);
+  assert.match(memory.error.message, /kiokuko backup --output/u);
+  assert.match(memory.error.message, /move the current database file aside/u);
+  assert.match(memory.error.message, /cp .*<new-backup\.sqlite3>/u);
+  assert.match(memory.error.message, /kiokuko setup/u);
+  assert.match(memory.error.message, /Do not delete database rows manually/u);
+
+  const backup = errorEnvelope('backup', databaseBackupIntegrityError(new Error('private cause')));
+  assert.match(backup.error.message, /source database was not changed/u);
+  assert.match(backup.error.message, /Node\.js is version 24\.16\.0 or newer/u);
+  assert.equal(JSON.stringify(backup).includes('private cause'), false);
 });
 
 test('preserves every existing CLI exit-code mapping when server errors are added', () => {

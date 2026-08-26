@@ -3,6 +3,7 @@ import { KiokukoError } from '../errors.js';
 import { isSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
 import type { SkillDiscoveryMode } from '../skills/types.js';
 import type { DelimitedBlockResult } from './managed-text.js';
+import { setupMcpIdentityConflict } from './mcp-conflict.js';
 import { assertStrictJsonSyntax } from './strict-json.js';
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -36,13 +37,22 @@ function validation(message: string): never {
 }
 
 function conflict(): never {
-  throw new KiokukoError('CONFLICT', 'Claude user config already contains a conflicting kiokuko MCP server');
+  setupMcpIdentityConflict('claude', 'Claude user config already contains a conflicting kiokuko MCP server');
 }
 
-export function renderClaudeConfig(existing: string | undefined, command = 'kiokuko', skillDiscoveryMode?: SkillDiscoveryMode): DelimitedBlockResult {
+export function renderClaudeConfig(
+  existing: string | undefined,
+  command = 'kiokuko',
+  skillDiscoveryMode?: SkillDiscoveryMode,
+  options: { replaceConflictingIdentity?: boolean } = {},
+): DelimitedBlockResult {
   if (!isNonEmptyCommand(command)) validation('Claude MCP command must be a non-empty executable path or name');
   if (skillDiscoveryMode !== undefined && !isSkillDiscoveryMode(skillDiscoveryMode)) {
     validation('Claude Skill discovery mode is invalid');
+  }
+  if (options.replaceConflictingIdentity !== undefined
+    && typeof options.replaceConflictingIdentity !== 'boolean') {
+    validation('Claude MCP replacement authorization is invalid');
   }
   const source = existing ?? '{}\n';
   assertStrictJsonSyntax(
@@ -59,8 +69,11 @@ export function renderClaudeConfig(existing: string | undefined, command = 'kiok
   const mcpServers = object(root.mcpServers);
   if (root.mcpServers !== undefined && mcpServers === undefined) validation('Claude user config has an invalid mcpServers object');
   const currentServer = mcpServers?.kiokuko;
-  if (currentServer !== undefined && !isCanonicalManagedServer(currentServer)) conflict();
-  const currentEnvironment = currentServer === undefined ? undefined : object(currentServer.env);
+  const canonicalServer = currentServer !== undefined && isCanonicalManagedServer(currentServer)
+    ? currentServer
+    : undefined;
+  if (currentServer !== undefined && canonicalServer === undefined && !options.replaceConflictingIdentity) conflict();
+  const currentEnvironment = canonicalServer === undefined ? undefined : object(canonicalServer.env);
   const effectiveSkillDiscoveryMode = skillDiscoveryMode
     ?? (currentEnvironment?.[SKILL_DISCOVERY_ENV] as SkillDiscoveryMode | undefined)
     ?? 'official';

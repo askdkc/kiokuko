@@ -2,7 +2,8 @@ import { KiokukoError } from '../errors.js';
 import { isSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
 import type { SkillDiscoveryMode } from '../skills/types.js';
 import { upsertDelimitedBlock, type DelimitedBlockResult } from './managed-text.js';
-import { parseStrictTomlDefinitions } from './strict-toml.js';
+import { setupMcpIdentityConflict, setupMcpIdentityConflictClient } from './mcp-conflict.js';
+import { parseStrictTomlDefinitions, parseStrictTomlDocument } from './strict-toml.js';
 
 export const GLOBAL_INSTRUCTIONS_BEGIN = '<!-- BEGIN KIOKUKO GLOBAL MEMORY -->';
 export const GLOBAL_INSTRUCTIONS_END = '<!-- END KIOKUKO GLOBAL MEMORY -->';
@@ -52,10 +53,79 @@ function occurrences(content: string, marker: string): number[] {
 }
 
 function codexConflict(): never {
-  throw new KiokukoError(
-    'CONFLICT',
+  setupMcpIdentityConflict(
+    'codex',
     'Codex config contains a non-canonical or unmanaged Kiokuko MCP identity; remove it before running setup',
   );
+}
+
+function startsWithPath(path: readonly string[], prefix: readonly string[]): boolean {
+  return prefix.every((segment, index) => path[index] === segment);
+}
+
+function isPathPrefix(path: readonly string[], target: readonly string[]): boolean {
+  return path.length < target.length && path.every((segment, index) => target[index] === segment);
+}
+
+function removeStandaloneCodexManagedBlock(existing: string): string {
+  const begins = occurrences(existing, CODEX_MCP_BEGIN);
+  const ends = occurrences(existing, CODEX_MCP_END);
+  if (begins.length === 0 && ends.length === 0) return existing;
+  if (begins.length !== 1 || ends.length !== 1) codexConflict();
+
+  const begin = begins[0]!;
+  const end = ends[0]!;
+  const endMarkerExclusive = end + CODEX_MCP_END.length;
+  if (
+    begin >= end
+    || (begin > 0 && existing[begin - 1] !== '\n')
+    || (endMarkerExclusive < existing.length
+      && existing[endMarkerExclusive] !== '\r'
+      && existing[endMarkerExclusive] !== '\n')
+  ) codexConflict();
+
+  const endExclusive = existing.startsWith('\r\n', endMarkerExclusive)
+    ? endMarkerExclusive + 2
+    : existing[endMarkerExclusive] === '\n'
+      ? endMarkerExclusive + 1
+      : endMarkerExclusive;
+  const target = ['mcp_servers', 'kiokuko'] as const;
+  let definitions: ReturnType<typeof parseStrictTomlDefinitions>;
+  try {
+    definitions = parseStrictTomlDefinitions(existing.slice(begin, endMarkerExclusive));
+  } catch {
+    codexConflict();
+  }
+  if (
+    !definitions.some((definition) => startsWithPath(definition.path, target))
+    || definitions.some((definition) => (
+      !startsWithPath(definition.path, target) && !isPathPrefix(definition.path, target)
+    ))
+  ) codexConflict();
+  return `${existing.slice(0, begin)}${existing.slice(endExclusive)}`;
+}
+
+function removeUnmanagedCodexMcpIdentity(existing: string): string {
+  const withoutMarkedBlock = removeStandaloneCodexManagedBlock(existing);
+  const target = ['mcp_servers', 'kiokuko'] as const;
+  const document = parseStrictTomlDocument(withoutMarkedBlock);
+  const removable = document.statements.filter((statement) => {
+    const containsTarget = statement.definitions.some((definition) => startsWithPath(definition.path, target));
+    if (!containsTarget) return false;
+    if (!statement.definitions.every((definition) => (
+      startsWithPath(definition.path, target) || isPathPrefix(definition.path, target)
+    ))) codexConflict();
+    return true;
+  });
+
+  let content = withoutMarkedBlock;
+  for (const statement of [...removable].reverse()) {
+    content = `${content.slice(0, statement.startOffset)}${content.slice(statement.endOffset)}`;
+  }
+  if (parseStrictTomlDefinitions(content).some((definition) => startsWithPath(definition.path, target))) {
+    codexConflict();
+  }
+  return content;
 }
 
 function parseCanonicalCodexBlock(existing: string): SkillDiscoveryMode | undefined {
@@ -116,14 +186,31 @@ function parseCanonicalCodexBlock(existing: string): SkillDiscoveryMode | undefi
   return modeMatch[1] as SkillDiscoveryMode;
 }
 
-export function renderCodexMcpConfig(existing = '', command = 'kiokuko', skillDiscoveryMode?: SkillDiscoveryMode): DelimitedBlockResult {
+export function renderCodexMcpConfig(
+  existing = '',
+  command = 'kiokuko',
+  skillDiscoveryMode?: SkillDiscoveryMode,
+  options: { replaceConflictingIdentity?: boolean } = {},
+): DelimitedBlockResult {
   if (typeof command !== 'string' || command.trim().length === 0 || command.includes('\0')) {
     throw new KiokukoError('VALIDATION_ERROR', 'Codex MCP command must be a non-empty executable path or name');
   }
   if (skillDiscoveryMode !== undefined && !isSkillDiscoveryMode(skillDiscoveryMode)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Codex Skill discovery mode is invalid');
   }
-  const currentSkillDiscoveryMode = parseCanonicalCodexBlock(existing);
+  if (options.replaceConflictingIdentity !== undefined
+    && typeof options.replaceConflictingIdentity !== 'boolean') {
+    throw new KiokukoError('VALIDATION_ERROR', 'Codex MCP replacement authorization is invalid');
+  }
+  let renderTarget = existing;
+  let currentSkillDiscoveryMode: SkillDiscoveryMode | undefined;
+  try {
+    currentSkillDiscoveryMode = parseCanonicalCodexBlock(renderTarget);
+  } catch (error) {
+    if (!options.replaceConflictingIdentity || setupMcpIdentityConflictClient(error) !== 'codex') throw error;
+    renderTarget = removeUnmanagedCodexMcpIdentity(renderTarget);
+    currentSkillDiscoveryMode = parseCanonicalCodexBlock(renderTarget);
+  }
   const effectiveSkillDiscoveryMode = skillDiscoveryMode === undefined
     ? currentSkillDiscoveryMode ?? 'official'
     : skillDiscoveryMode;
@@ -137,5 +224,5 @@ export function renderCodexMcpConfig(existing = '', command = 'kiokuko', skillDi
     `env = { ${SKILL_DISCOVERY_ENV} = ${JSON.stringify(effectiveSkillDiscoveryMode)} }`,
     CODEX_MCP_END,
   ].join('\n');
-  return upsertDelimitedBlock(existing, block, CODEX_MCP_BEGIN, CODEX_MCP_END, 'Codex config.toml');
+  return upsertDelimitedBlock(renderTarget, block, CODEX_MCP_BEGIN, CODEX_MCP_END, 'Codex config.toml');
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
-import { KiokukoError } from '../errors.js';
+import { KiokukoError, storedMemoryIntegrityError } from '../errors.js';
 import { canonicalEntryRevisionContentHash, canonicalJson, type JsonObject, validateRecordInput, requireWorkspace, type EntryKind, type EntryStatus, type TrustLevel, type ValidatedRecordInput } from '../serialization/validate.js';
 import { recordAuditEvent } from './audit.js';
 import { findSecret } from './secrets.js';
@@ -103,7 +103,7 @@ interface EntryRow extends SqliteRow {
 
 function rowToEntry(database: SqliteDatabase, row: EntryRow, options: DecodeStoredMemoryOptions = {}): EntryRecord {
   if (typeof row.revision_entry_id !== 'string' || !Number.isSafeInteger(row.current_revision)) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Stored entry or revision is invalid');
+    throw storedMemoryIntegrityError();
   }
   const tags = database
     .prepare('SELECT tag FROM entry_revision_tags WHERE entry_id = ? AND revision = ? ORDER BY tag ASC')
@@ -145,7 +145,7 @@ function rowToEntry(database: SqliteDatabase, row: EntryRow, options: DecodeStor
     options,
   });
   const entry = decoded.entry;
-  if (entry === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Stored entry or revision is invalid');
+  if (entry === undefined) throw storedMemoryIntegrityError();
   const revision = decoded.revision;
   return {
     id: entry.id,

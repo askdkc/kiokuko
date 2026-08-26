@@ -3,6 +3,7 @@ import { KiokukoError } from '../errors.js';
 import { isSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
 import type { SkillDiscoveryMode } from '../skills/types.js';
 import type { DelimitedBlockResult } from './managed-text.js';
+import { setupMcpIdentityConflict } from './mcp-conflict.js';
 
 export const HERMES_MANAGED_MARKER = 'Managed by `kiokuko setup`.';
 
@@ -69,7 +70,22 @@ function validation(): never {
 }
 
 function conflict(): never {
-  throw new KiokukoError('CONFLICT', 'Hermes config already contains a conflicting kiokuko MCP server');
+  setupMcpIdentityConflict('hermes', 'Hermes config already contains a conflicting kiokuko MCP server');
+}
+
+function managedHermesServerValue(
+  document: ReturnType<typeof parseDocument>,
+  command: string,
+  skillDiscoveryMode: SkillDiscoveryMode,
+) {
+  const value = document.createNode({
+    command,
+    args: ['mcp'],
+    env: { [SKILL_DISCOVERY_ENV]: skillDiscoveryMode },
+  });
+  if (!isNode(value)) validation();
+  value.commentBefore = ` ${HERMES_MANAGED_MARKER}`;
+  return value;
 }
 
 function serializeHermesDocument(
@@ -86,12 +102,21 @@ function serializeHermesDocument(
   };
 }
 
-export function renderHermesConfig(existing: string | undefined, command = 'kiokuko', skillDiscoveryMode?: SkillDiscoveryMode): DelimitedBlockResult {
+export function renderHermesConfig(
+  existing: string | undefined,
+  command = 'kiokuko',
+  skillDiscoveryMode?: SkillDiscoveryMode,
+  options: { replaceConflictingIdentity?: boolean } = {},
+): DelimitedBlockResult {
   if (typeof command !== 'string' || command.trim().length === 0 || command.includes('\0')) {
     throw new KiokukoError('VALIDATION_ERROR', 'Hermes MCP command must be a non-empty executable path or name');
   }
   if (skillDiscoveryMode !== undefined && !isSkillDiscoveryMode(skillDiscoveryMode)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Hermes Skill discovery mode is invalid');
+  }
+  if (options.replaceConflictingIdentity !== undefined
+    && typeof options.replaceConflictingIdentity !== 'boolean') {
+    throw new KiokukoError('VALIDATION_ERROR', 'Hermes MCP replacement authorization is invalid');
   }
   const source = existing ?? '';
   const document = parseDocument(source);
@@ -116,7 +141,15 @@ export function renderHermesConfig(existing: string | undefined, command = 'kiok
   const serverMap = mcpServers as HermesMap;
   const existingPair = findKeyPair(serverMap, 'kiokuko');
   if (existingPair !== undefined) {
-    if (!hasManagedMarker(existingPair) || !hasCanonicalManagedShape(existingPair)) conflict();
+    if (!hasManagedMarker(existingPair) || !hasCanonicalManagedShape(existingPair)) {
+      if (!options.replaceConflictingIdentity) conflict();
+      existingPair.value = managedHermesServerValue(
+        document,
+        command,
+        skillDiscoveryMode ?? 'official',
+      );
+      return serializeHermesDocument(document, source, existing);
+    }
     const currentSkillDiscoveryMode = currentManagedSkillDiscoveryMode(existingPair);
     if (currentSkillDiscoveryMode === undefined) conflict();
     const effectiveSkillDiscoveryMode = skillDiscoveryMode ?? currentSkillDiscoveryMode;
@@ -128,13 +161,10 @@ export function renderHermesConfig(existing: string | undefined, command = 'kiok
   }
 
   const effectiveSkillDiscoveryMode = skillDiscoveryMode ?? 'official';
-  const pair = document.createPair('kiokuko', {
-    command,
-    args: ['mcp'],
-    env: { [SKILL_DISCOVERY_ENV]: effectiveSkillDiscoveryMode },
-  }) as unknown as Pair;
-  if (!isNode(pair.value)) validation();
-  pair.value.commentBefore = ` ${HERMES_MANAGED_MARKER}`;
+  const pair = document.createPair(
+    'kiokuko',
+    managedHermesServerValue(document, command, effectiveSkillDiscoveryMode),
+  ) as unknown as Pair;
   serverMap.add(pair);
   return serializeHermesDocument(document, source, existing);
 }
