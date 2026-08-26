@@ -110,6 +110,7 @@ export interface SetupResult {
   databaseAction: 'initialized' | 'planned';
   databaseBackupPath: string | null;
   appliedMigrations: number[];
+  recoveredEntries: number;
   files: Array<Pick<PlannedFile, 'path' | 'action' | 'purpose' | 'client'>>;
   standardSkills: boolean;
   dryRun: boolean;
@@ -724,6 +725,7 @@ export async function setupGlobalClients(
     databaseAction: options.dryRun ? 'planned' : 'initialized',
     databaseBackupPath: null,
     appliedMigrations: [],
+    recoveredEntries: 0,
     files: files
       .filter((file) => file.report)
       .map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
@@ -739,6 +741,7 @@ export async function setupGlobalClients(
   });
   result.databaseBackupPath = initialized.backupPath;
   result.appliedMigrations = initialized.applied;
+  result.recoveredEntries = initialized.recoveredEntries;
   const database = dependencies.openConnection(databasePath);
   let workspaceInitializationFailed = false;
   let workspaceInitializationError: unknown;

@@ -11,6 +11,7 @@ import { withImmediateTransaction } from './transaction.js';
 export interface MigrationResult {
   applied: number[];
   currentVersion: number;
+  recoveredEntries: number;
 }
 
 export interface MigrationPlan {
@@ -41,6 +42,8 @@ export interface MigrationHooks {
    * written. The hook is inside the same SQLite transaction as both steps.
    */
   readonly beforeMarkApplied?: (database: SqliteDatabase, migration: MigrationIdentity) => void;
+  /** Allows setup to remove unreadable memory while preserving the pre-upgrade backup. */
+  readonly recoverInvalidStoredMemory?: boolean;
 }
 
 interface AppliedMigrationRow extends SqliteRow {
@@ -49,10 +52,17 @@ interface AppliedMigrationRow extends SqliteRow {
   checksum: unknown;
 }
 
-function applyBuiltInMigrationOperation(database: SqliteDatabase, migration: MigrationIdentity): void {
+function applyBuiltInMigrationOperation(
+  database: SqliteDatabase,
+  migration: MigrationIdentity,
+  hooks: MigrationHooks,
+): number {
   if (migration.version === 9 && migration.name === '009_external_skill_discovery.sql') {
-    canonicalizeEntryRevisionHashesInMigration(database);
+    return canonicalizeEntryRevisionHashesInMigration(database, hooks.recoverInvalidStoredMemory === undefined
+      ? {}
+      : { recoverInvalidStoredMemory: hooks.recoverInvalidStoredMemory }).recoveredEntries;
   }
+  return 0;
 }
 
 const MIGRATION_FILE = /^([0-9]{3})_([a-z0-9_-]+)\.sql$/;
@@ -239,7 +249,7 @@ function applyOneInTransaction(
   migration: MigrationSource,
   migrations: readonly MigrationSource[],
   hooks: MigrationHooks,
-): boolean {
+): { applied: boolean; recoveredEntries: number } {
   // Revalidate while the caller's write lock is held. No other migrator can
   // advance the history between this check, the SQL, the application hook,
   // and the marker write.
@@ -255,16 +265,16 @@ function applyOneInTransaction(
         { version: migration.version, name: migration.name },
       );
     }
-    return false;
+    return { applied: false, recoveredEntries: 0 };
   }
 
   database.exec(migration.sql);
-  applyBuiltInMigrationOperation(database, migration);
+  const recoveredEntries = applyBuiltInMigrationOperation(database, migration, hooks);
   hooks.beforeMarkApplied?.(database, { version: migration.version, name: migration.name });
   database
     .prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
     .run(migration.version, migration.name, migration.checksum, new Date().toISOString());
-  return true;
+  return { applied: true, recoveredEntries };
 }
 
 function applyMigrationSetInTransaction(
@@ -284,11 +294,14 @@ function applyMigrationSetInTransaction(
   `);
 
   const applied: number[] = [];
+  let recoveredEntries = 0;
   for (const migration of migrations) {
-    if (applyOneInTransaction(database, migration, migrations, hooks)) applied.push(migration.version);
+    const result = applyOneInTransaction(database, migration, migrations, hooks);
+    if (result.applied) applied.push(migration.version);
+    recoveredEntries += result.recoveredEntries;
   }
   const currentVersion = migrations.at(-1)?.version ?? 0;
-  return { applied, currentVersion };
+  return { applied, currentVersion, recoveredEntries };
 }
 
 /** Apply an already-loaded migration snapshot inside a transaction owned by the caller. */

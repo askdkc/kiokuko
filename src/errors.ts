@@ -43,15 +43,15 @@ export class KiokukoError extends Error {
 
 export const STORED_MEMORY_RECOVERY_MESSAGE = [
   'Stored entry or revision is invalid.',
-  'The Kiokuko database contains unreadable saved memory; this is not an MCP configuration problem.',
+  'Kiokuko setup could not automatically recover existing saved memory.',
   'Recovery:',
-  '1. Create a full backup first: kiokuko backup --output <new-backup.sqlite3>',
+  '1. Keep the latest verified SQLite backup; setup creates one automatically before a pending database upgrade.',
   '2. If the memory is needed, keep the backup and do not delete database rows manually.',
-  '3. To restore that backup, stop Kiokuko, move the current database file aside, copy the backup to the original database path, and rerun: kiokuko setup',
+  '3. Restore the backup as one SQLite snapshot: move the current database and any -wal, -shm, or -journal sidecar files aside, copy the backup to the original database path, and rerun: kiokuko setup.',
   '   macOS database path: "$HOME/Library/Application Support/kiokuko/kiokuko.sqlite3"',
   '   Linux database path: "${XDG_DATA_HOME:-$HOME/.local/share}/kiokuko/kiokuko.sqlite3"',
   '   Example (replace <new-backup.sqlite3> and choose an unused <timestamp>):',
-  '   DB="$HOME/Library/Application Support/kiokuko/kiokuko.sqlite3"; mv "$DB" "$DB.before-restore-<timestamp>"; cp "<new-backup.sqlite3>" "$DB"; kiokuko setup',
+  '   DB="$HOME/Library/Application Support/kiokuko/kiokuko.sqlite3"; for SUFFIX in "" -wal -shm -journal; do [ -e "$DB$SUFFIX" ] && mv "$DB$SUFFIX" "$DB$SUFFIX.before-restore-<timestamp>"; done; cp "<new-backup.sqlite3>" "$DB"; kiokuko setup',
   '4. If the old memory is disposable, moving the database file aside and rerunning kiokuko setup creates a new database.',
   '5. Keep the .before-restore file until the restored memory has been verified. Do not delete database rows manually.',
 ].join('\n');

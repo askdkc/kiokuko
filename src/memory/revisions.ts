@@ -1,4 +1,4 @@
-import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
+import type { SqliteDatabase, SqliteRow, SqliteValue } from '../db/adapter.js';
 import { KiokukoError, storedMemoryIntegrityError } from '../errors.js';
 import {
   canonicalContentHash,
@@ -454,6 +454,145 @@ interface RevisionHashMigrationUpdate {
   readonly canonicalHash: string;
 }
 
+export interface RevisionHashMigrationOptions {
+  readonly recoverInvalidStoredMemory?: boolean;
+}
+
+interface RecoveryEntryRow extends SqliteRow {
+  readonly id: unknown;
+  readonly workspace: unknown;
+}
+
+interface RecoveryRevisionRow extends SqliteRow {
+  readonly entryId: unknown;
+  readonly revision: unknown;
+}
+
+interface ForeignKeyRow extends SqliteRow {
+  readonly id: unknown;
+  readonly seq: unknown;
+  readonly table: unknown;
+  readonly from: unknown;
+  readonly to: unknown;
+}
+
+function quoteSqlIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function tableNames(database: SqliteDatabase): string[] {
+  return database
+    .prepare(`
+      SELECT name
+        FROM sqlite_schema
+       WHERE type = 'table'
+         AND name NOT LIKE 'sqlite_%'
+    `)
+    .all<{ name: unknown }>()
+    .flatMap((row) => typeof row.name === 'string' ? [row.name] : []);
+}
+
+function foreignKeys(database: SqliteDatabase, table: string): ForeignKeyRow[] {
+  return database
+    .prepare(`PRAGMA foreign_key_list(${quoteSqlIdentifier(table)})`)
+    .all<ForeignKeyRow>();
+}
+
+function recoveryEntryId(row: RecoveryEntryRow): string {
+  if (typeof row.id !== 'string' || row.id.length === 0 || typeof row.workspace !== 'string') {
+    storedIntegrity();
+  }
+  return row.id;
+}
+
+function invalidRecoveryRevisionRows(database: SqliteDatabase, entryId: string): RecoveryRevisionRow[] {
+  return database
+    .prepare(`
+      SELECT entry_id AS entryId, revision
+        FROM entry_revisions
+       WHERE entry_id = ?
+       ORDER BY revision
+    `)
+    .all<RecoveryRevisionRow>(entryId);
+}
+
+function deleteForeignKeyReferences(
+  database: SqliteDatabase,
+  invalidEntries: readonly RecoveryEntryRow[],
+): void {
+  const entryIds = invalidEntries.map(recoveryEntryId);
+  const revisions = invalidEntries.flatMap((entry) => invalidRecoveryRevisionRows(database, recoveryEntryId(entry)));
+  for (const table of tableNames(database)) {
+    for (const foreignKey of foreignKeys(database, table)) {
+      if (typeof foreignKey.table !== 'string' || typeof foreignKey.from !== 'string'
+        || typeof foreignKey.to !== 'string') continue;
+      const childTable = quoteSqlIdentifier(table);
+      const childColumn = quoteSqlIdentifier(foreignKey.from);
+      if (foreignKey.table === 'entries' && foreignKey.to === 'id') {
+        for (const entryId of entryIds) {
+          if (table === 'entries' && foreignKey.from === 'superseded_by') {
+            database.prepare(`
+              UPDATE entries
+                 SET superseded_by = NULL,
+                     status = CASE WHEN status = 'superseded' THEN 'candidate' ELSE status END,
+                     verified_at = CASE WHEN status = 'superseded' THEN NULL ELSE verified_at END
+               WHERE ${childColumn} = ?
+            `).run(entryId);
+          } else if (table !== 'entries' && table !== 'entry_revisions') {
+            database.prepare(`DELETE FROM ${childTable} WHERE ${childColumn} = ?`).run(entryId);
+          }
+        }
+      } else if (foreignKey.table === 'entry_revisions'
+        && (foreignKey.to === 'entry_id' || foreignKey.to === 'revision')) {
+        // Composite foreign keys are removed as one group below. Processing
+        // only their first column here would leave unrelated revision rows
+        // vulnerable to an over-broad delete.
+        continue;
+      }
+    }
+    const groups = new Map<string, ForeignKeyRow[]>();
+    for (const foreignKey of foreignKeys(database, table)) {
+      if (typeof foreignKey.id !== 'number' || typeof foreignKey.table !== 'string') continue;
+      const key = `${foreignKey.id}\u0000${foreignKey.table}`;
+      const group = groups.get(key) ?? [];
+      group.push(foreignKey);
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      if (group[0]?.table !== 'entry_revisions' || table === 'entry_revisions') continue;
+      const columns = group
+        .map((foreignKey) => ({
+          from: foreignKey.from,
+          to: foreignKey.to,
+        }))
+        .filter((value): value is { from: string; to: 'entry_id' | 'revision' } =>
+          typeof value.from === 'string' && (value.to === 'entry_id' || value.to === 'revision'));
+      if (columns.length !== group.length) continue;
+      for (const revision of revisions) {
+        if (typeof revision.entryId !== 'string' || typeof revision.revision !== 'number') continue;
+        const parameters: SqliteValue[] = columns.map(({ to }) => to === 'entry_id' ? revision.entryId as string : revision.revision as number);
+        const predicate = columns.map(({ from }) => `${quoteSqlIdentifier(from)} = ?`).join(' AND ');
+        database.prepare(`DELETE FROM ${quoteSqlIdentifier(table)} WHERE ${predicate}`).run(...parameters);
+      }
+    }
+  }
+}
+
+function removeInvalidStoredMemoryForMigration(
+  database: SqliteDatabase,
+  invalidEntries: readonly RecoveryEntryRow[],
+): number {
+  if (invalidEntries.length === 0) return 0;
+  deleteForeignKeyReferences(database, invalidEntries);
+  const deleteEntry = database.prepare('DELETE FROM entries WHERE id = ? AND workspace = ?');
+  for (const entry of invalidEntries) {
+    const id = recoveryEntryId(entry);
+    if (typeof entry.workspace !== 'string') storedIntegrity();
+    deleteEntry.run(id, entry.workspace);
+  }
+  return invalidEntries.length;
+}
+
 function migratableRevision(
   database: SqliteDatabase,
   row: RevisionRow,
@@ -546,7 +685,10 @@ function migratableRevision(
  * the migration transaction; any invalid preimage or canonical collision
  * aborts the whole schema upgrade.
  */
-export function canonicalizeEntryRevisionHashesInMigration(database: SqliteDatabase): { inspected: number; rewritten: number } {
+export function canonicalizeEntryRevisionHashesInMigration(
+  database: SqliteDatabase,
+  options: RevisionHashMigrationOptions = {},
+): { inspected: number; rewritten: number; recoveredEntries: number } {
   const formatTable = database.prepare(`
     SELECT type
       FROM sqlite_schema
@@ -571,14 +713,33 @@ export function canonicalizeEntryRevisionHashesInMigration(database: SqliteDatab
      ORDER BY entry_id, revision
   `).all<RevisionRow>();
   const entries = database.prepare('SELECT id, workspace FROM entries ORDER BY id')
-    .all<{ id: unknown; workspace: unknown }>();
+    .all<RecoveryEntryRow>();
+  const invalidEntries: RecoveryEntryRow[] = [];
   for (const entry of entries) {
-    const entryId = storedNonEmptyString(entry.id);
-    const workspace = storedNonEmptyString(entry.workspace);
-    const owner = ownerRevisionChain(database, entryId);
-    if (owner === undefined || owner.workspace !== workspace || !completeRevisionChain(owner)) storedIntegrity();
+    try {
+      const entryId = storedNonEmptyString(entry.id);
+      const workspace = storedNonEmptyString(entry.workspace);
+      const owner = ownerRevisionChain(database, entryId);
+      if (owner === undefined || owner.workspace !== workspace || !completeRevisionChain(owner)) storedIntegrity();
+      for (const row of rows.filter((candidate) => candidate.entry_id === entryId)) migratableRevision(database, row);
+    } catch (error) {
+      if (options.recoverInvalidStoredMemory
+        && error instanceof KiokukoError
+        && error.code === 'INTEGRITY_ERROR'
+        && error.message.startsWith('Stored entry or revision is invalid.')) {
+        invalidEntries.push(entry);
+        continue;
+      }
+      throw error;
+    }
   }
-  const updates = rows.map((row) => migratableRevision(database, row));
+  const recoveredEntries = removeInvalidStoredMemoryForMigration(database, invalidEntries);
+  const updates = database.prepare(`
+    SELECT entry_id, workspace, revision, kind, title, body, summary,
+           scope_json, provenance_json, content_hash, created_by, created_at
+      FROM entry_revisions
+     ORDER BY entry_id, revision
+  `).all<RevisionRow>().map((row) => migratableRevision(database, row));
   const canonicalIdentities = new Set<string>();
   for (const update of updates) {
     const identity = `${update.workspace}\u0000${update.canonicalHash}`;
@@ -626,7 +787,7 @@ export function canonicalizeEntryRevisionHashesInMigration(database: SqliteDatab
   }
   database.prepare('INSERT INTO entry_revision_hash_format (singleton, algorithm) VALUES (1, ?)')
     .run(REVISION_HASH_ALGORITHM);
-  return { inspected: updates.length, rewritten: changed.length };
+  return { inspected: updates.length, rewritten: changed.length, recoveredEntries };
 }
 
 function tagsFor(database: SqliteDatabase, entryId: string, revision: number): unknown[] {

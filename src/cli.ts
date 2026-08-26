@@ -832,7 +832,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         ? `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.`
         : data.clients.length === 0
           ? `Kiokuko database initialized; no supported client executable was detected. Use --clients codex,opencode,claude,hermes to configure clients.`
-          : `Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${data.databaseBackupPath === null ? '' : ` Pre-migration backup: ${data.databaseBackupPath}.`} ${data.nextStep}`;
+          : `Now you are ready to use Kiokuko! Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${data.databaseBackupPath === null ? '' : ` Pre-migration backup: ${data.databaseBackupPath}.`}${data.recoveredEntries === 0 ? '' : ` Recovered by excluding ${data.recoveredEntries} unreadable memor${data.recoveredEntries === 1 ? 'y' : 'ies'}; the pre-migration backup retains the original data.`} ${data.nextStep}`;
       humanOrJson(options.json, 'setup', data, message);
     });
 

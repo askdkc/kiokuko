@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { ensurePlatformDataDirectory, getGlobalDatabasePath } from '../config/paths.js';
 import { detectCapabilities, type SqliteCapabilities } from '../db/capabilities.js';
@@ -58,6 +58,7 @@ export interface InitResult {
   applied: number[];
   currentVersion: number;
   backupPath: string | null;
+  recoveredEntries: number;
   capabilities: SqliteCapabilities;
 }
 
@@ -78,6 +79,30 @@ function dataVersion(connection: ReturnType<typeof openConnection>): number {
     throw new KiokukoError('INTEGRITY_ERROR', 'SQLite data-version probe returned an invalid result');
   }
   return value;
+}
+
+function moveRestoredDatabaseWalSidecars(databasePath: string): void {
+  if (!existsSync(databasePath)) return;
+  const descriptor = openSync(databasePath, constants.O_RDONLY);
+  try {
+    const header = Buffer.alloc(20);
+    if (readSync(descriptor, header, 0, header.length, 0) !== header.length
+      || header.subarray(0, 16).toString('ascii') !== 'SQLite format 3\u0000'
+      || header[18] !== 1) return;
+  } finally {
+    closeSync(descriptor);
+  }
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecar = `${databasePath}${suffix}`;
+    if (!existsSync(sidecar)) continue;
+    let sequence = 0;
+    let preserved = `${sidecar}.before-setup-${Date.now()}`;
+    while (existsSync(preserved)) {
+      sequence += 1;
+      preserved = `${sidecar}.before-setup-${Date.now()}-${sequence}`;
+    }
+    renameSync(sidecar, preserved);
+  }
 }
 
 function samePlan(left: MigrationPlan, right: MigrationPlan): boolean {
@@ -460,6 +485,7 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
   // are replaced while a backup or SQLite lock is in progress.
   const migrationSnapshot = loadMigrationSnapshot(migrationsDirectory);
   const databaseExistedAtPreflight = databasePath !== ':memory:' && existsSync(databasePath);
+  if (databaseExistedAtPreflight) moveRestoredDatabaseWalSidecars(databasePath);
   let expectedDatabaseIdentity = databaseExistedAtPreflight
     ? databaseFileIdentity(databasePath)
     : undefined;
@@ -563,6 +589,18 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
       requireDatabaseFileIdentity(databasePath, expectedDatabaseIdentity);
     }
     if (backupBinding !== undefined) requireBackupArtifact(backupBinding, true);
+    if (inspection !== undefined) {
+      const postBackupDataVersion = dataVersion(inspection);
+      if (postBackupDataVersion !== preBackupDataVersion) {
+        throw new KiokukoError(
+          'CONFLICT',
+          'The SQLite database changed while setup was preparing it; setup was not completed',
+        );
+      }
+      const completedInspection = inspection;
+      inspection = undefined;
+      completedInspection.close();
+    }
     const writableConnection = openConnection(databasePath, expectedDatabaseIdentity === undefined
       ? {}
       : { expectedFileIdentity: expectedDatabaseIdentity });
@@ -570,8 +608,17 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
     const freshDataVersion = reservationDescriptor === undefined
       ? undefined
       : dataVersion(writableConnection);
+    const writableDataVersion = databaseExistedAtPreflight
+      ? dataVersion(writableConnection)
+      : undefined;
     if (freshDataVersion !== undefined) requireFreshDatabaseMetadata(writableConnection);
     if (hooks.afterWritableOpen !== undefined) await hooks.afterWritableOpen();
+    if (writableDataVersion !== undefined && dataVersion(writableConnection) !== writableDataVersion) {
+      throw new KiokukoError(
+        'CONFLICT',
+        'The SQLite database changed while setup was preparing it; setup was not completed',
+      );
+    }
     // Validate existing history before taking a write lock. The exact same
     // immutable migration snapshot is revalidated under the lock.
     const writablePlan = inspectMigrationSnapshot(writableConnection, migrationSnapshot);
@@ -586,6 +633,7 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
         applied: [],
         currentVersion: writablePlan.currentVersion,
         backupPath,
+        recoveredEntries: 0,
         capabilities: detectCapabilities(writableConnection),
       };
     }
@@ -596,18 +644,6 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
         requireDatabaseFileIdentity(databasePath, expectedDatabaseIdentity);
       }
       if (backupBinding !== undefined) requireBackupArtifact(backupBinding, true);
-      if (inspection !== undefined) {
-        const postBackupDataVersion = dataVersion(inspection);
-        if (postBackupDataVersion !== preBackupDataVersion) {
-          throw new KiokukoError(
-            'CONFLICT',
-            'Database changed while the pre-migration backup was being created; migration was not applied',
-          );
-        }
-        const completedInspection = inspection;
-        inspection = undefined;
-        completedInspection.close();
-      }
       if (freshDataVersion !== undefined) {
         if (dataVersion(writableConnection) !== freshDataVersion) {
           throw new KiokukoError(
@@ -633,6 +669,7 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
       }
       requireForeignKeyIntegrity(writableConnection, 'before');
       migration = migrateDatabaseSnapshotInTransaction(writableConnection, migrationSnapshot, {
+        recoverInvalidStoredMemory: true,
         beforeMarkApplied(database, pending) {
           if ((pending.version === 5 && pending.name === '005_hybrid_search.sql')
             || (pending.version === 9 && pending.name === '009_external_skill_discovery.sql')) {
@@ -660,6 +697,7 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
       applied: migration.applied,
       currentVersion: migration.currentVersion,
       backupPath,
+      recoveredEntries: migration.recoveredEntries,
       capabilities: detectCapabilities(writableConnection),
     };
   } catch (error) {

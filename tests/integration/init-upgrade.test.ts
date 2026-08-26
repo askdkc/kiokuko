@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { initializeDatabase } from '../../src/commands/init.js';
+import { createBackup } from '../../src/commands/backup.js';
 import { databaseFileIdentity, openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { createPreMigrationBackup } from '../../src/db/upgrade-backup.js';
@@ -76,6 +77,44 @@ test('initializeDatabase creates and verifies a pre-migration backup before upgr
   } finally {
     upgraded.close();
   }
+});
+
+test('initializeDatabase upgrades a restored standalone backup without a false data-version conflict', async () => {
+  const root = await temporaryDirectory('restored-backup');
+  const { databasePath } = await createVersionOneDatabase(root);
+  const newMigrations = await migrationDirectory(root, true);
+  const standaloneBackup = path.join(root, 'standalone-backup.sqlite3');
+
+  await createBackup(standaloneBackup, databasePath);
+  await copyFile(standaloneBackup, databasePath);
+  await Promise.all([
+    `${databasePath}-wal`,
+    `${databasePath}-shm`,
+    `${databasePath}-journal`,
+  ].map((sidecar) => rm(sidecar, { force: true })));
+
+  const result = await initializeDatabase({ databasePath, migrationsDirectory: newMigrations });
+  assert.deepEqual(result.applied, [2]);
+});
+
+test('initializeDatabase preserves stale WAL sidecars left beside a restored standalone backup', async () => {
+  const root = await temporaryDirectory('restored-backup-sidecars');
+  const { databasePath } = await createVersionOneDatabase(root);
+  const newMigrations = await migrationDirectory(root, true);
+  const standaloneBackup = path.join(root, 'standalone-backup.sqlite3');
+
+  await createBackup(standaloneBackup, databasePath);
+  await copyFile(standaloneBackup, databasePath);
+  await Promise.all([
+    writeFile(`${databasePath}-wal`, 'stale WAL sidecar'),
+    writeFile(`${databasePath}-shm`, 'stale SHM sidecar'),
+  ]);
+
+  const result = await initializeDatabase({ databasePath, migrationsDirectory: newMigrations });
+  assert.deepEqual(result.applied, [2]);
+  const names = await readdir(root);
+  assert.equal(names.filter((name) => name.startsWith('data.sqlite3-wal.before-setup-')).length, 1);
+  assert.equal(names.filter((name) => name.startsWith('data.sqlite3-shm.before-setup-')).length, 1);
 });
 
 test('pre-migration backup serializes the already-open source across a rename-and-restore ABA', {
@@ -564,7 +603,7 @@ test('initializeDatabase rejects a concurrent migration even when the writable p
     ),
     (error: unknown) => error instanceof KiokukoError
       && error.code === 'CONFLICT'
-      && /changed while the pre-migration backup/u.test(error.message),
+      && /database changed while setup was preparing it/u.test(error.message),
   );
 
   const live = openConnection(databasePath, { readOnly: true });

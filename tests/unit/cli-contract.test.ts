@@ -60,11 +60,12 @@ test('redacts arbitrary errors from the public JSON envelope', () => {
 
 test('provides recovery guidance for stored memory and backup integrity failures', () => {
   const memory = errorEnvelope('setup', storedMemoryIntegrityError());
-  assert.match(memory.error.message, /not an MCP configuration problem/u);
-  assert.match(memory.error.message, /kiokuko backup --output/u);
-  assert.match(memory.error.message, /move the current database file aside/u);
+  assert.match(memory.error.message, /could not automatically recover existing saved memory/u);
+  assert.match(memory.error.message, /setup creates one automatically/u);
+  assert.match(memory.error.message, /move the current database and any -wal, -shm, or -journal sidecar files aside/u);
   assert.match(memory.error.message, /cp .*<new-backup\.sqlite3>/u);
   assert.match(memory.error.message, /kiokuko setup/u);
+  assert.match(memory.error.message, /-wal, -shm, or -journal/u);
   assert.match(memory.error.message, /Do not delete database rows manually/u);
 
   const backup = errorEnvelope('backup', databaseBackupIntegrityError(new Error('private cause')));

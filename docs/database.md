@@ -85,12 +85,16 @@ A full SQLite backup serializes the exact already-open read-only connection, val
 
 `doctor` checks database integrity, migration checksums, FTS synchronization, dangling references, ledger contiguous sequence/hash/cursor invariants, secret residue counts, and server descriptor/lock consistency. Purge uses services rather than manual SQL and preserves content-free ledger tombstones.
 
-To restore a full SQLite backup, stop Kiokuko processes first. Keep the current database as a rollback copy, then copy the backup to the original database pathname; do not use workspace `import` for a full SQLite backup:
+`setup` creates the pre-upgrade backup before applying pending migrations. If the upgrade finds an unreadable saved-memory entry, setup preserves the original entry in that backup, excludes only the unreadable entry from the active database, and completes the migration. The success output reports how many entries were recovered this way.
+
+To restore a full SQLite backup, keep the current database and any `-wal`, `-shm`, or `-journal` sidecar files as rollback copies, then copy the backup to the original database pathname; do not use workspace `import` for a full SQLite backup. A standalone backup has no matching sidecars, so old sidecars must not remain beside it:
 
 ```sh
 DB="$HOME/Library/Application Support/kiokuko/kiokuko.sqlite3"
 BACKUP="<new-backup.sqlite3>"
-mv "$DB" "$DB.before-restore-<timestamp>"
+for SUFFIX in "" -wal -shm -journal; do
+  [ -e "$DB$SUFFIX" ] && mv "$DB$SUFFIX" "$DB$SUFFIX.before-restore-<timestamp>"
+done
 cp "$BACKUP" "$DB"
 kiokuko setup
 ```

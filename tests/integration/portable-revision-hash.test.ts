@@ -222,6 +222,75 @@ test('migration 009 rejects an unbound legacy preimage and rolls back every sche
   }
 });
 
+test('initializeDatabase recovers an unreadable revision chain from its pre-upgrade backup', async () => {
+  const source = await v8Database('recover-revision-chain');
+  let entry: EntryRecord;
+  try {
+    entry = recordEntry(source.db, {
+      workspace: 'project:recover-revision-chain',
+      kind: 'lesson',
+      title: 'Unreadable chain',
+      body: 'The backup keeps this original row while setup recovers the active database.',
+    });
+    source.db.exec(`
+      CREATE TABLE recovery_entry_ref (entry_id TEXT NOT NULL REFERENCES entries(id));
+      CREATE TABLE recovery_revision_ref (
+        entry_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        FOREIGN KEY (entry_id, revision) REFERENCES entry_revisions(entry_id, revision)
+      );
+    `);
+    source.db.prepare('INSERT INTO recovery_entry_ref (entry_id) VALUES (?)').run(entry.id);
+    source.db.prepare('INSERT INTO recovery_revision_ref (entry_id, revision) VALUES (?, ?)').run(entry.id, entry.revision);
+    source.db.exec('DROP TRIGGER entry_revisions_immutable_update');
+    source.db.prepare(`
+      INSERT INTO entry_revisions (
+        entry_id, workspace, revision, kind, title, body, summary, scope_json,
+        provenance_json, content_hash, created_by, created_at
+      ) VALUES (?, ?, 4, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      entry.id,
+      entry.workspace,
+      entry.kind,
+      entry.title,
+      entry.body,
+      entry.summary,
+      canonicalJson(entry.scope),
+      canonicalJson(entry.provenance),
+      '0'.repeat(64),
+      entry.createdBy,
+      entry.updatedAt,
+    );
+    source.db.prepare('UPDATE entries SET current_revision = 4 WHERE id = ?').run(entry.id);
+    source.db.exec(REVISION_TRIGGER);
+    await installMigration009(source);
+  } finally {
+    source.db.close();
+  }
+
+  const initialized = await initializeDatabase({
+    databasePath: source.databasePath,
+    migrationsDirectory: source.migrationsDirectory,
+  });
+  assert.deepEqual(initialized.applied, [9]);
+  assert.equal(initialized.recoveredEntries, 1);
+  const upgraded = openConnection(source.databasePath, { readOnly: true });
+  try {
+    assert.equal(upgraded.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
+    assert.equal(upgraded.prepare('SELECT COUNT(*) AS count FROM recovery_entry_ref').get<{ count: number }>()?.count, 0);
+    assert.equal(upgraded.prepare('SELECT COUNT(*) AS count FROM recovery_revision_ref').get<{ count: number }>()?.count, 0);
+    assert.equal(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get<{ version: number }>()?.version, 9);
+  } finally {
+    upgraded.close();
+  }
+  const backup = openConnection(initialized.backupPath!, { readOnly: true });
+  try {
+    assert.equal(backup.prepare('SELECT COUNT(*) AS count FROM entries WHERE id = ?').get<{ count: number }>(entry.id)?.count, 1);
+  } finally {
+    backup.close();
+  }
+});
+
 test('migration 009 rejects canonical identity collisions without partially rewriting rows', async () => {
   const source = await v8Database('colliding-revision-upgrade');
   try {
