@@ -22,6 +22,7 @@ const gatewayTables = [
   'ledger_memory_links',
   'ledger_purge_audit',
   'gateway_idempotency',
+  'nudge_deliveries',
 ] as const;
 
 const gatewayIndexes = [
@@ -40,6 +41,8 @@ const gatewayIndexes = [
   'idx_ledger_memory_links_entry',
   'idx_ledger_purge_audit_target',
   'idx_gateway_idempotency_created_at',
+  'nudge_deliveries_run_code_sequence',
+  'nudge_deliveries_run_sequence',
 ] as const;
 
 const now = '2026-08-20T00:00:00.000Z';
@@ -100,7 +103,7 @@ test('fresh migration applies the current schema and every gateway table and ind
   const directory = await temporaryDirectory('gateway-fresh');
   const database = openConnection(path.join(directory, 'data.sqlite3'));
   try {
-    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     assert.deepEqual(
       gatewayTables.filter((table) => !exists(database, 'table', table)),
       [],

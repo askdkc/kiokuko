@@ -16,6 +16,7 @@ import { inspectLedger } from '../ledger/maintenance.js';
 import { findSecret } from '../memory/secrets.js';
 import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
 import { readEntryRevision } from '../memory/revisions.js';
+import { NUDGE_CODES, NUDGE_POLICY_VERSION, NUDGE_PRIORITY } from '../context/nudges.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -46,6 +47,7 @@ export interface DoctorResult {
     permissions: DoctorCheck;
     secrets: DoctorCheck;
     ledger: DoctorCheck;
+    nudgeDeliveries: DoctorCheck;
     runtime: DoctorCheck;
     hybridSearch: DoctorCheck;
   };
@@ -99,6 +101,65 @@ function count(database: ReturnType<typeof openConnection>, sql: string, ...para
 
 function balancedMarkers(content: string): boolean {
   return content.split(BEGIN_MARKER).length - 1 === 1 && content.split(END_MARKER).length - 1 === 1;
+}
+
+function validTimestamp(value: unknown): boolean {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)) return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function nudgeDeliveryCheck(database: ReturnType<typeof openConnection>): DoctorCheck {
+  const rows = database.prepare(`
+    SELECT d.id, d.run_id, d.policy_version, d.code, d.occurrence_id,
+           d.through_sequence, d.priority, d.delivered_at,
+           r.last_sequence AS run_last_sequence
+      FROM nudge_deliveries AS d
+      LEFT JOIN ledger_runs AS r ON r.run_id = d.run_id
+     ORDER BY d.id ASC
+  `).all<{
+    id: unknown;
+    run_id: unknown;
+    policy_version: unknown;
+    code: unknown;
+    occurrence_id: unknown;
+    through_sequence: unknown;
+    priority: unknown;
+    delivered_at: unknown;
+    run_last_sequence: unknown;
+  }>();
+  const invalidRows = new Set<string>();
+  let orphanRows = 0;
+  for (const [index, row] of rows.entries()) {
+    const key = typeof row.id === 'string' && row.id.length > 0 ? row.id : `row-${index}`;
+    const invalid = () => invalidRows.add(key);
+    if (typeof row.run_id !== 'string' || row.run_id.length === 0 || typeof row.run_last_sequence !== 'number') {
+      orphanRows += 1;
+      invalid();
+    }
+    if (row.policy_version !== NUDGE_POLICY_VERSION) invalid();
+    if (typeof row.code !== 'string' || !NUDGE_CODES.includes(row.code as typeof NUDGE_CODES[number])) invalid();
+    else if (typeof row.priority !== 'number' || row.priority !== NUDGE_PRIORITY[row.code as typeof NUDGE_CODES[number]]) invalid();
+    if (typeof row.occurrence_id !== 'string' || row.occurrence_id.length === 0 || row.occurrence_id.length > 256) invalid();
+    if (typeof row.through_sequence !== 'number'
+      || !Number.isSafeInteger(row.through_sequence)
+      || row.through_sequence < 0
+      || typeof row.run_last_sequence === 'number' && row.through_sequence > row.run_last_sequence) invalid();
+    if (typeof row.priority !== 'number' || !Number.isSafeInteger(row.priority) || row.priority < 1) invalid();
+    if (!validTimestamp(row.delivered_at)) invalid();
+  }
+  const duplicateRows = database.prepare(`
+    SELECT run_id, policy_version, occurrence_id
+      FROM nudge_deliveries
+     GROUP BY run_id, policy_version, occurrence_id
+    HAVING COUNT(*) > 1
+  `).all();
+  const invalidCount = invalidRows.size + duplicateRows.length;
+  return {
+    ok: invalidCount === 0,
+    count: invalidCount,
+    detail: `deliveries=${rows.length}, invalidRows=${invalidRows.size}, duplicateOccurrenceIdentities=${duplicateRows.length}, orphanRows=${orphanRows}`,
+  };
 }
 
 async function runtimeCheck(databasePath: string, descriptorPath = getRuntimeDescriptorPath()): Promise<DoctorCheck> {
@@ -288,6 +349,7 @@ export async function runDoctor(
 
     const ledgerReport = inspectLedger(database);
     const ledgerCheck = { ok: ledgerReport.ok, count: ledgerReport.findingCount, detail: `findings=${ledgerReport.findingCount}` };
+    const nudgeDeliveries = nudgeDeliveryCheck(database);
     const runtime = await runtimeCheck(initialized.databasePath, options.runtimeDescriptorPath);
     const checks = {
       integrity: { ok: integrity === 'ok', detail: integrity },
@@ -305,6 +367,7 @@ export async function runDoctor(
       permissions,
       secrets: { ok: secretCount === 0, count: secretCount },
       ledger: ledgerCheck,
+      nudgeDeliveries,
       runtime,
       hybridSearch: hybridCheck,
     };

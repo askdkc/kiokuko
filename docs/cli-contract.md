@@ -365,6 +365,24 @@ These commands discover the service from the runtime descriptor and call authent
 
 The bridge maps to `/api/v1/agent/runs`, intake answers, events, checkpoints, close, and feedback. It does not expose a compatibility alias for the separate promotions endpoint. Every checkpoint that can return task-aware context must include the exact catalog bound at `open`; the server rejects a swapped catalog before context retrieval. The former unbound `/api/v1/context/query` and context-delivery listing endpoints were removed because neither had a safe complete-catalog binding channel. Every write creates a fresh opaque `Idempotency-Key` unless a key is explicitly supplied in structured input for a retry. Same-key same-body replay reuses the stored atomic mutation acknowledgement without repeating the write; same-key different-body is conflict. Capability gating and context retrieval are post-commit and are re-evaluated against current retrievable revisions and feedback, so an exact retry can return different enriched context or a new hard-stop state while retaining the same mutation acknowledgement.
 
+### Recommendations and nudges
+
+Checkpoint responses retain the full deterministic `recommendations` array. They may also contain `nudge`, which is either `null` or one bounded advisory object:
+
+```json
+{
+  "policyVersion": "nudges.v1",
+  "occurrenceId": "...",
+  "code": "VERIFY_AFTER_MUTATION",
+  "message": "The latest passing verification predates the most recent mutation. Consider re-running the affected verification before finishing.",
+  "evidenceEventIds": ["..."],
+  "referenceIds": [],
+  "priority": 4
+}
+```
+
+`recommendations` describe all applicable deterministic conditions. `nudge` is at most one rate-limited presentation selected from the v1 subset and does not remove or mutate recommendations. Nudges are advisory, not commands, never trigger tools or tests, and do not alter the ledger projection. The same logical occurrence is delivered at most once per run and policy version; v1 allows at most three deliveries per run and requires three committed ledger sequence positions between deliveries of the same code. Delivery history is stored in `nudge_deliveries`, separate from `ledger_events`, and timestamps are audit metadata rather than an eligibility signal.
+
 ## Existing guide and memory paths
 
 `kiokuko guide` retains intake-only `start` and `answer` commands. Direct

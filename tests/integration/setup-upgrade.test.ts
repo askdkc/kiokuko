@@ -27,6 +27,13 @@ test('setup backs up an existing database before applying pending migrations', a
       created_at TEXT NOT NULL,
       last_used_at TEXT NOT NULL
     );
+    CREATE TABLE repository_locations (
+      repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+      canonical_root TEXT NOT NULL UNIQUE,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      PRIMARY KEY (repository_id, canonical_root)
+    );
   `;
   await writeFile(path.join(oldMigrations, '001_initial.sql'), initialSql);
   await writeFile(path.join(currentMigrations, '001_initial.sql'), initialSql);

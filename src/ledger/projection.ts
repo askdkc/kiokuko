@@ -34,7 +34,9 @@ export interface LedgerProjection {
   unresolvedFailureEventIds: string[];
   unknownOutcomeEventIds: string[];
   latestMutationSequence: number | null;
+  latestMutationEventIds: string[];
   latestPassingVerificationSequence: number | null;
+  latestPassingVerificationEventIds: string[];
   coverage: ProjectionCoverage;
   declaredCoverage: Coverage;
   intakeIncomplete: boolean;
@@ -276,7 +278,9 @@ export function projectLedger(input: unknown): LedgerProjection {
 
   let taskProfile = { ...parsed.initialProfile };
   let latestMutationSequence: number | null = null;
+  let latestMutationEventIds: string[] = [];
   let latestPassingVerificationSequence: number | null = null;
+  let latestPassingVerificationEventIds: string[] = [];
   let latestEvidence: { outcome: 'failed' | 'passed'; sequence: number } | null = null;
   let unresolvedFailureEventIds: string[] = [];
   let unknownOutcomeEventIds: string[] = [];
@@ -289,8 +293,10 @@ export function projectLedger(input: unknown): LedgerProjection {
     if (event.eventType === 'task_profile.revised') {
       taskProfile = applyRevision(taskProfile, event.payload);
       latestMutationSequence = event.sequence;
+      latestMutationEventIds = [event.eventId];
     } else if (event.eventType === 'file.changed' || ((event.eventType === 'command.completed' || event.eventType === 'tool.completed') && mutated(event.payload))) {
       latestMutationSequence = event.sequence;
+      latestMutationEventIds = [event.eventId];
     }
 
     if (FAILURE_EVENT_TYPES.has(event.eventType) || ((event.eventType === 'test.completed' || event.eventType === 'verification.recorded') && event.outcome === 'failed')) {
@@ -302,7 +308,10 @@ export function projectLedger(input: unknown): LedgerProjection {
       const outcome = evidenceOutcome(event.outcome);
       if (outcome !== null) {
         latestEvidence = { outcome, sequence: event.sequence };
-        if (outcome === 'passed') latestPassingVerificationSequence = event.sequence;
+        if (outcome === 'passed') {
+          latestPassingVerificationSequence = event.sequence;
+          latestPassingVerificationEventIds = [event.eventId];
+        }
       }
     }
   }
@@ -326,7 +335,9 @@ export function projectLedger(input: unknown): LedgerProjection {
     unresolvedFailureEventIds,
     unknownOutcomeEventIds,
     latestMutationSequence,
+    latestMutationEventIds,
     latestPassingVerificationSequence,
+    latestPassingVerificationEventIds,
     coverage,
     declaredCoverage,
     intakeIncomplete: parsed.intakeStatus === 'exhausted' && missingProfileFields.length > 0,

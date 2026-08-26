@@ -12,6 +12,13 @@ import { validateEventBatch, validateTimestamp } from '../ledger/validate.js';
 import type { JsonObject, JsonValue, LedgerEventInput, LedgerEventType, RunStatus } from '../ledger/types.js';
 import { executeIdempotentInTransaction } from '../server/idempotency.js';
 import { buildRecommendations, type Recommendation } from '../context/recommendations.js';
+import {
+  buildDeliveredNudge,
+  deriveNudgeCandidates,
+  NUDGE_POLICY_VERSION,
+  selectNudge,
+} from '../context/nudges.js';
+import { readNudgeHistory, recordNudgeDeliveryInTransaction } from '../context/nudge-store.js';
 import { readContextRunRetrievalState } from '../context/run-state.js';
 import {
   recordContextFeedbackInTransaction,
@@ -53,6 +60,7 @@ export interface CheckpointResponse {
   profileHash: string;
   projection: LedgerProjection;
   recommendations: Recommendation[];
+  nudge: import('../context/nudges.js').DeliveredNudge | null;
   characterBudget: number;
   context: null;
   untrusted: true;
@@ -223,6 +231,21 @@ function responseValue(database: SqliteDatabase, runId: string, request: Checkpo
   }
   const { intakeStatus, projection } = projectionFor(database, runId, ack.acceptedThrough);
   const recommendations = buildRecommendations({ projection, broker: {} });
+  const candidates = deriveNudgeCandidates(projection, recommendations);
+  const history = readNudgeHistory(database, runId, NUDGE_POLICY_VERSION);
+  const selected = selectNudge(candidates, history, ack.acceptedThrough);
+  const nudge = selected === null ? null : buildDeliveredNudge(selected);
+  if (selected !== null) {
+    recordNudgeDeliveryInTransaction(database, {
+      runId,
+      policyVersion: NUDGE_POLICY_VERSION,
+      code: selected.code,
+      occurrenceId: selected.occurrenceId,
+      throughSequence: ack.acceptedThrough,
+      priority: selected.priority,
+      deliveredAt: now,
+    });
+  }
   return {
     ...ack,
     runStatus: 'active',
@@ -231,6 +254,7 @@ function responseValue(database: SqliteDatabase, runId: string, request: Checkpo
     profileHash: projection.profileHash,
     projection,
     recommendations,
+    nudge,
     characterBudget: request.characterBudget,
     context: null,
     untrusted: true,
