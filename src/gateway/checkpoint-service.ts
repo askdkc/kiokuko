@@ -4,11 +4,12 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { readAkinatorSession, readRunIntakeLink } from '../akinator/store.js';
+import { checkpointEligibility } from '../ledger/checkpoint-eligibility.js';
 import { projectLedger, type LedgerProjection } from '../ledger/projection.js';
 import { LedgerStore } from '../ledger/store.js';
 import { sanitizeEvent } from '../ledger/redaction.js';
 import { validateEventBatch, validateTimestamp } from '../ledger/validate.js';
-import type { JsonObject, JsonValue, LedgerEventInput, LedgerEventType } from '../ledger/types.js';
+import type { JsonObject, JsonValue, LedgerEventInput, LedgerEventType, RunStatus } from '../ledger/types.js';
 import { executeIdempotentInTransaction } from '../server/idempotency.js';
 import { buildRecommendations, type Recommendation } from '../context/recommendations.js';
 import { readContextRunRetrievalState } from '../context/run-state.js';
@@ -63,6 +64,17 @@ function validation(): never {
 
 function conflict(message = 'Checkpoint requires an active run'): never {
   throw new KiokukoError('CONFLICT', message);
+}
+
+function assertCheckpointEligible(status: RunStatus): void {
+  const eligibility = checkpointEligibility(status);
+  if (eligibility.allowed) return;
+  throw new KiokukoError('CONFLICT', status === 'intake'
+    ? 'Checkpoint is not allowed during intake'
+    : 'Checkpoint is not allowed for a terminal run', {
+      checkpointEligibility: eligibility,
+      runStatus: status,
+    });
 }
 
 function assertPlainObject(value: unknown): Record<string, unknown> {
@@ -191,9 +203,11 @@ function responseValue(database: SqliteDatabase, runId: string, request: Checkpo
   // The route's broker validates this state again after checkpoint persistence.
   // Validate the exact same authoritative run/intake/event chain before the
   // first mutation so a corrupt pre-existing state cannot commit a checkpoint.
+  const currentRun = new LedgerStore(database).readRun(runId);
+  if (!currentRun) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
+  assertCheckpointEligible(currentRun.status);
   const state = readContextRunRetrievalState(database, runId);
   const run = state.run;
-  if (run.status !== 'active') conflict(run.status === 'intake' ? 'Checkpoint is not allowed during intake' : 'Checkpoint is not allowed for a terminal run');
   const store = new LedgerStore(database);
   const ack = store.appendBatchInTransaction(runId, { events: request.events });
   for (let index = 0; index < request.contextFeedback.length; index += 1) {

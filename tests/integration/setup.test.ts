@@ -394,6 +394,13 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /Availability alone is not compliance: read that Skill before modifying code/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(instructions, /Call `task_answer` with the same capability catalog, run ID, and context budget/);
+    assert.match(instructions, /When `runId` is supplied, the run must be active/);
+    assert.match(instructions, /Do not call `memory_checkpoint` while `task_prepare` or `task_answer` reports `needs_answer`/);
+    assert.match(instructions, /complete the required `task_answer` loop first/);
+    assert.match(instructions, /successful terminal checkpoint is allowed at most once per logical request/);
+    assert.match(instructions, /rejected precondition does not count as that successful checkpoint/);
+    assert.match(instructions, /rejected precondition .*may be retried only after the indicated run-state change/);
+    assert.doesNotMatch(instructions, /Call `memory_checkpoint` at most once for the current user request/);
     assert.match(instructions, /unavailable before a non-trivial build\/debug request can obtain its policy, stop and report/);
     assert.match(instructions, /For such a request, repository-only continuation is allowed only after the policy establishes that no Kiokuko memory was delivered or used/);
     assert.doesNotMatch(instructions, /Kiokuko is unavailable[^.]*continue from current evidence/iu);

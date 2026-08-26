@@ -75,6 +75,18 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       assert.match(schema.properties?.capabilities?.description ?? '', /kind and canonical name/u);
     }
     assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /call no more tools/);
+    const checkpointTool = tools.tools.find((tool) => tool.name === 'memory_checkpoint');
+    assert.match(checkpointTool?.description ?? '', /runId.*active/u);
+    assert.match(checkpointTool?.description ?? '', /needs_answer/);
+    assert.match(checkpointTool?.description ?? '', /answer_from_evidence_or_ask_user/);
+    assert.match(checkpointTool?.description ?? '', /complete the required `task_answer` loop/);
+    assert.match(checkpointTool?.description ?? '', /successful terminal checkpoint.*at most once/u);
+    assert.match(checkpointTool?.description ?? '', /rejected precondition does not count as that successful checkpoint/u);
+    assert.match(checkpointTool?.description ?? '', /indicated run-state change/);
+    assert.doesNotMatch(checkpointTool?.description ?? '', /Call at most once per user request/u);
+    const checkpointSchema = checkpointTool?.inputSchema as ToolInputSchema;
+    assert.match(checkpointSchema.properties?.runId?.description ?? '', /active/u);
+    assert.match(checkpointSchema.properties?.runId?.description ?? '', /needs_answer/u);
     const globalizeSchema = tools.tools.find((tool) => tool.name === 'curator_globalize')?.inputSchema as { properties?: { confirmed?: { const?: unknown } }; required?: string[] };
     assert.equal(globalizeSchema.properties?.confirmed?.const, true);
     assert.ok(globalizeSchema.required?.includes('confirmed'));
@@ -285,6 +297,148 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       assert.equal(stoppedContent.skillDiscovery.attempted, false);
       assert.deepEqual(stoppedContent.skillDiscovery.selected, []);
     }
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('memory_checkpoint returns actionable MCP guidance during intake and succeeds after task_answer finalizes the run', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'kiokuko-checkpoint-recovery-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const capabilities = [{ kind: 'skill', name: 'memory-reasoning' }];
+    const prepared = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        requestId: 'mcp-checkpoint-recovery-request',
+        task: 'Implement the checkpoint recovery behavior',
+        profileHints: { taskType: 'build' },
+        capabilities,
+      },
+    });
+    const preparedContent = prepared.structuredContent as {
+      intake: { status: string; sessionId: string; question: { id: string } };
+      run: { runId: string };
+      nextAction: string;
+    };
+    assert.equal(preparedContent.intake.status, 'needs_answer');
+    assert.equal(preparedContent.nextAction, 'answer_from_evidence_or_ask_user');
+    const runId = preparedContent.run.runId;
+
+    const before = openConnection(databasePath);
+    let eventCount: number;
+    try {
+      eventCount = before.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(runId)?.count ?? 0;
+    } finally {
+      before.close();
+    }
+
+    const earlyCheckpoint = await client.callTool({
+      name: 'memory_checkpoint',
+      arguments: {
+        runId,
+        memories: [{ kind: 'lesson', title: 'Recovery sentinel', body: 'token=private-intake-checkpoint-sentinel must not persist during intake.' }],
+      },
+    });
+    assert.equal(earlyCheckpoint.isError, true);
+    assert.equal(JSON.stringify(earlyCheckpoint).includes('private-intake-checkpoint-sentinel'), false);
+    assert.deepEqual(earlyCheckpoint.content, [{
+      type: 'text',
+      text: 'Checkpoint is blocked while the run awaits intake answers. Complete task_answer before retrying.',
+    }]);
+    assert.deepEqual(earlyCheckpoint.structuredContent, {
+      code: 'CHECKPOINT_RUN_NOT_ACTIVE',
+      reason: 'run_awaiting_intake_answer',
+      runStatus: 'intake',
+      nextAction: 'answer_from_evidence_or_ask_user',
+      retryableAfterStateChange: true,
+    });
+
+    const afterEarlyCheckpoint = openConnection(databasePath);
+    try {
+      assert.equal(afterEarlyCheckpoint.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(runId)?.status, 'intake');
+      assert.equal(afterEarlyCheckpoint.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(runId)?.count, eventCount);
+      assert.equal(afterEarlyCheckpoint.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
+      assert.equal(afterEarlyCheckpoint.prepare('SELECT COUNT(*) AS count FROM context_feedback').get<{ count: number }>()?.count, 0);
+    } finally {
+      afterEarlyCheckpoint.close();
+    }
+
+    const target = await client.callTool({
+      name: 'task_answer',
+      arguments: {
+        sessionId: preparedContent.intake.sessionId,
+        runId,
+        questionId: 'target',
+        value: 'src/mcp/server.ts',
+        capabilities,
+      },
+    });
+    const targetContent = target.structuredContent as { intake: { status: string; question: { id: string } }; nextAction: string };
+    assert.equal(targetContent.intake.status, 'needs_answer');
+    assert.equal(targetContent.intake.question.id, 'expected');
+    assert.equal(targetContent.nextAction, 'answer_from_evidence_or_ask_user');
+
+    const completed = await client.callTool({
+      name: 'task_answer',
+      arguments: {
+        sessionId: preparedContent.intake.sessionId,
+        runId,
+        questionId: 'expected',
+        value: 'Focused tests pass',
+        capabilities,
+      },
+    });
+    const completedContent = completed.structuredContent as { intake: { status: string }; nextAction: string };
+    assert.equal(completedContent.intake.status, 'ready');
+    assert.equal(completedContent.nextAction, 'proceed');
+
+    const finalCheckpoint = await client.callTool({
+      name: 'memory_checkpoint',
+      arguments: {
+        runId,
+        memories: [{ kind: 'lesson', title: 'Recovery lesson', body: 'Complete task_answer before checkpointing the run.' }],
+      },
+    });
+    assert.equal(finalCheckpoint.isError, undefined);
+    const finalContent = finalCheckpoint.structuredContent as { run: { runId: string; status: string }; entries: unknown[] };
+    assert.deepEqual(finalContent.run, {
+      runId,
+      status: 'completed',
+      feedbackCount: 0,
+      evidenceCount: 0,
+      reasoningPaths: 1,
+      qualifiedReasoningPaths: 0,
+    });
+    assert.equal(finalContent.entries.length, 1);
+
+    const terminalRetry = await client.callTool({
+      name: 'memory_checkpoint',
+      arguments: {
+        runId,
+        memories: [{ kind: 'lesson', title: 'Terminal retry sentinel', body: 'This must not create a second checkpoint.' }],
+      },
+    });
+    assert.equal(terminalRetry.isError, true);
+    assert.deepEqual(terminalRetry.content, [{
+      type: 'text',
+      text: 'Checkpoint is blocked because the run is terminal.',
+    }]);
+    assert.deepEqual(terminalRetry.structuredContent, {
+      code: 'CHECKPOINT_RUN_NOT_ACTIVE',
+      reason: 'run_terminal',
+      runStatus: 'completed',
+      nextAction: 'stop',
+      retryableAfterStateChange: false,
+    });
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();
@@ -594,6 +748,46 @@ test('MCP tool failures sanitize typed Kiokuko errors instead of trusting their 
     assert.equal(result.isError, true);
     assert.match(serialized, /Internal integrity error/u);
     assert.equal(serialized.includes(sentinel), false);
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('MCP checkpoint keeps unsupported eligibility details on the generic redacted error path', async () => {
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-redaction-'));
+  const sentinel = 'token=private-unsupported-checkpoint-sentinel';
+  const server = createKiokukoMcpServer({
+    databasePath: path.join(data, 'kiokuko.sqlite3'),
+    openConnection: () => {
+      throw new KiokukoError('CONFLICT', sentinel, {
+        runStatus: 'intake',
+        checkpointEligibility: {
+          allowed: false,
+          reason: 'unsupported_reason',
+          nextAction: 'leak_internal_action',
+          retryableAfterStateChange: true,
+        },
+        secret: sentinel,
+      });
+    },
+  });
+  const client = new Client({ name: 'kiokuko-checkpoint-redaction-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const result = await client.callTool({
+      name: 'memory_checkpoint',
+      arguments: { memories: [{ kind: 'lesson', title: 'Redaction test', body: 'bounded' }] },
+    });
+    const serialized = JSON.stringify(result);
+    assert.equal(result.isError, true);
+    assert.match(serialized, /Request conflicts with current state/u);
+    assert.equal(serialized.includes(sentinel), false);
+    assert.equal(serialized.includes('unsupported_reason'), false);
+    assert.equal(serialized.includes('leak_internal_action'), false);
+    assert.equal(result.structuredContent, undefined);
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();

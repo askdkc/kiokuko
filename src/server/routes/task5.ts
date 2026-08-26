@@ -1,5 +1,7 @@
 import { assertCapabilityCatalogBinding } from '../../akinator/capability-binding.js';
 import { KiokukoError } from '../../errors.js';
+import { checkpointEligibility } from '../../ledger/checkpoint-eligibility.js';
+import type { RunStatus } from '../../ledger/types.js';
 import { successEnvelope } from '../../serialization/envelope.js';
 import type { V1RouteHandler } from '../router.js';
 import {
@@ -42,10 +44,13 @@ function checkpointSignals(value: unknown): { changedPaths: string[]; errorSigna
   };
 }
 
-function assertActiveCheckpointRun(run: { status: string }): void {
-  if (run.status !== 'active') {
-    throw new KiokukoError('CONFLICT', 'Checkpoint is not allowed for a non-active run');
-  }
+function assertActiveCheckpointRun(run: { status: RunStatus }): void {
+  const eligibility = checkpointEligibility(run.status);
+  if (eligibility.allowed) return;
+  throw new KiokukoError('CONFLICT', 'Checkpoint is not allowed for a non-active run', {
+    checkpointEligibility: eligibility,
+    runStatus: run.status,
+  });
 }
 
 export function createTask5Route(context: AgentRouteContext): V1RouteHandler {

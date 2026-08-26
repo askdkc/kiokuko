@@ -137,6 +137,16 @@ request, it must also stop and report that boundary. Repository-only
 continuation for such a request is allowed only after the policy establishes
 that no Kiokuko memory was delivered or used.
 
+Run-bound `memory_checkpoint` has the same intake precondition across MCP,
+scoped memory, and the Agent Gateway: only `active` runs may be closed by a
+successful checkpoint. If `task_prepare` or `task_answer` returns
+`needs_answer` with `nextAction=answer_from_evidence_or_ask_user`, the client
+must finish every required `task_answer` question before retrying. The MCP
+tool returns `isError=true` with fixed text and structured fields
+`code=CHECKPOINT_RUN_NOT_ACTIVE`, `reason`, `runStatus`, `nextAction`, and
+`retryableAfterStateChange`; arbitrary internal messages and details are never
+forwarded. A terminal run returns `reason=run_terminal` and `nextAction=stop`.
+
 ## Scope boundary
 
 The stdio MCP server calls Kiokuko's memory services only through

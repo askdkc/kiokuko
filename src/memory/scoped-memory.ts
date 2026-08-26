@@ -17,6 +17,8 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { isProxy } from 'node:util/types';
 import { LedgerStore } from '../ledger/store.js';
+import { checkpointEligibility } from '../ledger/checkpoint-eligibility.js';
+import type { RunStatus } from '../ledger/types.js';
 import { findSecret } from './secrets.js';
 import { assertContextFeedbackRecordable, recordContextFeedbackInTransaction } from '../context/feedback.js';
 import { readContextDelivery } from '../context/delivery.js';
@@ -140,6 +142,15 @@ const CHECKPOINT_MEMORY_FIELDS = new Set([
 ]);
 const CHECKPOINT_FEEDBACK_FIELDS = new Set(['entryId', 'entryRevision', 'verdict', 'comment']);
 const CHECKPOINT_OUTCOMES = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+
+function assertCheckpointEligible(status: RunStatus): void {
+  const eligibility = checkpointEligibility(status);
+  if (eligibility.allowed) return;
+  throw new KiokukoError('CONFLICT', 'Checkpoint run is not active', {
+    checkpointEligibility: eligibility,
+    runStatus: status,
+  });
+}
 
 function checkpointObject(
   value: unknown,
@@ -297,7 +308,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
   }
   const run = input.runId === undefined ? undefined : new LedgerStore(database).readRun(input.runId);
   if (input.runId !== undefined && run === undefined) throw new KiokukoError('NOT_FOUND', 'Checkpoint run was not found');
-  if (run && run.status !== 'active') throw new KiokukoError('CONFLICT', 'Checkpoint run is not active');
+  if (run !== undefined) assertCheckpointEligible(run.status);
   if (input.deliveryId !== undefined) {
     const delivery = readContextDelivery(database, { workspace: run!.workspace, deliveryId: input.deliveryId });
     if (delivery.runId !== run!.runId) throw new KiokukoError('NOT_FOUND', 'Checkpoint delivery was not found for this run');
@@ -417,10 +428,15 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
   if (!sameProject(plannedProject, project)) {
     throw new KiokukoError('CONFLICT', 'Checkpoint project identity changed after validation');
   }
-  ensureGlobalWorkspace(database, now);
-
   const records = withImmediateTransaction(database, () => {
-    const store = run === undefined ? undefined : new LedgerStore(database, { workspace: run.workspace });
+    const transactionRun = run === undefined ? undefined : new LedgerStore(database).readRun(run.runId);
+    if (run !== undefined && transactionRun === undefined) throw new KiokukoError('NOT_FOUND', 'Checkpoint run was not found');
+    if (transactionRun !== undefined) assertCheckpointEligible(transactionRun.status);
+    if (run !== undefined && transactionRun !== undefined && transactionRun.workspace !== run.workspace) {
+      throw new KiokukoError('NOT_FOUND', 'Checkpoint run was not found');
+    }
+    ensureGlobalWorkspace(database, now);
+    const store = transactionRun === undefined ? undefined : new LedgerStore(database, { workspace: transactionRun.workspace });
     const evidenceEvents = [
       ...evidence.changedPaths.map((path) => ({ eventId: randomUUID(), eventType: 'file.changed' as const, actor: 'kiokuko-mcp', occurredAt: now, payload: { path } })),
       ...evidence.errorSignatures.map((signature) => ({ eventId: randomUUID(), eventType: 'error.recorded' as const, actor: 'kiokuko-mcp', occurredAt: now, payload: { signature } })),
@@ -428,7 +444,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
       ...evidence.tests.map((test) => ({ eventId: randomUUID(), eventType: 'test.completed' as const, actor: 'kiokuko-mcp', occurredAt: now, outcome: test.outcome, payload: { runner: test.runner, ...(test.target === undefined ? {} : { target: test.target }), ...(test.digest === undefined ? {} : { digest: test.digest }) } })),
       ...(evidence.verification === undefined ? [] : [{ eventId: randomUUID(), eventType: 'verification.recorded' as const, actor: 'kiokuko-mcp' as const, occurredAt: now, outcome: evidence.verification.outcome, payload: { outcome: evidence.verification.outcome } }]),
     ];
-    const evidenceAck = run === undefined || evidenceEvents.length === 0 ? { eventIds: [] as string[] } : store!.appendBatchInTransaction(run.runId, { events: evidenceEvents });
+    const evidenceAck = transactionRun === undefined || evidenceEvents.length === 0 ? { eventIds: [] as string[] } : store!.appendBatchInTransaction(transactionRun.runId, { events: evidenceEvents });
     const evidenceRows: Array<{ kind: 'command' | 'test' | 'file' | 'artifact'; locator: string; eventId: string | null; summary: string; digest?: string }> = [
       ...evidence.changedPaths.map((locator, index) => ({ kind: 'file' as const, locator, eventId: evidenceAck.eventIds[index] ?? null, summary: 'changed relative path' })),
       ...evidence.errorSignatures.map((locator, index) => ({ kind: 'artifact' as const, locator, eventId: evidenceAck.eventIds[evidence.changedPaths.length + index] ?? null, summary: 'sanitized error signature' })),
@@ -439,28 +455,28 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
     if (evidenceRows.length !== evidenceIds.length) {
       throw new KiokukoError('INTEGRITY_ERROR', 'Checkpoint evidence projection is invalid');
     }
-    if (run !== undefined) {
+    if (transactionRun !== undefined) {
       for (let index = 0; index < evidenceRows.length; index += 1) {
         const row = evidenceRows[index]!;
         database.prepare('INSERT INTO ledger_evidence (evidence_id, run_id, event_id, kind, locator, digest_algorithm, digest, byte_size, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)').run(
-          evidenceIds[index]!, run.runId, row.eventId, row.kind, row.locator, row.digest === undefined ? null : 'sha256', row.digest ?? null, row.summary, now,
+          evidenceIds[index]!, transactionRun.runId, row.eventId, row.kind, row.locator, row.digest === undefined ? null : 'sha256', row.digest ?? null, row.summary, now,
         );
       }
     }
     const saved = preparedMemories.map((memory) => recordEntryInTransaction(database, memory, { now }));
     const memoryEvents = saved.map((entry) => ({ eventId: randomUUID(), eventType: 'memory.proposed' as const, actor: 'kiokuko-mcp', occurredAt: now, payload: { entryId: entry.id, revision: entry.revision } }));
-    const memoryAck = run === undefined || memoryEvents.length === 0 ? { eventIds: [] as string[] } : store!.appendBatchInTransaction(run.runId, { events: memoryEvents });
+    const memoryAck = transactionRun === undefined || memoryEvents.length === 0 ? { eventIds: [] as string[] } : store!.appendBatchInTransaction(transactionRun.runId, { events: memoryEvents });
     const eventId = evidenceAck.eventIds[0] ?? memoryAck.eventIds[0] ?? null;
-    if (run !== undefined) {
+    if (transactionRun !== undefined) {
       for (const entry of saved) {
-        database.prepare('INSERT INTO ledger_memory_links (link_id, run_id, event_id, delivery_id, entry_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(randomUUID(), run.runId, eventId, input.deliveryId ?? null, entry.id, now);
+        database.prepare('INSERT INTO ledger_memory_links (link_id, run_id, event_id, delivery_id, entry_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(randomUUID(), transactionRun.runId, eventId, input.deliveryId ?? null, entry.id, now);
       }
       for (const feedbackRecord of preparedFeedback) {
         recordContextFeedbackInTransaction(database, feedbackRecord);
       }
       const paths = recordKnowledgePathsInTransaction(database, {
-        runId: run.runId,
-        workspace: run.workspace,
+        runId: transactionRun.runId,
+        workspace: transactionRun.workspace,
         entries: saved,
         outcome: input.outcome ?? 'completed',
         verification: {
@@ -471,7 +487,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
         },
         createdAt: now,
       });
-      const updated = new LedgerStore(database).updateRunStatusInTransaction(run.runId, input.outcome ?? 'completed', now);
+      const updated = new LedgerStore(database).updateRunStatusInTransaction(transactionRun.runId, input.outcome ?? 'completed', now);
       return {
         saved,
         run: {

@@ -158,6 +158,19 @@ only the gated task entry points and lifecycle tools:
 - `curator_check(cwd?, workspace?, limit?, includeUnready?)`
 - `curator_globalize(workspace, entryId, expectedRevision, confirmed=true)`
 
+Run-bound `memory_checkpoint` accepts only an `active` run. Clients must inspect
+`nextAction` after every `task_prepare` and `task_answer` response and continue
+the `task_answer` loop until intake is `ready` or `exhausted`; Akinator may ask
+more than one question. A checkpoint while intake reports `needs_answer` or
+`answer_from_evidence_or_ask_user` is a no-op rejection, not a successful
+checkpoint. The MCP result is an error with fixed structured guidance:
+`code=CHECKPOINT_RUN_NOT_ACTIVE`, `reason` equal to
+`run_awaiting_intake_answer` or `run_terminal`, the allowlisted `runStatus`,
+`nextAction`, and `retryableAfterStateChange`. A rejected precondition may be
+retried only after the indicated state transition; this is not an unchanged
+retry. Terminal runs return `nextAction=stop` and are never reopened. Only one
+successful terminal checkpoint is allowed per logical request.
+
 Capability catalogs are request-only metadata and are not persisted. Returned
 scoped context and capability recommendations are advisory and untrusted.
 `task_prepare` and `task_answer` expose scoped `context` as their only

@@ -11,6 +11,16 @@ import { curateMemoryCandidates, globalizeCuratorCandidate } from '../memory/cur
 import { BoundedStdioServerTransport } from './bounded-stdio-transport.js';
 import { KiokukoError, type ErrorCode } from '../errors.js';
 import { PACKAGE_VERSION } from '../package-version.js';
+import { isProxy } from 'node:util/types';
+import { checkpointEligibility } from '../ledger/checkpoint-eligibility.js';
+import { RUN_STATUSES, type RunStatus } from '../ledger/types.js';
+import {
+  CHECKPOINT_INTAKE_ERROR_MESSAGE,
+  CHECKPOINT_RUN_ID_DESCRIPTION,
+  CHECKPOINT_RUN_NOT_ACTIVE_CODE,
+  CHECKPOINT_TERMINAL_ERROR_MESSAGE,
+  CHECKPOINT_TOOL_DESCRIPTION,
+} from '../ledger/checkpoint-contract.js';
 
 export interface McpServerDependencies {
   databasePath?: string;
@@ -78,6 +88,58 @@ function publicToolError(error: unknown): KiokukoError {
   return new KiokukoError(error.code, PUBLIC_TOOL_ERROR_MESSAGES[error.code], details);
 }
 
+type McpToolErrorResult = {
+  isError: true;
+  content: [{ type: 'text'; text: string }];
+  structuredContent: Record<string, unknown>;
+};
+
+function safeOwnRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || isProxy(value)) return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') return undefined;
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) return undefined;
+    result[key] = descriptor.value;
+  }
+  return result;
+}
+
+function checkpointEligibilityToolError(error: unknown): McpToolErrorResult | undefined {
+  if (!(error instanceof KiokukoError) || error.code !== 'CONFLICT') return undefined;
+  const details = safeOwnRecord(error.details);
+  if (details === undefined || Object.keys(details).length !== 2
+    || !Object.hasOwn(details, 'checkpointEligibility') || !Object.hasOwn(details, 'runStatus')) return undefined;
+  const status = details.runStatus;
+  if (typeof status !== 'string' || !RUN_STATUSES.includes(status as RunStatus)) return undefined;
+  const expected = checkpointEligibility(status as RunStatus);
+  if (expected.allowed) return undefined;
+  const actual = safeOwnRecord(details.checkpointEligibility);
+  if (actual === undefined || Object.keys(actual).length !== 4
+    || actual.allowed !== false
+    || actual.reason !== expected.reason
+    || actual.nextAction !== expected.nextAction
+    || actual.retryableAfterStateChange !== expected.retryableAfterStateChange) return undefined;
+  const message = expected.reason === 'run_awaiting_intake_answer'
+    ? CHECKPOINT_INTAKE_ERROR_MESSAGE
+    : CHECKPOINT_TERMINAL_ERROR_MESSAGE;
+  return {
+    isError: true,
+    content: [{ type: 'text', text: message }],
+    structuredContent: {
+      code: CHECKPOINT_RUN_NOT_ACTIVE_CODE,
+      reason: expected.reason,
+      runStatus: status,
+      nextAction: expected.nextAction,
+      retryableAfterStateChange: expected.retryableAfterStateChange,
+    },
+  };
+}
+
 function boundedRetryAfterSeconds(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 1;
   return Math.min(60, Math.max(1, Math.trunc(value)));
@@ -87,6 +149,16 @@ async function withPublicToolError<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
+    throw publicToolError(error);
+  }
+}
+
+async function withPublicCheckpointToolError<T>(operation: () => Promise<T>): Promise<T | McpToolErrorResult> {
+  try {
+    return await operation();
+  } catch (error) {
+    const result = checkpointEligibilityToolError(error);
+    if (result !== undefined) return result;
     throw publicToolError(error);
   }
 }
@@ -240,7 +312,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
 
   server.registerTool('memory_checkpoint', {
     title: 'Checkpoint durable Kiokuko memory',
-    description: 'Store one final batch of durable facts, decisions, lessons, preferences, or references as untrusted candidate memory. Call at most once per user request; after it completes, call no more tools and return the final response. Defaults to the current project. Use Curator for learned knowledge that may become global; choose direct global scope only when the user explicitly requested it. Secret-like content is rejected.',
+    description: CHECKPOINT_TOOL_DESCRIPTION,
     inputSchema: {
       cwd: z.string().min(1).optional().describe('Absolute current working directory; defaults to the MCP process cwd'),
       memories: z.array(z.object({
@@ -257,14 +329,14 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
         signals: signals.optional(),
         portableReason: z.string().trim().min(1).max(2000).optional(),
       }).strict()).max(20).optional(),
-      runId: runId.optional(),
+      runId: runId.optional().describe(CHECKPOINT_RUN_ID_DESCRIPTION),
       deliveryId: deliveryId.optional(),
       outcome: z.enum(['completed', 'failed', 'cancelled', 'interrupted']).optional(),
       feedback: z.array(z.unknown()).max(100).optional(),
       evidence: z.unknown().optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ cwd, memories, runId, deliveryId, outcome, feedback, evidence }) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await checkpointScopedMemory(database, {
+  }, async ({ cwd, memories, runId, deliveryId, outcome, feedback, evidence }) => withPublicCheckpointToolError(() => withDatabase(dependencies, async (database) => toolResult(await checkpointScopedMemory(database, {
     cwd: cwd ?? dependencies.cwd?.() ?? process.cwd(),
     ...(runId === undefined ? {} : { runId }),
     ...(deliveryId === undefined ? {} : { deliveryId }),

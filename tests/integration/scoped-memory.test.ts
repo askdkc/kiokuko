@@ -359,3 +359,70 @@ test('checkpoint validates all input and exact feedback targets before workspace
     database.close();
   }
 });
+
+test('checkpoint rechecks run status at transaction time and performs no mutation after a terminal transition', async () => {
+  const root = await gitRepository('transaction-status-race');
+  const filePath = await databasePath('transaction-status-race');
+  const database = openConnection(filePath);
+  const competing = openConnection(filePath);
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+    seedCheckpointRun(database, 'run-transaction-status-race', project.workspace);
+    const runId = 'run-transaction-status-race';
+    const snapshot = () => ({
+      entries: database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count ?? 0,
+      events: database.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(runId)?.count ?? 0,
+      evidence: database.prepare('SELECT COUNT(*) AS count FROM ledger_evidence WHERE run_id = ?').get<{ count: number }>(runId)?.count ?? 0,
+      links: database.prepare('SELECT COUNT(*) AS count FROM ledger_memory_links WHERE run_id = ?').get<{ count: number }>(runId)?.count ?? 0,
+      feedback: database.prepare('SELECT COUNT(*) AS count FROM context_feedback WHERE run_id = ?').get<{ count: number }>(runId)?.count ?? 0,
+      reasoningPaths: database.prepare('SELECT COUNT(*) AS count FROM akinator_reasoning_paths WHERE run_id = ?').get<{ count: number }>(runId)?.count ?? 0,
+    });
+    const before = snapshot();
+    const originalExec = database.exec.bind(database);
+    let resolverCommitted = false;
+    let transitioned = false;
+    database.exec = (sql: string) => {
+      if (sql === 'COMMIT') {
+        resolverCommitted = true;
+        originalExec(sql);
+        return;
+      }
+      if (resolverCommitted && !transitioned && sql === 'BEGIN IMMEDIATE') {
+        competing.prepare('UPDATE ledger_runs SET status = ?, ended_at = ?, updated_at = ? WHERE run_id = ?')
+          .run('completed', '2026-08-25T00:00:00.000Z', '2026-08-25T00:00:00.000Z', runId);
+        transitioned = true;
+      }
+      originalExec(sql);
+    };
+
+    await assert.rejects(
+      checkpointScopedMemory(database, {
+        cwd: root,
+        runId,
+        memories: [{ kind: 'lesson', title: 'Must not persist after race', body: 'The transaction-time status guard must reject this.' }],
+        evidence: { changedPaths: ['src/race.ts'], verification: { outcome: 'fresh' } },
+        outcome: 'completed',
+      }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, 'CONFLICT');
+        assert.deepEqual((error as { details?: unknown }).details, {
+          checkpointEligibility: {
+            allowed: false,
+            reason: 'run_terminal',
+            nextAction: 'stop',
+            retryableAfterStateChange: false,
+          },
+          runStatus: 'completed',
+        });
+        return true;
+      },
+    );
+    assert.equal(transitioned, true);
+    assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(runId)?.status, 'completed');
+    assert.deepEqual(snapshot(), before);
+  } finally {
+    competing.close();
+    database.close();
+  }
+});
