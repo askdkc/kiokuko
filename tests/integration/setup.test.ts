@@ -205,6 +205,67 @@ test('CLI setup preserves an explicit discovery environment override', async () 
   );
 });
 
+test('Windows OpenCode dry-run plans every artifact below the XDG-style global root', async () => {
+  const temporary = await temporaryEnvironment('windows-opencode-dry-run');
+  const windowsHome = String.raw`C:\Users\test`;
+  const windowsAppData = String.raw`C:\Users\test\AppData\Roaming`;
+  const windowsLocalAppData = String.raw`C:\Users\test\AppData\Local`;
+  const canonicalRoot = String.raw`C:\Users\test\.config\opencode`;
+
+  const result = await setupGlobalClients({
+    clients: ['opencode'],
+    dryRun: true,
+    platform: 'win32',
+    env: {
+      USERPROFILE: windowsHome,
+      APPDATA: windowsAppData,
+      LOCALAPPDATA: windowsLocalAppData,
+    },
+    databasePath: temporary.databasePath,
+  });
+
+  assert.equal(result.dryRun, true);
+  assert.deepEqual(
+    result.files.map((file) => file.path).sort(),
+    [
+      path.win32.join(canonicalRoot, 'AGENTS.md'),
+      path.win32.join(canonicalRoot, 'opencode.json'),
+      path.win32.join(canonicalRoot, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'),
+      path.win32.join(canonicalRoot, 'skills', 'kiokuko-ui-design-soul', 'references', 'ui-checklist.md'),
+    ].sort(),
+  );
+  assert.ok(result.files.every((file) => !file.path.startsWith(path.win32.join(windowsAppData, 'opencode'))));
+  assert.ok(result.files.every((file) => !file.path.startsWith(path.win32.join(windowsLocalAppData, 'opencode'))));
+});
+
+test('Windows OpenCode dry-run honors XDG_CONFIG_HOME before APPDATA', async () => {
+  const temporary = await temporaryEnvironment('windows-opencode-xdg-dry-run');
+  const xdgRoot = String.raw`D:\xdg-config\opencode`;
+
+  const result = await setupGlobalClients({
+    clients: ['opencode'],
+    dryRun: true,
+    platform: 'win32',
+    env: {
+      USERPROFILE: String.raw`C:\Users\test`,
+      APPDATA: String.raw`C:\Users\test\AppData\Roaming`,
+      LOCALAPPDATA: String.raw`C:\Users\test\AppData\Local`,
+      XDG_CONFIG_HOME: String.raw`D:\xdg-config`,
+    },
+    databasePath: temporary.databasePath,
+  });
+
+  assert.ok(result.files.every((file) => file.path.startsWith(`${xdgRoot}\\`)));
+  assert.ok(result.files.some((file) => file.path === path.win32.join(xdgRoot, 'opencode.json')));
+  assert.ok(result.files.some((file) => file.path === path.win32.join(xdgRoot, 'AGENTS.md')));
+  assert.ok(result.files.some((file) => file.path === path.win32.join(
+    xdgRoot,
+    'skills',
+    'kiokuko-ui-design-soul',
+    'SKILL.md',
+  )));
+});
+
 test('setup safely merges Codex, OpenCode, and Claude Code global configuration and is idempotent', async () => {
   const temporary = await temporaryEnvironment('merge');
   const codexDirectory = path.join(temporary.home, '.codex');

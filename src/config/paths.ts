@@ -153,10 +153,6 @@ export function getLegacyClaudePromptHookSettingsPath(options: PathEnvironment =
 export function getOpenCodeConfigDirectory(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  if (platform === 'win32') {
-    const root = env.APPDATA ?? env.LOCALAPPDATA;
-    if (root) return join(root, 'opencode');
-  }
   if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, 'opencode');
   const { home } = requireHome(options);
   return join(home, '.config', 'opencode');

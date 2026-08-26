@@ -42,6 +42,9 @@ execute, verify, globalize, or register fetched skill content automatically.
 
 ## Fail-closed storage and setup
 
+- Fixed Windows OpenCode setup writing MCP configuration, global instructions,
+  and bundled skills under `%APPDATA%\opencode`; setup now follows OpenCode's
+  XDG global directory resolution.
 - Setup now rejects duplicate or semantically colliding JSON/TOML configuration,
   malformed UTF-8, symlink escapes, and concurrent target changes before it can
   silently merge or overwrite them. Exact concurrent `use` results converge once;

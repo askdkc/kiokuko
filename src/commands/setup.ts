@@ -68,6 +68,11 @@ interface SetupPlanningContext {
   directories: Map<string, PlannedDirectory>;
 }
 
+function setupPathJoin(options: PathEnvironment, ...segments: string[]): string {
+  const platform = options.platform ?? process.platform;
+  return platform === 'win32' ? path.win32.join(...segments) : path.posix.join(...segments);
+}
+
 interface PlannedFile {
   path: string;
   parentDirectory: PlannedDirectory;
@@ -433,11 +438,11 @@ async function openCodeConfigPath(
   options: PathEnvironment,
 ): Promise<{ path: string; mustRemainAbsent: readonly string[] }> {
   const directory = getOpenCodeConfigDirectory(options);
-  const jsonc = path.join(directory, 'opencode.jsonc');
+  const jsonc = setupPathJoin(options, directory, 'opencode.jsonc');
   if ((await readPlannedRegularFile(planning, jsonc)).snapshot !== undefined) {
     return { path: jsonc, mustRemainAbsent: [] };
   }
-  return { path: path.join(directory, 'opencode.json'), mustRemainAbsent: [jsonc] };
+  return { path: setupPathJoin(options, directory, 'opencode.json'), mustRemainAbsent: [jsonc] };
 }
 
 interface AppliedFileMutation {
@@ -621,9 +626,19 @@ export async function setupGlobalClients(
   if (standardSkills) {
     const bundledFiles = await loadBundledStandardSkillFiles();
     for (const client of clients) {
-      const destination = path.join(await standardSkillDirectory(client, pathEnvironment, hermesProfile), STANDARD_UI_SKILL_NAME);
+      const destination = setupPathJoin(
+        pathEnvironment,
+        await standardSkillDirectory(client, pathEnvironment, hermesProfile),
+        STANDARD_UI_SKILL_NAME,
+      );
       for (const bundled of bundledFiles) {
-        files.push(await planFile(planning, path.join(destination, bundled.relativePath), client, 'standard-skill', (existing) => renderStandardSkillFile(existing, bundled)));
+        files.push(await planFile(
+          planning,
+          setupPathJoin(pathEnvironment, destination, bundled.relativePath),
+          client,
+          'standard-skill',
+          (existing) => renderStandardSkillFile(existing, bundled),
+        ));
       }
     }
   }

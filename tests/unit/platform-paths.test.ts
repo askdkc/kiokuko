@@ -157,11 +157,94 @@ test('derives native standard-skill directories on macOS, Linux, and Windows', a
     HERMES_HOME: String.raw`D:\Hermes\profiles\work`,
   };
   assert.equal(getCodexSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.agents\skills`);
-  assert.equal(getOpenCodeSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\AppData\Roaming\opencode\skills`);
+  assert.equal(getOpenCodeConfigDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.config\opencode`);
+  assert.equal(getOpenCodeInstructionsPath({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.config\opencode\AGENTS.md`);
+  assert.equal(getOpenCodeSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.config\opencode\skills`);
   assert.equal(getClaudeSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Claude\skills`);
   assert.equal(getLegacyClaudePromptHookSettingsPath({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Claude\settings.json`);
-  assert.equal(getLegacyOpenCodeLoopGuardPath({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\AppData\Roaming\opencode\plugins\kiokuko-loop-guard.js`);
+  assert.equal(getLegacyOpenCodeLoopGuardPath({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.config\opencode\plugins\kiokuko-loop-guard.js`);
   assert.equal(await getHermesSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Hermes\profiles\work\skills`);
+});
+
+test('uses the XDG-style OpenCode directory on Windows', () => {
+  const options = {
+    platform: 'win32' as const,
+    env: {
+      USERPROFILE: String.raw`C:\Users\test`,
+      APPDATA: String.raw`C:\Users\test\AppData\Roaming`,
+      LOCALAPPDATA: String.raw`C:\Users\test\AppData\Local`,
+    },
+  };
+
+  assert.equal(
+    getOpenCodeConfigDirectory(options),
+    String.raw`C:\Users\test\.config\opencode`,
+  );
+});
+
+test('honors XDG_CONFIG_HOME before Windows application-data directories', () => {
+  const options = {
+    platform: 'win32' as const,
+    env: {
+      USERPROFILE: String.raw`C:\Users\test`,
+      APPDATA: String.raw`C:\Users\test\AppData\Roaming`,
+      LOCALAPPDATA: String.raw`C:\Users\test\AppData\Local`,
+      XDG_CONFIG_HOME: String.raw`D:\xdg-config`,
+    },
+  };
+
+  assert.equal(
+    getOpenCodeConfigDirectory(options),
+    String.raw`D:\xdg-config\opencode`,
+  );
+});
+
+test('treats an empty Windows XDG_CONFIG_HOME as unset', () => {
+  assert.equal(
+    getOpenCodeConfigDirectory({
+      platform: 'win32',
+      env: {
+        USERPROFILE: String.raw`C:\Users\test`,
+        APPDATA: String.raw`C:\Users\test\AppData\Roaming`,
+        XDG_CONFIG_HOME: '',
+      },
+    }),
+    String.raw`C:\Users\test\.config\opencode`,
+  );
+});
+
+test('uses HOME for OpenCode on Windows when USERPROFILE is unavailable', () => {
+  assert.equal(
+    getOpenCodeConfigDirectory({
+      platform: 'win32',
+      env: { HOME: String.raw`D:\home\test` },
+    }),
+    String.raw`D:\home\test\.config\opencode`,
+  );
+});
+
+test('rejects APPDATA-only OpenCode path resolution on Windows', () => {
+  assert.throws(
+    () => getOpenCodeConfigDirectory({
+      platform: 'win32',
+      env: {
+        APPDATA: String.raw`C:\Users\test\AppData\Roaming`,
+        LOCALAPPDATA: String.raw`C:\Users\test\AppData\Local`,
+      },
+    }),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
+  );
+});
+
+test('keeps OpenCode XDG fallback paths unchanged on Linux and macOS', () => {
+  assert.equal(
+    getOpenCodeConfigDirectory({ platform: 'linux', env: { HOME: '/home/test' } }),
+    '/home/test/.config/opencode',
+  );
+  assert.equal(
+    getOpenCodeConfigDirectory({ platform: 'darwin', env: { HOME: '/Users/test' } }),
+    '/Users/test/.config/opencode',
+  );
 });
 
 test('resolves Linux and macOS Hermes default, named, custom, and profile-shaped homes', async () => {

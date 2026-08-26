@@ -10,6 +10,11 @@ Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-sco
 | Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/kiokuko-ui-design-soul` | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | not installed | none |
 
+OpenCode global configuration follows XDG paths on every platform:
+`$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode` when unset. On Windows,
+`~` resolves from `%USERPROFILE%`, falling back to `%HOME%`; `%APPDATA%` and
+`%LOCALAPPDATA%` are not OpenCode global configuration roots.
+
 Codex's current official documentation supports stdio MCP servers and global
 configuration. OpenCode's current official documentation supports local MCP
 commands and global rules. Claude Code supports user-scoped stdio MCP servers,
