@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { access, chmod, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { access, chmod, link, mkdir, mkdtemp, readFile, readdir, realpath, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -145,6 +145,75 @@ test('use adopts one exact concurrent binding and converges on an exact agent-fi
   } finally {
     database.close();
   }
+});
+
+test('binding convergence retries when the intended agent result replaces a stale observation', async () => {
+  const root = await repository('concurrent-observation-retry');
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const bindingPath = path.join(root, '.kiokuko.json');
+  const agentPath = path.join(root, 'AGENTS.md');
+  const canonicalRoot = await realpath(root);
+  await writeFile(agentPath, 'human header\n');
+  const intendedAgent = renderAgentFile('human header\n', {
+    repositoryId: 'repo_concurrent_observation',
+    workspace: 'project:concurrent-observation',
+    cliCommand: 'kiokuko',
+  }).content;
+  const parent = await stat(canonicalRoot, { bigint: true });
+  let bindingInjected = false;
+  let observationRaceInjected = false;
+  let agentReads = 0;
+
+  const result = await useRepository({ root, databasePath }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
+      if (!bindingInjected && path.basename(filePath) === '.kiokuko.json') {
+        bindingInjected = true;
+        const proposed = JSON.parse(content) as Record<string, unknown>;
+        await writeFile(filePath, `${JSON.stringify({
+          ...proposed,
+          repositoryId: 'repo_concurrent_observation',
+          workspace: 'project:concurrent-observation',
+        }, null, 2)}\n`, { mode });
+        if (mode !== undefined) await chmod(filePath, mode);
+      }
+      return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
+    },
+    readAgentFileForConvergence: async (filePath, options) => {
+      const snapshot = await readRegularFile(filePath, options);
+      if (path.basename(filePath) === 'AGENTS.md') {
+        agentReads += 1;
+        if (bindingInjected && !observationRaceInjected && snapshot !== undefined) {
+          observationRaceInjected = true;
+          const peerOutcome = await atomicWriteTextIfUnchanged(
+            filePath,
+            intendedAgent,
+            {
+              expected: snapshot,
+              containmentRoot: canonicalRoot,
+              expectedParentDirectory: { device: parent.dev, inode: parent.ino },
+            },
+            snapshot.mode,
+          );
+          assert.deepEqual(peerOutcome.cleanupFailures, []);
+        }
+      }
+      return snapshot;
+    },
+  });
+
+  assert.equal(bindingInjected, true);
+  assert.equal(observationRaceInjected, true);
+  assert.ok(agentReads >= 2);
+  assert.equal(result.repositoryId, 'repo_concurrent_observation');
+  assert.equal(result.workspace, 'project:concurrent-observation');
+  assert.equal(await readFile(agentPath, 'utf8'), intendedAgent);
+  const binding = JSON.parse(await readFile(bindingPath, 'utf8')) as {
+    repositoryId: string;
+    workspace: string;
+  };
+  assert.equal(binding.repositoryId, 'repo_concurrent_observation');
+  assert.equal(binding.workspace, 'project:concurrent-observation');
 });
 
 test('use rejects desired agent bytes written in place on the planned inode', async () => {

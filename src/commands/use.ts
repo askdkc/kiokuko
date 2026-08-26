@@ -54,6 +54,7 @@ export interface UseOptions {
 export interface UseCommandDependencies {
   atomicWriteTextIfUnchanged?: typeof atomicWriteTextIfUnchanged;
   unlinkRegularFileIfUnchanged?: typeof unlinkRegularFileIfUnchanged;
+  readAgentFileForConvergence?: typeof readRegularFile;
   registerRepositoryAndLocation?: typeof registerRepositoryAndLocation;
   openConnection?: typeof openConnection;
 }
@@ -279,8 +280,9 @@ async function readObservedTarget(
   filePath: string,
   containmentRoot: string,
   parentIdentity: FileIdentity,
+  readFile: typeof readRegularFile = readRegularFile,
 ): Promise<ObservedTarget | undefined> {
-  const current = await readRegularFile(filePath, { containmentRoot });
+  const current = await readFile(filePath, { containmentRoot });
   await assertFileExpectation(
     filePath,
     expectation(current, containmentRoot, parentIdentity),
@@ -744,12 +746,30 @@ async function readRetriedAgentPlan(
   parentIdentity: FileIdentity,
   forbiddenBindingIdentity?: FileIdentity,
   initialFinalCandidate?: RegularFileSnapshot,
+  readFile: typeof readRegularFile = readRegularFile,
 ): Promise<RegularFileSnapshot | undefined> {
   let finalCandidate = initialFinalCandidate;
   let linkedCandidate: RegularFileSnapshot | undefined;
   let lastWasLinked = false;
   for (let attempt = 0; attempt < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS; attempt += 1) {
-    const observed = await readObservedTarget(filePath, containmentRoot, parentIdentity);
+    let observed: ObservedTarget | undefined;
+    try {
+      observed = await readObservedTarget(
+        filePath,
+        containmentRoot,
+        parentIdentity,
+        readFile,
+      );
+    } catch (error) {
+      if (!isTargetConflict(error, filePath)) throw error;
+      if (attempt + 1 < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS) {
+        await delay(CONCURRENT_IDENTICAL_OBSERVATION_DELAY_MS);
+        continue;
+      }
+      throw new KiokukoError('CONFLICT', 'Concurrent agent mutation did not settle', {
+        target: filePath,
+      });
+    }
     if (observed === undefined) {
       lastWasLinked = false;
       if (linkedCandidate !== undefined || finalCandidate !== undefined) {
@@ -856,6 +876,7 @@ async function useRepositoryAttempt(
   const dependencies = {
     atomicWriteTextIfUnchanged: dependencyOverrides.atomicWriteTextIfUnchanged ?? atomicWriteTextIfUnchanged,
     unlinkRegularFileIfUnchanged: dependencyOverrides.unlinkRegularFileIfUnchanged ?? unlinkRegularFileIfUnchanged,
+    readAgentFileForConvergence: dependencyOverrides.readAgentFileForConvergence ?? readRegularFile,
     registerRepositoryAndLocation: dependencyOverrides.registerRepositoryAndLocation ?? registerRepositoryAndLocation,
     openConnection: dependencyOverrides.openConnection ?? openConnection,
   };
@@ -972,6 +993,8 @@ async function useRepositoryAttempt(
         repositoryRoot,
         agentParentIdentity,
         bindingSnapshot?.identity,
+        undefined,
+        dependencies.readAgentFileForConvergence,
       );
   assertSupportedManagedTemplate(plannedAgent, 'Prospective agentFile');
   const existingAgent = options.noAgentFile ? undefined : plannedAgent;
