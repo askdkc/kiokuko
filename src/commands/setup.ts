@@ -203,8 +203,8 @@ async function askReplaceConflictingMcp(
   const label = setupClientLabel(client);
   output.write(`${label} already has a non-canonical or unmanaged Kiokuko MCP identity.\n`);
   output.write('Kiokuko can remove that identity, install the managed configuration, and continue setup.\n');
-  const answer = (await prompt.question(`Replace the existing ${label} Kiokuko MCP identity and continue? [y/N] `)).trim();
-  return /^(?:y|yes|はい)$/iu.test(answer);
+  const answer = (await prompt.question(`Replace the existing ${label} Kiokuko MCP identity and continue? [Y/n] `)).trim();
+  return answer.length === 0 || /^(?:y|yes|はい)$/iu.test(answer);
 }
 
 /** Ask which supported clients should receive configuration in an interactive terminal. */

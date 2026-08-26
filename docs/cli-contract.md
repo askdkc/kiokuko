@@ -57,6 +57,11 @@ flag is omitted, a new MCP entry gets `official` and an existing managed mode is
 preserved. An explicitly supplied `KIOKUKO_SKILL_DISCOVERY` environment value is
 also honored; the CLI option takes precedence, and any defined value outside
 `off|official|community` fails explicitly instead of silently disabling discovery.
+When a selected client has an old, modified, or unmanaged Kiokuko MCP identity,
+interactive setup asks whether to replace only that identity. The default answer
+is yes (`[Y/n]`), so Enter authorizes replacement; `n`, `no`, or `いいえ` declines
+and leaves every planned client file unchanged. Non-interactive and JSON setup
+do not authorize replacement implicitly and report the conflict instead.
 Client selection follows this matrix:
 
 | Command | Executables detected on `PATH` | Selected clients |

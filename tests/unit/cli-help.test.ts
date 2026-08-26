@@ -318,7 +318,7 @@ test('combined setup prompt keeps both answers in one readline session', async (
   assert.deepEqual(selected, { clients: ['hermes'], skillDiscoveryMode: 'community' });
 });
 
-test('client conflict prompt defaults to no and accepts explicit yes', async () => {
+test('client conflict prompt defaults to yes and accepts explicit negative answers', async () => {
   let outputText = '';
   const output = new Writable({
     write(chunk, _encoding, callback) {
@@ -326,15 +326,20 @@ test('client conflict prompt defaults to no and accepts explicit yes', async () 
       callback();
     },
   });
-  assert.equal(await promptReplaceConflictingMcp('opencode', { input: Readable.from(['\n']), output }), false);
+  assert.equal(await promptReplaceConflictingMcp('opencode', { input: Readable.from(['\n']), output }), true);
   assert.match(outputText, /remove that identity, install the managed configuration, and continue setup/u);
-  assert.match(outputText, /Replace the existing OpenCode Kiokuko MCP identity and continue\? \[y\/N\]/u);
+  assert.match(outputText, /Replace the existing OpenCode Kiokuko MCP identity and continue\? \[Y\/n\]/u);
 
-  const yesOutput = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
-  assert.equal(await promptReplaceConflictingMcp('hermes', { input: Readable.from(['yes\n']), output: yesOutput }), true);
+  for (const answer of ['n\n', 'no\n', 'いいえ\n']) {
+    const declineOutput = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+    assert.equal(
+      await promptReplaceConflictingMcp('hermes', { input: Readable.from([answer]), output: declineOutput }),
+      false,
+    );
+  }
 });
 
-test('interactive setup replaces an unmanaged Codex MCP identity after confirmation and completes', async () => {
+test('interactive setup replaces an unmanaged Codex MCP identity after accepting the default confirmation', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-codex-replace-'));
   const bin = path.join(root, 'bin');
   const codexDirectory = path.join(root, '.codex');
@@ -367,7 +372,7 @@ test('interactive setup replaces an unmanaged Codex MCP identity after confirmat
       if (!answeredReplacement && text.includes('Replace the existing Codex Kiokuko MCP identity')) {
         answeredReplacement = true;
         setImmediate(() => {
-          input.write('y\n');
+          input.write('\n');
           input.end();
         });
       }
@@ -540,7 +545,7 @@ test('interactive setup preserves an unmanaged Codex MCP identity when replaceme
       if (!answered && chunk.toString().includes('Replace the existing Codex Kiokuko MCP identity')) {
         answered = true;
         setImmediate(() => {
-          input.write('\n');
+          input.write('n\n');
           input.end();
         });
       }
@@ -596,7 +601,7 @@ test('declining a later client conflict preserves every earlier approved client 
       if (text.includes('Replace the existing OpenCode Kiokuko MCP identity')) {
         promptedClients.push('OpenCode');
         setImmediate(() => {
-          input.write('\n');
+          input.write('n\n');
           input.end();
         });
       }
