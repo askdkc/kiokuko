@@ -1745,10 +1745,12 @@ export function markExternalSkillRefreshFailureInTransaction(database: SqliteDat
 export function markExternalSkillRefreshFailure(database: SqliteDatabase, skillId: string, state: 'stale' | 'blocked', expected: ExternalSkillRefreshExpectation, now = new Date().toISOString()): ExternalSkillRecord {
   return withImmediateTransaction(database, () => markExternalSkillRefreshFailureInTransaction(database, skillId, state, expected, now));
 }
-export function isExternalSkillReference(entry: { createdBy: string; tags: string[]; provenance: JsonObject }): boolean {
+export function isExternalSkillReference(entry: { createdBy: string; provenance: JsonObject }): boolean {
+  const provenanceType = (entry.provenance as Record<string, unknown>).type;
   return entry.createdBy === 'kiokuko-skill-discovery'
-    || entry.tags.includes('external:skill')
-    || (entry.provenance as Record<string, unknown>).type === 'external_skill';
+    || entry.createdBy === 'kiokuko-source-sync'
+    || provenanceType === 'external_skill'
+    || provenanceType === 'source_sync';
 }
 
 function verifiedSnapshotDocuments(snapshot: SkillSnapshot, documents: PreparedSkillImport['documents']): { snapshot: SkillSnapshot; documents: PreparedSkillImport['documents'] } {

@@ -7,7 +7,6 @@ import {
   isFederatedEcosystemCandidate,
 } from '../memory/federated-retrieval.js';
 import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
-import { GLOBAL_WORKSPACE } from '../memory/workspaces.js';
 import { canonicalContentHash, compareCanonicalStrings } from '../serialization/validate.js';
 import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
 import { contextFeedbackSignals } from './feedback.js';
@@ -231,7 +230,10 @@ function contextCandidateState(
     const entry = readEntry(
       database,
       { workspace: row.workspace, entryId: row.id },
-      { requireStructuredScope: row.workspace === GLOBAL_WORKSPACE || row.isExternal === 1 },
+      // Released v2 global scopes remain valid stored records, but retrieval
+      // policy excludes them because they lack an explicit v3 global scope.
+      // Managed external entries still require the current structured shape.
+      { requireStructuredScope: row.isExternal === 1 },
     );
     if (entry.status === 'superseded') return [];
     const local = relevant.has(entry.workspace);

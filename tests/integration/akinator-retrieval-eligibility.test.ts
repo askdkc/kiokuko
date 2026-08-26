@@ -8,7 +8,58 @@ import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordEntry } from '../../src/memory/entries.js';
-import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
+import { GLOBAL_WORKSPACE, resolveProjectWorkspace } from '../../src/memory/workspaces.js';
+
+test('Akinator retrieval ignores a released v2 curator memory with a legacy external tag without failing intake', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-akinator-curator-tag-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-akinator-curator-tag-db-'));
+  const database = openConnection(path.join(directory, 'kiokuko.sqlite3'));
+  migrateDatabase(database);
+
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+    const memory = recordEntry(database, {
+      workspace: GLOBAL_WORKSPACE,
+      kind: 'lesson',
+      status: 'candidate',
+      title: 'Kiokuko task intake integrity recovery',
+      body: 'When Kiokuko task intake fails, reproduce the stored context selection before changing its integrity contract.',
+      scope: {
+        schemaVersion: 2,
+        visibility: 'global',
+        memoryClass: 'troubleshooting',
+        applicability: { tools: ['kiokuko'] },
+      },
+      provenance: { type: 'curator_globalize', reference: 'project:legacy-curator-source' },
+      tags: ['external:skill', 'kiokuko'],
+      createdBy: 'kiokuko-curator',
+      actor: 'kiokuko-curator',
+    }, { now: '2026-08-22T15:20:49.813Z' });
+
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'akinator-curator-legacy-external-tag',
+      cwd: root,
+      task: 'Fix the Kiokuko task intake integrity error',
+      profileHints: {
+        taskType: 'debug',
+        target: 'Kiokuko task intake',
+        expected: 'The focused regression passes',
+        constraints: null,
+      },
+      capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+      client: { kind: 'test', sessionId: 'akinator-curator-legacy-external-tag' },
+      skillDiscoveryMode: 'off',
+    });
+
+    assert.equal(prepared.run.status, 'active');
+    assert.equal(prepared.context?.items.some((item) => item.entryId === memory.id), false);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM external_skill_entries').get<{ count: number }>()?.count, 0);
+  } finally {
+    database.close();
+  }
+});
 
 test('Akinator retrieval fails closed for an external marker without a managed import mapping', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-akinator-retrieval-repo-'));

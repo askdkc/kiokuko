@@ -191,21 +191,14 @@ function hasExplicitFederatedScope(entry: EntryRecord, expected: 'ecosystem' | '
 /** SQL equivalent of the persisted marker portion of isExternalSkillReference for an `entries AS e` row. */
 export function externalSkillReferenceCandidateSql(): string {
   return `(
-    e.created_by = 'kiokuko-skill-discovery'
-    OR EXISTS (
-      SELECT 1
-        FROM entry_revision_tags AS external_tag
-       WHERE external_tag.entry_id = e.id
-         AND external_tag.revision = e.current_revision
-         AND external_tag.tag = 'external:skill'
-    )
+    e.created_by IN ('kiokuko-skill-discovery', 'kiokuko-source-sync')
     OR EXISTS (
       SELECT 1
         FROM entry_revisions AS external_revision
        WHERE external_revision.entry_id = e.id
          AND external_revision.revision = e.current_revision
          AND json_valid(external_revision.provenance_json) = 1
-         AND json_extract(external_revision.provenance_json, '$.type') = 'external_skill'
+         AND json_extract(external_revision.provenance_json, '$.type') IN ('external_skill', 'source_sync')
     )
   )`;
 }

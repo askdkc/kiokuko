@@ -74,13 +74,13 @@ test('retrieves applicable project-owned memory through ecosystem scope without 
       workspace: first.workspace,
       kind: 'reference',
       status: 'candidate',
-      title: 'Forged external skill marker',
+      title: 'Ordinary memory with an external skill tag',
       body: 'Portable Laravel migration guidance that is not managed by the external skill store.',
       scope: buildStructuredScope({ visibility: 'project', retrievalScope: 'ecosystem', applicability: { frameworks: [{ name: 'Laravel', version: '>=12 <14' }] }, signals: { packages: ['laravel/framework'] } }),
       tags: ['external:skill', 'Laravel'],
     });
-    const forged = await recallScopedMemory(database, { cwd: secondRoot, query: 'Laravel migration laravel/framework' });
-    assert.equal(forged.ecosystem?.items.some((item) => item.title === 'Forged external skill marker') ?? false, false);
+    const taggedOrdinary = await recallScopedMemory(database, { cwd: secondRoot, query: 'Laravel migration laravel/framework' });
+    assert.equal(taggedOrdinary.ecosystem?.items.some((item) => item.title === 'Ordinary memory with an external skill tag'), true);
 
     for (let index = 0; index < 4; index += 1) {
       recordEntry(database, {

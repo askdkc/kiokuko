@@ -10,6 +10,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createKiokukoMcpServer } from '../../src/mcp/server.js';
 import { BoundedStdioServerTransport } from '../../src/mcp/bounded-stdio-transport.js';
 import { openConnection } from '../../src/db/connection.js';
+import { migrateDatabase } from '../../src/db/migrate.js';
+import { recordEntry } from '../../src/memory/entries.js';
+import { GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
 import { MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS, MAX_RAW_CAPABILITY_DESCRIPTION_CHARS } from '../../src/akinator/capabilities.js';
 import { KiokukoError } from '../../src/errors.js';
 import { PACKAGE_VERSION } from '../../src/package-version.js';
@@ -640,6 +643,66 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     } finally {
       database.close();
     }
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('task_prepare accepts stored v2 curator memory whose legacy tag is not managed external identity', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-legacy-curator-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-legacy-curator-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const database = openConnection(databasePath);
+  migrateDatabase(database);
+  const legacy = recordEntry(database, {
+    workspace: GLOBAL_WORKSPACE,
+    kind: 'lesson',
+    status: 'candidate',
+    title: 'Legacy curator task intake guidance',
+    body: 'Reproduce task intake failures against the stored context selection state.',
+    scope: {
+      schemaVersion: 2,
+      visibility: 'global',
+      memoryClass: 'troubleshooting',
+      portableReason: 'This diagnostic workflow applies across Kiokuko repositories.',
+    },
+    provenance: { type: 'curator_globalize', reference: 'project:legacy-curator-source' },
+    tags: ['external:skill', 'kiokuko'],
+    createdBy: 'kiokuko-curator',
+    actor: 'kiokuko-curator',
+  }, { now: '2026-08-22T15:20:49.813Z' });
+  database.close();
+
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'kiokuko-legacy-curator-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const result = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        requestId: 'mcp-legacy-curator-task-prepare',
+        task: 'Fix the Kiokuko task intake integrity error',
+        profileHints: {
+          taskType: 'debug',
+          target: 'Kiokuko task intake',
+          expected: 'The focused regression passes',
+        },
+        capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+      },
+    });
+    assert.equal(result.isError, undefined);
+    const content = result.structuredContent as {
+      run: { status: string };
+      nextAction: string;
+      context: { items: Array<{ entryId: string }> };
+    };
+    assert.equal(content.run.status, 'active');
+    assert.equal(content.nextAction, 'proceed');
+    assert.equal(content.context.items.some((item) => item.entryId === legacy.id), false);
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();
