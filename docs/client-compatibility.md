@@ -2,12 +2,12 @@
 
 Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-scoped Hermes Agent. No client hook/plugin is installed.
 
-| Client | Global MCP registration | Global instructions | Managed standard skill | Hooks/plugins |
+| Client | Global MCP registration | Global instructions | Managed standard skills | Hooks/plugins |
 |---|---|---|---|---|
-| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/kiokuko-ui-design-soul` | not installed |
-| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/kiokuko-ui-design-soul` | none |
-| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/kiokuko-ui-design-soul` | none |
-| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/kiokuko-ui-design-soul` | none |
+| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/{kiokuko-ui-design-soul,kiokuko-single-purpose-functions}` | not installed |
+| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/{kiokuko-ui-design-soul,kiokuko-single-purpose-functions}` | none |
+| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/{kiokuko-ui-design-soul,kiokuko-single-purpose-functions}` | none |
+| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/{kiokuko-ui-design-soul,kiokuko-single-purpose-functions}` | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | not installed | none |
 
 OpenCode global configuration follows XDG paths on every platform:
@@ -19,9 +19,10 @@ Codex's current official documentation supports stdio MCP servers and global
 configuration. OpenCode's current official documentation supports local MCP
 commands and global rules. Claude Code supports user-scoped stdio MCP servers,
 global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
-instruction surfaces and installs the bundled `kiokuko-ui-design-soul` skill in
-the selected supported clients by default. The skill is copied from a fixed
-package manifest and never downloaded during setup. `--no-standard-skills`
+instruction surfaces and installs the bundled `kiokuko-ui-design-soul` and
+`kiokuko-single-purpose-functions` skills in the selected supported clients by
+default. The skills are copied from a fixed package manifest and never downloaded
+during setup. `--no-standard-skills`
 skips placement without deleting an existing copy.
 
 Hermes Agent v0.20.4 uses a profile-scoped native stdio MCP client. Kiokuko writes
@@ -38,7 +39,7 @@ mcp_servers:
 ```
 
 It does not create a global instruction file, Hermes plugin, or Hermes hook.
-Hermes's built-in memory and Kiokuko's bundled skill remain separate capabilities.
+Hermes's built-in memory and Kiokuko's bundled skills remain separate capabilities.
 Use `kiokuko setup --clients hermes`, then restart Hermes Agent or start a new
 session; `/reload-mcp` only reloads MCP registration. Smoke-test with
 `hermes mcp test kiokuko`.
@@ -57,7 +58,7 @@ session; `/reload-mcp` only reloads MCP registration. Smoke-test with
 
 Setup guarantees safe, repeatable configuration merging and makes the Kiokuko MCP
 tools available in each configured client scope after that client reloads its
-configuration and makes the bundled standard skill discoverable after a client
+configuration and makes the bundled standard skills discoverable after a client
 restart or new session. Global instructions request `task_prepare` before non-trivial work, grounded
 `task_answer` calls when intake fields are missing, and checkpointing after
 substantial verified work.
@@ -68,10 +69,19 @@ lifecycle after one-time setup; it does not mean Kiokuko intercepts every prompt
 or response. For Hermes specifically, automatic/model use is best effort from
 MCP tool descriptions.
 
-The standard skill is intended for explicit UI, UX, frontend, screen, SwiftUI,
+The UI standard skill is intended for explicit UI, UX, frontend, screen, SwiftUI,
 accessibility, and equivalent Japanese-language tasks. `task_prepare` treats it
 as a first-party recommendation only for such concrete terms; generic `design`,
 backend-only work, and image-only generation do not trigger it.
+
+The single-purpose-functions standard skill applies to writing, modifying,
+reviewing, debugging, and refactoring code across languages and repositories.
+Its examples use typed TypeScript for concreteness, but the contracts explicitly
+adapt to the target project's language, error model, persistence layer, and test
+framework. `task_prepare` treats it as a first-party recommendation for concrete
+coding terms in English or Japanese. Explicit no-code, documentation-only, and
+image-only work do not trigger it. Kiokuko does not claim that availability alone
+forces model use.
 
 Kiokuko does not install hooks or plugins in any supported client. During an
 upgrade, setup removes only the byte-exact retired OpenCode guard and the one

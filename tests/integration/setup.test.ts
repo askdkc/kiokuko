@@ -19,6 +19,23 @@ import {
   legacyOpenCodeLoopGuardFixture,
 } from '../fixtures/legacy-client-cleanup.js';
 
+const STANDARD_SKILL_FIXTURES = [{
+  name: 'kiokuko-ui-design-soul',
+  files: ['SKILL.md', 'references/ui-checklist.md'],
+}, {
+  name: 'kiokuko-single-purpose-functions',
+  files: ['SKILL.md', 'references/kiokuko-patterns.md', 'references/review-checklist.md'],
+}] as const;
+
+function standardSkillPaths(
+  skillsDirectory: string,
+  join: (...paths: string[]) => string = path.join,
+): string[] {
+  return STANDARD_SKILL_FIXTURES.flatMap((skill) => skill.files.map((relativePath) => (
+    join(skillsDirectory, skill.name, relativePath)
+  )));
+}
+
 async function temporaryEnvironment(prefix: string) {
   const root = await mkdtemp(path.join(tmpdir(), `kiokuko-setup-${prefix}-`));
   const home = path.join(root, 'home');
@@ -115,6 +132,7 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     assert.ok(dryRunFiles.every((file) => file.client === 'hermes'));
     await assert.rejects(access(String(dryRun.data.databasePath)));
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
+    await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md')));
 
     const first = await runCliJson(platform, env, ['setup', '--json']);
     assert.equal(first.ok, true);
@@ -123,6 +141,7 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     await access(String(first.data.databasePath));
     await access(path.join(hermesHome, 'config.yaml'));
     await access(path.join(hermesHome, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'));
+    await access(path.join(hermesHome, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'));
     assert.match(await readFile(path.join(hermesHome, 'config.yaml'), 'utf8'), /command: kiokuko/);
     assert.match(await readFile(path.join(hermesHome, 'config.yaml'), 'utf8'), /command: other/);
     await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
@@ -230,8 +249,7 @@ test('Windows OpenCode dry-run plans every artifact below the XDG-style global r
     [
       path.win32.join(canonicalRoot, 'AGENTS.md'),
       path.win32.join(canonicalRoot, 'opencode.json'),
-      path.win32.join(canonicalRoot, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'),
-      path.win32.join(canonicalRoot, 'skills', 'kiokuko-ui-design-soul', 'references', 'ui-checklist.md'),
+      ...standardSkillPaths(path.win32.join(canonicalRoot, 'skills'), path.win32.join),
     ].sort(),
   );
   assert.ok(result.files.every((file) => !file.path.startsWith(path.win32.join(windowsAppData, 'opencode'))));
@@ -264,6 +282,12 @@ test('Windows OpenCode dry-run honors XDG_CONFIG_HOME before APPDATA', async () 
     'kiokuko-ui-design-soul',
     'SKILL.md',
   )));
+  assert.ok(result.files.some((file) => file.path === path.win32.join(
+    xdgRoot,
+    'skills',
+    'kiokuko-single-purpose-functions',
+    'SKILL.md',
+  )));
 });
 
 test('setup safely merges Codex, OpenCode, and Claude Code global configuration and is idempotent', async () => {
@@ -288,10 +312,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     databasePath: temporary.databasePath,
   });
   assert.equal(first.standardSkills, true);
-  assert.equal(first.files.length, 15);
+  assert.equal(first.files.length, 27);
   assert.equal(first.files.filter((file) => file.action === 'updated').length, 6);
-  assert.equal(first.files.filter((file) => file.action === 'created').length, 9);
-  assert.equal(first.files.filter((file) => file.purpose === 'standard-skill').length, 8);
+  assert.equal(first.files.filter((file) => file.action === 'created').length, 21);
+  assert.equal(first.files.filter((file) => file.purpose === 'standard-skill').length, 20);
 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
   assert.match(codexConfig, /^model = "gpt-test"/);
@@ -323,18 +347,30 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   assert.match(hermesConfig, /- mcp/);
   assert.match(hermesConfig, /KIOKUKO_SKILL_DISCOVERY: official/);
 
-  const skillDirectories = [
-    path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul'),
-    path.join(openCodeDirectory, 'skills', 'kiokuko-ui-design-soul'),
-    path.join(claudeDirectory, 'skills', 'kiokuko-ui-design-soul'),
-    path.join(temporary.home, '.hermes', 'skills', 'kiokuko-ui-design-soul'),
+  const skillsDirectories = [
+    path.join(temporary.home, '.agents', 'skills'),
+    path.join(openCodeDirectory, 'skills'),
+    path.join(claudeDirectory, 'skills'),
+    path.join(temporary.home, '.hermes', 'skills'),
   ];
-  for (const skillDirectory of skillDirectories) {
-    const skill = await readFile(path.join(skillDirectory, 'SKILL.md'), 'utf8');
-    const checklist = await readFile(path.join(skillDirectory, 'references', 'ui-checklist.md'), 'utf8');
-    assert.match(skill, /^---\nname: kiokuko-ui-design-soul\n/);
-    assert.match(skill, /KIOKUKO MANAGED STANDARD SKILL/);
-    assert.match(checklist, /Last reviewed against the official sources: 2026-08-22/);
+  for (const skillsDirectory of skillsDirectories) {
+    for (const fixture of STANDARD_SKILL_FIXTURES) {
+      const skill = await readFile(path.join(skillsDirectory, fixture.name, 'SKILL.md'), 'utf8');
+      assert.match(skill, new RegExp(`^---\\nname: ${fixture.name}\\n`));
+      assert.match(skill, /KIOKUKO MANAGED STANDARD SKILL/);
+    }
+    assert.match(
+      await readFile(path.join(skillsDirectory, 'kiokuko-ui-design-soul', 'references', 'ui-checklist.md'), 'utf8'),
+      /Last reviewed against the official sources: 2026-08-22/,
+    );
+    assert.match(
+      await readFile(path.join(skillsDirectory, 'kiokuko-single-purpose-functions', 'references', 'kiokuko-patterns.md'), 'utf8'),
+      /Single-purpose implementation patterns/,
+    );
+    assert.match(
+      await readFile(path.join(skillsDirectory, 'kiokuko-single-purpose-functions', 'references', 'review-checklist.md'), 'utf8'),
+      /Function-contract coding and review checklist/,
+    );
   }
 
   for (const instructionsPath of [path.join(codexDirectory, 'AGENTS.md'), path.join(openCodeDirectory, 'AGENTS.md'), path.join(claudeDirectory, 'CLAUDE.md')]) {
@@ -678,6 +714,21 @@ test('setup resolves a sticky named Hermes profile without crossing into another
     action: 'created',
     purpose: 'standard-skill',
     client: 'hermes',
+  }, {
+    path: path.join(mainProfile, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'),
+    action: 'created',
+    purpose: 'standard-skill',
+    client: 'hermes',
+  }, {
+    path: path.join(mainProfile, 'skills', 'kiokuko-single-purpose-functions', 'references', 'kiokuko-patterns.md'),
+    action: 'created',
+    purpose: 'standard-skill',
+    client: 'hermes',
+  }, {
+    path: path.join(mainProfile, 'skills', 'kiokuko-single-purpose-functions', 'references', 'review-checklist.md'),
+    action: 'created',
+    purpose: 'standard-skill',
+    client: 'hermes',
   }]);
   assert.match(result.nextStep, /Hermes Agent/);
   assert.match(result.nextStep, /\/reload-mcp/);
@@ -689,8 +740,11 @@ test('setup resolves a sticky named Hermes profile without crossing into another
 test('setup can skip new standard-skill installation without deleting an existing skill', async () => {
   const temporary = await temporaryEnvironment('no-standard-skills');
   const skillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md');
+  const functionSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md');
   await mkdir(path.dirname(skillPath), { recursive: true });
+  await mkdir(path.dirname(functionSkillPath), { recursive: true });
   await writeFile(skillPath, 'human-owned skill\n');
+  await writeFile(functionSkillPath, 'human-owned function skill\n');
 
   const result = await setupGlobalClients({
     clients: ['codex'],
@@ -703,6 +757,7 @@ test('setup can skip new standard-skill installation without deleting an existin
   assert.equal(result.standardSkills, false);
   assert.equal(result.files.some((file) => file.purpose === 'standard-skill'), false);
   assert.equal(await readFile(skillPath, 'utf8'), 'human-owned skill\n');
+  assert.equal(await readFile(functionSkillPath, 'utf8'), 'human-owned function skill\n');
 });
 
 test('setup upgrades an older managed standard skill and then reports it unchanged', async () => {
@@ -721,9 +776,16 @@ test('setup upgrades an older managed standard skill and then reports it unchang
     env: temporary.env,
     databasePath: temporary.databasePath,
   });
-  assert.deepEqual(first.files.filter((file) => file.purpose === 'standard-skill').map((file) => file.action), ['updated', 'updated']);
+  assert.deepEqual(
+    first.files.filter((file) => file.purpose === 'standard-skill').map((file) => file.action),
+    ['updated', 'updated', 'created', 'created', 'created'],
+  );
   assert.match(await readFile(skillPath, 'utf8'), /description: Prevent common UI\/UX failures/);
   assert.match(await readFile(checklistPath, 'utf8'), /Eight-principle map/);
+  assert.match(
+    await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'), 'utf8'),
+    /one cohesive contract per function/,
+  );
 
   const second = await setupGlobalClients({
     clients: ['codex'],
@@ -734,22 +796,25 @@ test('setup upgrades an older managed standard skill and then reports it unchang
   assert.ok(second.files.every((file) => file.action === 'unchanged'));
 });
 
-test('setup fails closed on an unmanaged same-name skill before any write', async () => {
-  const temporary = await temporaryEnvironment('unmanaged-skill-conflict');
-  const skillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md');
-  await mkdir(path.dirname(skillPath), { recursive: true });
-  await writeFile(skillPath, '---\nname: kiokuko-ui-design-soul\n---\nhuman-owned\n');
+test('setup fails closed on every unmanaged same-name standard skill before any write', async () => {
+  for (const fixture of STANDARD_SKILL_FIXTURES) {
+    const temporary = await temporaryEnvironment(`unmanaged-skill-conflict-${fixture.name}`);
+    const skillPath = path.join(temporary.home, '.agents', 'skills', fixture.name, 'SKILL.md');
+    const original = `---\nname: ${fixture.name}\n---\nhuman-owned\n`;
+    await mkdir(path.dirname(skillPath), { recursive: true });
+    await writeFile(skillPath, original);
 
-  await assert.rejects(setupGlobalClients({
-    clients: ['codex'],
-    platform: 'linux',
-    env: temporary.env,
-    databasePath: temporary.databasePath,
-  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+    await assert.rejects(setupGlobalClients({
+      clients: ['codex'],
+      platform: 'linux',
+      env: temporary.env,
+      databasePath: temporary.databasePath,
+    }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
 
-  assert.equal(await readFile(skillPath, 'utf8'), '---\nname: kiokuko-ui-design-soul\n---\nhuman-owned\n');
-  await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
-  await assert.rejects(access(temporary.databasePath));
+    assert.equal(await readFile(skillPath, 'utf8'), original);
+    await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
+    await assert.rejects(access(temporary.databasePath));
+  }
 });
 
 test('setup only installs the standard skill for selected clients', async () => {
@@ -760,17 +825,24 @@ test('setup only installs the standard skill for selected clients', async () => 
     env: temporary.env,
     databasePath: temporary.databasePath,
   });
-  assert.equal(result.files.filter((file) => file.purpose === 'standard-skill').length, 2);
-  await access(path.join(temporary.config, 'opencode', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'));
-  await assert.rejects(access(path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
-  await assert.rejects(access(path.join(temporary.home, '.claude', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
-  await assert.rejects(access(path.join(temporary.home, '.hermes', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
+  const openCodeSkills = path.join(temporary.config, 'opencode', 'skills');
+  assert.equal(result.files.filter((file) => file.purpose === 'standard-skill').length, standardSkillPaths(openCodeSkills).length);
+  for (const filePath of standardSkillPaths(openCodeSkills)) await access(filePath);
+  for (const otherSkillsDirectory of [
+    path.join(temporary.home, '.agents', 'skills'),
+    path.join(temporary.home, '.claude', 'skills'),
+    path.join(temporary.home, '.hermes', 'skills'),
+  ]) {
+    for (const fixture of STANDARD_SKILL_FIXTURES) {
+      await assert.rejects(access(path.join(otherSkillsDirectory, fixture.name, 'SKILL.md')));
+    }
+  }
 });
 
 test('setup rolls back earlier client and skill files when a later standard-skill write fails', { skip: process.platform === 'win32' }, async () => {
   const temporary = await temporaryEnvironment('skill-rollback');
-  const skillDirectory = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul');
-  const referencesDirectory = path.join(skillDirectory, 'references');
+  const skillsDirectory = path.join(temporary.home, '.agents', 'skills');
+  const referencesDirectory = path.join(skillsDirectory, 'kiokuko-single-purpose-functions', 'references');
   await mkdir(referencesDirectory, { recursive: true });
   await chmod(referencesDirectory, 0o500);
   try {
@@ -786,8 +858,7 @@ test('setup rolls back earlier client and skill files when a later standard-skil
 
   await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
   await assert.rejects(access(path.join(temporary.home, '.codex', 'AGENTS.md')));
-  await assert.rejects(access(path.join(skillDirectory, 'SKILL.md')));
-  await assert.rejects(access(path.join(referencesDirectory, 'ui-checklist.md')));
+  for (const filePath of standardSkillPaths(skillsDirectory)) await assert.rejects(access(filePath));
 });
 
 test('setup rolls back Claude MCP and instructions when a later standard-skill write fails', { skip: process.platform === 'win32' }, async () => {
@@ -796,7 +867,8 @@ test('setup rolls back Claude MCP and instructions when a later standard-skill w
   const settings = '{"permissions":{"allow":["Bash(git status)"]}}\n';
   await mkdir(path.dirname(settingsPath), { recursive: true });
   await writeFile(settingsPath, settings);
-  const referencesDirectory = path.join(temporary.home, '.claude', 'skills', 'kiokuko-ui-design-soul', 'references');
+  const skillsDirectory = path.join(temporary.home, '.claude', 'skills');
+  const referencesDirectory = path.join(skillsDirectory, 'kiokuko-single-purpose-functions', 'references');
   await mkdir(referencesDirectory, { recursive: true });
   await chmod(referencesDirectory, 0o500);
   try {
@@ -813,8 +885,7 @@ test('setup rolls back Claude MCP and instructions when a later standard-skill w
   assert.equal(await readFile(settingsPath, 'utf8'), settings);
   await assert.rejects(access(path.join(temporary.home, '.claude.json')));
   await assert.rejects(access(path.join(temporary.home, '.claude', 'CLAUDE.md')));
-  await assert.rejects(access(path.join(temporary.home, '.claude', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
-  await assert.rejects(access(path.join(referencesDirectory, 'ui-checklist.md')));
+  for (const filePath of standardSkillPaths(skillsDirectory)) await assert.rejects(access(filePath));
 });
 
 test('setup exposes the initiating failure and every failed restore after attempting them all', async () => {
@@ -1472,6 +1543,7 @@ test('setup resolves the Hermes profile once for config and standard-skill desti
   assert.equal(await readFile(countPath, 'utf8'), 'x\n');
   await access(path.join(profile, 'config.yaml'));
   await access(path.join(profile, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'));
+  await access(path.join(profile, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'));
 });
 
 test('setup rejects invalid UTF-8 managed text before database mutation', async () => {

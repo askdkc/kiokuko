@@ -50,7 +50,6 @@ import {
 import {
   loadBundledStandardSkillFiles,
   renderStandardSkillFile,
-  STANDARD_UI_SKILL_NAME,
 } from '../setup/standard-skills.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
@@ -626,15 +625,11 @@ export async function setupGlobalClients(
   if (standardSkills) {
     const bundledFiles = await loadBundledStandardSkillFiles();
     for (const client of clients) {
-      const destination = setupPathJoin(
-        pathEnvironment,
-        await standardSkillDirectory(client, pathEnvironment, hermesProfile),
-        STANDARD_UI_SKILL_NAME,
-      );
+      const skillsDirectory = await standardSkillDirectory(client, pathEnvironment, hermesProfile);
       for (const bundled of bundledFiles) {
         files.push(await planFile(
           planning,
-          setupPathJoin(pathEnvironment, destination, bundled.relativePath),
+          setupPathJoin(pathEnvironment, skillsDirectory, bundled.skillName, bundled.relativePath),
           client,
           'standard-skill',
           (existing) => renderStandardSkillFile(existing, bundled),

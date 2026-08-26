@@ -68,8 +68,13 @@ Ordinary searches do not mix in memories from unrelated projects.
 - **Project memory**
   Knowledge used only in the current repository
 
+- **Ecosystem memory**
+  Knowledge kept in its source project and reused only when its language, framework, database, runtime, tool, or other applicability constraints match the current project
+
 - **Global memory**
-  Knowledge reusable across multiple projects, such as languages, frameworks, databases, and tools
+  Knowledge explicitly generalized for reuse across projects without depending on one particular project
+
+Matching free-form tags alone does not expose Project memory to other projects. Ecosystem retrieval checks both the memory's structured applicability and the technology fingerprint detected from the current project. Memories containing project-specific paths or identifiers are excluded.
 
 Projects are automatically identified from Git remotes or paths.
 

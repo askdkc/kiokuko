@@ -1,5 +1,8 @@
 import type { TaskProfile } from './types.js';
-import { STANDARD_UI_SKILL_NAME } from '../setup/standard-skills.js';
+import {
+  STANDARD_FUNCTION_SKILL_NAME,
+  STANDARD_UI_SKILL_NAME,
+} from '../setup/standard-skills.js';
 import { compareCanonicalStrings } from '../serialization/validate.js';
 
 export const CAPABILITY_KINDS = ['skill', 'mcp_tool'] as const;
@@ -268,11 +271,14 @@ const SKILL_REASONS: Record<string, string> = {
   research: 'The research task requires source-grounded findings.',
   'code-review': 'The review task benefits from a structured code-review workflow.',
   [MEMORY_REASONING_SKILL_NAME]: 'Relevant stored memory was delivered for a build or debug task; verify its premises, invariants, counterexamples, and tests before changing code.',
+  [STANDARD_FUNCTION_SKILL_NAME]: 'The task explicitly involves writing, changing, debugging, or reviewing code and benefits from cohesive function contracts, explicit boundaries, and focused tests.',
   [STANDARD_UI_SKILL_NAME]: 'The task explicitly involves UI implementation, design, or review and benefits from Kiokuko\'s interaction-state and accessibility contract.',
 };
 
 const EXPLICIT_UI_INTENT = /(?:\b(?:ui|ux|frontend|front-end|swiftui|accessibility)\b|\buser[ -]?interface\b|\b(?:app|web)[ -]?(?:screen|interface|view|page)\b|\bscreen(?:s)?\b|ユーザーインターフェース|インターフェース|フロントエンド|アクセシビリティ|画面|操作(?:性|設計|フロー)|ボタン|フォーム|モーダル|ダイアログ|ナビゲーション)/iu;
 const EXCLUDED_UI_SCOPE = /(?:\bbackend[- ]only\b|\bserver[- ]side only\b|\bimage generation only\b|バックエンド(?:だけ|のみ)|画像生成(?:だけ|のみ))/iu;
+const EXPLICIT_CODING_INTENT = /(?:\b(?:code|coding|codebase|programming|function|method|class|module|refactor|debug|bugfix|bug[ -]?fix|unit[ -]?test|integration[ -]?test|pull[ -]?request|source[ -]?file)\b|\b(?:implement|modify|patch|fix|test|review|rewrite|compile|typecheck|type-check)\b.{0,32}\b(?:code|function|method|class|module|api|test|repository|file)\b|\b(?:typescript|javascript|php|python|ruby|rust|golang|java|kotlin|swift|c\+\+|csharp|c#|sql|terraform)\b|コード|コーディング|プログラミング|実装|関数|メソッド|クラス|モジュール|ソース(?:コード|ファイル)|リファクタ|デバッグ|バグ(?:修正|フィックス)|単体テスト|結合テスト|型チェック|プルリクエスト)/iu;
+const EXCLUDED_CODING_SCOPE = /(?:\b(?:no code changes?|without changing code|documentation only|writing only|image generation only)\b|コード変更(?:なし|不要)|コードを変更しない|文書(?:だけ|のみ)|文章(?:だけ|のみ)|画像生成(?:だけ|のみ))/iu;
 
 function normalizedName(value: string): string {
   return value.trim().toLowerCase().replaceAll('_', '-');
@@ -299,6 +305,9 @@ function desiredSkills(input: { task: string; profile: TaskProfile; recommendedT
     .filter(Boolean);
   const taskScope = [input.task, input.profile.target ?? '', input.profile.expected ?? '', input.profile.constraints ?? ''].join(' ');
   if (!EXCLUDED_UI_SCOPE.test(taskScope) && EXPLICIT_UI_INTENT.test(taskScope)) skillNames.push(STANDARD_UI_SKILL_NAME);
+  if (!EXCLUDED_CODING_SCOPE.test(taskScope) && EXPLICIT_CODING_INTENT.test(taskScope)) {
+    skillNames.push(STANDARD_FUNCTION_SKILL_NAME);
+  }
   if (memoryReasoningRequired(input.profile, input.memoryUse)) {
     skillNames.push(MEMORY_REASONING_SKILL_NAME);
   }
@@ -332,7 +341,9 @@ function relevantCatalogCapabilities(
   return catalog
     .filter((candidate) => {
       const aliases = nameAliases(candidate.name);
-      if (aliases.has(STANDARD_UI_SKILL_NAME) || aliases.has(MEMORY_REASONING_SKILL_NAME)) return false;
+      if (aliases.has(STANDARD_UI_SKILL_NAME)
+        || aliases.has(STANDARD_FUNCTION_SKILL_NAME)
+        || aliases.has(MEMORY_REASONING_SKILL_NAME)) return false;
       if (candidate.kind === 'mcp_tool') return true;
       return ![...aliases].some((alias) => desiredSkillNames.has(alias));
     })

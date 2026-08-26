@@ -202,6 +202,11 @@ test('reports Akinator skill recommendations as unknown without a client catalog
     name: 'tdd',
     availability: 'unknown',
     source: 'akinator_policy',
+  }, {
+    kind: 'skill',
+    name: 'kiokuko-single-purpose-functions',
+    availability: 'unknown',
+    source: 'akinator_policy',
   }]);
 });
 
@@ -312,6 +317,47 @@ test('does not recommend the UI skill for generic design, backend-only, or image
       capabilities,
     });
     assert.ok(!result.recommendations.some((item) => item.name === 'kiokuko-ui-design-soul'));
+  }
+});
+
+test('recommends the standard function skill for explicit coding work across languages', () => {
+  const capabilities = [{
+    kind: 'skill' as const,
+    name: 'kiokuko-single-purpose-functions',
+    description: 'Apply cohesive function contracts while writing or reviewing code in any language.',
+  }];
+  for (const input of [
+    { task: 'Refactor the PHP service method and add unit tests', profile: buildProfile },
+    { task: 'Pythonの関数をリファクタして型チェックと単体テストを追加する', profile: buildProfile },
+    { task: 'Review this Rust pull request for unsafe state transitions', profile: { ...buildProfile, taskType: 'review' as const } },
+  ]) {
+    const result = resolveCapabilities({
+      task: input.task,
+      profile: input.profile,
+      recommendedTags: [],
+      capabilities,
+    });
+    assert.ok(result.recommendations.some((item) => item.name === 'kiokuko-single-purpose-functions'
+      && item.availability === 'available'
+      && item.source === 'akinator_policy'));
+  }
+});
+
+test('does not recommend the standard function skill for explicitly non-coding work', () => {
+  const capabilities = [{ kind: 'skill' as const, name: 'kiokuko-single-purpose-functions' }];
+  for (const task of [
+    'Write release notes without changing code',
+    'Create a product illustration; image generation only',
+    'Draft the conference program and speaker schedule',
+    'コードを変更しないでアーキテクチャ文書だけをレビューする',
+  ]) {
+    const result = resolveCapabilities({
+      task,
+      profile: { ...buildProfile, taskType: 'writing', target: 'release notes' },
+      recommendedTags: [],
+      capabilities,
+    });
+    assert.ok(!result.recommendations.some((item) => item.name === 'kiokuko-single-purpose-functions'));
   }
 });
 

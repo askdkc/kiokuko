@@ -119,8 +119,9 @@ rejected as `CONFLICT`; it is not silently migrated. The managed marker, comment
 top-level values, and other MCP servers are preserved. An unmanaged entry,
 noncanonical environment, extra field, or non-`mcp` args remains `CONFLICT`;
 malformed YAML or a non-mapping `mcp_servers` remains `VALIDATION_ERROR`.
-By default it also places the bundled `kiokuko-ui-design-soul` skill in each
-selected client's native user-skill directory. `--no-standard-skills` skips new
+By default it also places the bundled `kiokuko-ui-design-soul` and
+`kiokuko-single-purpose-functions` skills in each selected client's native
+user-skill directory. `--no-standard-skills` skips new
 placement and updates without deleting a previously installed copy.
 Setup installs no client hook or plugin. As a one-way upgrade cleanup, selected
 Claude/OpenCode setup removes only the exact retired Claude prompt handler and
@@ -133,8 +134,8 @@ rejects symlinks, and is idempotent. Before an existing database is migrated,
 `databaseBackupPath` in JSON. It rejects databases created by a newer Kiokuko
 schema before opening them for writes. `--dry-run` performs no writes.
 
-Standard-skill input is the package's fixed two-file manifest; setup performs no
-network fetch or HIG scraping. Each managed destination file contains a Kiokuko
+Standard-skill input is the package's fixed two-skill, five-file manifest; setup
+performs no network fetch or dynamic skill discovery. Each managed destination file contains a Kiokuko
 marker. A same-name unmarked file causes `CONFLICT` before all writes. Managed
 older files are replaced, byte-identical files are `unchanged`, unrelated sibling
 files are not touched, and `files[].purpose` is `standard-skill`. JSON setup

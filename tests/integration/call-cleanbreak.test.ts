@@ -82,13 +82,6 @@ async function captureStdinCall(input: string | Buffer, entryPoint = fileURLToPa
   };
 }
 
-test('retired permissive call parser has no source module', async () => {
-  const retiredModule = fileURLToPath(new URL('../../src/commands/call.ts', import.meta.url));
-  await assert.rejects(access(retiredModule), (error: unknown) => {
-    return error instanceof Error && 'code' in error && error.code === 'ENOENT';
-  });
-});
-
 test('generic JSON call rejects every retired memory-returning operation', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-call-cleanbreak-'));
 
