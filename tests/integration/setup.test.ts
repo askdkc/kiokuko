@@ -399,6 +399,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /continue from repository evidence/);
     assert.match(instructions, /read it before consuming applicable memory/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(instructions, /`executionContext\.repositoryRoot` \(equal to `project\.repositoryRoot`\) as the canonical filesystem base/u);
+    assert.match(instructions, /For OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
+    assert.match(instructions, /never pass `~`, `\$HOME`, or HOME-relative fragments/u);
+    assert.match(instructions, /produces an `external_directory` permission request, reject the malformed path and retry/u);
     assert.match(instructions, /Call `task_answer` with the same capability catalog, run ID, and context budget/);
     assert.match(instructions, /When `runId` is supplied, the run must be active/);
     assert.match(instructions, /Do not call `memory_checkpoint` while `task_prepare` or `task_answer` reports `needs_answer`/);
@@ -746,9 +750,9 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
-    `human project rule\n${staleAgent.replace('kiokuko-template-version: 9', 'kiokuko-template-version: 8')}`,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 10', 'kiokuko-template-version: 9')}`,
   );
-  await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 8 }, null, 2)}\n`);
+  await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 9 }, null, 2)}\n`);
 
   await initializeDatabase({ databasePath: temporary.databasePath });
   const locationOnlyCanonicalRoot = await realpath(locationOnlyRoot);
@@ -794,7 +798,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   ]);
   await assert.rejects(access(path.join(locationOnlyRoot, '.kiokuko.json')));
   await assert.rejects(access(path.join(locationOnlyRoot, 'AGENTS.md')));
-  assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 8/u);
+  assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 9/u);
 
   const result = await setupGlobalClients({
     clients: [],
@@ -822,11 +826,11 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.match(refreshedAgent, /kiokuko-template-version: 9/u);
-  assert.equal(refreshedAgent.includes('kiokuko-template-version: 8'), false);
+  assert.match(refreshedAgent, /kiokuko-template-version: 10/u);
+  assert.equal(refreshedAgent.includes('kiokuko-template-version: 9'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
-  assert.equal(refreshedBinding.templateVersion, 9);
+  assert.equal(refreshedBinding.templateVersion, 10);
 
   const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
@@ -839,7 +843,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryId: 'repo_setup_refresh_location_only',
     workspace: 'project:setup-refresh-location-only',
     agentFile: 'AGENTS.md',
-    templateVersion: 9,
+    templateVersion: 10,
   });
 });
 

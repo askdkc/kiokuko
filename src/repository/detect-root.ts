@@ -16,7 +16,7 @@ export interface DetectRepositoryRootOptions {
   allowDirectory?: boolean;
 }
 
-function canonicalDirectory(directory: string): string {
+export function canonicalDirectory(directory: string): string {
   const resolved = realpathSync(directory);
   if (!statSync(resolved).isDirectory()) throw new KiokukoError('VALIDATION_ERROR', 'Repository root must be a directory');
   return resolved;

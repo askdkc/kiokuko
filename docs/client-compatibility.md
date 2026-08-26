@@ -137,6 +137,12 @@ request, it must also stop and report that boundary. Repository-only
 continuation for such a request is allowed only after the policy establishes
 that no Kiokuko memory was delivered or used.
 
+The latest returned `intake.question` is authoritative for every answer. If
+`question.options` is non-null, submit exactly one returned option as `value`.
+If `options` is null, submit grounded non-empty free text. Repeat the loop until
+`intake.status` is `ready` or `exhausted`; `target` and `expected` require
+grounded text and are not one-word enums.
+
 Run-bound `memory_checkpoint` has the same intake precondition across MCP,
 scoped memory, and the Agent Gateway: only `active` runs may be closed by a
 successful checkpoint. If `task_prepare` or `task_answer` returns
@@ -146,6 +152,16 @@ tool returns `isError=true` with fixed text and structured fields
 `code=CHECKPOINT_RUN_NOT_ACTIVE`, `reason`, `runStatus`, `nextAction`, and
 `retryableAfterStateChange`; arbitrary internal messages and details are never
 forwarded. A terminal run returns `reason=run_terminal` and `nextAction=stop`.
+
+The MCP checkpoint payload is closed and has two forms. A standalone
+checkpoint contains at least one memory and omits `runId`, `outcome`,
+`deliveryId`, `feedback`, and `evidence`. A run-bound checkpoint requires an
+active exact `runId`, an explicit terminal `outcome`, and at least one
+non-empty `memories`, `feedback`, or `evidence` lane. Outcome-only, empty
+evidence, empty feedback, and invented evidence fields such as `checks` are
+invalid. Evidence fields are limited to `changedPaths`, `errorSignatures`,
+`commands`, `tests`, and `verification`; feedback items are limited to
+`entryId`, `entryRevision`, `verdict`, and `comment`.
 
 ## Scope boundary
 

@@ -24,6 +24,26 @@ import { assertContextFeedbackRecordable, recordContextFeedbackInTransaction } f
 import { readContextDelivery } from '../context/delivery.js';
 import { recordKnowledgePathsInTransaction } from '../akinator/knowledge-path.js';
 import type { ProjectFingerprint } from '../repository/project-fingerprint.js';
+import {
+  CHECKPOINT_COMMAND_FIELD_NAMES,
+  CHECKPOINT_EVIDENCE_FIELD_NAMES,
+  CHECKPOINT_FEEDBACK_FIELD_NAMES,
+  CHECKPOINT_OUTCOMES,
+  CHECKPOINT_RESULT_OUTCOMES,
+  CHECKPOINT_TEST_FIELD_NAMES,
+  CHECKPOINT_VERIFICATION_FIELD_NAMES,
+  MAX_CHECKPOINT_EVIDENCE_ITEMS,
+  MAX_CHECKPOINT_EXECUTABLE_CHARS,
+  MAX_CHECKPOINT_PATHS,
+  MAX_CHECKPOINT_SHORT_TEXT_CHARS,
+  MAX_CHECKPOINT_SIGNALS,
+  type CheckpointCommandEvidence,
+  type CheckpointResultOutcome,
+  type CheckpointTestEvidence,
+  type CheckpointOutcome,
+  type NormalizedCheckpointEvidence,
+  type CheckpointVerificationOutcome,
+} from '../ledger/checkpoint-contract.js';
 
 const GIT_PROVENANCE_TIMEOUT_MS = 5_000;
 const GIT_PROVENANCE_MAX_BUFFER = 64 * 1024;
@@ -120,15 +140,22 @@ export interface CheckpointMemory {
   portableReason?: string;
 }
 
-export interface ScopedCheckpointInput {
+export interface ScopedCheckpointStandaloneInput {
   cwd?: string;
   memories: CheckpointMemory[];
-  runId?: string;
+}
+
+export interface ScopedCheckpointRunInput {
+  cwd?: string;
+  memories: CheckpointMemory[];
+  runId: string;
   deliveryId?: string;
-  outcome?: 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  outcome: CheckpointOutcome;
   feedback?: unknown[];
   evidence?: unknown;
 }
+
+export type ScopedCheckpointInput = ScopedCheckpointStandaloneInput | ScopedCheckpointRunInput;
 
 export interface ScopedCheckpointResult {
   project: ResolvedProjectWorkspace | null;
@@ -140,8 +167,8 @@ const CHECKPOINT_MEMORY_FIELDS = new Set([
   'kind', 'title', 'body', 'summary', 'scope', 'retrievalScope', 'tags', 'confidence',
   'memoryClass', 'applicability', 'signals', 'portableReason',
 ]);
-const CHECKPOINT_FEEDBACK_FIELDS = new Set(['entryId', 'entryRevision', 'verdict', 'comment']);
-const CHECKPOINT_OUTCOMES = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+const CHECKPOINT_INPUT_FIELDS = new Set(['cwd', 'memories', 'runId', 'deliveryId', 'outcome', 'feedback', 'evidence']);
+const CHECKPOINT_FEEDBACK_FIELDS = new Set(CHECKPOINT_FEEDBACK_FIELD_NAMES);
 
 function assertCheckpointEligible(status: RunStatus): void {
   const eligibility = checkpointEligibility(status);
@@ -164,9 +191,11 @@ function checkpointObject(
   if (prototype !== Object.prototype && prototype !== null) {
     throw new KiokukoError('VALIDATION_ERROR', message);
   }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length > allowed.size) throw new KiokukoError('VALIDATION_ERROR', message);
   const result: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const key of Reflect.ownKeys(value)) {
+  for (const key of keys) {
     if (typeof key !== 'string' || !allowed.has(key)) {
       throw new KiokukoError('VALIDATION_ERROR', message);
     }
@@ -189,18 +218,107 @@ function sameProject(
     && left.workspace === right.workspace;
 }
 
-function boundedEvidence(raw: unknown): {
-  changedPaths: string[];
-  errorSignatures: string[];
-  commands: Array<{ executable: string; classification?: string; exitCode?: number; outcome: string; digest?: string }>;
-  tests: Array<{ runner: string; target?: string; outcome: string; digest?: string }>;
-  verification?: { outcome: string };
-} {
+function checkpointArray(value: unknown, maximum: number, message: string): unknown[] {
+  if (!Array.isArray(value) || isProxy(value) || value.length > maximum) {
+    throw new KiokukoError('VALIDATION_ERROR', message);
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || !keys.includes('length') || keys.some((key) => typeof key !== 'string')) {
+    throw new KiokukoError('VALIDATION_ERROR', message);
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const result: unknown[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) {
+      throw new KiokukoError('VALIDATION_ERROR', message);
+    }
+    result.push(descriptor.value);
+  }
+  return result;
+}
+
+function boundedEvidence(raw: unknown): NormalizedCheckpointEvidence {
   if (raw === undefined) return { changedPaths: [], errorSignatures: [], commands: [], tests: [] };
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
+  const value = checkpointObject(raw, new Set(CHECKPOINT_EVIDENCE_FIELD_NAMES), 'Evidence is invalid');
+  const evidenceError = () => new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
+  const pathError = () => new KiokukoError('VALIDATION_ERROR', 'Evidence path is invalid');
+  const strings = (candidate: unknown, maximum: number): string[] => {
+    if (candidate === undefined) return [];
+    const values = checkpointArray(candidate, maximum, 'Evidence is invalid');
+    return [...new Set(values.map((item) => {
+      if (typeof item !== 'string' || item.length === 0 || item.length > MAX_CHECKPOINT_SHORT_TEXT_CHARS || /[\u0000-\u001f\u007f]/u.test(item)) {
+        throw evidenceError();
+      }
+      return item;
+    }))];
+  };
+  const changedPaths = strings(value.changedPaths, MAX_CHECKPOINT_PATHS).map((item) => {
+    if (item.startsWith('/') || item.startsWith('\\') || /^[A-Za-z]:/u.test(item) || item.split(/[\\/]/u).includes('..')) throw pathError();
+    return item.replaceAll('\\', '/');
+  });
+  const errorSignatures = strings(value.errorSignatures, MAX_CHECKPOINT_SIGNALS);
+  const normalizeItems = (items: unknown, kind: 'command' | 'test'): Array<CheckpointCommandEvidence | CheckpointTestEvidence> => {
+    if (items === undefined) return [];
+    const values = checkpointArray(items, MAX_CHECKPOINT_EVIDENCE_ITEMS, 'Evidence is invalid');
+    const allowedFields = new Set(kind === 'command' ? CHECKPOINT_COMMAND_FIELD_NAMES : CHECKPOINT_TEST_FIELD_NAMES);
+    const optionalFields = kind === 'command' ? ['classification', 'digest'] : ['target', 'digest'];
+    const required = kind === 'command' ? 'executable' : 'runner';
+    return values.map((item) => {
+      const record = checkpointObject(item, allowedFields, 'Evidence is invalid');
+      const requiredValue = record[required];
+      if (typeof requiredValue !== 'string' || requiredValue.length === 0
+        || requiredValue.length > MAX_CHECKPOINT_EXECUTABLE_CHARS
+        || /[\u0000-\u001f\u007f]/u.test(requiredValue)) throw evidenceError();
+      const rawOutcome = record.outcome;
+      if (typeof rawOutcome !== 'string' || !CHECKPOINT_RESULT_OUTCOMES.includes(rawOutcome as CheckpointResultOutcome)) throw evidenceError();
+      const outcome = rawOutcome as CheckpointResultOutcome;
+      const optional: { classification?: string; target?: string; digest?: string } = {};
+      for (const field of optionalFields) {
+        const optionalValue = record[field];
+        if (optionalValue === undefined) continue;
+        if (typeof optionalValue !== 'string' || optionalValue.length === 0
+          || optionalValue.length > MAX_CHECKPOINT_SHORT_TEXT_CHARS
+          || /[\u0000-\u001f\u007f]/u.test(optionalValue)) throw evidenceError();
+        if (field === 'classification' || field === 'target' || field === 'digest') optional[field] = optionalValue;
+      }
+      if (kind === 'command') {
+        const exitCode = record.exitCode;
+        if (exitCode !== undefined && (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode) || exitCode < 0)) throw evidenceError();
+        return {
+          executable: requiredValue,
+          outcome,
+          ...(optional.classification === undefined ? {} : { classification: optional.classification }),
+          ...(exitCode === undefined ? {} : { exitCode }),
+          ...(optional.digest === undefined ? {} : { digest: optional.digest }),
+        };
+      }
+      return {
+        runner: requiredValue,
+        outcome,
+        ...(optional.target === undefined ? {} : { target: optional.target }),
+        ...(optional.digest === undefined ? {} : { digest: optional.digest }),
+      };
+    });
+  };
+  const commands = normalizeItems(value.commands, 'command') as CheckpointCommandEvidence[];
+  const tests = normalizeItems(value.tests, 'test') as CheckpointTestEvidence[];
+  const verification = value.verification === undefined ? undefined : (() => {
+    const verificationValue = checkpointObject(value.verification, new Set(CHECKPOINT_VERIFICATION_FIELD_NAMES), 'Evidence is invalid');
+    const rawOutcome = verificationValue.outcome;
+    if (typeof rawOutcome !== 'string' || !['fresh', 'stale', 'failed', 'unknown'].includes(rawOutcome)) throw evidenceError();
+    return { outcome: rawOutcome as CheckpointVerificationOutcome };
+  })();
+  const normalized: NormalizedCheckpointEvidence = {
+    changedPaths,
+    errorSignatures,
+    commands,
+    tests,
+    ...(verification === undefined ? {} : { verification }),
+  };
   let canonicalEvidence: string;
   try {
-    canonicalEvidence = canonicalJson(raw);
+    canonicalEvidence = canonicalJson(normalized);
   } catch (error) {
     if (error instanceof RangeError || (error instanceof KiokukoError && error.code === 'VALIDATION_ERROR')) {
       throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
@@ -208,55 +326,95 @@ function boundedEvidence(raw: unknown): {
     throw error;
   }
   if (findSecret(canonicalEvidence)) throw new KiokukoError('SECURITY_REJECTION', 'Evidence resembles a secret and was not stored');
-  const value = raw as Record<string, unknown>;
-  if (Object.keys(value).some((field) => !['changedPaths', 'errorSignatures', 'commands', 'tests', 'verification'].includes(field))) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-  const strings = (value: unknown, max: number): string[] => {
-    if (value === undefined) return [];
-    if (!Array.isArray(value) || value.length > max || value.some((item) => typeof item !== 'string' || item.length === 0 || item.length > 500 || /[\u0000-\u001f\u007f]/u.test(item))) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-    return [...new Set(value)];
+  return normalized;
+}
+
+interface NormalizedStandaloneCheckpoint {
+  cwd?: string;
+  memories: CheckpointMemory[];
+}
+
+interface NormalizedRunBoundCheckpoint {
+  cwd?: string;
+  memories: CheckpointMemory[];
+  runId: string;
+  deliveryId?: string;
+  outcome: CheckpointOutcome;
+  feedback: Array<Record<string, unknown>>;
+  evidence: NormalizedCheckpointEvidence;
+}
+
+type NormalizedCheckpointInput = NormalizedStandaloneCheckpoint | NormalizedRunBoundCheckpoint;
+
+function checkpointIdentifier(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0 || value.length > 256 || value.trim() !== value || /\p{Cc}/u.test(value)) {
+    throw new KiokukoError('VALIDATION_ERROR', `${label} is invalid`);
+  }
+  return value;
+}
+
+function normalizeCheckpointInput(input: ScopedCheckpointInput): NormalizedCheckpointInput {
+  const value = checkpointObject(input, CHECKPOINT_INPUT_FIELDS, 'Checkpoint input is invalid');
+  const cwd = value.cwd === undefined
+    ? undefined
+    : typeof value.cwd === 'string' && value.cwd.length > 0 && !/\p{Cc}/u.test(value.cwd)
+      ? value.cwd
+      : (() => { throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint cwd is invalid'); })();
+  const memoryValues = value.memories === undefined
+    ? []
+    : checkpointArray(value.memories, 20, 'Checkpoint memories must be an array');
+  const memories = memoryValues.map((memory) => checkpointObject(
+    memory,
+    CHECKPOINT_MEMORY_FIELDS,
+    'Checkpoint memory is invalid',
+  ) as unknown as CheckpointMemory);
+  const feedbackValues = value.feedback === undefined
+    ? []
+    : checkpointArray(value.feedback, 100, 'Checkpoint feedback is invalid');
+  const feedback = feedbackValues.map((item) => checkpointObject(
+    item,
+    CHECKPOINT_FEEDBACK_FIELDS,
+    'Checkpoint feedback is invalid',
+  ));
+  const evidence = boundedEvidence(value.evidence);
+  const runId = checkpointIdentifier(value.runId, 'Checkpoint runId');
+  const deliveryId = checkpointIdentifier(value.deliveryId, 'Checkpoint deliveryId');
+  const rawOutcome = value.outcome;
+
+  if (runId === undefined) {
+    if (memories.length === 0) throw new KiokukoError('VALIDATION_ERROR', 'Without runId, at least one memory is required');
+    if (rawOutcome !== undefined) throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint outcome requires runId');
+    if (deliveryId !== undefined) throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint deliveryId requires runId');
+    if (value.feedback !== undefined) throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint feedback requires runId');
+    if (value.evidence !== undefined) throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint evidence requires runId');
+    return { ...(cwd === undefined ? {} : { cwd }), memories };
+  }
+
+  if (typeof rawOutcome !== 'string' || !CHECKPOINT_OUTCOMES.includes(rawOutcome as CheckpointOutcome)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint outcome is required and invalid');
+  }
+  const outcome = rawOutcome as CheckpointOutcome;
+  const hasEvidence = evidence.changedPaths.length > 0
+    || evidence.errorSignatures.length > 0
+    || evidence.commands.length > 0
+    || evidence.tests.length > 0
+    || evidence.verification !== undefined;
+  if (memories.length === 0 && feedback.length === 0 && !hasEvidence) {
+    throw new KiokukoError('VALIDATION_ERROR', 'An empty checkpoint is not allowed');
+  }
+  if (feedback.length > 0 && deliveryId === undefined) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint feedback requires deliveryId');
+  }
+  return {
+    ...(cwd === undefined ? {} : { cwd }),
+    memories,
+    runId,
+    ...(deliveryId === undefined ? {} : { deliveryId }),
+    outcome,
+    feedback,
+    evidence,
   };
-  const changedPaths = strings(value.changedPaths, 200).map((item) => {
-    if (item.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(item) || item.split(/[\\/]/u).includes('..')) throw new KiokukoError('VALIDATION_ERROR', 'Evidence path is invalid');
-    return item.replaceAll('\\', '/');
-  });
-  const errorSignatures = strings(value.errorSignatures, 200);
-  const normalizeItems = (items: unknown, kind: 'command' | 'test'): Array<Record<string, unknown>> => {
-    if (items === undefined) return [];
-    if (!Array.isArray(items) || items.length > 100) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-    return items.map((item) => {
-      if (typeof item !== 'object' || item === null || Array.isArray(item)) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-      const record = item as Record<string, unknown>;
-      const allowedFields = kind === 'command' ? ['executable', 'classification', 'exitCode', 'outcome', 'digest'] : ['runner', 'target', 'outcome', 'digest'];
-      if (Object.keys(record).some((field) => !allowedFields.includes(field))) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-      const required = kind === 'command' ? 'executable' : 'runner';
-      if (typeof record[required] !== 'string' || record[required].length === 0 || record[required].length > 200) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-      if (typeof record.outcome !== 'string' || !['passed', 'failed', 'unknown'].includes(record.outcome)) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-      const result: Record<string, unknown> = { [required]: record[required], outcome: record.outcome };
-      for (const field of kind === 'command' ? ['classification', 'digest'] : ['target', 'digest']) {
-        if (record[field] !== undefined) {
-          if (typeof record[field] !== 'string' || record[field].length === 0 || record[field].length > 500) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-          result[field] = record[field];
-        }
-      }
-      if (kind === 'command' && record.exitCode !== undefined) {
-        const exitCode = record.exitCode;
-        if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode) || exitCode < 0) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-        result.exitCode = exitCode;
-      }
-      return result;
-    });
-  };
-  const verification = value.verification === undefined ? undefined : (() => {
-    if (typeof value.verification !== 'object' || value.verification === null || Array.isArray(value.verification)) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-    const verificationValue = value.verification as Record<string, unknown>;
-    if (Object.keys(verificationValue).some((field) => field !== 'outcome')) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-    const outcome = verificationValue.outcome;
-    if (typeof outcome !== 'string' || !['fresh', 'stale', 'failed', 'unknown'].includes(outcome)) throw new KiokukoError('VALIDATION_ERROR', 'Evidence is invalid');
-    return { outcome };
-  })();
-  const commands = normalizeItems(value.commands, 'command') as Array<{ executable: string; classification?: string; exitCode?: number; outcome: string; digest?: string }>;
-  const tests = normalizeItems(value.tests, 'test') as Array<{ runner: string; target?: string; outcome: string; digest?: string }>;
-  return { changedPaths, errorSignatures, commands, tests, ...(verification === undefined ? {} : { verification }) };
 }
 
 export async function recallScopedMemory(database: SqliteDatabase, input: ScopedRecallInput): Promise<ScopedRecallResult> {
@@ -273,51 +431,24 @@ export async function recallScopedMemory(database: SqliteDatabase, input: Scoped
 }
 
 export async function checkpointScopedMemory(database: SqliteDatabase, input: ScopedCheckpointInput): Promise<ScopedCheckpointResult> {
-  if (!Array.isArray(input.memories)) throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint memories must be an array');
-  if (input.memories.length === 0 && input.runId === undefined) throw new KiokukoError('VALIDATION_ERROR', 'A checkpoint requires a run or at least one memory');
-  if (input.memories.length > 20) throw new KiokukoError('VALIDATION_ERROR', 'At most 20 memories may be checkpointed at once');
-  const memories = input.memories.map((memory) => checkpointObject(
-    memory,
-    CHECKPOINT_MEMORY_FIELDS,
-    'Checkpoint memory is invalid',
-  ) as unknown as CheckpointMemory);
-  if (input.feedback !== undefined && (!Array.isArray(input.feedback) || input.feedback.length > 100)) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint feedback is invalid');
-  }
-  const feedback = (input.feedback ?? []).map((item) => checkpointObject(
-    item,
-    CHECKPOINT_FEEDBACK_FIELDS,
-    'Checkpoint feedback is invalid',
-  ));
-  if (input.outcome !== undefined && !CHECKPOINT_OUTCOMES.has(input.outcome)) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint outcome is invalid');
-  }
-  if (input.deliveryId !== undefined && input.runId === undefined) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint deliveryId requires runId');
-  }
-  if (input.runId === undefined && feedback.length > 0) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint feedback requires runId');
-  }
-  if (feedback.length > 0 && input.deliveryId === undefined) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint feedback requires deliveryId');
-  }
-  const evidence = boundedEvidence(input.evidence);
-  const hasEvidence = evidence.changedPaths.length > 0 || evidence.errorSignatures.length > 0 || evidence.commands.length > 0 || evidence.tests.length > 0 || evidence.verification !== undefined;
-  if (input.runId === undefined && hasEvidence) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Checkpoint evidence requires runId');
-  }
-  const run = input.runId === undefined ? undefined : new LedgerStore(database).readRun(input.runId);
-  if (input.runId !== undefined && run === undefined) throw new KiokukoError('NOT_FOUND', 'Checkpoint run was not found');
+  const request = normalizeCheckpointInput(input);
+  const runId = 'runId' in request ? request.runId : undefined;
+  const deliveryId = 'runId' in request ? request.deliveryId : undefined;
+  const outcome = 'runId' in request ? request.outcome : undefined;
+  const feedback = 'runId' in request ? request.feedback : [];
+  const evidence: NormalizedCheckpointEvidence = 'runId' in request
+    ? request.evidence
+    : { changedPaths: [], errorSignatures: [], commands: [], tests: [] };
+  const memories = request.memories;
+  const run = runId === undefined ? undefined : new LedgerStore(database).readRun(runId);
+  if (runId !== undefined && run === undefined) throw new KiokukoError('NOT_FOUND', 'Checkpoint run was not found');
   if (run !== undefined) assertCheckpointEligible(run.status);
-  if (input.deliveryId !== undefined) {
-    const delivery = readContextDelivery(database, { workspace: run!.workspace, deliveryId: input.deliveryId });
+  if (deliveryId !== undefined) {
+    const delivery = readContextDelivery(database, { workspace: run!.workspace, deliveryId });
     if (delivery.runId !== run!.runId) throw new KiokukoError('NOT_FOUND', 'Checkpoint delivery was not found for this run');
   }
-  if (memories.length === 0 && feedback.length === 0 && !hasEvidence) {
-    throw new KiokukoError('VALIDATION_ERROR', 'An empty checkpoint is not allowed');
-  }
   const needsProject = memories.some((memory) => (memory.scope ?? 'project') === 'project');
-  const plannedProject = await resolveProjectWorkspaceReadOnly(database, input.cwd);
+  const plannedProject = await resolveProjectWorkspaceReadOnly(database, request.cwd);
   if (needsProject && !plannedProject) {
     throw new KiokukoError('NOT_FOUND', 'No Git repository or .kiokuko.json binding was found for project-scoped memory; use scope "global" only for cross-project preferences or lessons');
   }
@@ -398,7 +529,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
       ...(plannedProject === undefined ? {} : { sourceRepositoryId: plannedProject.repositoryId, sourceWorkspace: plannedProject.workspace }),
       ...(sourceCommit === null ? {} : { sourceCommit }),
       ...(run === undefined ? {} : { runId: run.runId }),
-      ...(input.deliveryId === undefined ? {} : { deliveryId: input.deliveryId }),
+      ...(deliveryId === undefined ? {} : { deliveryId }),
       ...(evidenceIds.length === 0 ? {} : { evidenceIds }),
       ...(evidence.changedPaths.length === 0 ? {} : { sourcePaths: evidence.changedPaths }),
       clientKind: 'mcp',
@@ -409,7 +540,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
   const preparedFeedback = feedback.map((value, index) => {
     const record = {
       workspace: run!.workspace,
-      deliveryId: input.deliveryId!,
+      deliveryId: deliveryId!,
       entryId: value.entryId,
       entryRevision: value.entryRevision,
       verdict: value.verdict,
@@ -424,7 +555,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
     return record;
   });
 
-  const project = await resolveProjectWorkspace(database, input.cwd);
+  const project = await resolveProjectWorkspace(database, request.cwd);
   if (!sameProject(plannedProject, project)) {
     throw new KiokukoError('CONFLICT', 'Checkpoint project identity changed after validation');
   }
@@ -468,8 +599,9 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
     const memoryAck = transactionRun === undefined || memoryEvents.length === 0 ? { eventIds: [] as string[] } : store!.appendBatchInTransaction(transactionRun.runId, { events: memoryEvents });
     const eventId = evidenceAck.eventIds[0] ?? memoryAck.eventIds[0] ?? null;
     if (transactionRun !== undefined) {
+      if (outcome === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Run-bound checkpoint outcome is missing');
       for (const entry of saved) {
-        database.prepare('INSERT INTO ledger_memory_links (link_id, run_id, event_id, delivery_id, entry_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(randomUUID(), transactionRun.runId, eventId, input.deliveryId ?? null, entry.id, now);
+        database.prepare('INSERT INTO ledger_memory_links (link_id, run_id, event_id, delivery_id, entry_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(randomUUID(), transactionRun.runId, eventId, deliveryId ?? null, entry.id, now);
       }
       for (const feedbackRecord of preparedFeedback) {
         recordContextFeedbackInTransaction(database, feedbackRecord);
@@ -478,7 +610,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
         runId: transactionRun.runId,
         workspace: transactionRun.workspace,
         entries: saved,
-        outcome: input.outcome ?? 'completed',
+        outcome,
         verification: {
           fresh: evidence.verification?.outcome === 'fresh',
           passedTests: evidence.tests.filter((test) => test.outcome === 'passed').length,
@@ -487,7 +619,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
         },
         createdAt: now,
       });
-      const updated = new LedgerStore(database).updateRunStatusInTransaction(transactionRun.runId, input.outcome ?? 'completed', now);
+      const updated = new LedgerStore(database).updateRunStatusInTransaction(transactionRun.runId, outcome, now);
       return {
         saved,
         run: {

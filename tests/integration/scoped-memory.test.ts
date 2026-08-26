@@ -279,7 +279,7 @@ test('checkpoint validates delivery ownership before mutating memory or ledger s
         cwd: secondRoot,
         runId: 'run-delivery-owner-b',
         deliveryId: 'delivery-owner-a',
-        memories: [],
+        memories: [{ kind: 'lesson', title: 'Delivery ownership sentinel', body: 'This must not persist.' }],
         outcome: 'completed',
       }),
       (error: unknown) => (error as { code?: unknown }).code === 'NOT_FOUND',
@@ -346,6 +346,7 @@ test('checkpoint validates all input and exact feedback targets before workspace
       runId: 'run-checkpoint-prevalidation',
       deliveryId: 'delivery-checkpoint-prevalidation',
       memories: [],
+      outcome: 'completed',
       feedback: [{ entryId: 'missing-entry', entryRevision: 1, verdict: 'unknown-verdict' }],
     }, 'VALIDATION_ERROR');
     await rejectsWithoutMutation({
@@ -353,6 +354,7 @@ test('checkpoint validates all input and exact feedback targets before workspace
       runId: 'run-checkpoint-prevalidation',
       deliveryId: 'delivery-checkpoint-prevalidation',
       memories: [],
+      outcome: 'completed',
       feedback: [{ entryId: 'missing-entry', entryRevision: 1, verdict: 'helpful' }],
     }, 'NOT_FOUND');
   } finally {

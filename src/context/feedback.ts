@@ -6,12 +6,16 @@ import { KiokukoError } from '../errors.js';
 import { sanitizeJson } from '../security/sanitize.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin } from './origin.js';
+import {
+  CONTEXT_FEEDBACK_VERDICTS,
+  MAX_FEEDBACK_COMMENT_BYTES,
+  MAX_FEEDBACK_IDENTIFIER_LENGTH,
+} from '../ledger/checkpoint-contract.js';
 
-export const MAX_FEEDBACK_COMMENT_BYTES = 4 * 1024;
+export { CONTEXT_FEEDBACK_VERDICTS, MAX_FEEDBACK_COMMENT_BYTES, MAX_FEEDBACK_IDENTIFIER_LENGTH };
+
 export const MAX_FEEDBACK_OUTCOME_BYTES = 4 * 1024;
-export const MAX_FEEDBACK_IDENTIFIER_LENGTH = 256;
 
-export const CONTEXT_FEEDBACK_VERDICTS = ['helpful', 'irrelevant', 'stale', 'conflicting'] as const;
 export type ContextFeedbackVerdict = (typeof CONTEXT_FEEDBACK_VERDICTS)[number];
 export const RUN_FEEDBACK_RECOMMENDATION_VERDICTS = ['accepted', 'dismissed', 'resolved'] as const;
 export type RunFeedbackRecommendationVerdict = (typeof RUN_FEEDBACK_RECOMMENDATION_VERDICTS)[number];

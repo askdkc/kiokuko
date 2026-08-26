@@ -152,7 +152,8 @@ separate. Smoke-test the effective profile with `hermes mcp test kiokuko`.
 stdout; ordinary CLI diagnostics must not contaminate that stream. It exposes
 only the gated task entry points and lifecycle tools:
 
-- `memory_checkpoint(cwd?, runId?, deliveryId?, outcome?, feedback?, evidence?, memories?)`
+- `memory_checkpoint` standalone: `memory_checkpoint(cwd?, memories)` with at least one memory
+- `memory_checkpoint` run-bound: `memory_checkpoint(runId, outcome, cwd?, deliveryId?, memories?, feedback?, evidence?)`
 - `task_prepare(requestId, task, cwd?, profileHints?, capabilities?, client?, maxContextChars?)`
 - `task_answer(sessionId, runId, questionId, value, cwd?, capabilities?, maxContextChars?)`
 - `curator_check(cwd?, workspace?, limit?, includeUnready?)`
@@ -170,6 +171,47 @@ checkpoint. The MCP result is an error with fixed structured guidance:
 retried only after the indicated state transition; this is not an unchanged
 retry. Terminal runs return `nextAction=stop` and are never reopened. Only one
 successful terminal checkpoint is allowed per logical request.
+
+The current `task_answer` question is authoritative. Inspect it after every
+response. If `question.options` is non-null, send exactly one returned option;
+if it is null, send grounded non-empty free text. Continue until intake is
+`ready` or `exhausted`; `target` and `expected` are free-text questions, not
+one-word enums.
+
+`memory_checkpoint` has two closed payload forms. A standalone proposal has
+one or more `memories` and must omit `runId`, `outcome`, `deliveryId`,
+`feedback`, and `evidence`. A run-bound checkpoint requires the exact `runId`,
+an explicit terminal `outcome` (`completed`, `failed`, `cancelled`, or
+`interrupted`), and at least one non-empty content lane: `memories`,
+`feedback`, or `evidence`. An outcome-only checkpoint and an empty evidence or
+feedback lane are invalid. Evidence accepts only `changedPaths`,
+`errorSignatures`, `commands`, `tests`, and `verification`; `checks` is not a
+compatibility field. Feedback accepts only `entryId`, `entryRevision`,
+`verdict`, and an optional comment, with exact delivery/run/entry ownership.
+
+Valid memory checkpoint:
+
+```json
+{"runId":"run-id","outcome":"completed","memories":[{"kind":"lesson","title":"Verified workflow","body":"Use the verified workflow."}]}
+```
+
+Valid evidence-only checkpoint:
+
+```json
+{"runId":"run-id","outcome":"completed","evidence":{"tests":[{"runner":"node --test","target":"tests/integration/mcp.test.ts","outcome":"passed"}],"verification":{"outcome":"fresh"}}}
+```
+
+Invalid outcome-only checkpoint:
+
+```json
+{"runId":"run-id","outcome":"completed"}
+```
+
+Invalid invented evidence field:
+
+```json
+{"runId":"run-id","outcome":"completed","evidence":{"checks":[]}}
+```
 
 Capability catalogs are request-only metadata and are not persisted. Returned
 scoped context and capability recommendations are advisory and untrusted.

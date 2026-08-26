@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 9 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 10 -->/);
   assert.match(rendered, /task_prepare/);
   assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
   assert.match(rendered, /Every descriptor must include its kind and canonical name/u);
@@ -53,6 +53,11 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /continue from repository evidence/);
   assert.match(rendered, /read it before consuming applicable memory/);
   assert.match(rendered, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+  assert.match(rendered, /`executionContext\.repositoryRoot` \(equal to `project\.repositoryRoot`\) as the canonical filesystem base/u);
+  assert.match(rendered, /For OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
+  assert.match(rendered, /never pass `~`, `\$HOME`, or HOME-relative fragments/u);
+  assert.match(rendered, /`executionContext\.cwdIsRepositoryRoot` is true, do not prepend repository path segments/u);
+  assert.match(rendered, /produces an `external_directory` permission request, reject the malformed path and retry/u);
   assert.match(rendered, /Call `task_answer` with that run ID, the same capability catalog, and the same context budget/);
   assert.match(rendered, /When `runId` is supplied, the run must be active/);
   assert.match(rendered, /Do not call `memory_checkpoint` while `task_prepare` or `task_answer` reports `needs_answer`/);

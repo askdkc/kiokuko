@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -36,6 +36,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
     assert.match(instructions, /read it before modifying code/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(instructions, /executionContext\.repositoryRoot as the filesystem base/u);
+    assert.match(instructions, /OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['curator_check', 'curator_globalize', 'memory_checkpoint', 'task_answer', 'task_prepare']);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
@@ -57,6 +59,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(taskPrepareTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(taskPrepareTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
+    assert.match(taskPrepareTool?.description ?? '', /never use ~, \$HOME, or HOME-relative path fragments/u);
     assert.match(taskAnswerTool?.description ?? '', /required run ID returned by task_prepare/);
     assert.match(taskAnswerTool?.description ?? '', /Repeat the same capability catalog and context budget/);
     assert.match(taskAnswerTool?.description ?? '', /changed context budget conflicts before intake mutation/);
@@ -65,14 +69,25 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskAnswerTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskAnswerTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(taskAnswerTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
-    type ToolInputSchema = {
+    assert.match(taskAnswerTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
+    type JsonSchema = {
+      type?: string;
+      description?: string;
+      additionalProperties?: boolean;
+      properties?: Record<string, JsonSchema>;
+      items?: JsonSchema;
+      enum?: unknown[];
+      maxItems?: number;
       required?: string[];
-      properties?: Record<string, { type?: string; description?: string }>;
     };
+    type ToolInputSchema = JsonSchema;
     const taskAnswerSchema = taskAnswerTool?.inputSchema as ToolInputSchema;
     const taskPrepareSchema = taskPrepareTool?.inputSchema as ToolInputSchema;
     assert.ok(taskPrepareSchema.required?.includes('requestId'));
     assert.ok(taskAnswerSchema.required?.includes('runId'));
+    assert.match(taskAnswerSchema.properties?.value?.description ?? '', /Use the exact current question/);
+    assert.match(taskAnswerSchema.properties?.value?.description ?? '', /value must be exactly one returned option/);
+    assert.match(taskAnswerSchema.properties?.value?.description ?? '', /options is null, provide grounded non-empty text/);
     for (const schema of [taskPrepareSchema, taskAnswerSchema]) {
       assert.equal(schema.properties?.capabilities?.type, 'array');
       assert.match(
@@ -92,6 +107,23 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(checkpointTool?.description ?? '', /indicated run-state change/);
     assert.doesNotMatch(checkpointTool?.description ?? '', /Call at most once per user request/u);
     const checkpointSchema = checkpointTool?.inputSchema as ToolInputSchema;
+    assert.equal(checkpointSchema.type, 'object');
+    assert.equal(checkpointSchema.additionalProperties, false);
+    assert.deepEqual(Object.keys(checkpointSchema.properties ?? {}).sort(), ['cwd', 'deliveryId', 'evidence', 'feedback', 'memories', 'outcome', 'runId']);
+    assert.equal(checkpointSchema.properties?.evidence?.type, 'object');
+    assert.equal(checkpointSchema.properties?.evidence?.additionalProperties, false);
+    assert.deepEqual(Object.keys(checkpointSchema.properties?.evidence?.properties ?? {}).sort(), ['changedPaths', 'commands', 'errorSignatures', 'tests', 'verification']);
+    assert.equal(checkpointSchema.properties?.evidence?.properties?.commands?.items?.additionalProperties, false);
+    assert.equal(checkpointSchema.properties?.evidence?.properties?.tests?.items?.additionalProperties, false);
+    assert.equal(checkpointSchema.properties?.evidence?.properties?.verification?.additionalProperties, false);
+    assert.equal(checkpointSchema.properties?.feedback?.items?.additionalProperties, false);
+    assert.deepEqual(checkpointSchema.properties?.feedback?.items?.required, ['entryId', 'entryRevision', 'verdict']);
+    assert.equal(checkpointSchema.properties?.feedback?.maxItems, 100);
+    assert.equal(checkpointSchema.properties?.evidence?.properties?.commands?.maxItems, 100);
+    assert.equal(checkpointSchema.properties?.evidence?.properties?.tests?.maxItems, 100);
+    assert.equal(checkpointSchema.properties?.evidence?.properties?.changedPaths?.maxItems, 200);
+    assert.equal(checkpointSchema.properties?.evidence?.properties?.errorSignatures?.maxItems, 200);
+    assert.equal('checks' in (checkpointSchema.properties?.evidence?.properties ?? {}), false);
     assert.match(checkpointSchema.properties?.runId?.description ?? '', /active/u);
     assert.match(checkpointSchema.properties?.runId?.description ?? '', /needs_answer/u);
     const globalizeSchema = tools.tools.find((tool) => tool.name === 'curator_globalize')?.inputSchema as { properties?: { confirmed?: { const?: unknown } }; required?: string[] };
@@ -142,6 +174,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       context: { items: Array<{ metadata: { untrusted: boolean } }> };
       capabilities: { availability: string; recommendations: Array<{ kind: string; name: string; availability: string }> };
       memoryPolicy: { memoryReasoningRequired: boolean };
+      executionContext: { canonicalCwd: string; repositoryRoot: string; cwdIsRepositoryRoot: boolean; pathPolicy: string };
       nextAction: string;
     } & Record<string, unknown>;
     assert.equal(preparedContent.intake.status, 'ready');
@@ -151,6 +184,13 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(preparedContent.nextAction, 'proceed');
     assert.equal(preparedContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(preparedContent.memoryPolicy, { memoryReasoningRequired: true });
+    const canonicalRoot = await realpath(root);
+    assert.deepEqual(preparedContent.executionContext, {
+      canonicalCwd: canonicalRoot,
+      repositoryRoot: canonicalRoot,
+      cwdIsRepositoryRoot: true,
+      pathPolicy: 'canonical_absolute_under_repository_root',
+    });
     assert.equal(preparedContent.context.items[0]?.metadata.untrusted, true);
     assert.equal('memory' in preparedContent, false);
     assert.equal('references' in preparedContent, false);
@@ -216,6 +256,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     });
     const completedContent = completed.structuredContent as {
       intake: { status: string };
+      executionContext: { canonicalCwd: string; repositoryRoot: string; cwdIsRepositoryRoot: boolean; pathPolicy: string };
       capabilities: {
         availability: string;
         diagnostics: { received: number; accepted: number; truncated: number; dropped: number };
@@ -225,6 +266,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     };
     assert.equal(completedContent.intake.status, 'ready');
     assert.equal(completedContent.nextAction, 'proceed');
+    assert.deepEqual(completedContent.executionContext, {
+      canonicalCwd: canonicalRoot,
+      repositoryRoot: canonicalRoot,
+      cwdIsRepositoryRoot: true,
+      pathPolicy: 'canonical_absolute_under_repository_root',
+    });
     assert.equal(completedContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(completedContent.capabilities.diagnostics, { received: 1, accepted: 1, truncated: 0, dropped: 0 });
     assert.ok(completedContent.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
@@ -352,6 +399,7 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
       name: 'memory_checkpoint',
       arguments: {
         runId,
+        outcome: 'completed',
         memories: [{ kind: 'lesson', title: 'Recovery sentinel', body: 'token=private-intake-checkpoint-sentinel must not persist during intake.' }],
       },
     });
@@ -412,6 +460,7 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
       name: 'memory_checkpoint',
       arguments: {
         runId,
+        outcome: 'completed',
         memories: [{ kind: 'lesson', title: 'Recovery lesson', body: 'Complete task_answer before checkpointing the run.' }],
       },
     });
@@ -431,6 +480,7 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
       name: 'memory_checkpoint',
       arguments: {
         runId,
+        outcome: 'completed',
         memories: [{ kind: 'lesson', title: 'Terminal retry sentinel', body: 'This must not create a second checkpoint.' }],
       },
     });
