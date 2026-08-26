@@ -885,7 +885,11 @@ test('setup creates a root gitignore when it materializes a registered project b
     env: temporary.env,
   });
 
-  assert.equal(result.projectAgentFiles[0]?.bindingAction, 'created');
+  const project = result.projectAgentFiles[0];
+  assert.ok(project !== undefined);
+  assert.equal(project.status, 'created');
+  if (!('bindingAction' in project)) assert.fail('setup did not materialize the registered project binding');
+  assert.equal(project.bindingAction, 'created');
   assert.equal(await readFile(path.join(canonicalRoot, '.gitignore'), 'utf8'), '.kiokuko.json\n');
 });
 
