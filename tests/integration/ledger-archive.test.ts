@@ -261,6 +261,100 @@ test('imports a release-shaped v2 archive and upgrades it to the v3 output shape
   }
 });
 
+function seedNudgeRateLimitArchive(database: ReturnType<typeof openConnection>, workspace: string): string {
+  const runId = `${workspace}-run`;
+  const store = new LedgerStore(database, { now: () => fixedNow });
+  store.createRun({
+    runId,
+    workspace,
+    protocolVersion: '1',
+    client: { kind: 'generic' },
+    captureProfile: 'minimal',
+    coverage: { run: 'declared', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+    task: { title: 'Nudge limits', query: 'Validate nudge limits', profileHints: { taskType: 'build', target: null, expected: null, constraints: null } },
+    startedAt: fixedNow,
+  });
+  store.appendBatch(runId, {
+    events: Array.from({ length: 10 }, (_, index) => ({
+      eventId: `${workspace}-event-${index + 1}`,
+      eventType: index === 0 ? 'run.started' as const : 'step.completed' as const,
+      actor: 'agent',
+      payload: {},
+    })),
+  });
+  for (const [index, throughSequence] of [1, 4].entries()) {
+    recordNudgeDeliveryInTransaction(database, {
+      runId,
+      policyVersion: 'nudges.v1',
+      code: 'UNRESOLVED_FAILURE',
+      occurrenceId: `${workspace}-occurrence-${index + 1}`,
+      checkpointId: `${workspace}-checkpoint-${index + 1}`,
+      throughSequence,
+      priority: 3,
+      evidenceEventIds: [],
+      referenceIds: [],
+      deliveredAt: fixedNow,
+    });
+  }
+  return exportLedgerArchive(database, { workspace }).content;
+}
+
+function nudgeArchiveRecord(workspace: string, index: number, throughSequence: number): Record<string, unknown> {
+  return {
+    type: 'nudge_delivery',
+    id: `${workspace}-extra-id-${index}`,
+    run_id: `${workspace}-run`,
+    policy_version: 'nudges.v1',
+    code: 'UNRESOLVED_FAILURE',
+    occurrence_id: `${workspace}-extra-occurrence-${index}`,
+    checkpoint_id: `${workspace}-extra-checkpoint-${index}`,
+    through_sequence: throughSequence,
+    priority: 3,
+    evidence_event_ids_json: '[]',
+    reference_ids_json: '[]',
+    delivered_at: fixedNow,
+  };
+}
+
+test('rejects archive histories over the run cap and within the code cooldown, but accepts valid distance', async () => {
+  const source = await setup();
+  const validTarget = await setup();
+  const capTarget = await setup();
+  const cooldownTarget = await setup();
+  try {
+    const valid = seedNudgeRateLimitArchive(source, 'workspace:nudge-limits');
+    const imported = importLedgerArchive(validTarget, { content: valid });
+    assert.equal(imported.imported.nudgeDeliveries, 2);
+
+    const overCap = rebuildArchive(valid, (lines) => {
+      const manifest = lines[0]!;
+      const counts = manifest.counts as Record<string, number>;
+      manifest.counts = { ...counts, nudgeDeliveries: 4 };
+      lines.push(nudgeArchiveRecord('workspace:nudge-limits', 3, 7));
+      lines.push(nudgeArchiveRecord('workspace:nudge-limits', 4, 10));
+    });
+    assert.throws(
+      () => importLedgerArchive(capTarget, { content: overCap }),
+      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR',
+    );
+
+    const cooldown = rebuildArchive(valid, (lines) => {
+      const second = lines.find((line) => line.type === 'nudge_delivery' && line.occurrence_id === 'workspace:nudge-limits-occurrence-2');
+      assert.ok(second);
+      second.through_sequence = 2;
+    });
+    assert.throws(
+      () => importLedgerArchive(cooldownTarget, { content: cooldown }),
+      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR',
+    );
+  } finally {
+    source.close();
+    validTarget.close();
+    capTarget.close();
+    cooldownTarget.close();
+  }
+});
+
 test('archives the complete linked ledger graph without curated memory bodies or unrelated workspaces', async () => {
   const source = await setup();
   const target = await setup();

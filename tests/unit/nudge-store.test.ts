@@ -118,3 +118,99 @@ test('rejects priority mismatches at the application and database boundaries', a
     database.close();
   }
 });
+
+test('rejects persisted histories that exceed the run cap or violate code cooldown', async () => {
+  const database = await createDatabase();
+  try {
+    insertRun(database, 'run-history-cap');
+    deliver(database, 'run-history-cap', 'occurrence-1', 'UNRESOLVED_FAILURE', 1);
+    deliver(database, 'run-history-cap', 'occurrence-2', 'UNRESOLVED_FAILURE', 4);
+    deliver(database, 'run-history-cap', 'occurrence-3', 'UNRESOLVED_FAILURE', 7);
+    deliver(database, 'run-history-cap', 'occurrence-4', 'UNRESOLVED_FAILURE', 10);
+    assert.throws(
+      () => readNudgeHistory(database, 'run-history-cap', NUDGE_POLICY_VERSION),
+      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR',
+    );
+  } finally {
+    database.close();
+  }
+
+  const cooldownDatabase = await createDatabase();
+  try {
+    insertRun(cooldownDatabase, 'run-history-cooldown');
+    deliver(cooldownDatabase, 'run-history-cooldown', 'occurrence-1', 'UNRESOLVED_FAILURE', 1);
+    deliver(cooldownDatabase, 'run-history-cooldown', 'occurrence-2', 'UNRESOLVED_FAILURE', 2);
+    assert.throws(
+      () => readNudgeHistory(cooldownDatabase, 'run-history-cooldown', NUDGE_POLICY_VERSION),
+      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR',
+    );
+  } finally {
+    cooldownDatabase.close();
+  }
+});
+
+test('accepts persisted same-code history when the sequence distance is valid', async () => {
+  const database = await createDatabase();
+  try {
+    insertRun(database, 'run-history-valid');
+    deliver(database, 'run-history-valid', 'occurrence-1', 'UNRESOLVED_FAILURE', 1);
+    deliver(database, 'run-history-valid', 'occurrence-2', 'UNRESOLVED_FAILURE', 4);
+    assert.equal(readNudgeHistory(database, 'run-history-valid', NUDGE_POLICY_VERSION).runDeliveryCount, 2);
+  } finally {
+    database.close();
+  }
+});
+
+test('classifies malformed persisted nudge values as integrity errors without echoing them', async () => {
+  const sentinel = 'stored-nudge-secret-sentinel';
+  const cases: Array<{ name: string; mutate(database: ReturnType<typeof openConnection>): void }> = [
+    {
+      name: 'policy',
+      mutate: (database) => {
+        database.exec('DROP TRIGGER nudge_deliveries_integrity_update');
+        database.prepare('UPDATE nudge_deliveries SET policy_version = ?').run(`invalid-${sentinel}`);
+      },
+    },
+    {
+      name: 'code',
+      mutate: (database) => {
+        database.exec('DROP TRIGGER nudge_deliveries_integrity_update');
+        database.prepare('UPDATE nudge_deliveries SET code = ?').run(`invalid-${sentinel}`);
+      },
+    },
+    {
+      name: 'occurrence',
+      mutate: (database) => {
+        database.exec('PRAGMA ignore_check_constraints = ON');
+        database.prepare('UPDATE nudge_deliveries SET occurrence_id = ?').run(`${'x'.repeat(257)}${sentinel}`);
+        database.exec('PRAGMA ignore_check_constraints = OFF');
+      },
+    },
+    {
+      name: 'evidence',
+      mutate: (database) => {
+        database.exec('PRAGMA ignore_check_constraints = ON');
+        database.prepare('UPDATE nudge_deliveries SET evidence_event_ids_json = ?').run('[123]');
+        database.exec('PRAGMA ignore_check_constraints = OFF');
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const database = await createDatabase();
+    try {
+      insertRun(database, `run-stored-${item.name}`);
+      deliver(database, `run-stored-${item.name}`, `occurrence-${item.name}`);
+      item.mutate(database);
+      assert.throws(
+        () => readNudgeHistory(database, `run-stored-${item.name}`, NUDGE_POLICY_VERSION),
+        (error: unknown) => {
+          const typed = error as { code?: string; message?: string };
+          return typed.code === 'INTEGRITY_ERROR' && !typed.message?.includes(sentinel);
+        },
+      );
+    } finally {
+      database.close();
+    }
+  }
+});

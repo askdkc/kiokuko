@@ -16,7 +16,6 @@ import { inspectLedger } from '../ledger/maintenance.js';
 import { findSecret } from '../memory/secrets.js';
 import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
 import { readEntryRevision } from '../memory/revisions.js';
-import { isNudgePolicyVersion, NUDGE_CODES, NUDGE_PRIORITY } from '../context/nudges.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -101,112 +100,6 @@ function count(database: ReturnType<typeof openConnection>, sql: string, ...para
 
 function balancedMarkers(content: string): boolean {
   return content.split(BEGIN_MARKER).length - 1 === 1 && content.split(END_MARKER).length - 1 === 1;
-}
-
-function validTimestamp(value: unknown): boolean {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)) return false;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
-}
-
-function validNudgeIdentifier(value: unknown): boolean {
-  return typeof value === 'string'
-    && value.length > 0
-    && value.length <= 256
-    && !value.includes('\u0000');
-}
-
-function validNudgeIdList(value: unknown): boolean {
-  if (typeof value !== 'string') return false;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return false;
-  }
-  if (!Array.isArray(parsed) || parsed.length > 16 || parsed.some((item) => !validNudgeIdentifier(item))) return false;
-  return new Set(parsed).size === parsed.length;
-}
-
-function nudgeDeliveryCheck(database: ReturnType<typeof openConnection>): DoctorCheck {
-  const rows = database.prepare(`
-    SELECT d.id, d.run_id, d.policy_version, d.code, d.occurrence_id, d.checkpoint_id,
-           d.through_sequence, d.priority, d.delivered_at,
-           d.evidence_event_ids_json, d.reference_ids_json,
-           r.last_sequence AS run_last_sequence
-      FROM nudge_deliveries AS d
-      LEFT JOIN ledger_runs AS r ON r.run_id = d.run_id
-     ORDER BY d.id ASC
-  `).all<{
-    id: unknown;
-    run_id: unknown;
-    policy_version: unknown;
-    code: unknown;
-    occurrence_id: unknown;
-    checkpoint_id: unknown;
-    through_sequence: unknown;
-    priority: unknown;
-    delivered_at: unknown;
-    evidence_event_ids_json: unknown;
-    reference_ids_json: unknown;
-    run_last_sequence: unknown;
-  }>();
-  const invalidRows = new Set<string>();
-  let orphanRows = 0;
-  for (const [index, row] of rows.entries()) {
-    const key = typeof row.id === 'string' && row.id.length > 0 ? row.id : `row-${index}`;
-    const invalid = () => invalidRows.add(key);
-    if (typeof row.run_id !== 'string' || row.run_id.length === 0 || typeof row.run_last_sequence !== 'number') {
-      orphanRows += 1;
-      invalid();
-    }
-    if (!isNudgePolicyVersion(row.policy_version)) invalid();
-    if (typeof row.code !== 'string' || !NUDGE_CODES.includes(row.code as typeof NUDGE_CODES[number])) invalid();
-    else if (typeof row.priority !== 'number' || row.priority !== NUDGE_PRIORITY[row.code as typeof NUDGE_CODES[number]]) invalid();
-    if (!validNudgeIdentifier(row.id) || !validNudgeIdentifier(row.occurrence_id) || !validNudgeIdentifier(row.checkpoint_id)) invalid();
-    if (typeof row.through_sequence !== 'number'
-      || !Number.isSafeInteger(row.through_sequence)
-      || row.through_sequence < 0
-      || typeof row.run_last_sequence === 'number' && row.through_sequence > row.run_last_sequence) invalid();
-    if (typeof row.priority !== 'number' || !Number.isSafeInteger(row.priority) || row.priority < 1) invalid();
-    if (!validTimestamp(row.delivered_at)) invalid();
-    if (!validNudgeIdList(row.evidence_event_ids_json) || !validNudgeIdList(row.reference_ids_json)) invalid();
-  }
-  const eventRows = database.prepare('SELECT event_id, run_id, sequence FROM ledger_events').all<{
-    event_id: unknown;
-    run_id: unknown;
-    sequence: unknown;
-  }>();
-  const eventById = new Map(eventRows.map((row) => [String(row.event_id), row]));
-  for (const row of rows) {
-    if (!validNudgeIdentifier(row.run_id) || typeof row.through_sequence !== 'number') continue;
-    let evidenceEventIds: unknown;
-    try {
-      evidenceEventIds = JSON.parse(String(row.evidence_event_ids_json));
-    } catch {
-      continue;
-    }
-    if (!Array.isArray(evidenceEventIds)) continue;
-    for (const eventId of evidenceEventIds) {
-      const event = eventById.get(String(eventId));
-      if (!event || event.run_id !== row.run_id || typeof event.sequence !== 'number' || event.sequence > row.through_sequence) {
-        invalidRows.add(validNudgeIdentifier(row.id) ? row.id as string : `row-${rows.indexOf(row)}`);
-        break;
-      }
-    }
-  }
-  const duplicateRows = database.prepare(`
-    SELECT run_id, policy_version, occurrence_id
-      FROM nudge_deliveries
-     GROUP BY run_id, policy_version, occurrence_id
-    HAVING COUNT(*) > 1
-  `).all();
-  const invalidCount = invalidRows.size + duplicateRows.length;
-  return {
-    ok: invalidCount === 0,
-    count: invalidCount,
-    detail: `deliveries=${rows.length}, invalidRows=${invalidRows.size}, duplicateOccurrenceIdentities=${duplicateRows.length}, orphanRows=${orphanRows}`,
-  };
 }
 
 async function runtimeCheck(databasePath: string, descriptorPath = getRuntimeDescriptorPath()): Promise<DoctorCheck> {
@@ -396,7 +289,11 @@ export async function runDoctor(
 
     const ledgerReport = inspectLedger(database);
     const ledgerCheck = { ok: ledgerReport.ok, count: ledgerReport.findingCount, detail: `findings=${ledgerReport.findingCount}` };
-    const nudgeDeliveries = nudgeDeliveryCheck(database);
+    const nudgeDeliveries = {
+      ok: ledgerReport.checks.nudgeDeliveries.ok,
+      count: ledgerReport.checks.nudgeDeliveries.findingCount,
+      detail: `deliveries=${ledgerReport.counts.nudgeDeliveries}, findings=${ledgerReport.checks.nudgeDeliveries.findingCount}`,
+    };
     const runtime = await runtimeCheck(initialized.databasePath, options.runtimeDescriptorPath);
     const checks = {
       integrity: { ok: integrity === 'ok', detail: integrity },

@@ -7,6 +7,7 @@ import { findSecret } from '../memory/secrets.js';
 import { sanitizeJson } from '../security/sanitize.js';
 import { canonicalJson, GENESIS_HASH, hashLedgerEvent } from './hash.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
+import { parseStoredIdentifier, parseStoredNudgeDelivery, validateStoredNudgeHistory, type StoredNudgeDelivery } from '../context/nudge-validation.js';
 import {
   CAPTURE_PROFILES,
   COVERAGE_LEVELS,
@@ -18,7 +19,7 @@ import {
 
 export const LEDGER_CHECK_NAMES = [
   'runs', 'eventIdentity', 'eventHashChain', 'runCursors', 'runIntakes',
-  'references', 'contextDeliveries', 'feedbackLinks', 'storedValues', 'secretResidue',
+  'references', 'contextDeliveries', 'nudgeDeliveries', 'feedbackLinks', 'storedValues', 'secretResidue',
 ] as const;
 export type LedgerCheckName = (typeof LEDGER_CHECK_NAMES)[number];
 
@@ -47,6 +48,7 @@ export interface LedgerIntegrityReport {
     evidence: number;
     deliveries: number;
     deliveryEntries: number;
+    nudgeDeliveries: number;
     intakeFeedback: number;
     contextFeedback: number;
     runFeedback: number;
@@ -192,7 +194,7 @@ function counts(database: SqliteDatabase, workspace: string | undefined): Counts
   return {
     runs: workspace === undefined ? rowCount(database, 'SELECT COUNT(*) AS count FROM ledger_runs') : rowCount(database, 'SELECT COUNT(*) AS count FROM ledger_runs WHERE workspace = ?', workspace),
     events: child('ledger_events'), evidence: child('ledger_evidence'), deliveries: child('context_deliveries'), deliveryEntries: entries,
-    intakeFeedback: child('intake_feedback'), contextFeedback: child('context_feedback'), runFeedback: child('run_feedback'), memoryLinks: child('ledger_memory_links'), tombstones,
+    nudgeDeliveries: child('nudge_deliveries'), intakeFeedback: child('intake_feedback'), contextFeedback: child('context_feedback'), runFeedback: child('run_feedback'), memoryLinks: child('ledger_memory_links'), tombstones,
   };
 }
 
@@ -384,6 +386,63 @@ function inspectContext(database: SqliteDatabase, workspace: string | undefined,
   }
 }
 
+function inspectNudgeDeliveries(database: SqliteDatabase, workspace: string | undefined, findings: FindingCollector): void {
+  const scope = workspace === undefined ? '' : ' WHERE r.workspace = ?';
+  const parameters = workspace === undefined ? [] : [workspace];
+  const rows = database.prepare(`
+    SELECT d.*, r.last_sequence AS run_last_sequence
+      FROM nudge_deliveries AS d
+      LEFT JOIN ledger_runs AS r ON r.run_id = d.run_id${scope}
+     ORDER BY d.id ASC
+  `).all<Row>(...parameters);
+  const eventRows = database.prepare('SELECT event_id, run_id, sequence FROM ledger_events').all<Row>();
+  const eventById = new Map(eventRows.map((row) => [String(row.event_id), row]));
+  const histories = new Map<string, StoredNudgeDelivery[]>();
+
+  for (const row of rows) {
+    let stored: StoredNudgeDelivery;
+    try {
+      parseStoredIdentifier(row.run_id, 'runId');
+      stored = parseStoredNudgeDelivery(row);
+    } catch {
+      findings.add('nudgeDeliveries', 'invalid_row', 'nudge_deliveries', row.id);
+      findings.add('storedValues', 'invalid_nudge_row', 'nudge_deliveries', row.id);
+      scanRow(row, 'nudge_deliveries', row.id, findings);
+      continue;
+    }
+
+    if (integer(row.run_last_sequence) === undefined) {
+      findings.add('nudgeDeliveries', 'orphan_nudge_run', 'nudge_deliveries', row.id);
+    } else if (stored.throughSequence > (row.run_last_sequence as number)) {
+      findings.add('nudgeDeliveries', 'through_sequence_out_of_range', 'nudge_deliveries', row.id);
+    }
+    const historyKey = `${row.run_id}\u0000${stored.policyVersion}`;
+    const history = histories.get(historyKey) ?? [];
+    history.push(stored);
+    histories.set(historyKey, history);
+    for (const eventId of stored.evidenceEventIds) {
+      const event = eventById.get(eventId);
+      if (!event || event.run_id !== row.run_id || integer(event.sequence) === undefined || (event.sequence as number) > stored.throughSequence) {
+        findings.add('nudgeDeliveries', 'invalid_evidence_event_reference', 'nudge_deliveries', row.id);
+        break;
+      }
+    }
+    scanRow(row, 'nudge_deliveries', row.id, findings);
+  }
+
+  for (const history of histories.values()) {
+    try {
+      validateStoredNudgeHistory(history, { maxPerResponse: 1, maxPerRun: 3, minSequenceDistancePerCode: 3 });
+    } catch (error) {
+      if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
+        findings.add('nudgeDeliveries', 'invalid_history', 'nudge_deliveries', history[0]?.id);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 function inspectFeedback(database: SqliteDatabase, workspace: string | undefined, findings: FindingCollector): void {
   const scope = workspace === undefined ? '' : ' WHERE r.workspace = ?';
   const param = workspace === undefined ? [] : [workspace];
@@ -461,6 +520,7 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
     inspectIntakes(database, workspace, runs, findings);
     inspectReferences(database, workspace, findings);
     inspectContext(database, workspace, runs, findings);
+    inspectNudgeDeliveries(database, workspace, findings);
     inspectFeedback(database, workspace, findings);
     const tombstoneCount = inspectTombstones(database, workspace, findings);
     checks.runs.count = reportCounts.runs;
@@ -468,10 +528,11 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
     checks.eventHashChain.count = reportCounts.events;
     checks.runCursors.count = reportCounts.runs;
     checks.runIntakes.count = workspace === undefined ? rowCount(database, 'SELECT COUNT(*) AS count FROM run_intakes') : rowCount(database, 'SELECT COUNT(*) AS count FROM run_intakes AS i JOIN ledger_runs AS r ON r.run_id = i.run_id WHERE r.workspace = ?', workspace);
-    checks.references.count = reportCounts.evidence + reportCounts.deliveries + reportCounts.deliveryEntries + reportCounts.memoryLinks;
+    checks.references.count = reportCounts.evidence + reportCounts.deliveries + reportCounts.deliveryEntries + reportCounts.nudgeDeliveries + reportCounts.memoryLinks;
     checks.contextDeliveries.count = reportCounts.deliveries + reportCounts.deliveryEntries;
     checks.feedbackLinks.count = reportCounts.intakeFeedback + reportCounts.contextFeedback + reportCounts.runFeedback + reportCounts.memoryLinks;
-    checks.storedValues.count = runRows.length + eventRows.length + reportCounts.evidence + reportCounts.deliveries + reportCounts.deliveryEntries + reportCounts.intakeFeedback + reportCounts.contextFeedback + reportCounts.runFeedback + reportCounts.memoryLinks + tombstoneCount;
+    checks.nudgeDeliveries.count = reportCounts.nudgeDeliveries;
+    checks.storedValues.count = runRows.length + eventRows.length + reportCounts.evidence + reportCounts.deliveries + reportCounts.deliveryEntries + reportCounts.nudgeDeliveries + reportCounts.intakeFeedback + reportCounts.contextFeedback + reportCounts.runFeedback + reportCounts.memoryLinks + tombstoneCount;
     checks.secretResidue.count = checks.storedValues.count;
     return { ok: LEDGER_CHECK_NAMES.every((name) => checks[name].ok), workspace: workspace ?? null, counts: reportCounts, checks, findings: findings.findings, findingCount: findings.findingCount, findingsTruncated: findings.findingsTruncated, tombstoneCount };
   } catch (error) {
@@ -563,7 +624,7 @@ function insertPurgeTombstone(database: SqliteDatabase, input: ValidatedPurge, r
 }
 function runGraphCount(database: SqliteDatabase, runId: string): number {
   let total = 1;
-  for (const table of ['run_intakes', 'intake_feedback', 'ledger_events', 'ledger_evidence', 'context_deliveries', 'context_feedback', 'run_feedback', 'ledger_memory_links']) total += rowCount(database, `SELECT COUNT(*) AS count FROM ${table} WHERE run_id = ?`, runId);
+  for (const table of ['run_intakes', 'intake_feedback', 'ledger_events', 'ledger_evidence', 'context_deliveries', 'nudge_deliveries', 'context_feedback', 'run_feedback', 'ledger_memory_links']) total += rowCount(database, `SELECT COUNT(*) AS count FROM ${table} WHERE run_id = ?`, runId);
   total += rowCount(database, 'SELECT COUNT(*) AS count FROM context_delivery_entries AS e JOIN context_deliveries AS d ON d.delivery_id = e.delivery_id WHERE d.run_id = ?', runId);
   const session = database.prepare('SELECT session_id FROM run_intakes WHERE run_id = ?').get<{ session_id: string }>(runId);
   if (session) { total += rowCount(database, 'SELECT COUNT(*) AS count FROM akinator_answers WHERE session_id = ?', session.session_id); total += rowCount(database, 'SELECT COUNT(*) AS count FROM akinator_sessions WHERE id = ?', session.session_id); }

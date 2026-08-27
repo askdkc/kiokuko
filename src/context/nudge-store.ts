@@ -13,6 +13,12 @@ import {
   type DeliveredNudge,
   type NudgeCode,
 } from './nudges.js';
+import {
+  parseInputIdentifier,
+  parseStoredNudgeDelivery,
+  type StoredNudgeDelivery,
+  validateStoredNudgeHistory,
+} from './nudge-validation.js';
 
 export interface NudgeHistory {
   deliveredOccurrenceIds: ReadonlySet<string>;
@@ -32,60 +38,15 @@ interface NudgeDeliveryRow extends SqliteRow {
   reference_ids_json: unknown;
 }
 
-function boundedIdentifier(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 256 || value.includes('\u0000')) {
-    throw new KiokukoError('VALIDATION_ERROR', `${label} must be a non-empty bounded string`);
-  }
-  return value;
-}
-
-function sequence(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    throw new KiokukoError('INTEGRITY_ERROR', `Stored nudge ${label} is invalid`);
-  }
-  return value;
-}
-
-function idList(value: unknown, label: string): string[] {
-  if (typeof value !== 'string') throw new KiokukoError('INTEGRITY_ERROR', `Stored nudge ${label} is invalid`);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new KiokukoError('INTEGRITY_ERROR', `Stored nudge ${label} is invalid`);
-  }
-  if (!Array.isArray(parsed) || parsed.length > 16 || parsed.some((item) => typeof item !== 'string')) {
-    throw new KiokukoError('INTEGRITY_ERROR', `Stored nudge ${label} is invalid`);
-  }
-  const result = parsed.map((item) => boundedIdentifier(item, label));
-  if (new Set(result).size !== result.length) throw new KiokukoError('INTEGRITY_ERROR', `Stored nudge ${label} is invalid`);
-  return result;
-}
-
-function rowValues(row: NudgeDeliveryRow): { code: NudgeCode; occurrenceId: string; throughSequence: number } {
-  const code = row.code;
-  if (typeof code !== 'string') throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge code is invalid');
-  assertNudgeCode(code);
-  return {
-    code,
-    occurrenceId: boundedIdentifier(row.occurrence_id, 'occurrenceId'),
-    throughSequence: sequence(row.through_sequence, 'sequence'),
-  };
-}
-
 function deliveredValue(row: NudgeDeliveryRow): DeliveredNudge {
-  if (typeof row.policy_version !== 'string') throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge policy version is invalid');
-  assertNudgePolicyVersion(row.policy_version);
-  const value = rowValues(row);
-  const priority = sequence(row.priority, 'priority');
-  if (priority !== NUDGE_PRIORITY[value.code]) throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge priority is invalid');
+  const value = parseStoredNudgeDelivery(row);
   return {
     occurrenceId: value.occurrenceId,
     code: value.code,
     message: NUDGE_MESSAGES[value.code],
-    evidenceEventIds: idList(row.evidence_event_ids_json, 'evidenceEventIds'),
-    referenceIds: idList(row.reference_ids_json, 'referenceIds'),
-    priority,
+    evidenceEventIds: [...value.evidenceEventIds],
+    referenceIds: [...value.referenceIds],
+    priority: value.priority,
     policyVersion: NUDGE_POLICY_VERSION,
   };
 }
@@ -94,18 +55,20 @@ export function readNudgeDeliveryForCheckpoint(
   database: SqliteDatabase,
   input: { runId: string; policyVersion: string; checkpointId: string },
 ): DeliveredNudge | null {
-  const runId = boundedIdentifier(input.runId, 'runId');
-  const policyVersion = boundedIdentifier(input.policyVersion, 'policyVersion');
+  const runId = parseInputIdentifier(input.runId, 'runId');
+  const policyVersion = parseInputIdentifier(input.policyVersion, 'policyVersion');
   assertNudgePolicyVersion(policyVersion);
-  const checkpointId = boundedIdentifier(input.checkpointId, 'checkpointId');
+  const checkpointId = parseInputIdentifier(input.checkpointId, 'checkpointId');
   const row = database.prepare(`
-    SELECT id, policy_version, code, occurrence_id, checkpoint_id, through_sequence, priority,
-           evidence_event_ids_json, reference_ids_json
+      SELECT id, policy_version, code, occurrence_id, checkpoint_id, through_sequence, priority,
+           evidence_event_ids_json, reference_ids_json, delivered_at
       FROM nudge_deliveries
-     WHERE run_id = ? AND policy_version = ? AND checkpoint_id = ?
-  `).get<NudgeDeliveryRow>(runId, policyVersion, checkpointId);
+     WHERE run_id = ? AND checkpoint_id = ?
+  `).get<NudgeDeliveryRow>(runId, checkpointId);
   if (row === undefined) return null;
-  if (row.checkpoint_id !== checkpointId) throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge checkpoint identity is invalid');
+  const stored = parseStoredNudgeDelivery(row);
+  if (stored.policyVersion !== policyVersion) throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge policy identity is invalid');
+  if (stored.checkpointId !== checkpointId) throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge checkpoint identity is invalid');
   return deliveredValue(row);
 }
 
@@ -114,23 +77,28 @@ export function readNudgeHistory(
   runId: string,
   policyVersion: string,
 ): NudgeHistory {
-  const safeRunId = boundedIdentifier(runId, 'runId');
-  const safePolicyVersion = boundedIdentifier(policyVersion, 'policyVersion');
+  const safeRunId = parseInputIdentifier(runId, 'runId');
+  const safePolicyVersion = parseInputIdentifier(policyVersion, 'policyVersion');
   assertNudgePolicyVersion(safePolicyVersion);
   const rows = database.prepare(`
-    SELECT id, policy_version, code, occurrence_id, through_sequence
+    SELECT id, policy_version, code, occurrence_id, checkpoint_id, through_sequence, priority,
+           evidence_event_ids_json, reference_ids_json, delivered_at
       FROM nudge_deliveries
-     WHERE run_id = ? AND policy_version = ?
-     ORDER BY through_sequence ASC, code ASC, occurrence_id ASC, id ASC
-  `).all<NudgeDeliveryRow>(safeRunId, safePolicyVersion);
+     WHERE run_id = ?
+      ORDER BY through_sequence ASC, code ASC, occurrence_id ASC, id ASC
+  `).all<NudgeDeliveryRow>(safeRunId);
   const deliveredOccurrenceIds = new Set<string>();
   const lastSequenceByCode = new Map<NudgeCode, number>();
+  const historyRows: StoredNudgeDelivery[] = [];
   for (const row of rows) {
-    const value = rowValues(row);
+    const value = parseStoredNudgeDelivery(row);
+    if (value.policyVersion !== safePolicyVersion) throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge policy identity is invalid');
+    historyRows.push(value);
     deliveredOccurrenceIds.add(value.occurrenceId);
     const previous = lastSequenceByCode.get(value.code);
     if (previous === undefined || value.throughSequence > previous) lastSequenceByCode.set(value.code, value.throughSequence);
   }
+  validateStoredNudgeHistory(historyRows, { maxPerResponse: 1, maxPerRun: 3, minSequenceDistancePerCode: 3 });
   return {
     deliveredOccurrenceIds,
     runDeliveryCount: rows.length,
@@ -153,11 +121,11 @@ export function recordNudgeDeliveryInTransaction(
     deliveredAt: string;
   },
 ): void {
-  const runId = boundedIdentifier(input.runId, 'runId');
-  const policyVersion = boundedIdentifier(input.policyVersion, 'policyVersion');
+  const runId = parseInputIdentifier(input.runId, 'runId');
+  const policyVersion = parseInputIdentifier(input.policyVersion, 'policyVersion');
   assertNudgePolicyVersion(policyVersion);
-  const occurrenceId = boundedIdentifier(input.occurrenceId, 'occurrenceId');
-  const checkpointId = boundedIdentifier(input.checkpointId ?? occurrenceId, 'checkpointId');
+  const occurrenceId = parseInputIdentifier(input.occurrenceId, 'occurrenceId');
+  const checkpointId = parseInputIdentifier(input.checkpointId ?? occurrenceId, 'checkpointId');
   assertNudgeCode(input.code);
   if (!Number.isSafeInteger(input.throughSequence) || input.throughSequence < 0) {
     throw new KiokukoError('VALIDATION_ERROR', 'throughSequence must be a non-negative safe integer');
@@ -170,10 +138,10 @@ export function recordNudgeDeliveryInTransaction(
   }
   const deliveredAt = validateTimestamp(input.deliveredAt, 'deliveredAt');
   const evidenceEventIds = [...new Set(input.evidenceEventIds ?? [])]
-    .map((value) => boundedIdentifier(value, 'evidenceEventId'))
+    .map((value) => parseInputIdentifier(value, 'evidenceEventId'))
     .sort(compareCanonicalStrings);
   const referenceIds = [...new Set(input.referenceIds ?? [])]
-    .map((value) => boundedIdentifier(value, 'referenceId'))
+    .map((value) => parseInputIdentifier(value, 'referenceId'))
     .sort(compareCanonicalStrings);
   if (evidenceEventIds.length > 16 || referenceIds.length > 16) {
     throw new KiokukoError('VALIDATION_ERROR', 'Nudge evidence is too large');

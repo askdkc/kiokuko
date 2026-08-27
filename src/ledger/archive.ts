@@ -9,6 +9,7 @@ import { canonicalJson, compareCanonicalStrings, requireWorkspace } from '../ser
 import { hashLedgerEvent, GENESIS_HASH } from './hash.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
 import { NUDGE_CODES, NUDGE_POLICY_VERSION, NUDGE_PRIORITY } from '../context/nudges.js';
+import { parseStoredNudgeDelivery, validateStoredNudgeHistory } from '../context/nudge-validation.js';
 import {
   CAPTURE_PROFILES,
   COVERAGE_LEVELS,
@@ -919,6 +920,7 @@ function validateGraph(records: Map<ArchiveRecordType, ArchiveRecord[]>, workspa
   }
   const nudgeOccurrences = new Set<string>();
   const nudgeCheckpoints = new Set<string>();
+  const nudgeHistory = new Map<string, ReturnType<typeof parseStoredNudgeDelivery>[]>();
   for (const nudge of records.get('nudgeDeliveries') ?? []) {
     const run = byId(records, 'runs', String(nudge.run_id));
     if (!run || Number(nudge.through_sequence) > Number(run.last_sequence)) integrity();
@@ -927,6 +929,11 @@ function validateGraph(records: Map<ArchiveRecordType, ArchiveRecord[]>, workspa
     if (nudgeOccurrences.has(occurrenceKey) || nudgeCheckpoints.has(checkpointKey)) integrity();
     nudgeOccurrences.add(occurrenceKey);
     nudgeCheckpoints.add(checkpointKey);
+    const stored = parseStoredNudgeDelivery(nudge);
+    const historyKey = `${stored.policyVersion}\u0000${nudge.run_id}`;
+    const history = nudgeHistory.get(historyKey) ?? [];
+    history.push(stored);
+    nudgeHistory.set(historyKey, history);
     let evidenceEventIds: unknown;
     try {
       evidenceEventIds = JSON.parse(String(nudge.evidence_event_ids_json));
@@ -938,6 +945,9 @@ function validateGraph(records: Map<ArchiveRecordType, ArchiveRecord[]>, workspa
       const event = eventById.get(String(eventId));
       if (!event || event.run_id !== nudge.run_id || Number(event.sequence) > Number(nudge.through_sequence)) integrity();
     }
+  }
+  for (const history of nudgeHistory.values()) {
+    validateStoredNudgeHistory(history, { maxPerResponse: 1, maxPerRun: 3, minSequenceDistancePerCode: 3 });
   }
   const deliveryEntries = new Set<string>();
   for (const entry of records.get('deliveryEntries') ?? []) {
