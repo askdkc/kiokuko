@@ -597,9 +597,10 @@ function legacyScopedDeliveryId(input: ContextDeliveryInput): string {
 }
 
 function storedScopedDeliveryIdentityMatches(input: ContextDeliveryInput): boolean {
-  if (input.deliveryId === scopedDeliveryId(input)) return true;
-  return LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(input.policyVersion)
-    && input.deliveryId === legacyScopedDeliveryId(input);
+  if (LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(input.policyVersion)) {
+    return input.deliveryId === legacyScopedDeliveryId(input);
+  }
+  return input.deliveryId === scopedDeliveryId(input);
 }
 
 function selectHeaderByDeliveryId(database: SqliteDatabase, deliveryId: string): DeliveryHeaderRow | undefined {

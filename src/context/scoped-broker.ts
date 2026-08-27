@@ -407,8 +407,6 @@ function assertScopedReplayDeliveryUnchanged(database: SqliteDatabase, expected:
     assertScopedDeliveryIdentity(current);
   }
   if (scopedDeliveryId(current) !== scopedDeliveryId(expected)) {
-    if (LEGACY_SCOPED_POLICY_VERSIONS.has(current.policyVersion)
-      && current.deliveryId === expected.deliveryId) return;
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored scoped context delivery changed during replay');
   }
 }

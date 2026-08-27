@@ -81,7 +81,9 @@ export function storedLegacyScopedItems(
     const revision = readDeliveredRevision(database, delivery, item);
     const bodySource = revision.summary ?? revision.body;
     const bodyPreview = Array.from(bodySource).slice(0, remaining).join('');
-    const cost = revision.title.length + (revision.summary?.length ?? 0) + bodyPreview.length;
+    const cost = Array.from(revision.title).length
+      + Array.from(revision.summary ?? '').length
+      + bodyPreview.length;
     const scoreComponents = item.scoreComponents as ScopedContextItem['scoreComponents'];
     items.push({
       entryId: item.entryId,

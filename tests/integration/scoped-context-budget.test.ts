@@ -13,7 +13,7 @@ import { recordEntry } from '../../src/memory/entries.js';
 import { supersedeEntry } from '../../src/memory/lifecycle.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
-import { canonicalEntryRevisionContentHash, canonicalJson } from '../../src/serialization/validate.js';
+import { canonicalContentHash, canonicalEntryRevisionContentHash, canonicalJson } from '../../src/serialization/validate.js';
 import { CONTEXT_SELECTION_STATE_MAX_ENTRIES } from '../../src/context/selection-state.js';
 import { documentsFromSkillSnapshot } from '../../src/skills/import-preparation.js';
 import { importSkillSnapshot, setExternalSkillState } from '../../src/skills/store.js';
@@ -732,6 +732,77 @@ test('replays a delivery truncated only by the item limit', async () => {
     assert.deepEqual(replayed.items, delivered.items);
     assert.equal(replayed.truncated, true);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('fails closed when a legacy scoped replay delivery changes before persistence', async () => {
+  const { database, project, runId } = await fixture('legacy scoped replay mutation sentinel', 'bounded context');
+  const task = 'Use the legacy scoped replay mutation sentinel workflow';
+  const taskProfile = {
+    taskType: 'build' as const,
+    target: 'legacy scoped replay mutation sentinel',
+    expected: 'bounded context',
+    constraints: null,
+  };
+  const query = {
+    project,
+    task,
+    taskProfile,
+    runId,
+    limit: 1,
+    characterBudget: 300,
+  };
+  try {
+    const run = new LedgerStore(database).readRun(runId);
+    assert.ok(run);
+    const intakeSessionId = database.prepare('SELECT session_id AS value FROM run_intakes WHERE run_id = ?')
+      .get<{ value: string }>(runId)?.value;
+    assert.ok(intakeSessionId);
+    const legacyQuery = {
+      task,
+      taskProfile,
+      recommendedTags: [],
+      changedPaths: [],
+      errorSignatures: [],
+    };
+    const legacyQueryDigest = canonicalContentHash(legacyQuery);
+    const deliveryId = `context-${canonicalContentHash({ runId, queryHash: legacyQueryDigest })}`;
+    database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
+        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+        score_schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, 'context-ranking-v3', '{}', ?, 0, 0, ?, 2)
+    `).run(
+      deliveryId,
+      runId,
+      run.lastSequence,
+      intakeSessionId,
+      canonicalContentHash(taskProfile),
+      legacyQueryDigest,
+      query.characterBudget,
+      now,
+    );
+
+    const delivered = await queryScopedContext(database, query);
+    assert.equal(delivered.deliveryId, deliveryId);
+    assert.deepEqual(delivered.items, []);
+
+    await assert.rejects(
+      queryScopedContextGated(database, query, (candidate) => {
+        assert.equal(candidate.deliveryId, deliveryId);
+        database.prepare('UPDATE context_deliveries SET truncated = 1 WHERE delivery_id = ?').run(deliveryId);
+        return { persist: true, value: 'proceed' as const };
+      }),
+      (error: unknown) => error instanceof Error
+        && 'code' in error
+        && error.code === 'INTEGRITY_ERROR'
+        && error.message === 'Stored scoped context delivery changed during replay',
+    );
+    assert.equal(database.prepare('SELECT truncated FROM context_deliveries WHERE delivery_id = ?')
+      .get<{ truncated: number }>(deliveryId)?.truncated, 1);
   } finally {
     database.close();
   }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isProxy } from 'node:util/types';
-import type { SqliteDatabase } from '../db/adapter.js';
+import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { readAkinatorSession, readRunIntakeLink } from '../akinator/store.js';
@@ -77,6 +77,10 @@ function validation(): never {
 
 function conflict(message = 'Checkpoint requires an active run'): never {
   throw new KiokukoError('CONFLICT', message);
+}
+
+function checkpointIntegrity(): never {
+  throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
 }
 
 function assertCheckpointEligible(status: RunStatus): void {
@@ -281,9 +285,41 @@ function sameTaskProfile(
     && left.constraints === right.constraints;
 }
 
+interface CheckpointLedgerEventRow extends SqliteRow {
+  sequence: unknown;
+  source_sequence: unknown;
+  event_id: unknown;
+}
+
+function assertCheckpointAcknowledgementAgainstLedger(
+  database: SqliteDatabase,
+  acknowledgement: CheckpointMutationResult,
+): void {
+  if (acknowledgement.localSequences.length > MAX_ARRAY) checkpointIntegrity();
+  const placeholders = acknowledgement.localSequences.map(() => '?').join(', ');
+  const rows = database.prepare(`
+    SELECT sequence, source_sequence, event_id
+      FROM ledger_events
+     WHERE run_id = ?
+       AND sequence IN (${placeholders})
+     ORDER BY sequence ASC
+  `).all<CheckpointLedgerEventRow>(acknowledgement.runId, ...acknowledgement.localSequences);
+  if (rows.length !== acknowledgement.localSequences.length) checkpointIntegrity();
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row === undefined
+      || row.sequence !== acknowledgement.localSequences[index]
+      || row.source_sequence !== acknowledgement.sourceSequences[index]
+      || row.event_id !== acknowledgement.eventIds[index]) {
+      checkpointIntegrity();
+    }
+  }
+}
+
 function assertCheckpointMutationInvariants(
   normalized: CheckpointMutationResult,
   expected: { runId: string; characterBudget: number },
+  database: SqliteDatabase,
 ): void {
   if (normalized.runId !== expected.runId
     || normalized.characterBudget !== expected.characterBudget
@@ -297,9 +333,25 @@ function assertCheckpointMutationInvariants(
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
   }
 
+  assertCheckpointAcknowledgementAgainstLedger(database, normalized);
+
+  let authoritative: ReturnType<typeof projectionFor>;
+  try {
+    authoritative = projectionFor(database, normalized.runId, normalized.acceptedThrough);
+  } catch (error) {
+    if (error instanceof KiokukoError) checkpointIntegrity();
+    throw error;
+  }
+  if (authoritative.intakeStatus !== normalized.intakeStatus
+    || canonicalJson(authoritative.projection) !== canonicalJson(normalized.projection)
+    || normalized.profileHash !== authoritative.projection.profileHash
+    || !sameTaskProfile(normalized.taskProfile, authoritative.projection.taskProfile)) {
+    checkpointIntegrity();
+  }
+
   let recommendations: Recommendation[];
   try {
-    recommendations = buildRecommendations({ projection: normalized.projection, broker: {} });
+    recommendations = buildRecommendations({ projection: authoritative.projection, broker: {} });
   } catch {
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
   }
@@ -309,6 +361,7 @@ function assertCheckpointMutationInvariants(
 }
 
 function normalizeCheckpointMutationResult(
+  database: SqliteDatabase,
   value: unknown,
   expected: { runId: string; characterBudget: number },
 ): CheckpointMutationResult {
@@ -334,7 +387,7 @@ function normalizeCheckpointMutationResult(
     preliminaryRecommendations: normalized.preliminaryRecommendations,
     characterBudget: normalized.characterBudget,
   };
-  assertCheckpointMutationInvariants(result, expected);
+  assertCheckpointMutationInvariants(result, expected, database);
   return result;
 }
 
@@ -428,13 +481,16 @@ function projectionFor(
   runId: string,
   acceptedThrough: number,
 ): { intakeStatus: CheckpointMutationResult['intakeStatus']; projection: LedgerProjection } {
+  const state = readContextRunRetrievalState(database, runId);
+  if (acceptedThrough > state.run.lastSequence) {
+    checkpointIntegrity();
+  }
   const store = new LedgerStore(database);
-  const run = store.readRun(runId);
-  if (!run) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
+  const run = state.run;
   const link = readRunIntakeLink(database, { workspace: run.workspace, runId });
   const session = readAkinatorSession(database, { workspace: run.workspace, sessionId: link.sessionId });
   if (session.status !== 'ready' && session.status !== 'exhausted') conflict('Checkpoint requires finalized intake');
-  const events = store.readEvents(runId).map((row) => ({
+  const events = store.readEvents(runId).filter((row) => row.sequence <= acceptedThrough).map((row) => ({
     eventId: row.event_id,
     sequence: row.sequence,
     eventType: row.event_type as LedgerEventType,
@@ -503,16 +559,18 @@ export class CheckpointMutationService {
     if (!run) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
     const now = validateTimestamp(this.now(), 'createdAt');
     const request = normalizeRequest(value.request, run.workspace, now);
-    const response = withImmediateTransaction(this.database, () => executeIdempotentInTransaction(
-      this.database,
-      { scope: `agent.checkpoint.${value.runId}`, key: value.idempotencyKey, request: value.request, createdAt: now },
-      () => serializeCheckpointAcknowledgement(
-        mutationValue(this.database, value.runId as string, request, value.idempotencyKey as string, now),
-      ) as unknown as JsonValue,
-    ));
-    return normalizeCheckpointMutationResult(response, {
-      runId: value.runId as string,
-      characterBudget: request.characterBudget,
+    return withImmediateTransaction(this.database, () => {
+      const response = executeIdempotentInTransaction(
+        this.database,
+        { scope: `agent.checkpoint.${value.runId}`, key: value.idempotencyKey, request: value.request, createdAt: now },
+        () => serializeCheckpointAcknowledgement(
+          mutationValue(this.database, value.runId as string, request, value.idempotencyKey as string, now),
+        ) as unknown as JsonValue,
+      );
+      return normalizeCheckpointMutationResult(this.database, response, {
+        runId: value.runId as string,
+        characterBudget: request.characterBudget,
+      });
     });
   }
 }

@@ -421,6 +421,28 @@ test('legacy materialization truncates a body preview at the original budget', a
   }
 });
 
+test('migration 012 preserves legacy accounting with astral Unicode in metadata', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-astral-metadata',
+    entries: [
+      { entryId: 'entry-legacy-astral-first', title: '😀', summary: '🙂', body: '1234' },
+      { entryId: 'entry-legacy-astral-second', title: 'b', body: '56789' },
+    ],
+    characterBudget: 8,
+    characterCount: 6,
+  });
+  try {
+    assert.deepEqual((await applyContextDeliveryMigration(fixture)).applied, [12]);
+    const delivery = readContextDelivery(fixture.database, { workspace: fixture.workspace, deliveryId: fixture.deliveryId });
+    assert.deepEqual(
+      storedLegacyScopedItems(fixture.database, delivery).map((item) => item.bodyPreview),
+      ['🙂', '5678'],
+    );
+  } finally {
+    fixture.database.close();
+  }
+});
+
 test('legacy migration does not expand a bounded preview for an oversized source body', async () => {
   const fixture = await legacyDeliveryFixture({
     prefix: 'migration-012-oversized-source',
