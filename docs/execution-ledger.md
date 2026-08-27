@@ -16,6 +16,12 @@ Migration `004_agent_gateway.sql` adds:
 - `ledger_memory_links`: provenance from run/event/delivery to promoted candidate memory.
 - `ledger_purge_audit`: content-free tombstones after privacy purge.
 
+Migration `010_nudge_deliveries.sql` adds:
+
+- `nudge_deliveries`: presentation history for selected advisory nudges. It stores the run, policy version, checkpoint identity, logical occurrence, code, sequence, priority, and bounded evidence/reference ID snapshots, but not rendered message text.
+
+Migration `011_nudge_integrity.sql` adds database guards for the supported nudge policy, code/priority pairs, and bounded JSON snapshots.
+
 ## Invariants
 
 1. A run belongs to one workspace for its lifetime.
@@ -53,6 +59,10 @@ Projection is deterministic through a committed local sequence. It derives curre
 
 Minimum recommendation codes are `INTAKE_INCOMPLETE`, `VERIFY_AFTER_MUTATION`, `SIDE_EFFECT_OUTCOME_UNKNOWN`, `UNRESOLVED_FAILURE`, `CONTEXT_STALE`, `CONTRADICTORY_MEMORY`, `COVERAGE_INCOMPLETE`, and `PROMOTION_CANDIDATE`. Recommendations are stored data with evidence IDs, not commands.
 
+Recommendations describe every currently applicable deterministic condition. A nudge is a separate presentation decision: at most one eligible advisory item selected from the v1 nudge subset (`SIDE_EFFECT_OUTCOME_UNKNOWN`, `UNRESOLVED_FAILURE`, and `VERIFY_AFTER_MUTATION`). `CONTRADICTORY_MEMORY` remains a recommendation but is not a nudge because the HTTP checkpoint broker does not currently expose its complete contradiction-pair state. Nudge candidates are derived from the committed projection and final capability-gated recommendations only; fixed messages and bounded evidence/reference IDs are returned, and rate limiting never removes the corresponding recommendation.
+
+Nudge policy version `nudges.v1` shows one logical occurrence at most once per run, permits at most three deliveries per run, and requires at least three committed ledger sequence positions between deliveries of the same code. Eligibility uses occurrence identity and ledger sequence, not wall-clock time. `nudge_deliveries` is presentation history outside `ledger_events`, so delivering a nudge cannot change the execution projection.
+
 ## Archive, backup, purge
 
-Existing memory export remains memory-only. Ledger export/import uses a separate deterministic manifest/checksum. Full SQLite backup contains memory, ledger, deliveries, and feedback. Purge removes bounded content under explicit confirmation while preserving only a content-free tombstone and any promoted memory that has its own lifecycle.
+Existing memory export remains memory-only. Ledger export/import uses a separate deterministic manifest/checksum and includes nudge delivery history. Full SQLite backup contains memory, ledger, nudge deliveries, and feedback. Purge removes bounded content under explicit confirmation while preserving only a content-free tombstone and any promoted memory that has its own lifecycle.

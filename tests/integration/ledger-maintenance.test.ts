@@ -12,6 +12,7 @@ import {
   LEDGER_CHECK_NAMES,
   type LedgerIntegrityReport,
 } from '../../src/ledger/maintenance.js';
+import { recordNudgeDeliveryInTransaction } from '../../src/context/nudge-store.js';
 
 const migrations = path.resolve(import.meta.dirname, '../../migrations');
 
@@ -60,6 +61,7 @@ test('reports a healthy run and event chain with deterministic selected counts',
       evidence: 0,
       deliveries: 0,
       deliveryEntries: 0,
+      nudgeDeliveries: 0,
       intakeFeedback: 0,
       contextFeedback: 0,
       runFeedback: 0,
@@ -251,6 +253,7 @@ test('treats the workspace filter as a hard boundary for counts and findings', a
       evidence: 0,
       deliveries: 0,
       deliveryEntries: 0,
+      nudgeDeliveries: 0,
       intakeFeedback: 0,
       contextFeedback: 0,
       runFeedback: 0,
@@ -328,6 +331,18 @@ test('run purge removes ledger and intake graph but preserves curated memory and
       VALUES ('run-1', 'session-1', 'v1', 1, '{"taskType":"inferred"}', '[]', ?)
     `).run('2026-08-20T00:00:00.000Z');
     store.appendBatch('run-1', { events: [{ eventId: 'event-1', eventType: 'run.started', actor: 'agent', payload: { safe: 'payload' } }] });
+    recordNudgeDeliveryInTransaction(database, {
+      runId: 'run-1',
+      policyVersion: 'nudges.v1',
+      code: 'UNRESOLVED_FAILURE',
+      occurrenceId: 'purge-nudge-occurrence',
+      checkpointId: 'purge-nudge-checkpoint',
+      throughSequence: 1,
+      priority: 3,
+      evidenceEventIds: ['event-1'],
+      referenceIds: [],
+      deliveredAt: '2026-08-20T00:00:00.000Z',
+    });
     const entry = recordEntry(database, { workspace: 'workspace-a', kind: 'lesson', title: 'Curated title', body: 'Curated body', createdBy: 'test', actor: 'test' }, { now: '2026-08-20T00:00:00.000Z', idFactory: () => 'entry-1' });
     database.prepare(`
       INSERT INTO ledger_evidence (evidence_id, run_id, event_id, kind, locator, summary, created_at)
@@ -352,13 +367,14 @@ test('run purge removes ledger and intake graph but preserves curated memory and
     });
 
     assert.equal(result.replayed, false);
-    assert.ok(result.deletedCount >= 7);
+    assert.equal(result.deletedCount, 9);
     assert.equal(result.tombstone.targetId, 'run-1');
     assert.equal(result.tombstone.runId, null);
     assert.equal(result.tombstone.reason, 'privacy request');
     assert.equal(result.backupWarning, 'Backups may retain purged content and must be managed separately.');
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM ledger_events').get<{ count: number }>()?.count, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM nudge_deliveries').get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM akinator_sessions').get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries WHERE id = ?').get<{ count: number }>('entry-1')?.count, 1);
     const audit = database.prepare('SELECT * FROM ledger_purge_audit WHERE purge_id = ?').get<Record<string, unknown>>('purge-run-1');
@@ -478,6 +494,7 @@ test('reports a fixed healthy schema for an empty ledger without mutating the da
       evidence: 0,
       deliveries: 0,
       deliveryEntries: 0,
+      nudgeDeliveries: 0,
       intakeFeedback: 0,
       contextFeedback: 0,
       runFeedback: 0,

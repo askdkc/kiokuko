@@ -4,7 +4,7 @@ Kiokuko is a model-agnostic local control plane with three deliberately separate
 
 1. curated memory: `entries` (identity/lifecycle), `entry_revisions` (immutable content), `entry_revision_tags`, and `entry_links`;
 2. memory mutation audit: existing `audit_events`;
-3. append-oriented execution ledger: runs, events, evidence, context deliveries, feedback, and promotion provenance.
+3. append-oriented execution ledger: runs, events, evidence, context deliveries, nudge presentation history, feedback, and promotion provenance.
 
 ## Boundaries
 
@@ -15,7 +15,7 @@ Kiokuko is a model-agnostic local control plane with three deliberately separate
   Hybrid retrieval adds exact-signal, word-FTS, trigram, literal, and tag lanes
   without replacing the existing word FTS index.
 - Akinator intake owns task-profile inference, at most three high-value discriminating questions, and `ready`/`exhausted` transitions. Its reasoning projection starts with competing action families and narrows them through intent, target, observable success, selected action, verification, and stop conditions. It is not a retrieval-hit counter.
-- The Agent Event Gateway owns authenticated HTTP/JSON lifecycle, idempotency, event collection, projection, context delivery, and deterministic recommendations.
+- The Agent Event Gateway owns authenticated HTTP/JSON lifecycle, idempotency, event collection, projection, context delivery, deterministic recommendations, and advisory nudge selection.
 - Codex/OpenCode/Claude Code task preparation uses the stdio MCP
   `task_prepare` / `task_answer` boundary. Human/operator CLI and Web memory
   inspection is management-only, not a model-facing task entry. Generic
@@ -64,7 +64,7 @@ A foreground `kiokuko serve --port 0` process keeps one primary SQLite connectio
 
 ## Context loop
 
-A run opens with the shared Akinator intake. Memory is withheld while intake needs an answer. Each question exposes the decision dimension it discriminates; a ready profile produces a concrete action, verification, stop conditions, and an abstraction-to-action silo score. When ready/exhausted, the finalized profile and recommended tags select an initial bounded context. Events then build a deterministic projection. A checkpoint commits events first, projects through the accepted cursor, suppresses unchanged re-delivery, re-ranks memory using current paths/errors/profile/feedback, stores selection reasons and revisions, and returns recommendations. For each proposed memory, it records one reasoning path per run. A path is qualified only when the run completed, the silo is actionable, and fresh verification or a passing test exists. Retrieval impressions never enter this table. Explicit close, feedback, Curator review, and candidate-only promotion complete the loop.
+A run opens with the shared Akinator intake. Memory is withheld while intake needs an answer. Each question exposes the decision dimension it discriminates; a ready profile produces a concrete action, verification, stop conditions, and an abstraction-to-action silo score. When ready/exhausted, the finalized profile and recommended tags select an initial bounded context. Events then build a deterministic projection. A checkpoint commits events first, projects through the accepted cursor, suppresses unchanged re-delivery, re-ranks memory using current paths/errors/profile/feedback, stores selection reasons and revisions, and returns recommendations. The HTTP checkpoint route then applies the capability gate and selects at most one rate-limited nudge from that final recommendation snapshot. Recommendations describe current conditions; nudges are fixed-message advisory presentations and never commands. Nudge delivery rows are stored outside `ledger_events`, keyed by policy version, checkpoint identity, and logical occurrence, so presentation history cannot alter execution evidence. For each proposed memory, it records one reasoning path per run. A path is qualified only when the run completed, the silo is actionable, and fresh verification or a passing test exists. Retrieval impressions never enter this table. Explicit close, feedback, Curator review, and candidate-only promotion complete the loop.
 
 Curator aggregates qualified paths by a server-derived generalized concept key. Two or more independent successful runs, high silo completeness, and either cross-workspace evidence or explicit structured applicability produce `skill-ready`. Lower-evidence candidates remain inspectable for manual judgment. Automated client guidance calls `curator_check` before the terminal checkpoint and always asks the user before `curator_globalize`.
 

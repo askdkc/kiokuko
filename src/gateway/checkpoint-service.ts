@@ -12,6 +12,15 @@ import { validateEventBatch, validateTimestamp } from '../ledger/validate.js';
 import type { JsonObject, JsonValue, LedgerEventInput, LedgerEventType, RunStatus } from '../ledger/types.js';
 import { executeIdempotentInTransaction } from '../server/idempotency.js';
 import { buildRecommendations, type Recommendation } from '../context/recommendations.js';
+import {
+  buildDeliveredNudge,
+  deriveNudgeCandidates,
+  NUDGE_POLICY_VERSION,
+  selectNudge,
+  type DeliveredNudge,
+} from '../context/nudges.js';
+import { readNudgeDeliveryForCheckpoint, readNudgeHistory, recordNudgeDeliveryInTransaction } from '../context/nudge-store.js';
+import { canonicalContentHash } from '../serialization/validate.js';
 import { readContextRunRetrievalState } from '../context/run-state.js';
 import {
   recordContextFeedbackInTransaction,
@@ -53,6 +62,7 @@ export interface CheckpointResponse {
   profileHash: string;
   projection: LedgerProjection;
   recommendations: Recommendation[];
+  nudge: import('../context/nudges.js').DeliveredNudge | null;
   characterBudget: number;
   context: null;
   untrusted: true;
@@ -231,6 +241,7 @@ function responseValue(database: SqliteDatabase, runId: string, request: Checkpo
     profileHash: projection.profileHash,
     projection,
     recommendations,
+    nudge: null,
     characterBudget: request.characterBudget,
     context: null,
     untrusted: true,
@@ -252,6 +263,66 @@ export class CheckpointService {
       { scope: `agent.checkpoint.${value.runId}`, key: value.idempotencyKey, request: value.request, createdAt: now },
       () => responseValue(this.database, value.runId as string, request, value.idempotencyKey as string, now) as unknown as JsonValue,
     ) as unknown as CheckpointResponse);
+  }
+
+  deliverNudge(input: {
+    runId: string;
+    idempotencyKey: string;
+    throughSequence: number;
+    projection: LedgerProjection;
+    recommendations: readonly Recommendation[];
+  }): DeliveredNudge | null {
+    if (input.runId.length === 0 || input.idempotencyKey.length === 0
+      || !Number.isSafeInteger(input.throughSequence) || input.throughSequence < 0) {
+      validation();
+    }
+    const checkpointId = canonicalContentHash({
+      kind: 'agent-checkpoint-nudge-v1',
+      runId: input.runId,
+      idempotencyKey: input.idempotencyKey,
+    });
+    const candidates = deriveNudgeCandidates(input.projection, input.recommendations);
+    return withImmediateTransaction(this.database, () => {
+      const run = new LedgerStore(this.database).readRun(input.runId);
+      if (!run) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
+      if (run.lastSequence !== input.throughSequence) {
+        throw new KiokukoError('CONFLICT', 'Nudge delivery conflicts with current run state');
+      }
+      const existing = readNudgeDeliveryForCheckpoint(this.database, {
+        runId: input.runId,
+        policyVersion: NUDGE_POLICY_VERSION,
+        checkpointId,
+      });
+      if (existing !== null) {
+        const matchingCandidate = candidates.find(
+          (candidateValue) => candidateValue.occurrenceId === existing.occurrenceId,
+        );
+        if (matchingCandidate === undefined) return null;
+        if (matchingCandidate.code !== existing.code) {
+          throw new KiokukoError(
+            'INTEGRITY_ERROR',
+            'Stored nudge occurrence binding is invalid',
+          );
+        }
+        return existing;
+      }
+      const history = readNudgeHistory(this.database, input.runId, NUDGE_POLICY_VERSION);
+      const selected = selectNudge(candidates, history, input.throughSequence);
+      if (selected === null) return null;
+      recordNudgeDeliveryInTransaction(this.database, {
+        runId: input.runId,
+        policyVersion: NUDGE_POLICY_VERSION,
+        code: selected.code,
+        occurrenceId: selected.occurrenceId,
+        checkpointId,
+        throughSequence: input.throughSequence,
+        priority: selected.priority,
+        evidenceEventIds: selected.evidenceEventIds,
+        referenceIds: selected.referenceIds,
+        deliveredAt: this.now(),
+      });
+      return buildDeliveredNudge(selected);
+    });
   }
 }
 

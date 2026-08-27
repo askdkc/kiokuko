@@ -12,7 +12,7 @@ test('initializes an isolated database and applies migrations', async () => {
   const result = await initializeDatabase({ databasePath });
   assert.equal(result.databasePath, databasePath);
   await access(databasePath);
-  assert.equal(result.currentVersion, 9);
+  assert.equal(result.currentVersion, 11);
   assert.equal(result.backupPath, null);
   assert.equal(result.capabilities.driver, 'node:sqlite');
   assert.equal(result.capabilities.foreignKeys, true);

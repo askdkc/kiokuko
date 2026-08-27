@@ -16,6 +16,7 @@ import {
   CONTEXT_SELECTION_REASON_ORDER,
 } from '../context/ranking.js';
 import { RECOMMENDATION_CODES } from '../context/recommendations.js';
+import { NUDGE_CODES, NUDGE_MESSAGES, NUDGE_POLICY_VERSION, NUDGE_PRIORITY } from '../context/nudges.js';
 import { findSecret } from '../memory/secrets.js';
 import { successEnvelope } from '../serialization/envelope.js';
 import {
@@ -536,6 +537,23 @@ function validateContextRecommendations(value: unknown): JsonValue[] {
   return recommendations;
 }
 
+function validateNudge(value: unknown): Record<string, JsonValue> | null {
+  if (value === null) return null;
+  const object = responseObject(value, [
+    'occurrenceId', 'code', 'message', 'evidenceEventIds', 'referenceIds', 'priority', 'policyVersion',
+  ]);
+  const code = responseEnum(object.code, NUDGE_CODES) as typeof NUDGE_CODES[number];
+  responseIdentifier(object.occurrenceId);
+  responseStringArray(object.evidenceEventIds, 16);
+  responseStringArray(object.referenceIds, 16);
+  if (object.policyVersion !== NUDGE_POLICY_VERSION
+    || object.message !== NUDGE_MESSAGES[code]
+    || object.priority !== NUDGE_PRIORITY[code]) {
+    throw responseIntegrityError();
+  }
+  return object;
+}
+
 function validateScoreComponentsSchema(value: unknown): void {
   const score = responseObject(value, CONTEXT_RANKING_COMPONENTS);
   for (const field of CONTEXT_RANKING_COMPONENTS) {
@@ -729,13 +747,15 @@ function validateProjectionSchema(value: unknown): Record<string, JsonValue> {
     'throughSequence', 'taskProfile', 'profileHash', 'evidenceState', 'unresolvedFailureEventIds',
     'unknownOutcomeEventIds', 'latestMutationSequence', 'latestPassingVerificationSequence', 'coverage',
     'declaredCoverage', 'intakeIncomplete', 'missingProfileFields',
-  ]);
+  ], ['latestMutationEventIds', 'latestPassingVerificationEventIds']);
   responseInteger(object.throughSequence);
   validateTaskProfileSchema(object.taskProfile);
   responseHash(object.profileHash);
   responseEnum(object.evidenceState, ['none', 'failed', 'fresh', 'stale']);
   responseArray(object.unresolvedFailureEventIds, 4096).forEach(responseEventId);
   responseArray(object.unknownOutcomeEventIds, 4096).forEach(responseEventId);
+  if (Object.hasOwn(object, 'latestMutationEventIds')) responseArray(object.latestMutationEventIds, 16).forEach(responseEventId);
+  if (Object.hasOwn(object, 'latestPassingVerificationEventIds')) responseArray(object.latestPassingVerificationEventIds, 16).forEach(responseEventId);
   for (const field of ['latestMutationSequence', 'latestPassingVerificationSequence'] as const) {
     if (object[field] !== null) responseInteger(object[field], 1);
   }
@@ -856,7 +876,7 @@ function validateCheckpointResponse(value: JsonValue, binding: AgentResponseBind
     'runId', 'acceptedThrough', 'localSequences', 'sourceSequences', 'eventIds', 'runStatus', 'intakeStatus',
     'taskProfile', 'profileHash', 'projection', 'recommendations', 'characterBudget', 'context', 'untrusted',
     'capabilities', 'memoryPolicy', 'warnings', 'nextAction', 'requestBindingHash',
-  ]);
+  ], ['nudge']);
   validateRequestBindingHash(object, binding);
   const ack = validateAckFields(object);
   const expectedAck = checkpointExpectedAck(binding.requestBody);
@@ -868,6 +888,7 @@ function validateCheckpointResponse(value: JsonValue, binding: AgentResponseBind
   validateTaskProfileSchema(object.taskProfile, true);
   responseHash(object.profileHash);
   validateProjectionSchema(object.projection);
+  if (Object.hasOwn(object, 'nudge')) validateNudge(object.nudge);
   responseInteger(object.characterBudget, 1, 100_000);
   if (object.untrusted !== true) throw responseIntegrityError();
   const context = validateContextSchema(object.context);

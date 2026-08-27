@@ -37,6 +37,9 @@ import { createBackup } from '../../src/commands/backup.js';
 import { runDoctor } from '../../src/commands/doctor.js';
 import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { createRuntimeDescriptor, writeRuntimeDescriptor } from '../../src/server/runtime-descriptor.js';
+import { readNudgeHistory, recordNudgeDeliveryInTransaction } from '../../src/context/nudge-store.js';
+import { exportLedgerArchive } from '../../src/ledger/archive.js';
+import { inspectLedger } from '../../src/ledger/maintenance.js';
 import {
   canonicalEntryRevisionContentHash,
   canonicalJson,
@@ -1572,6 +1575,103 @@ test('doctor reports integrity, migration, FTS, and permissions checks', async (
     assert.equal(result.checks.migrations.ok, true);
     assert.equal(result.checks.fts.ok, true);
     assert.equal(result.checks.permissions.ok, true);
+  } finally {
+    data.db.close();
+  }
+});
+
+test('doctor and ledger inspect detect the same corrupt nudge row without exposing its value', async () => {
+  const data = await database('doctor-nudge-integrity');
+  const sentinel = 'corrupt-nudge-secret-sentinel';
+  try {
+    const service = new AgentGatewayService(data.db, { now: () => '2026-08-20T00:00:00.000Z' });
+    const opened = service.openRun({
+      idempotencyKey: 'doctor-nudge-open',
+      request: {
+        apiVersion: '1',
+        workspace: 'project:doctor-nudge',
+        client: { kind: 'doctor-test' },
+        task: { title: 'doctor nudge', query: 'doctor nudge', profileHints: { taskType: 'build', target: 'src', expected: 'healthy' } },
+        captureProfile: 'standard',
+        coverage: { run: 'complete', tool: 'complete', command: 'complete', file: 'complete', approval: 'complete' },
+        metadata: {},
+      },
+    });
+    recordNudgeDeliveryInTransaction(data.db, {
+      runId: opened.runId,
+      policyVersion: 'nudges.v1',
+      code: 'UNRESOLVED_FAILURE',
+      occurrenceId: 'doctor-nudge-occurrence',
+      checkpointId: 'doctor-nudge-checkpoint',
+      throughSequence: 0,
+      priority: 3,
+      evidenceEventIds: [],
+      referenceIds: [],
+      deliveredAt: '2026-08-20T00:00:00.000Z',
+    });
+    data.db.exec('PRAGMA ignore_check_constraints = ON');
+    data.db.prepare('UPDATE nudge_deliveries SET occurrence_id = ?, evidence_event_ids_json = ? WHERE run_id = ?')
+      .run(`${'x'.repeat(257)}${sentinel}`, '[123]', opened.runId);
+    data.db.exec('PRAGMA ignore_check_constraints = OFF');
+
+    const ledger = inspectLedger(data.db);
+    const doctor = await runDoctorWithDatabase(data.databasePath, path.join(data.directory, 'runtime', 'server.json'));
+    assert.equal(ledger.ok, false);
+    assert.equal(ledger.checks.nudgeDeliveries.ok, false);
+    assert.equal(doctor.ok, false);
+    assert.equal(doctor.checks.nudgeDeliveries.ok, false);
+    assert.equal(JSON.stringify(ledger).includes(sentinel), false);
+    assert.equal(JSON.stringify(doctor).includes(sentinel), false);
+  } finally {
+    data.db.close();
+  }
+});
+
+test('runtime reads, ledger inspect, doctor, and archive export reject unsorted nudge IDs consistently', async () => {
+  const data = await database('unsorted-nudge-ids');
+  try {
+    const service = new AgentGatewayService(data.db, { now: () => '2026-08-20T00:00:00.000Z' });
+    const opened = service.openRun({
+      idempotencyKey: 'unsorted-nudge-open',
+      request: {
+        apiVersion: '1',
+        workspace: 'project:unsorted-nudge-ids',
+        client: { kind: 'unsorted-nudge-test' },
+        task: { title: 'unsorted nudge', query: 'unsorted nudge', profileHints: { taskType: 'build', target: 'src', expected: 'healthy' } },
+        captureProfile: 'standard',
+        coverage: { run: 'complete', tool: 'complete', command: 'complete', file: 'complete', approval: 'complete' },
+        metadata: {},
+      },
+    });
+    recordNudgeDeliveryInTransaction(data.db, {
+      runId: opened.runId,
+      policyVersion: 'nudges.v1',
+      code: 'UNRESOLVED_FAILURE',
+      occurrenceId: 'unsorted-nudge-occurrence',
+      checkpointId: 'unsorted-nudge-checkpoint',
+      throughSequence: 0,
+      priority: 3,
+      evidenceEventIds: [],
+      referenceIds: ['reference-a', 'reference-z'],
+      deliveredAt: '2026-08-20T00:00:00.000Z',
+    });
+    data.db.prepare('UPDATE nudge_deliveries SET reference_ids_json = ? WHERE run_id = ?')
+      .run('["reference-z","reference-a"]', opened.runId);
+
+    assert.throws(
+      () => readNudgeHistory(data.db, opened.runId, 'nudges.v1'),
+      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR',
+    );
+    const ledger = inspectLedger(data.db);
+    assert.equal(ledger.ok, false);
+    assert.equal(ledger.checks.nudgeDeliveries.ok, false);
+    const doctor = await runDoctorWithDatabase(data.databasePath, path.join(data.directory, 'runtime', 'server.json'));
+    assert.equal(doctor.ok, false);
+    assert.equal(doctor.checks.nudgeDeliveries.ok, false);
+    assert.throws(
+      () => exportLedgerArchive(data.db, { workspace: 'project:unsorted-nudge-ids' }),
+      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR',
+    );
   } finally {
     data.db.close();
   }

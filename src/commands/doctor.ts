@@ -46,6 +46,7 @@ export interface DoctorResult {
     permissions: DoctorCheck;
     secrets: DoctorCheck;
     ledger: DoctorCheck;
+    nudgeDeliveries: DoctorCheck;
     runtime: DoctorCheck;
     hybridSearch: DoctorCheck;
   };
@@ -288,6 +289,11 @@ export async function runDoctor(
 
     const ledgerReport = inspectLedger(database);
     const ledgerCheck = { ok: ledgerReport.ok, count: ledgerReport.findingCount, detail: `findings=${ledgerReport.findingCount}` };
+    const nudgeDeliveries = {
+      ok: ledgerReport.checks.nudgeDeliveries.ok,
+      count: ledgerReport.checks.nudgeDeliveries.findingCount,
+      detail: `deliveries=${ledgerReport.counts.nudgeDeliveries}, findings=${ledgerReport.checks.nudgeDeliveries.findingCount}`,
+    };
     const runtime = await runtimeCheck(initialized.databasePath, options.runtimeDescriptorPath);
     const checks = {
       integrity: { ok: integrity === 'ok', detail: integrity },
@@ -305,6 +311,7 @@ export async function runDoctor(
       permissions,
       secrets: { ok: secretCount === 0, count: secretCount },
       ledger: ledgerCheck,
+      nudgeDeliveries,
       runtime,
       hybridSearch: hybridCheck,
     };

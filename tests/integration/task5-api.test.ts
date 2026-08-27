@@ -175,6 +175,69 @@ test('Task 5 checkpoint and feedback enforce the run-bound capability catalog wh
   }
 });
 
+test('HTTP checkpoint selects and replays a nudge from the final gated recommendations', async () => {
+  const { runtime, databasePath } = await fixture();
+  try {
+    const opened = await request(runtime.url, '/api/v1/agent/runs', {
+      method: 'POST',
+      key: 'task5-http-nudge-open',
+      body: openRequest(),
+    });
+    const openedData = dataOf(opened.value);
+    const runId = openedData.runId as string;
+    const verification = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/events`, {
+      method: 'POST',
+      key: 'task5-http-nudge-verification',
+      body: {
+        apiVersion: '1',
+        events: [{
+          eventId: 'task5-http-nudge-verification',
+          eventType: 'verification.recorded',
+          actor: 'test',
+          occurredAt: '2026-08-27T00:00:00.000Z',
+          outcome: 'passed',
+          payload: { suite: 'focused' },
+        }],
+      },
+    });
+    assert.equal(verification.response.status, 200);
+    const checkpointBody = {
+      apiVersion: '1',
+      changedPaths: ['src/server/routes/task5.ts'],
+      capabilities,
+    };
+    const first = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-http-nudge-checkpoint',
+      body: checkpointBody,
+    });
+    assert.equal(first.response.status, 200);
+    const firstData = dataOf(first.value);
+    assert.ok(firstData.recommendations.some((item: any) => item.code === 'VERIFY_AFTER_MUTATION'));
+    assert.equal(firstData.nudge?.code, 'VERIFY_AFTER_MUTATION');
+    assert.equal(firstData.nudge?.policyVersion, 'nudges.v1');
+
+    const replay = await request(runtime.url, `/api/v1/agent/runs/${encodeURIComponent(runId)}/checkpoints`, {
+      method: 'POST',
+      key: 'task5-http-nudge-checkpoint',
+      body: checkpointBody,
+    });
+    assert.equal(replay.response.status, 200);
+    const replayData = dataOf(replay.value);
+    assert.deepEqual(replayData.nudge, firstData.nudge);
+
+    const database = openConnection(databasePath);
+    try {
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM nudge_deliveries WHERE run_id = ?')
+        .get<{ count: number }>(runId)?.count, 1);
+    } finally {
+      database.close();
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
 test('checkpoint withholds actionable memory and continues without persisting a delivery when memory-reasoning is unavailable', async () => {
   const { runtime, databasePath } = await fixture();
   let runId: string | undefined;
