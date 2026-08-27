@@ -70,6 +70,10 @@ execute, verify, globalize, or register fetched skill content automatically.
 - Stored revision chains, hashes, structured scope, projections, and context
   replay state are validated from their exact persisted identities. Corruption
   fails explicitly instead of being skipped or normalized into a new identity.
+- Migration 012 upgrades persisted scoped context deliveries from the released
+  v2/v3 identities to v4 during setup. Delivery items, feedback, ledger links,
+  and purge-audit references are retained; invalid legacy deliveries abort the
+  migration transaction instead of being discarded or repaired implicitly.
 - Migration 009 transactionally rewrites the one exact released locale-ordered
   revision preimage to the canonical hash and scope. Forged preimages and
   canonical collisions abort the upgrade; runtime compatibility hashing was

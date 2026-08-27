@@ -5,6 +5,7 @@ import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import { KiokukoError } from '../errors.js';
 import { canonicalizeEntryRevisionHashesInMigration } from '../memory/revisions.js';
+import { migrateLegacyContextDeliveries } from '../context/delivery-migration.js';
 import type { SqliteDatabase, SqliteRow } from './adapter.js';
 import { withImmediateTransaction } from './transaction.js';
 
@@ -61,6 +62,10 @@ function applyBuiltInMigrationOperation(
     return canonicalizeEntryRevisionHashesInMigration(database, hooks.recoverInvalidStoredMemory === undefined
       ? {}
       : { recoverInvalidStoredMemory: hooks.recoverInvalidStoredMemory }).recoveredEntries;
+  }
+  if (migration.version === 12 && migration.name === '012_context_delivery_v4.sql') {
+    migrateLegacyContextDeliveries(database);
+    return 0;
   }
   return 0;
 }

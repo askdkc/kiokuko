@@ -9,6 +9,8 @@ import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { LedgerStore } from '../../src/ledger/store.js';
 import { recordEntry } from '../../src/memory/entries.js';
+import { readContextDelivery } from '../../src/context/delivery.js';
+import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, '../..');
@@ -24,8 +26,8 @@ test('applies the initial migration and is idempotent', async () => {
   const connection = openConnection(databasePath);
   try {
     const first = migrateDatabase(connection, initialMigrations);
-    assert.deepEqual(first.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 11);
+    assert.deepEqual(first.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 12);
     for (const table of [
       'repositories',
       'repository_locations',
@@ -243,6 +245,143 @@ test('migration 008 preserves project and global delivery rows while enabling ec
   }
 });
 
+test('migration 012 upgrades legacy scoped delivery identity, accounting, and references', async () => {
+  const directory = await temporaryDirectory('migration-012-context-delivery');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  const migrationFiles = await readdir(initialMigrations);
+  for (let version = 1; version <= 11; version += 1) {
+    const prefix = String(version).padStart(3, '0');
+    const name = migrationFiles.find((candidate) => candidate.startsWith(`${prefix}_`));
+    assert.ok(name);
+    await copyFile(path.join(initialMigrations, name), path.join(migrationsDirectory, name));
+  }
+  const database = openConnection(path.join(directory, 'data.sqlite3'));
+  const workspace = 'workspace:migration-012';
+  const runId = 'run-migration-012';
+  const sessionId = 'session-migration-012';
+  const entryId = 'entry-migration-012';
+  const createdAt = '2026-08-24T00:00:00.000Z';
+  const profile = { taskType: 'build', target: 'migration', expected: 'current format', constraints: null } as const;
+  const profileHash = canonicalContentHash(profile);
+  const queryHash = 'b'.repeat(64);
+  const legacyDeliveryId = `context-${canonicalContentHash({ runId, queryHash })}`;
+  try {
+    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    database.prepare(`
+      INSERT INTO ledger_runs (
+        run_id, workspace, client_kind, client_version, source_session_id, parent_run_id,
+        protocol_version, capture_profile, coverage_json, status, title, task_hash,
+        metadata_json, last_sequence, last_source_sequence, started_at, ended_at, created_at, updated_at
+      ) VALUES (?, ?, 'generic', '1.0.0', NULL, NULL, '1', 'standard', ?, 'active', 'Migration 012', NULL, '{}', 0, NULL, ?, NULL, ?, ?)
+    `).run(
+      runId,
+      workspace,
+      canonicalJson({ approval: 'unavailable', command: 'unavailable', file: 'unavailable', run: 'declared', tool: 'unavailable' }),
+      createdAt,
+      createdAt,
+      createdAt,
+    );
+    database.prepare(`
+      INSERT INTO akinator_sessions (id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
+      VALUES (?, ?, 'Migration 012', ?, 'ready', 0, ?, ?)
+    `).run(sessionId, workspace, canonicalJson(profile), createdAt, createdAt);
+    database.prepare(`
+      INSERT INTO run_intakes (
+        run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+        initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+      ) VALUES (?, ?, 'v2', 1, ?, ?, ?, ?, ?)
+    `).run(
+      runId,
+      sessionId,
+      canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+      profileHash,
+      canonicalJson(['bot:builder', 'skill:tdd']),
+      createdAt,
+      createdAt,
+    );
+    recordEntry(database, {
+      workspace,
+      kind: 'lesson',
+      status: 'verified',
+      trustLevel: 'source_verified',
+      confidence: 0.9,
+      title: 'Migration delivery entry',
+      body: 'Preserve this delivery while upgrading its identity.',
+      createdBy: 'migration-test',
+    }, { idFactory: () => entryId, now: createdAt });
+    database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
+        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+        score_schema_version
+      ) VALUES (?, ?, 0, ?, ?, ?, 'context-ranking-v3', '{}', 1000, 0, 0, ?, 2)
+    `).run(legacyDeliveryId, runId, sessionId, profileHash, queryHash, createdAt);
+    database.prepare(`
+      INSERT INTO context_delivery_entries (
+        delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json, origin_scope
+      ) VALUES (?, ?, 1, 1, ?, ?, 'project')
+    `).run(
+      legacyDeliveryId,
+      entryId,
+      canonicalJson({
+        status: 100,
+        trust: 25,
+        confidence: 18,
+        retrieval: 10,
+        taskAffinity: 0,
+        recommendedTags: 0,
+        scopeAffinity: 9,
+        applicability: 0,
+        pathOverlap: 0,
+        errorSignature: 0,
+        exactSignal: 0,
+        feedback: 0,
+        recency: 0,
+        contradiction: 0,
+      }),
+      canonicalJson(['project_origin', 'verified']),
+    );
+    database.prepare(`
+      INSERT INTO context_feedback (
+        feedback_id, delivery_id, entry_id, run_id, verdict, comment, actor, idempotency_key, created_at
+      ) VALUES (?, ?, ?, ?, 'helpful', NULL, 'operator', ?, ?)
+    `).run('feedback-migration-012', legacyDeliveryId, entryId, runId, 'c'.repeat(64), createdAt);
+    database.prepare(`
+      INSERT INTO ledger_memory_links (link_id, run_id, event_id, delivery_id, entry_id, created_at)
+      VALUES (?, ?, NULL, ?, ?, ?)
+    `).run('link-migration-012', runId, legacyDeliveryId, entryId, createdAt);
+    database.prepare(`
+      INSERT INTO ledger_purge_audit (
+        purge_id, run_id, event_id, delivery_id, entry_id, target_type, target_id, actor, reason, created_at
+      ) VALUES (?, ?, NULL, ?, NULL, 'delivery', ?, 'operator', 'migration test', ?)
+    `).run('purge-migration-012', runId, legacyDeliveryId, legacyDeliveryId, createdAt);
+
+    await copyFile(path.join(initialMigrations, '012_context_delivery_v4.sql'), path.join(migrationsDirectory, '012_context_delivery_v4.sql'));
+    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [12]);
+    const migrated = database.prepare(`
+      SELECT delivery_id, policy_version, score_schema_version, char_budget, char_count, truncated
+        FROM context_deliveries WHERE run_id = ?
+    `).get<Record<string, unknown>>(runId);
+    assert.ok(migrated);
+    assert.notEqual(migrated.delivery_id, legacyDeliveryId);
+    assert.equal(migrated.policy_version, 'context-ranking-v4');
+    assert.equal(migrated.score_schema_version, 2);
+    assert.equal(migrated.char_count, 76);
+    assert.equal(migrated.truncated, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE delivery_id = ?').get<{ count: number }>(legacyDeliveryId)?.count, 0);
+    assert.equal(database.prepare('SELECT delivery_id FROM context_feedback WHERE feedback_id = ?').get<{ delivery_id: string }>('feedback-migration-012')?.delivery_id, migrated.delivery_id);
+    assert.equal(database.prepare('SELECT delivery_id FROM ledger_memory_links WHERE link_id = ?').get<{ delivery_id: string }>('link-migration-012')?.delivery_id, migrated.delivery_id);
+    assert.deepEqual(
+      { ...database.prepare('SELECT delivery_id, target_id FROM ledger_purge_audit WHERE purge_id = ?').get('purge-migration-012') },
+      { delivery_id: migrated.delivery_id, target_id: migrated.delivery_id },
+    );
+    assert.doesNotThrow(() => readContextDelivery(database, { workspace, deliveryId: migrated.delivery_id as string }));
+  } finally {
+    database.close();
+  }
+});
+
 test('migration 009 preserves v8 knowledge sources and rolls back a failed upgrade atomically', async () => {
   const directory = await temporaryDirectory('migration-009-upgrade');
   const migrationsDirectory = path.join(directory, 'migrations');
@@ -436,7 +575,7 @@ test('concurrent processes initialize one migration exactly once', async () => {
 
   const connection = openConnection(databasePath);
   try {
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 11);
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 12);
   } finally {
     connection.close();
   }

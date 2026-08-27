@@ -32,6 +32,9 @@ const DELIVERY_CURSOR_VERSION = 1 as const;
 // broker contract and v2 is the scoped broker contract.
 const GENERIC_DELIVERY_POLICY_VERSION = `${CONTEXT_RANKING_VERSION}+${RECOMMENDATION_POLICY_VERSION}`;
 const SCOPED_DELIVERY_POLICY_VERSION = 'context-ranking-v4';
+// v3 deliveries were valid before the scoped broker added ecosystem origins.
+// Keep them readable without allowing new writes to use the retired policy.
+const LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS = new Set(['context-ranking-v2', 'context-ranking-v3']);
 
 const VALIDATION_MESSAGE = 'Context delivery input is invalid';
 const NOT_FOUND_MESSAGE = 'Context delivery target was not found';
@@ -314,6 +317,11 @@ function deliveryPolicyVersion(version: 1 | 2): string {
   return version === 1 ? GENERIC_DELIVERY_POLICY_VERSION : SCOPED_DELIVERY_POLICY_VERSION;
 }
 
+function storedDeliveryPolicyMatches(version: 1 | 2, policyVersion: string): boolean {
+  return policyVersion === deliveryPolicyVersion(version)
+    || version === 2 && LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(policyVersion);
+}
+
 function storedNonNegativeSafeInteger(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) integrity();
   return value;
@@ -558,7 +566,7 @@ function canonicalDeliveryBody(input: ContextDeliveryInput): string {
   });
 }
 
-function scopedDeliveryId(input: ContextDeliveryInput): string {
+export function scopedDeliveryId(input: ContextDeliveryInput): string {
   return `context-${canonicalContentHash({
     kind: 'scoped-context-delivery-v1',
     workspace: input.workspace,
@@ -582,6 +590,16 @@ function scopedDeliveryId(input: ContextDeliveryInput): string {
       ...(item.origin === undefined ? {} : { origin: item.origin }),
     })),
   })}`;
+}
+
+function legacyScopedDeliveryId(input: ContextDeliveryInput): string {
+  return `context-${canonicalContentHash({ runId: input.runId, queryHash: input.queryHash })}`;
+}
+
+function storedScopedDeliveryIdentityMatches(input: ContextDeliveryInput): boolean {
+  if (input.deliveryId === scopedDeliveryId(input)) return true;
+  return LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(input.policyVersion)
+    && input.deliveryId === legacyScopedDeliveryId(input);
 }
 
 function selectHeaderByDeliveryId(database: SqliteDatabase, deliveryId: string): DeliveryHeaderRow | undefined {
@@ -689,7 +707,7 @@ function validateStoredHeader(row: DeliveryHeaderRow, workspace: string): Contex
   const queryHash = storedHash(row.query_hash);
   const policyVersion = boundedStoredIdentifier(row.policy_version);
   const scoreSchemaVersion = validatedScoreSchemaVersion(row.score_schema_version, integrity);
-  if (policyVersion !== deliveryPolicyVersion(scoreSchemaVersion)) integrity();
+  if (!storedDeliveryPolicyMatches(scoreSchemaVersion, policyVersion)) integrity();
   const charBudget = storedPositiveSafeInteger(row.char_budget);
   if (charBudget > MAX_CHAR_BUDGET) integrity();
   const charCount = storedNonNegativeSafeInteger(row.char_count);
@@ -778,7 +796,7 @@ function readStoredDelivery(database: SqliteDatabase, workspace: string, deliver
   assertStoredProfileBinding(database, header);
   const items = validateStoredEntries(database, header);
   const complete = { ...header, items };
-  if ((header.scoreSchemaVersion ?? 1) === 2 && header.deliveryId !== scopedDeliveryId(complete)) scopedIdentityIntegrity();
+  if ((header.scoreSchemaVersion ?? 1) === 2 && !storedScopedDeliveryIdentityMatches(complete)) scopedIdentityIntegrity();
   const view: ContextDeliveryView = {
     ...complete,
     items: items.map((item) => ({ ...item, scoreComponents: { ...item.scoreComponents }, selectionReasons: [...item.selectionReasons], untrusted: true })),
@@ -911,7 +929,7 @@ export function listContextDeliveries(database: SqliteDatabase, input: unknown):
       assertStoredProfileBinding(database, header);
       const storedItems = validateStoredEntries(database, header);
       const complete = { ...header, items: storedItems };
-      if ((header.scoreSchemaVersion ?? 1) === 2 && header.deliveryId !== scopedDeliveryId(complete)) scopedIdentityIntegrity();
+      if ((header.scoreSchemaVersion ?? 1) === 2 && !storedScopedDeliveryIdentityMatches(complete)) scopedIdentityIntegrity();
       return {
         ...complete,
         items: storedItems.map((item) => ({ ...item, scoreComponents: { ...item.scoreComponents }, selectionReasons: [...item.selectionReasons], untrusted: true as const })),

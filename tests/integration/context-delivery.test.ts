@@ -871,6 +871,60 @@ test('binds generic and scoped deliveries to the authoritative profile projectio
   }
 });
 
+test('reads legacy scoped deliveries after the scoped policy version advances', async () => {
+  const database = await temporaryDatabase('context-delivery-legacy-scoped-policy');
+  try {
+    seedDeliveryTarget(database);
+    const legacyBody = {
+      workspace,
+      runId: 'run-delivery-1',
+      throughSequence: 0,
+      intakeSessionId: 'session-delivery-1',
+      taskProfileHash,
+      queryHash: 'c'.repeat(64),
+      policyVersion: 'context-ranking-v3',
+      charBudget: 8_000,
+      charCount: 0,
+      truncated: false,
+      createdAt: now,
+      scoreSchemaVersion: 2,
+      items: [],
+    } as const;
+    const deliveryId = `context-${canonicalContentHash({
+      runId: legacyBody.runId,
+      queryHash: legacyBody.queryHash,
+    })}`;
+    database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
+        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+        score_schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+    `).run(
+      deliveryId,
+      legacyBody.runId,
+      legacyBody.throughSequence,
+      legacyBody.intakeSessionId,
+      legacyBody.taskProfileHash,
+      legacyBody.queryHash,
+      legacyBody.policyVersion,
+      legacyBody.charBudget,
+      legacyBody.charCount,
+      legacyBody.truncated ? 1 : 0,
+      legacyBody.createdAt,
+      legacyBody.scoreSchemaVersion,
+    );
+
+    const read = readContextDelivery(database, { workspace, deliveryId });
+    assert.equal(read.deliveryId, deliveryId);
+    assert.equal(read.policyVersion, 'context-ranking-v3');
+    assert.equal(read.scoreSchemaVersion, 2);
+    assert.deepEqual(listContextDeliveries(database, { workspace, runId: 'run-delivery-1' }).items.map((item) => item.deliveryId), [deliveryId]);
+  } finally {
+    database.close();
+  }
+});
+
 test('maps corrupt stored scalars, canonical metadata, revisions, and joins to fixed integrity errors', async () => {
   const database = await temporaryDatabase('context-delivery-integrity');
   try {
