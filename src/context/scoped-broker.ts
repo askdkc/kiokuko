@@ -191,16 +191,6 @@ function textFor(query: ScopedContextQuery): string {
   ].join('\n');
 }
 
-function legacyScopedQueryHash(query: ScopedContextQuery): string {
-  return canonicalContentHash({
-    task: query.task,
-    taskProfile: query.taskProfile,
-    recommendedTags: query.recommendedTags ?? [],
-    changedPaths: query.changedPaths ?? [],
-    errorSignatures: query.errorSignatures ?? [],
-  });
-}
-
 function scopeObject(entry: EntryRecord): Record<string, unknown> {
   return entry.scope;
 }
@@ -494,19 +484,18 @@ function storedDeliveryIsRetrievable(
 function replayableDelivery(
   database: SqliteDatabase,
   run: ScopedRunContext | null,
-  queryHashes: readonly string[],
+  queryHash: string,
   taskProfileHash: string,
   limit: number,
   characterBudget: number,
 ): ContextDeliveryView | null {
   if (run === null) return null;
-  const placeholders = queryHashes.map(() => '?').join(', ');
   const rows = database.prepare(`
     SELECT delivery_id AS deliveryId
       FROM context_deliveries
-     WHERE run_id = ? AND query_hash IN (${placeholders})
+     WHERE run_id = ? AND query_hash = ?
      ORDER BY delivery_id ASC
-  `).all<{ deliveryId: string }>(run.runId, ...queryHashes);
+  `).all<{ deliveryId: string }>(run.runId, queryHash);
   for (const row of rows) {
     const delivery = readContextDelivery(database, { workspace: run.workspace, deliveryId: row.deliveryId });
     if (storedDeliveryIsRetrievable(database, delivery, run.throughSequence, taskProfileHash, limit, characterBudget)) return delivery;
@@ -654,7 +643,7 @@ async function prepareScopedContext(database: SqliteDatabase, raw: ScopedContext
   const replay = replayableDelivery(
     database,
     run,
-    [...new Set([queryHash, legacyScopedQueryHash(raw)])],
+    queryHash,
     taskProfileHash,
     limit,
     characterBudget,

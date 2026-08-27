@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { queryScopedContext, queryScopedContextGated } from '../../src/context/scoped-broker.js';
+import { readContextDelivery } from '../../src/context/delivery.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordEntry } from '../../src/memory/entries.js';
@@ -737,12 +738,12 @@ test('replays a delivery truncated only by the item limit', async () => {
   }
 });
 
-test('fails closed when a legacy scoped replay delivery changes before persistence', async () => {
-  const { database, project, runId } = await fixture('legacy scoped replay mutation sentinel', 'bounded context');
-  const task = 'Use the legacy scoped replay mutation sentinel workflow';
+test('does not replay a legacy scoped delivery as the current context', async () => {
+  const { database, project, runId } = await fixture('legacy scoped replay exclusion sentinel', 'bounded context');
+  const task = 'Use the legacy scoped replay exclusion sentinel workflow';
   const taskProfile = {
     taskType: 'build' as const,
-    target: 'legacy scoped replay mutation sentinel',
+    target: 'legacy scoped replay exclusion sentinel',
     expected: 'bounded context',
     constraints: null,
   };
@@ -786,23 +787,29 @@ test('fails closed when a legacy scoped replay delivery changes before persisten
       now,
     );
 
-    const delivered = await queryScopedContext(database, query);
-    assert.equal(delivered.deliveryId, deliveryId);
-    assert.deepEqual(delivered.items, []);
+    const currentEntry = recordEntry(database, {
+      workspace: project.workspace,
+      kind: 'lesson',
+      status: 'verified',
+      title: 'legacy scoped replay exclusion sentinel current v4',
+      body: 'The current scoped context must be ranked instead of replaying a legacy delivery.',
+      tags: ['legacy', 'scoped', 'replay', 'current', 'v4'],
+    }, { idFactory: () => 'current-v4-context-sentinel', now });
 
-    await assert.rejects(
-      queryScopedContextGated(database, query, (candidate) => {
-        assert.equal(candidate.deliveryId, deliveryId);
-        database.prepare('UPDATE context_deliveries SET truncated = 1 WHERE delivery_id = ?').run(deliveryId);
-        return { persist: true, value: 'proceed' as const };
-      }),
-      (error: unknown) => error instanceof Error
-        && 'code' in error
-        && error.code === 'INTEGRITY_ERROR'
-        && error.message === 'Stored scoped context delivery changed during replay',
-    );
-    assert.equal(database.prepare('SELECT truncated FROM context_deliveries WHERE delivery_id = ?')
-      .get<{ truncated: number }>(deliveryId)?.truncated, 1);
+    const delivered = await queryScopedContext(database, query);
+    assert.notEqual(delivered.deliveryId, deliveryId);
+    assert.equal(delivered.policyVersion, 'context-ranking-v4');
+    assert.equal(delivered.items[0]?.entryId, currentEntry.id);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+      .get<{ count: number }>(runId)?.count, 2);
+
+    const historical = readContextDelivery(database, { workspace: project.workspace, deliveryId });
+    assert.equal(historical.policyVersion, 'context-ranking-v3');
+    assert.deepEqual(historical.items, []);
+
+    const replayed = await queryScopedContext(database, query);
+    assert.equal(replayed.deliveryId, delivered.deliveryId);
+    assert.deepEqual(replayed.items, delivered.items);
   } finally {
     database.close();
   }
