@@ -103,6 +103,17 @@ test('generated Web UI exposes locale detection, persistence, selection, and tra
   assert.match(WEB_HTML, /curatorDraftChanges/);
   assert.match(WEB_HTML, /candidate\.knowledge\.qualifiedHits/);
   assert.match(WEB_HTML, /candidate\.tags/);
+  assert.match(WEB_HTML, /function showEntryConflictGuide\(entryId, draftText\)/);
+  assert.match(WEB_HTML, /className = 'status conflict-guide'/);
+  assert.match(WEB_HTML, /async function copyTextToClipboard\(text\)/);
+  assert.match(WEB_HTML, /entryConflictApplyHint/);
+  assert.match(WEB_HTML, /entryConflictApplying/);
+  assert.match(WEB_HTML, /await copyTextToClipboard\(draftText\(\)\);[\s\S]{0,500}await loadEntrySelection\(entryId\)/);
+  assert.match(WEB_HTML, /entryConflictApplyCopyFailed'\);\s+return;/);
+  assert.match(WEB_HTML, /entryConflictReloading/);
+  assert.match(WEB_HTML, /await loadEntrySelection\(entryId\)/);
+  assert.match(WEB_HTML, /error\.code === 'CONFLICT'/);
+  assert.match(WEB_HTML, /save\.disabled = true; setI18nText\(save, 'saving'\)/);
   assert.match(WEB_HTML, /history\.pushState/);
   assert.match(WEB_HTML, /window\.addEventListener\('popstate'/);
   assert.match(WEB_HTML, /\/api\/memory\/recall\?/);
@@ -110,6 +121,34 @@ test('generated Web UI exposes locale detection, persistence, selection, and tra
   assert.match(WEB_HTML, /curatorLoadMore/);
   assert.match(WEB_HTML, /\/api\/curator\/globalize/);
   for (const label of Object.values(WEB_LOCALE_LABELS)) assert.match(WEB_HTML, new RegExp(label));
+});
+
+test('every Web UI locale explains safe recovery from a stale editor revision', () => {
+  const required = [
+    'entryConflictTitle',
+    'entryConflictExplanation',
+    'entryConflictStepCopy',
+    'entryConflictStepReload',
+    'entryConflictStepCompare',
+    'entryConflictApplyHint',
+    'entryConflictApply',
+    'entryConflictApplying',
+    'entryConflictApplied',
+    'entryConflictApplyCopyFailed',
+    'entryConflictApplyReloadFailed',
+    'entryConflictCopy',
+    'entryConflictCopyFailed',
+    'entryConflictReload',
+    'entryConflictReloaded',
+  ] as const;
+  for (const locale of WEB_LOCALES) {
+    for (const key of required) assert.notEqual(WEB_MESSAGES[locale][key], '', `${locale}.${key}`);
+  }
+  assert.match(WEB_MESSAGES.ja.entryConflictExplanation, /編集内容はフォームに残っています/);
+  assert.equal(WEB_MESSAGES.ja.entryConflictApply, '修正更新適用');
+  assert.match(WEB_MESSAGES.ja.entryConflictApplyHint, /編集内容をコピーした後、最新リビジョン/);
+  assert.match(WEB_MESSAGES.ja.entryConflictApplyCopyFailed, /フォームは置き換えていません/);
+  assert.match(WEB_MESSAGES.ja.entryConflictReload, /フォームを置換/);
 });
 
 test('generated Web UI top-aligns the title and places the language picker at the upper right', () => {

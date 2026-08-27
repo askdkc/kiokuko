@@ -177,6 +177,13 @@ export const WEB_HTML = String.raw`<!doctype html>
     .notice { border-radius:12px; padding:11px 12px; background:#fffbeb; color:var(--warn); font-size:13px; }
     .notice.error { background:#fef2f2; color:var(--danger); }
     .status { color:var(--muted); font-size:12px; min-height:18px; }
+    .conflict-guide { display:grid; gap:10px; padding:16px; border:1px solid #fecaca; border-radius:14px; background:#fef2f2; color:#7f1d1d; font-size:14px; }
+    .conflict-guide h2,.conflict-guide p,.conflict-guide ol { margin:0; }
+    .conflict-guide h2 { font-size:16px; }
+    .conflict-guide ol { display:grid; gap:6px; padding-left:22px; line-height:1.5; }
+    .conflict-guide-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .conflict-guide-feedback { min-height:18px; font-size:13px; font-weight:700; }
+    .conflict-guide-feedback.error { color:var(--danger); }
     .operator-panel { grid-column:1 / -1; margin-top:16px; }
     .operator-grid { display:grid; grid-template-columns:minmax(240px,.7fr) minmax(420px,1.3fr); gap:16px; }
     .run-list { display:flex; flex-direction:column; gap:8px; max-height:360px; overflow:auto; }
@@ -402,7 +409,7 @@ export const WEB_HTML = String.raw`<!doctype html>
       if (state.selected) { delete element.dataset.i18n; element.dataset.i18nStatus = state.selected.status; element.textContent = labelForStatus(state.selected.status); }
       else { delete element.dataset.i18nStatus; setI18nText(element, 'unselected'); }
     };
-    const showStatus = (message, error = false) => { $('status').textContent = message; $('status').className = error ? 'status notice error' : 'status'; };
+    const showStatus = (message, error = false) => { const element = $('status'); element.textContent = message; element.className = error ? 'status notice error' : 'status'; element.setAttribute('role', error ? 'alert' : 'status'); element.setAttribute('aria-live', error ? 'assertive' : 'polite'); };
     const setStatus = (message, error = false) => { state.localizedStatus = null; showStatus(message, error); };
     const setLocalizedStatus = (key, parameters = {}, error = false) => { state.localizedStatus = { key, parameters, error }; showStatus(t(key, parameters), error); };
     const setLocalizedCountStatus = (key, count, error = false) => { state.localizedStatus = { key, count, error, plural: true }; showStatus(tp(key, count), error); };
@@ -468,6 +475,69 @@ export const WEB_HTML = String.raw`<!doctype html>
       if (!response.ok) throw apiError(value);
       return value;
     };
+    async function loadEntrySelection(id) {
+      const result = await api('/api/entries/' + encodeURIComponent(id) + '?workspace=' + encodeURIComponent(state.workspace));
+      state.selectedRecall = null; state.selected = result.entry; renderEntries(); renderEditor();
+    }
+    async function copyTextToClipboard(text) {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(text);
+    }
+    function showEntryConflictGuide(entryId, draftText) {
+      state.localizedStatus = null;
+      const root = $('status'); root.className = 'status conflict-guide'; root.setAttribute('role', 'alert'); root.setAttribute('aria-live', 'assertive');
+      const heading = document.createElement('h2'); setI18nText(heading, 'entryConflictTitle');
+      const explanation = document.createElement('p'); setI18nText(explanation, 'entryConflictExplanation');
+      const steps = document.createElement('ol');
+      for (const key of ['entryConflictStepCopy', 'entryConflictStepReload', 'entryConflictStepCompare']) { const item = document.createElement('li'); setI18nText(item, key); steps.append(item); }
+      const applyHint = document.createElement('p'); applyHint.id = 'entry-conflict-apply-hint'; setI18nText(applyHint, 'entryConflictApplyHint');
+      const actions = document.createElement('div'); actions.className = 'conflict-guide-actions';
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'button primary'; apply.setAttribute('aria-describedby', applyHint.id); setI18nText(apply, 'entryConflictApply');
+      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'button'; setI18nText(copy, 'entryConflictCopy');
+      const reload = document.createElement('button'); reload.type = 'button'; reload.className = 'button'; setI18nText(reload, 'entryConflictReload');
+      const feedback = document.createElement('div'); feedback.className = 'conflict-guide-feedback'; feedback.setAttribute('role', 'status'); feedback.setAttribute('aria-live', 'polite');
+      const actionsDisabled = (disabled) => { for (const action of [apply, copy, reload]) action.disabled = disabled; };
+      apply.addEventListener('click', async () => {
+        actionsDisabled(true); setI18nText(apply, 'entryConflictApplying');
+        try {
+          await copyTextToClipboard(draftText());
+        } catch {
+          actionsDisabled(false); setI18nText(apply, 'entryConflictApply');
+          feedback.className = 'conflict-guide-feedback error'; setI18nText(feedback, 'entryConflictApplyCopyFailed');
+          return;
+        }
+        try {
+          await loadEntrySelection(entryId);
+          setLocalizedStatus('entryConflictApplied');
+        } catch (error) {
+          actionsDisabled(false); setI18nText(apply, 'entryConflictApply');
+          feedback.className = 'conflict-guide-feedback error'; feedback.textContent = t('entryConflictApplyReloadFailed') + ' ' + apiErrorText(error);
+        }
+      });
+      copy.addEventListener('click', async () => {
+        actionsDisabled(true); setI18nText(copy, 'entryConflictCopying');
+        try {
+          await copyTextToClipboard(draftText());
+          feedback.className = 'conflict-guide-feedback'; setI18nText(feedback, 'entryConflictCopied');
+        } catch {
+          feedback.className = 'conflict-guide-feedback error'; setI18nText(feedback, 'entryConflictCopyFailed');
+        } finally {
+          actionsDisabled(false); setI18nText(copy, 'entryConflictCopy');
+        }
+      });
+      reload.addEventListener('click', async () => {
+        actionsDisabled(true); setI18nText(reload, 'entryConflictReloading');
+        try {
+          await loadEntrySelection(entryId);
+          setLocalizedStatus('entryConflictReloaded');
+        } catch (error) {
+          actionsDisabled(false); setI18nText(reload, 'entryConflictReload');
+          feedback.className = 'conflict-guide-feedback error'; feedback.textContent = apiErrorText(error);
+        }
+      });
+      actions.append(apply, copy, reload); root.replaceChildren(heading, explanation, steps, applyHint, actions, feedback);
+      requestAnimationFrame(() => root.scrollIntoView({ block: 'nearest' }));
+    }
     const escapeTags = (value) => value.split(',').map((item) => item.trim()).filter(Boolean);
     const setCuratorStatus = (message, error = false) => {
       const element = $('curator-status');
@@ -922,15 +992,17 @@ export const WEB_HTML = String.raw`<!doctype html>
       const save = document.createElement('button'); save.type = 'submit'; save.className = 'button primary'; setI18nText(save, 'save');
       const note = document.createElement('div'); note.className = entry.status === 'candidate' ? 'notice' : 'notice error'; setI18nText(note, entry.status === 'candidate' ? 'candidateNotice' : 'immutableNotice');
       if (entry.status !== 'candidate') { save.disabled = true; [kind, title, body, summary, tags, scope, provenance].forEach((control) => { control.disabled = true; }); }
-      actions.append(save); form.append(row, titleLabel, bodyLabel, summaryLabel, tagsLabel, jsonRow, note, actions); form.addEventListener('submit', async (event) => { event.preventDefault(); if (save.disabled) return; try {
+      const draftText = () => JSON.stringify({ memoryType: kind.value, title: title.value, body: body.value, summary: summary.value, tags: tags.value, scopeJson: scope.value, provenanceJson: provenance.value }, null, 2);
+      actions.append(save); form.append(row, titleLabel, bodyLabel, summaryLabel, tagsLabel, jsonRow, note, actions); form.addEventListener('submit', async (event) => { event.preventDefault(); if (save.disabled) return; save.disabled = true; setI18nText(save, 'saving'); try {
         const payload = { expectedRevision: entry.revision, kind: kind.value, title: title.value, body: body.value, summary: summary.value || null, scope: JSON.parse(scope.value || '{}'), provenance: JSON.parse(provenance.value || '{}'), tags: escapeTags(tags.value) };
         await api('/api/entries/' + encodeURIComponent(entry.id) + '?workspace=' + encodeURIComponent(state.workspace), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
         setLocalizedStatus('saved'); await loadEntries(); await selectEntry(entry.id);
-      } catch (error) { setStatus(error.message, true); }
+      } catch (error) { if (error instanceof Error && error.code === 'CONFLICT') showEntryConflictGuide(entry.id, draftText); else setStatus(error instanceof Error ? error.message : t('requestFailed'), true); }
+      finally { if (save.isConnected) { save.disabled = false; setI18nText(save, 'save'); } }
       }); editor.replaceChildren(form);
     }
 
-    async function selectEntry(id) { try { const result = await api('/api/entries/' + encodeURIComponent(id) + '?workspace=' + encodeURIComponent(state.workspace)); state.selectedRecall = null; state.selected = result.entry; renderEntries(); renderEditor(); } catch (error) { setStatus(error.message, true); } }
+    async function selectEntry(id) { try { await loadEntrySelection(id); } catch (error) { setStatus(error instanceof Error ? error.message : t('requestFailed'), true); } }
 
     const curatorCandidateKey = (candidate) => candidate.workspace + '\u0000' + candidate.entryId;
 
