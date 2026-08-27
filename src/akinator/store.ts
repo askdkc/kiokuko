@@ -118,6 +118,8 @@ interface AnswerRow extends SqliteRow {
 interface RunIntakeRow extends SqliteRow {
   run_id: unknown;
   session_id: unknown;
+  session_id_join: unknown;
+  session_workspace: unknown;
   workspace: unknown;
   policy_version: unknown;
   profile_schema_version: unknown;
@@ -541,6 +543,7 @@ function mapAnswer(row: AnswerRow): AkinatorAnswerRecord {
 }
 
 function mapIntakeLink(row: RunIntakeRow): RunIntakeLinkView {
+  if (row.session_id_join !== row.session_id || row.session_workspace !== row.workspace) return integrity();
   const finalizedAt = storedNullableTimestamp(row.finalized_at);
   const initialProfileHash = storedHash(row.initial_profile_hash);
   if (finalizedAt !== null && initialProfileHash === null) return integrity();
@@ -594,11 +597,13 @@ function selectAnswer(database: SqliteDatabase, sessionId: string, questionId: k
 function selectIntakeLink(database: SqliteDatabase, workspace: string, runId: string): RunIntakeRow | undefined {
   return database.prepare(`
     SELECT
-      ri.run_id, ri.session_id, lr.workspace, ri.policy_version, ri.profile_schema_version,
+      ri.run_id, ri.session_id, s.id AS session_id_join, s.workspace AS session_workspace,
+      lr.workspace, ri.policy_version, ri.profile_schema_version,
       ri.profile_sources_json, ri.initial_profile_hash, ri.recommended_tags_json,
       ri.linked_at, ri.finalized_at
     FROM run_intakes AS ri
     JOIN ledger_runs AS lr ON lr.run_id = ri.run_id
+    LEFT JOIN akinator_sessions AS s ON s.id = ri.session_id
     WHERE ri.run_id = ? AND lr.workspace = ?
   `).get<RunIntakeRow>(runId, workspace);
 }

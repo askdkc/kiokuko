@@ -104,7 +104,7 @@ export async function promptRemoveMissingRepositoryLocations(
   }
 }
 
-function count(database: ReturnType<typeof openConnection>, sql: string, ...parameters: string[]): number {
+function count(database: ReturnType<typeof openConnection>, sql: string, ...parameters: Array<string | number>): number {
   return Number(database.prepare(sql).get<{ count: number }>(...parameters)?.count ?? 0);
 }
 
@@ -222,7 +222,9 @@ async function collectDoctorResult(
     ? database.prepare('SELECT singleton, algorithm FROM entry_revision_hash_format')
       .all<{ singleton: unknown; algorithm: unknown }>()
     : [];
-  let revisionHashMismatches = hashFormats.length === 1
+  const revisionHashFormatRequired = hashFormatTable?.type === 'table'
+    || count(database, 'SELECT COUNT(*) AS count FROM schema_migrations WHERE version = ?', 9) > 0;
+  let revisionHashMismatches = !revisionHashFormatRequired || hashFormats.length === 1
     && hashFormats[0]?.singleton === 1
     && hashFormats[0].algorithm === 'canonical-json-utf16-tags-v1'
     ? 0

@@ -104,6 +104,15 @@ function rowCount(database: SqliteDatabase, sql: string, ...parameters: Array<st
   const result = typeof value === 'number' ? value : Number(value ?? 0);
   return Number.isFinite(result) ? result : 0;
 }
+
+function hasTable(database: SqliteDatabase, table: string): boolean {
+  return Boolean(database.prepare(`
+    SELECT 1 AS present
+      FROM sqlite_master
+     WHERE type = 'table' AND name = ?
+  `).get(table));
+}
+
 function emptyChecks(): LedgerIntegrityChecks {
   return Object.fromEntries(LEDGER_CHECK_NAMES.map((name) => [name, { ok: true, count: 0, findingCount: 0, findings: [], truncated: false }])) as unknown as LedgerIntegrityChecks;
 }
@@ -188,14 +197,14 @@ function selectedEvents(database: SqliteDatabase, workspace: string | undefined)
   if (workspace === undefined) return database.prepare('SELECT * FROM ledger_events ORDER BY run_id ASC, sequence ASC, event_id ASC').all<Event>();
   return database.prepare(`SELECT e.* FROM ledger_events AS e JOIN ledger_runs AS r ON r.run_id = e.run_id WHERE r.workspace = ? ORDER BY e.run_id ASC, e.sequence ASC, e.event_id ASC`).all<Event>(workspace);
 }
-function counts(database: SqliteDatabase, workspace: string | undefined): Counts {
+function counts(database: SqliteDatabase, workspace: string | undefined, nudgeDeliveriesAvailable: boolean): Counts {
   const child = (table: string): number => workspace === undefined ? rowCount(database, `SELECT COUNT(*) AS count FROM ${table}`) : rowCount(database, `SELECT COUNT(*) AS count FROM ${table} AS c JOIN ledger_runs AS r ON r.run_id = c.run_id WHERE r.workspace = ?`, workspace);
   const entries = workspace === undefined ? rowCount(database, 'SELECT COUNT(*) AS count FROM context_delivery_entries') : rowCount(database, 'SELECT COUNT(*) AS count FROM context_delivery_entries AS e JOIN context_deliveries AS d ON d.delivery_id = e.delivery_id JOIN ledger_runs AS r ON r.run_id = d.run_id WHERE r.workspace = ?', workspace);
   const tombstones = workspace === undefined ? rowCount(database, 'SELECT COUNT(*) AS count FROM ledger_purge_audit') : rowCount(database, 'SELECT COUNT(*) AS count FROM ledger_purge_audit AS p JOIN ledger_runs AS r ON r.run_id = p.run_id WHERE r.workspace = ?', workspace);
   return {
     runs: workspace === undefined ? rowCount(database, 'SELECT COUNT(*) AS count FROM ledger_runs') : rowCount(database, 'SELECT COUNT(*) AS count FROM ledger_runs WHERE workspace = ?', workspace),
     events: child('ledger_events'), evidence: child('ledger_evidence'), deliveries: child('context_deliveries'), deliveryEntries: entries,
-    nudgeDeliveries: child('nudge_deliveries'), intakeFeedback: child('intake_feedback'), contextFeedback: child('context_feedback'), runFeedback: child('run_feedback'), memoryLinks: child('ledger_memory_links'), tombstones,
+    nudgeDeliveries: nudgeDeliveriesAvailable ? child('nudge_deliveries') : 0, intakeFeedback: child('intake_feedback'), contextFeedback: child('context_feedback'), runFeedback: child('run_feedback'), memoryLinks: child('ledger_memory_links'), tombstones,
   };
 }
 
@@ -512,7 +521,8 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
   if (options.workspace !== undefined && (typeof options.workspace !== 'string' || options.workspace.length === 0)) errorValidation('workspace must be a non-empty string');
   try {
     const workspace = options.workspace;
-    const reportCounts = counts(database, workspace);
+    const nudgeDeliveriesAvailable = hasTable(database, 'nudge_deliveries');
+    const reportCounts = counts(database, workspace, nudgeDeliveriesAvailable);
     const checks = emptyChecks();
     const findings = new FindingCollector(checks);
     const runRows = workspace === undefined ? database.prepare('SELECT * FROM ledger_runs ORDER BY run_id ASC').all<Run>() : database.prepare('SELECT * FROM ledger_runs WHERE workspace = ? ORDER BY run_id ASC').all<Run>(workspace);
@@ -522,7 +532,8 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
     inspectIntakes(database, workspace, runs, findings);
     inspectReferences(database, workspace, findings);
     inspectContext(database, workspace, runs, findings);
-    inspectNudgeDeliveries(database, workspace, findings);
+    // Older databases legitimately lack the table introduced by migration 010.
+    if (nudgeDeliveriesAvailable) inspectNudgeDeliveries(database, workspace, findings);
     inspectFeedback(database, workspace, findings);
     const tombstoneCount = inspectTombstones(database, workspace, findings);
     checks.runs.count = reportCounts.runs;

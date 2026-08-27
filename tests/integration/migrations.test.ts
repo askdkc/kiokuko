@@ -9,7 +9,7 @@ import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { LedgerStore } from '../../src/ledger/store.js';
 import { recordEntry } from '../../src/memory/entries.js';
-import { readContextDelivery } from '../../src/context/delivery.js';
+import { listContextDeliveries, readContextDelivery } from '../../src/context/delivery.js';
 import {
   inspectLegacyContextDelivery,
   inspectLegacyContextDeliveries,
@@ -59,19 +59,24 @@ interface LegacyFixtureOptions {
   characterBudget: number;
   characterCount: number;
   truncated?: boolean;
+  maxMigrationVersion?: number;
+}
+
+async function copyMigrationRange(directory: string, firstVersion: number, lastVersion: number): Promise<void> {
+  const migrationFiles = await readdir(initialMigrations);
+  for (let version = firstVersion; version <= lastVersion; version += 1) {
+    const prefix = String(version).padStart(3, '0');
+    const name = migrationFiles.find((candidate) => candidate.startsWith(`${prefix}_`));
+    assert.ok(name);
+    await copyFile(path.join(initialMigrations, name), path.join(directory, name));
+  }
 }
 
 async function legacyDeliveryFixture(options: LegacyFixtureOptions) {
   const directory = await temporaryDirectory(options.prefix);
   const migrationsDirectory = path.join(directory, 'migrations');
   await mkdir(migrationsDirectory);
-  const migrationFiles = await readdir(initialMigrations);
-  for (let version = 1; version <= 11; version += 1) {
-    const prefix = String(version).padStart(3, '0');
-    const name = migrationFiles.find((candidate) => candidate.startsWith(`${prefix}_`));
-    assert.ok(name);
-    await copyFile(path.join(initialMigrations, name), path.join(migrationsDirectory, name));
-  }
+  await copyMigrationRange(migrationsDirectory, 1, options.maxMigrationVersion ?? 11);
 
   const database = openConnection(path.join(directory, 'data.sqlite3'));
   const workspace = `workspace:${options.prefix}`;
@@ -161,6 +166,19 @@ async function legacyDeliveryFixture(options: LegacyFixtureOptions) {
     );
   }
   return { database, databasePath: path.join(directory, 'data.sqlite3'), migrationsDirectory, workspace, runId, sessionId, profileHash, deliveryId, createdAt };
+}
+
+function databaseSnapshot(database: ReturnType<typeof openConnection>): unknown {
+  const tables = database.prepare(`
+    SELECT name
+      FROM sqlite_master
+     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+     ORDER BY name
+  `).all<{ name: string }>();
+  return tables.map(({ name }) => ({
+    name,
+    rows: database.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all(),
+  }));
 }
 
 async function applyContextDeliveryMigration(fixture: { database: ReturnType<typeof openConnection>; migrationsDirectory: string }) {
@@ -634,6 +652,110 @@ test('doctor preflights invalid legacy deliveries from database version 10', asy
     ]);
     assert.equal(report.checks.migrations.ok, false);
     assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 10);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('doctor preflights invalid legacy deliveries from released database version 8', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-doctor-version-8',
+    entries: [],
+    characterBudget: 100,
+    characterCount: 0,
+    maxMigrationVersion: 8,
+  });
+  try {
+    fixture.database.prepare('UPDATE context_deliveries SET delivery_id = ? WHERE delivery_id = ?')
+      .run('context-forged-doctor-version-8-1', fixture.deliveryId);
+    fixture.database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash,
+        query_hash, policy_version, external_sync_summary_json, char_budget, char_count,
+        truncated, created_at, score_schema_version
+      ) VALUES (?, ?, 0, ?, ?, ?, 'context-ranking-v3', '{}', 100, 0, 0, ?, 2)
+    `).run(
+      'context-forged-doctor-version-8-2',
+      fixture.runId,
+      fixture.sessionId,
+      fixture.profileHash,
+      'c'.repeat(64),
+      fixture.createdAt,
+    );
+    await copyMigrationRange(fixture.migrationsDirectory, 9, 12);
+    const before = databaseSnapshot(fixture.database);
+
+    const report = await runDoctor({
+      databasePath: fixture.databasePath,
+      migrationsDirectory: fixture.migrationsDirectory,
+      runtimeDescriptorPath: path.join(path.dirname(fixture.migrationsDirectory), 'runtime.json'),
+    });
+
+    assert.equal(report.ok, false);
+    assert.equal(report.currentVersion, 12);
+    assert.equal(report.legacyDeliveries.scanned, 2);
+    assert.equal(report.legacyDeliveries.valid, 0);
+    assert.equal(report.legacyDeliveries.invalid, 2);
+    assert.equal(report.legacyDeliveries.scanTruncated, false);
+    assert.equal(report.legacyDeliveries.findingsTruncated, false);
+    assert.deepEqual(report.legacyDeliveries.findings.map((finding) => finding.deliveryId), [
+      'context-forged-doctor-version-8-1',
+      'context-forged-doctor-version-8-2',
+    ]);
+    assert.equal(report.checks.legacyDeliveries.ok, false);
+    assert.equal(report.checks.migrations.ok, false);
+    assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 8);
+    assert.deepEqual(databaseSnapshot(fixture.database), before);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('rejects legacy deliveries whose intake session row is missing', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-missing-intake-session',
+    entries: [],
+    characterBudget: 100,
+    characterCount: 0,
+  });
+  try {
+    fixture.database.exec('PRAGMA foreign_keys = OFF');
+    fixture.database.prepare('DELETE FROM akinator_sessions WHERE id = ?').run(fixture.sessionId);
+    fixture.database.exec('PRAGMA foreign_keys = ON');
+    const row = fixture.database.prepare(`
+      SELECT cd.delivery_id, cd.run_id, cd.policy_version, cd.score_schema_version,
+             lr.workspace AS run_workspace
+        FROM context_deliveries AS cd
+        LEFT JOIN ledger_runs AS lr ON lr.run_id = cd.run_id
+       WHERE cd.delivery_id = ?
+    `).get<LegacyDeliveryRow>(fixture.deliveryId);
+    assert.ok(row);
+    const assertIntegrity = (operation: () => unknown): void => {
+      assert.throws(operation, (error: unknown) => (error as { code?: unknown }).code === 'INTEGRITY_ERROR');
+    };
+
+    assertIntegrity(() => readContextDelivery(fixture.database, {
+      workspace: fixture.workspace,
+      deliveryId: fixture.deliveryId,
+    }));
+    assertIntegrity(() => listContextDeliveries(fixture.database, {
+      workspace: fixture.workspace,
+      runId: fixture.runId,
+      limit: 10,
+    }));
+    assert.throws(
+      () => inspectLegacyContextDelivery(fixture.database, row),
+      (error: unknown) => {
+        const typed = error as { code?: string; details?: { stage?: string } };
+        return typed.code === 'INTEGRITY_ERROR' && typed.details?.stage === 'legacy-delivery-profile-binding';
+      },
+    );
+
+    const beforeMigration = databaseSnapshot(fixture.database);
+    await copyFile(path.join(initialMigrations, '012_context_delivery_v4.sql'), path.join(fixture.migrationsDirectory, '012_context_delivery_v4.sql'));
+    assertIntegrity(() => migrateDatabase(fixture.database, fixture.migrationsDirectory));
+    assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 11);
+    assert.deepEqual(databaseSnapshot(fixture.database), beforeMigration);
   } finally {
     fixture.database.close();
   }
