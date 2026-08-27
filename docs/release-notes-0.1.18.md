@@ -70,11 +70,15 @@ execute, verify, globalize, or register fetched skill content automatically.
 - Stored revision chains, hashes, structured scope, projections, and context
   replay state are validated from their exact persisted identities. Corruption
   fails explicitly instead of being skipped or normalized into a new identity.
-- Migration 012 validates released `context-ranking-v2` and
-  `context-ranking-v3` scoped deliveries during setup. Original delivery IDs,
-  policy versions, character accounting, delivery items, and all historical
-  references are preserved; invalid legacy deliveries abort the migration
-  transaction. New scoped deliveries continue to use `context-ranking-v4`.
+- Migration 012 validates the persisted structural identity of released
+  `context-ranking-v2` and `context-ranking-v3` scoped deliveries during setup.
+  Original delivery IDs, policy versions, character metadata, delivery items,
+  and all historical references are preserved. Legacy preview text was not
+  persisted and is not reconstructed during upgrade. Legacy deliveries remain
+  available for audit and feedback references but are never replayed as current
+  `context-ranking-v4` context; invalid persisted legacy structure aborts the
+  migration transaction. New scoped deliveries continue to use
+  `context-ranking-v4`.
 - Migration 009 transactionally rewrites the one exact released locale-ordered
   revision preimage to the canonical hash and scope. Forged preimages and
   canonical collisions abort the upgrade; runtime compatibility hashing was

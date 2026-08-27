@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { queryScopedContext, queryScopedContextGated } from '../../src/context/scoped-broker.js';
-import { readContextDelivery } from '../../src/context/delivery.js';
+import { legacyScopedDeliveryId, readContextDelivery } from '../../src/context/delivery.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordEntry } from '../../src/memory/entries.js';
@@ -24,6 +24,7 @@ import { hashLedgerEvent } from '../../src/ledger/hash.js';
 import { LedgerStore } from '../../src/ledger/store.js';
 import type { JsonValue, Redaction } from '../../src/ledger/types.js';
 import { authorizeSkillMaterialization } from '../../src/skills/materialization-authority.js';
+import { readContextRunRetrievalState } from '../../src/context/run-state.js';
 
 const migrations = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-25T00:00:00.000Z';
@@ -231,6 +232,57 @@ test('counts multibyte title, summary, and body preview exactly and gives each b
       (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR'
         && (error as Error).message === 'Stored scoped context character accounting is invalid',
     );
+  } finally {
+    database.close();
+  }
+});
+
+test('does not replay a legacy delivery even when its query hash matches the current scoped query', async () => {
+  const { database, project, runId } = await fixture('legacy replay policy boundary', 'new v4 delivery');
+  const query = {
+    project,
+    task: 'legacy replay policy boundary',
+    taskProfile: { taskType: 'build' as const, target: 'legacy replay policy boundary', expected: 'new v4 delivery', constraints: null },
+    runId,
+    limit: 10,
+    characterBudget: 1_000,
+  };
+  try {
+    let queryHash: string | undefined;
+    let taskProfileHash: string | undefined;
+    await queryScopedContextGated(database, query, (candidate) => {
+      queryHash = candidate.queryHash;
+      taskProfileHash = candidate.taskProfileHash;
+      return { persist: false, value: null };
+    });
+    assert.ok(queryHash);
+    assert.ok(taskProfileHash);
+    const state = readContextRunRetrievalState(database, runId);
+    const legacyDeliveryId = legacyScopedDeliveryId({ runId, queryHash });
+    database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash,
+        query_hash, policy_version, external_sync_summary_json, char_budget, char_count,
+        truncated, created_at, score_schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, 'context-ranking-v3', '{}', ?, 0, 0, ?, 2)
+    `).run(
+      legacyDeliveryId,
+      runId,
+      state.run.lastSequence,
+      state.intakeSessionId,
+      taskProfileHash,
+      queryHash,
+      query.characterBudget,
+      state.run.createdAt,
+    );
+
+    const result = await queryScopedContext(database, query);
+    assert.notEqual(result.deliveryId, legacyDeliveryId);
+    assert.equal(result.policyVersion, 'context-ranking-v4');
+    assert.equal(result.items.length, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count, 2);
+    assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(legacyDeliveryId)?.policy_version, 'context-ranking-v3');
+    assert.doesNotThrow(() => readContextDelivery(database, { workspace: project.workspace, deliveryId: legacyDeliveryId }));
   } finally {
     database.close();
   }

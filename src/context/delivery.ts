@@ -592,7 +592,7 @@ export function scopedDeliveryId(input: ContextDeliveryInput): string {
   })}`;
 }
 
-function legacyScopedDeliveryId(input: ContextDeliveryInput): string {
+export function legacyScopedDeliveryId(input: Pick<ContextDeliveryInput, 'runId' | 'queryHash'>): string {
   return `context-${canonicalContentHash({ runId: input.runId, queryHash: input.queryHash })}`;
 }
 
