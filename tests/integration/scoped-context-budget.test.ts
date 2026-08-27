@@ -7,13 +7,14 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { queryScopedContext, queryScopedContextGated } from '../../src/context/scoped-broker.js';
+import { readContextDelivery } from '../../src/context/delivery.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { supersedeEntry } from '../../src/memory/lifecycle.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
-import { canonicalEntryRevisionContentHash, canonicalJson } from '../../src/serialization/validate.js';
+import { canonicalContentHash, canonicalEntryRevisionContentHash, canonicalJson } from '../../src/serialization/validate.js';
 import { CONTEXT_SELECTION_STATE_MAX_ENTRIES } from '../../src/context/selection-state.js';
 import { documentsFromSkillSnapshot } from '../../src/skills/import-preparation.js';
 import { importSkillSnapshot, setExternalSkillState } from '../../src/skills/store.js';
@@ -732,6 +733,83 @@ test('replays a delivery truncated only by the item limit', async () => {
     assert.deepEqual(replayed.items, delivered.items);
     assert.equal(replayed.truncated, true);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('does not replay a legacy scoped delivery as the current context', async () => {
+  const { database, project, runId } = await fixture('legacy scoped replay exclusion sentinel', 'bounded context');
+  const task = 'Use the legacy scoped replay exclusion sentinel workflow';
+  const taskProfile = {
+    taskType: 'build' as const,
+    target: 'legacy scoped replay exclusion sentinel',
+    expected: 'bounded context',
+    constraints: null,
+  };
+  const query = {
+    project,
+    task,
+    taskProfile,
+    runId,
+    limit: 1,
+    characterBudget: 300,
+  };
+  try {
+    const run = new LedgerStore(database).readRun(runId);
+    assert.ok(run);
+    const intakeSessionId = database.prepare('SELECT session_id AS value FROM run_intakes WHERE run_id = ?')
+      .get<{ value: string }>(runId)?.value;
+    assert.ok(intakeSessionId);
+    const legacyQuery = {
+      task,
+      taskProfile,
+      recommendedTags: [],
+      changedPaths: [],
+      errorSignatures: [],
+    };
+    const legacyQueryDigest = canonicalContentHash(legacyQuery);
+    const deliveryId = `context-${canonicalContentHash({ runId, queryHash: legacyQueryDigest })}`;
+    database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
+        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+        score_schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, 'context-ranking-v3', '{}', ?, 0, 0, ?, 2)
+    `).run(
+      deliveryId,
+      runId,
+      run.lastSequence,
+      intakeSessionId,
+      canonicalContentHash(taskProfile),
+      legacyQueryDigest,
+      query.characterBudget,
+      now,
+    );
+
+    const currentEntry = recordEntry(database, {
+      workspace: project.workspace,
+      kind: 'lesson',
+      status: 'verified',
+      title: 'legacy scoped replay exclusion sentinel current v4',
+      body: 'The current scoped context must be ranked instead of replaying a legacy delivery.',
+      tags: ['legacy', 'scoped', 'replay', 'current', 'v4'],
+    }, { idFactory: () => 'current-v4-context-sentinel', now });
+
+    const delivered = await queryScopedContext(database, query);
+    assert.notEqual(delivered.deliveryId, deliveryId);
+    assert.equal(delivered.policyVersion, 'context-ranking-v4');
+    assert.equal(delivered.items[0]?.entryId, currentEntry.id);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+      .get<{ count: number }>(runId)?.count, 2);
+
+    const historical = readContextDelivery(database, { workspace: project.workspace, deliveryId });
+    assert.equal(historical.policyVersion, 'context-ranking-v3');
+    assert.deepEqual(historical.items, []);
+
+    const replayed = await queryScopedContext(database, query);
+    assert.equal(replayed.deliveryId, delivered.deliveryId);
+    assert.deepEqual(replayed.items, delivered.items);
   } finally {
     database.close();
   }

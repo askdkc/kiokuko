@@ -22,10 +22,13 @@ import type { RunStatus } from '../ledger/types.js';
 import { isExternalSkillReference } from '../skills/store.js';
 import { contextRetrievalStateHash, ordinaryContextSelectionStateHash } from './selection-state.js';
 import { readContextRunRetrievalState } from './run-state.js';
+import { storedLegacyScopedItems } from './delivery-migration.js';
 
 export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v4' as const;
 export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
+
+const LEGACY_SCOPED_POLICY_VERSIONS = new Set(['context-ranking-v2', 'context-ranking-v3']);
 
 export interface ScopedContextQuery {
   cwd?: string;
@@ -388,7 +391,11 @@ function assertScopedReplayDeliveryUnchanged(database: SqliteDatabase, expected:
     }
     throw error;
   }
-  assertScopedDeliveryIdentity(current);
+  if (LEGACY_SCOPED_POLICY_VERSIONS.has(current.policyVersion)) {
+    storedLegacyScopedItems(database, current);
+  } else {
+    assertScopedDeliveryIdentity(current);
+  }
   if (scopedDeliveryId(current) !== scopedDeliveryId(expected)) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored scoped context delivery changed during replay');
   }
@@ -462,11 +469,13 @@ function storedDeliveryIsRetrievable(
   limit: number,
   characterBudget: number,
 ): boolean {
-  assertScopedDeliveryIdentity(delivery);
+  const legacy = LEGACY_SCOPED_POLICY_VERSIONS.has(delivery.policyVersion);
+  if (!legacy) assertScopedDeliveryIdentity(delivery);
   if (delivery.throughSequence !== throughSequence) return false;
   if (!delivery.items.every((item) => currentRetrievableDeliveryEntry(database, delivery.workspace, item) !== null)) return false;
+  if (legacy) storedLegacyScopedItems(database, delivery);
   return !(delivery.taskProfileHash !== taskProfileHash
-    || delivery.policyVersion !== SCOPED_CONTEXT_POLICY_VERSION
+    || !legacy && delivery.policyVersion !== SCOPED_CONTEXT_POLICY_VERSION
     || delivery.scoreSchemaVersion !== 2
     || delivery.charBudget !== characterBudget
     || delivery.items.length > limit);
@@ -495,6 +504,9 @@ function replayableDelivery(
 }
 
 function storedScopedItems(database: SqliteDatabase, delivery: ContextDeliveryView): ScopedContextItem[] {
+  if (LEGACY_SCOPED_POLICY_VERSIONS.has(delivery.policyVersion)) {
+    return storedLegacyScopedItems(database, delivery);
+  }
   assertScopedDeliveryIdentity(delivery);
   const fullItems = delivery.items.map((item): ScopedContextItem => {
     const current = currentRetrievableDeliveryEntry(database, delivery.workspace, item);
@@ -628,7 +640,14 @@ async function prepareScopedContext(database: SqliteDatabase, raw: ScopedContext
     retrievalStateHash,
     runStateHash: run?.stateHash ?? null,
   });
-  const replay = replayableDelivery(database, run, queryHash, taskProfileHash, limit, characterBudget);
+  const replay = replayableDelivery(
+    database,
+    run,
+    queryHash,
+    taskProfileHash,
+    limit,
+    characterBudget,
+  );
   if (replay !== null) {
     return {
       result: {

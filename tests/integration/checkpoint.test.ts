@@ -8,6 +8,7 @@ import { migrateDatabase } from '../../src/db/migrate.js';
 import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { CheckpointService, FeedbackService } from '../../src/gateway/checkpoint-service.js';
 import { evaluateProfile } from '../../src/akinator/domain.js';
+import { buildRecommendations } from '../../src/context/recommendations.js';
 import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 
 const migrations = path.resolve(import.meta.dirname, '../../migrations');
@@ -113,6 +114,111 @@ test('replays pre-refactor checkpoint idempotency records through the legacy ser
     );
   } finally {
     db.close();
+  }
+});
+
+test('rejects type-correct checkpoint acknowledgements that violate request or projection binding', async () => {
+  const corruptions: Array<{ name: string; mutate: (response: Record<string, unknown>) => Record<string, unknown> }> = [
+    { name: 'run id', mutate: (response) => ({ ...response, runId: 'run-forged' }) },
+    { name: 'sequence array lengths', mutate: (response) => ({ ...response, sourceSequences: [] }) },
+    { name: 'accepted sequence', mutate: (response) => ({ ...response, acceptedThrough: (response.acceptedThrough as number) + 1 }) },
+    { name: 'profile hash', mutate: (response) => ({ ...response, profileHash: 'f'.repeat(64) }) },
+    {
+      name: 'event ID',
+      mutate: (response) => {
+        const eventIds = response.eventIds as string[];
+        return { ...response, eventIds: ['forged-event-id', ...eventIds.slice(1)] };
+      },
+    },
+    {
+      name: 'source sequence',
+      mutate: (response) => {
+        const sourceSequences = response.sourceSequences as Array<number | null>;
+        return { ...response, sourceSequences: [999, ...sourceSequences.slice(1)] };
+      },
+    },
+    {
+      name: 'intermediate local sequence',
+      mutate: (response) => {
+        const localSequences = response.localSequences as number[];
+        return {
+          ...response,
+          localSequences: [
+            (localSequences[0] as number) + 1,
+            ...localSequences.slice(1),
+          ],
+        };
+      },
+    },
+    {
+      name: 'paired profile hash',
+      mutate: (response) => {
+        const forgedProfileHash = 'f'.repeat(64);
+        return {
+          ...response,
+          profileHash: forgedProfileHash,
+          projection: {
+            ...(response.projection as Record<string, unknown>),
+            profileHash: forgedProfileHash,
+          },
+        };
+      },
+    },
+    {
+      name: 'self-consistent projection and recommendations',
+      mutate: (response) => {
+        const forgedProjection = {
+          ...(response.projection as Record<string, unknown>),
+          coverage: 'partial',
+          declaredCoverage: {
+            run: 'best_effort',
+            tool: 'best_effort',
+            command: 'best_effort',
+            file: 'best_effort',
+            approval: 'best_effort',
+          },
+        };
+        return {
+          ...response,
+          projection: forgedProjection,
+          recommendations: buildRecommendations({ projection: forgedProjection, broker: {} }),
+        };
+      },
+    },
+  ];
+
+  for (const corruption of corruptions) {
+    const db = await database();
+    try {
+      const gateway = new AgentGatewayService(db, { now: () => now });
+      const opened = open(gateway, `checkpoint-corrupt-${corruption.name}`);
+      const service = new CheckpointService(db, () => now);
+      const request = {
+        apiVersion: '1',
+        currentGoal: 'persist one acknowledgement',
+        currentStep: 'keep the acknowledgement bound',
+      };
+      service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-corrupt-1', request });
+      const stored = db.prepare(
+        'SELECT response_json AS responseJson FROM gateway_idempotency WHERE scope = ?',
+      ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
+      assert.ok(stored);
+      const response = corruption.mutate(JSON.parse(stored.responseJson) as Record<string, unknown>);
+      db.prepare('UPDATE gateway_idempotency SET response_json = ? WHERE scope = ?').run(
+        canonicalJson(response),
+        `agent.checkpoint.${opened.runId}`,
+      );
+
+      assert.throws(
+        () => service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-corrupt-1', request }),
+        (error: unknown) => error instanceof Error
+          && 'code' in error
+          && error.code === 'INTEGRITY_ERROR',
+        corruption.name,
+      );
+    } finally {
+      db.close();
+    }
   }
 });
 
