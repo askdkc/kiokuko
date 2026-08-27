@@ -10,6 +10,16 @@ import type { NudgeHistory } from './nudge-store.js';
 
 export const NUDGE_POLICY_VERSION = 'nudges.v1' as const;
 
+export function assertNudgePolicyVersion(value: string): asserts value is typeof NUDGE_POLICY_VERSION {
+  if (value !== NUDGE_POLICY_VERSION) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Unsupported nudge policy version');
+  }
+}
+
+export function isNudgePolicyVersion(value: unknown): value is typeof NUDGE_POLICY_VERSION {
+  return value === NUDGE_POLICY_VERSION;
+}
+
 export const NUDGE_CODES = [
   'SIDE_EFFECT_OUTCOME_UNKNOWN',
   'UNRESOLVED_FAILURE',

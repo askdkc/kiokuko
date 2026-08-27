@@ -120,6 +120,20 @@ test('changes occurrences when unresolved failure state changes', () => {
   assert.notEqual(failureA?.occurrenceId, failureB?.occurrenceId);
 });
 
+test('changes occurrences when only the seventeenth causal event changes', () => {
+  const common = Array.from({ length: 16 }, (_, index) => `failure-${index.toString().padStart(2, '0')}`);
+  const first = deriveNudgeCandidates(
+    projection({ unresolvedFailureEventIds: [...common, 'failure-a'] }),
+    [recommendation('UNRESOLVED_FAILURE')],
+  )[0];
+  const second = deriveNudgeCandidates(
+    projection({ unresolvedFailureEventIds: [...common, 'failure-b'] }),
+    [recommendation('UNRESOLVED_FAILURE')],
+  )[0];
+
+  assert.notEqual(first?.occurrenceId, second?.occurrenceId);
+});
+
 test('does not create v1 candidates for unsupported recommendation codes', () => {
   const result = deriveNudgeCandidates(projection({ intakeIncomplete: true }), [
     recommendation('INTAKE_INCOMPLETE'),

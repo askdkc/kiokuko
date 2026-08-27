@@ -15,7 +15,12 @@ Migration `004_agent_gateway.sql` adds:
 - `context_feedback` and `run_feedback`: explicit weak ranking signals and outcome/recommendation feedback.
 - `ledger_memory_links`: provenance from run/event/delivery to promoted candidate memory.
 - `ledger_purge_audit`: content-free tombstones after privacy purge.
+
+Migration `010_nudge_deliveries.sql` adds:
+
 - `nudge_deliveries`: presentation history for selected advisory nudges. It stores the run, policy version, checkpoint identity, logical occurrence, code, sequence, priority, and bounded evidence/reference ID snapshots, but not rendered message text.
+
+Migration `011_nudge_integrity.sql` adds database guards for the supported nudge policy, code/priority pairs, and bounded JSON snapshots.
 
 ## Invariants
 

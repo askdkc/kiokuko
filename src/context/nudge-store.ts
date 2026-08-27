@@ -9,6 +9,7 @@ import {
   NUDGE_POLICY_VERSION,
   NUDGE_PRIORITY,
   assertNudgeCode,
+  assertNudgePolicyVersion,
   type DeliveredNudge,
   type NudgeCode,
 } from './nudges.js';
@@ -21,6 +22,7 @@ export interface NudgeHistory {
 
 interface NudgeDeliveryRow extends SqliteRow {
   id: unknown;
+  policy_version: unknown;
   code: unknown;
   occurrence_id: unknown;
   checkpoint_id: unknown;
@@ -72,6 +74,8 @@ function rowValues(row: NudgeDeliveryRow): { code: NudgeCode; occurrenceId: stri
 }
 
 function deliveredValue(row: NudgeDeliveryRow): DeliveredNudge {
+  if (typeof row.policy_version !== 'string') throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge policy version is invalid');
+  assertNudgePolicyVersion(row.policy_version);
   const value = rowValues(row);
   const priority = sequence(row.priority, 'priority');
   if (priority !== NUDGE_PRIORITY[value.code]) throw new KiokukoError('INTEGRITY_ERROR', 'Stored nudge priority is invalid');
@@ -92,9 +96,10 @@ export function readNudgeDeliveryForCheckpoint(
 ): DeliveredNudge | null {
   const runId = boundedIdentifier(input.runId, 'runId');
   const policyVersion = boundedIdentifier(input.policyVersion, 'policyVersion');
+  assertNudgePolicyVersion(policyVersion);
   const checkpointId = boundedIdentifier(input.checkpointId, 'checkpointId');
   const row = database.prepare(`
-    SELECT id, code, occurrence_id, checkpoint_id, through_sequence, priority,
+    SELECT id, policy_version, code, occurrence_id, checkpoint_id, through_sequence, priority,
            evidence_event_ids_json, reference_ids_json
       FROM nudge_deliveries
      WHERE run_id = ? AND policy_version = ? AND checkpoint_id = ?
@@ -111,8 +116,9 @@ export function readNudgeHistory(
 ): NudgeHistory {
   const safeRunId = boundedIdentifier(runId, 'runId');
   const safePolicyVersion = boundedIdentifier(policyVersion, 'policyVersion');
+  assertNudgePolicyVersion(safePolicyVersion);
   const rows = database.prepare(`
-    SELECT id, code, occurrence_id, through_sequence
+    SELECT id, policy_version, code, occurrence_id, through_sequence
       FROM nudge_deliveries
      WHERE run_id = ? AND policy_version = ?
      ORDER BY through_sequence ASC, code ASC, occurrence_id ASC, id ASC
@@ -149,6 +155,7 @@ export function recordNudgeDeliveryInTransaction(
 ): void {
   const runId = boundedIdentifier(input.runId, 'runId');
   const policyVersion = boundedIdentifier(input.policyVersion, 'policyVersion');
+  assertNudgePolicyVersion(policyVersion);
   const occurrenceId = boundedIdentifier(input.occurrenceId, 'occurrenceId');
   const checkpointId = boundedIdentifier(input.checkpointId ?? occurrenceId, 'checkpointId');
   assertNudgeCode(input.code);

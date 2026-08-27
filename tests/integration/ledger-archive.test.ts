@@ -107,6 +107,16 @@ function rebuildArchive(content: string, mutate: (lines: Array<Record<string, un
   return `${canonicalJson({ type: 'checksum', sha256: createHash('sha256').update(payload).digest('hex') })}\n${payload}`;
 }
 
+function legacyV2Archive(content: string): string {
+  return rebuildArchive(content, (lines) => {
+    const manifest = lines[0]!;
+    const counts = { ...(manifest.counts as Record<string, number>) };
+    delete counts.nudgeDeliveries;
+    manifest.archiveVersion = 2;
+    manifest.counts = counts;
+  });
+}
+
 function seedSingleRun(database: ReturnType<typeof openConnection>, workspace = 'workspace:validation') {
   const store = new LedgerStore(database, { now: () => fixedNow });
   store.createRun({
@@ -150,7 +160,7 @@ test('exports an empty workspace as a deterministic ledger manifest without memo
     assert.equal(before.includes('ledger_events'), false);
     assert.equal(first.content.split('\n').length, 3);
     assert.match(first.content, /"type":"checksum"/);
-    assert.match(first.content, /"archiveVersion":2/);
+     assert.match(first.content, /"archiveVersion":3/);
     assert.match(first.content, /"format":"kiokuko-ledger-jsonl"/);
   } finally {
     database.close();
@@ -227,6 +237,24 @@ test('imports a ledger graph transactionally and re-imports identical rows as no
     assert.equal(duplicate.imported.events, 0);
     assert.equal(duplicate.duplicates.runs, 1);
     assert.equal(duplicate.duplicates.events, 1);
+  } finally {
+    source.close();
+    target.close();
+  }
+});
+
+test('imports a release-shaped v2 archive and upgrades it to the v3 output shape', async () => {
+  const source = await setup();
+  const target = await setup();
+  try {
+    const legacy = legacyV2Archive(seedSingleRun(source));
+    const imported = importLedgerArchive(target, { content: legacy });
+    assert.equal(imported.imported.runs, 1);
+    assert.equal(imported.imported.events, 1);
+    const upgraded = exportLedgerArchive(target, { workspace: 'workspace:validation' });
+    assert.equal(upgraded.counts.nudgeDeliveries, 0);
+    assert.match(upgraded.content, /"archiveVersion":3/);
+    assert.match(upgraded.content, /"nudgeDeliveries":0/);
   } finally {
     source.close();
     target.close();
@@ -612,12 +640,30 @@ test('validates hash chain, run cursor, delivery cursor, dry-run, missing memory
     const completeSource = await setup();
     try {
       const entry = recordEntry(completeSource, { workspace: 'workspace:missing', kind: 'fact', title: 'ref', body: 'ref' }, { idFactory: () => 'missing-entry', now: fixedNow });
-      seedCompleteGraph(completeSource, 'workspace:missing', entry.id);
+      const completeGraph = seedCompleteGraph(completeSource, 'workspace:missing', entry.id);
+      recordNudgeDeliveryInTransaction(completeSource, {
+        runId: completeGraph.runId,
+        policyVersion: 'nudges.v1',
+        code: 'UNRESOLVED_FAILURE',
+        occurrenceId: 'missing-nudge-occurrence',
+        checkpointId: 'missing-nudge-checkpoint',
+        throughSequence: 1,
+        priority: 3,
+        evidenceEventIds: [completeGraph.eventId],
+        referenceIds: [],
+        deliveredAt: fixedNow,
+      });
       const completeArchive = exportLedgerArchive(completeSource, { workspace: 'workspace:missing' });
       const badDeliveryCursor = rebuildArchive(completeArchive.content, (lines) => { lines.find((line) => line.type === 'delivery')!.through_sequence = 2; });
       assert.throws(() => importLedgerArchive(target, { content: badDeliveryCursor }), (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR');
       const badScoreSchema = rebuildArchive(completeArchive.content, (lines) => { lines.find((line) => line.type === 'delivery')!.score_schema_version = 3; });
       assert.throws(() => importLedgerArchive(target, { content: badScoreSchema }), (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR');
+      const badNudgePolicy = rebuildArchive(completeArchive.content, (lines) => { lines.find((line) => line.type === 'nudge_delivery')!.policy_version = 'nudges.v2'; });
+      assert.throws(() => importLedgerArchive(target, { content: badNudgePolicy }), (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR');
+      const badNudgePriority = rebuildArchive(completeArchive.content, (lines) => { lines.find((line) => line.type === 'nudge_delivery')!.priority = 999; });
+      assert.throws(() => importLedgerArchive(target, { content: badNudgePriority }), (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR');
+      const badNudgeEvidence = rebuildArchive(completeArchive.content, (lines) => { lines.find((line) => line.type === 'nudge_delivery')!.evidence_event_ids_json = '["missing-event"]'; });
+      assert.throws(() => importLedgerArchive(target, { content: badNudgeEvidence }), (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR');
       assert.throws(() => importLedgerArchive(target, { content: completeArchive.content }), (error: unknown) => (error as { code?: string }).code === 'NOT_FOUND');
       assert.equal(target.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{ count: number }>()?.count, 0);
     } finally {

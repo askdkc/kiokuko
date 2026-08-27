@@ -5,10 +5,10 @@ import { isSqliteCorruptionError, isSqliteUniqueConstraintError } from '../db/sq
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { findSecret } from '../memory/secrets.js';
-import { canonicalJson, requireWorkspace } from '../serialization/validate.js';
+import { canonicalJson, compareCanonicalStrings, requireWorkspace } from '../serialization/validate.js';
 import { hashLedgerEvent, GENESIS_HASH } from './hash.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
-import { NUDGE_CODES } from '../context/nudges.js';
+import { NUDGE_CODES, NUDGE_POLICY_VERSION, NUDGE_PRIORITY } from '../context/nudges.js';
 import {
   CAPTURE_PROFILES,
   COVERAGE_LEVELS,
@@ -21,7 +21,9 @@ import {
 
 export const LEDGER_ARCHIVE_FORMAT = 'kiokuko-ledger-jsonl' as const;
 export const LEDGER_ARCHIVE_API_VERSION = '1' as const;
-export const LEDGER_ARCHIVE_VERSION = 2 as const;
+export const LEDGER_ARCHIVE_VERSION = 3 as const;
+const LEGACY_LEDGER_ARCHIVE_VERSION = 2 as const;
+const SUPPORTED_LEDGER_ARCHIVE_VERSIONS: ReadonlySet<number> = new Set([LEGACY_LEDGER_ARCHIVE_VERSION, LEDGER_ARCHIVE_VERSION]);
 
 export const MAX_ARCHIVE_LINE_COUNT = 10_000;
 export const MAX_ARCHIVE_LINE_BYTES = 512 * 1024;
@@ -388,6 +390,9 @@ function nudgeIdListJson(value: unknown): void {
     if (seen.has(id)) integrity();
     seen.add(id);
   }
+  for (let index = 1; index < value.length; index += 1) {
+    if (compareCanonicalStrings(String(value[index - 1]), String(value[index])) > 0) integrity();
+  }
 }
 
 function redactionJson(value: unknown): void {
@@ -558,11 +563,14 @@ function normalizeRecord(type: ArchiveRecordType, source: Row, workspace: string
       normalized.id = stringValue(raw.id, true, IDENTIFIER_MAX_LENGTH);
       normalized.run_id = stringValue(raw.run_id, true, IDENTIFIER_MAX_LENGTH);
       normalized.policy_version = stringValue(raw.policy_version, true, IDENTIFIER_MAX_LENGTH);
-      normalized.code = enumValue(raw.code, new Set(NUDGE_CODES));
+      if (normalized.policy_version !== NUDGE_POLICY_VERSION) validation();
+      const nudgeCode = enumValue(raw.code, new Set(NUDGE_CODES));
+      normalized.code = nudgeCode;
       normalized.occurrence_id = stringValue(raw.occurrence_id, true, IDENTIFIER_MAX_LENGTH);
       normalized.checkpoint_id = stringValue(raw.checkpoint_id, true, IDENTIFIER_MAX_LENGTH);
       normalized.through_sequence = integerValue(raw.through_sequence);
       normalized.priority = integerValue(raw.priority, 1);
+      if (normalized.priority !== NUDGE_PRIORITY[nudgeCode as keyof typeof NUDGE_PRIORITY]) integrity();
       normalized.evidence_event_ids_json = parsedJson(raw.evidence_event_ids_json, nudgeIdListJson);
       normalized.reference_ids_json = parsedJson(raw.reference_ids_json, nudgeIdListJson);
       normalized.delivered_at = timestampValue(raw.delivered_at);
@@ -717,11 +725,14 @@ function parseLine(line: string, fields: readonly string[]): Row {
   return parsed;
 }
 
-function parseCounts(value: unknown): LedgerArchiveCounts {
+function parseCounts(value: unknown, archiveVersion: number): LedgerArchiveCounts {
   assertObject(value);
-  assertFields(value, Object.keys(EMPTY_COUNTS));
+  const fields = Object.keys(EMPTY_COUNTS).filter((field) => (
+    archiveVersion !== LEGACY_LEDGER_ARCHIVE_VERSION || field !== 'nudgeDeliveries'
+  ));
+  assertFields(value, fields);
   const counts = { ...EMPTY_COUNTS };
-  for (const type of Object.keys(counts) as ArchiveRecordType[]) counts[type] = integerValue(value[type]);
+  for (const type of fields as ArchiveRecordType[]) counts[type] = integerValue(value[type]);
   return counts;
 }
 
@@ -734,10 +745,15 @@ function parseArchive(content: string): { workspace: string; counts: LedgerArchi
   const actual = createHash('sha256').update(payload, 'utf8').digest('hex');
   if (actual !== checksum.sha256) integrity();
   const manifest = parseLine(lines[1]!, RECORD_FIELDS.manifest);
-  if (manifest.type !== 'manifest' || manifest.apiVersion !== LEDGER_ARCHIVE_API_VERSION || manifest.archiveVersion !== LEDGER_ARCHIVE_VERSION || manifest.format !== LEDGER_ARCHIVE_FORMAT) validation();
+  if (manifest.type !== 'manifest'
+    || manifest.apiVersion !== LEDGER_ARCHIVE_API_VERSION
+    || typeof manifest.archiveVersion !== 'number'
+    || !SUPPORTED_LEDGER_ARCHIVE_VERSIONS.has(manifest.archiveVersion)
+    || manifest.format !== LEDGER_ARCHIVE_FORMAT) validation();
+  const archiveVersion = manifest.archiveVersion as typeof LEGACY_LEDGER_ARCHIVE_VERSION | typeof LEDGER_ARCHIVE_VERSION;
   secretScan(manifest as ArchiveRecord);
   const workspace = requireWorkspace(manifest.workspace);
-  const counts = parseCounts(manifest.counts);
+  const counts = parseCounts(manifest.counts, archiveVersion);
   const records = new Map<ArchiveRecordType, ArchiveRecord[]>();
   for (const type of Object.keys(EMPTY_COUNTS) as ArchiveRecordType[]) records.set(type, []);
   const seenManifest = [manifest];
@@ -756,6 +772,7 @@ function parseArchive(content: string): { workspace: string; counts: LedgerArchi
     if (typeof type !== 'string') validation();
     const archiveType = RECORD_TYPES.get(type);
     if (!archiveType) validation();
+    if (archiveVersion === LEGACY_LEDGER_ARCHIVE_VERSION && archiveType === 'nudgeDeliveries') validation();
     const parsed = parseLine(line, RECORD_FIELDS[archiveType]);
     const normalized = normalizeRecord(archiveType, parsed, workspace, true);
     secretScan(normalized);
@@ -887,6 +904,7 @@ function validateGraph(records: Map<ArchiveRecordType, ArchiveRecord[]>, workspa
     if (!intake || intake.session_id !== feedback.session_id) integrity();
   }
   const eventIds = new Set((records.get('events') ?? []).map((event) => String(event.event_id)));
+  const eventById = new Map((records.get('events') ?? []).map((event) => [String(event.event_id), event]));
   for (const evidence of records.get('evidence') ?? []) {
     if (!runIds.has(String(evidence.run_id)) || (evidence.event_id !== null && !eventIds.has(String(evidence.event_id)))) integrity();
   }
@@ -899,9 +917,27 @@ function validateGraph(records: Map<ArchiveRecordType, ArchiveRecord[]>, workspa
       if (!intake || intake.session_id !== delivery.intake_session_id) integrity();
     }
   }
+  const nudgeOccurrences = new Set<string>();
+  const nudgeCheckpoints = new Set<string>();
   for (const nudge of records.get('nudgeDeliveries') ?? []) {
     const run = byId(records, 'runs', String(nudge.run_id));
     if (!run || Number(nudge.through_sequence) > Number(run.last_sequence)) integrity();
+    const occurrenceKey = `${nudge.run_id}\u0000${nudge.policy_version}\u0000${nudge.occurrence_id}`;
+    const checkpointKey = `${nudge.run_id}\u0000${nudge.policy_version}\u0000${nudge.checkpoint_id}`;
+    if (nudgeOccurrences.has(occurrenceKey) || nudgeCheckpoints.has(checkpointKey)) integrity();
+    nudgeOccurrences.add(occurrenceKey);
+    nudgeCheckpoints.add(checkpointKey);
+    let evidenceEventIds: unknown;
+    try {
+      evidenceEventIds = JSON.parse(String(nudge.evidence_event_ids_json));
+    } catch {
+      integrity();
+    }
+    if (!Array.isArray(evidenceEventIds)) integrity();
+    for (const eventId of evidenceEventIds) {
+      const event = eventById.get(String(eventId));
+      if (!event || event.run_id !== nudge.run_id || Number(event.sequence) > Number(nudge.through_sequence)) integrity();
+    }
   }
   const deliveryEntries = new Set<string>();
   for (const entry of records.get('deliveryEntries') ?? []) {

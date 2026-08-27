@@ -18,6 +18,8 @@ Migrations are forward-only and each applied file records its SHA-256 checksum. 
 
 Migration 004 adds the Agent Gateway execution ledger described in `execution-ledger.md`: runs, one-to-one intake links, intake feedback, append-only events/evidence, context deliveries/entries/feedback, run feedback, memory provenance links, and purge tombstones. Context delivery entries use a composite foreign key to the exact `(entry_id, entry_revision)` row; replay never follows the current revision pointer.
 
+Migration 010 adds `nudge_deliveries`, the content-free presentation history for deterministic checkpoint nudges. Migration 011 adds database guards for the supported nudge policy, code/priority pairs, and bounded JSON snapshots.
+
 `akinator_reasoning_paths` links one proposed entry revision to one run and its intake session. The unique `(run_id, entry_id, entry_revision)` key blocks same-run duplication. `qualified` is set only by the checkpoint service for completed actionable paths with fresh verification or a passing test. Concept aggregation uses a server-derived normalized hash; no user-supplied concept key or retrieval counter can increase it.
 
 Migration 009 adds the external-Skill tables and completes the revision-hash

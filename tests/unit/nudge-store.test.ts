@@ -68,20 +68,52 @@ test('reads empty history and aggregates delivered occurrences, run count, and l
   }
 });
 
-test('separates policy versions and rejects only duplicate logical identities', async () => {
+test('rejects unsupported policy versions and duplicate logical identities', async () => {
   const database = await createDatabase();
   try {
     insertRun(database, 'run-store-a');
     insertRun(database, 'run-store-b');
     deliver(database, 'run-store-a', 'occurrence-a');
-    deliver(database, 'run-store-a', 'occurrence-a', 'UNRESOLVED_FAILURE', 3, 'nudges.v2');
     deliver(database, 'run-store-b', 'occurrence-a');
     assert.equal(readNudgeHistory(database, 'run-store-a', NUDGE_POLICY_VERSION).runDeliveryCount, 1);
-    assert.equal(readNudgeHistory(database, 'run-store-a', 'nudges.v2').runDeliveryCount, 1);
     assert.equal(readNudgeHistory(database, 'run-store-b', NUDGE_POLICY_VERSION).runDeliveryCount, 1);
+    assert.throws(
+      () => deliver(database, 'run-store-a', 'occurrence-a', 'UNRESOLVED_FAILURE', 3, 'nudges.v2'),
+      (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR',
+    );
+    assert.throws(
+      () => readNudgeHistory(database, 'run-store-a', 'nudges.v2'),
+      (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR',
+    );
     assert.throws(() => deliver(database, 'run-store-a', 'occurrence-a'), (error: unknown) => (
       error as { code?: string }
     ).code === 'CONFLICT');
+  } finally {
+    database.close();
+  }
+});
+
+test('rejects priority mismatches at the application and database boundaries', async () => {
+  const database = await createDatabase();
+  try {
+    insertRun(database, 'run-priority');
+    assert.throws(
+      () => recordNudgeDeliveryInTransaction(database, {
+        runId: 'run-priority',
+        policyVersion: NUDGE_POLICY_VERSION,
+        code: 'UNRESOLVED_FAILURE',
+        occurrenceId: 'occurrence-priority',
+        throughSequence: 1,
+        priority: 999,
+        deliveredAt: now,
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR',
+    );
+    deliver(database, 'run-priority', 'stored-priority');
+    assert.throws(
+      () => database.prepare('UPDATE nudge_deliveries SET priority = 999 WHERE run_id = ?').run('run-priority'),
+      /invalid nudge delivery/u,
+    );
   } finally {
     database.close();
   }
