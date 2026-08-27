@@ -7,6 +7,7 @@ import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { CheckpointService } from '../../src/gateway/checkpoint-service.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
+import { KiokukoError } from '../../src/errors.js';
 
 const migrations = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-27T00:00:00.000Z';
@@ -101,6 +102,56 @@ test('delivers verify-after-mutation once and preserves the original nudge on ex
       projection: unrelated.projection,
       recommendations: unrelated.recommendations,
     }), null);
+  } finally {
+    database.close();
+  }
+});
+
+test('rejects checkpoint replay when a stored nudge code no longer matches its occurrence', async () => {
+  const database = await createDatabase();
+  try {
+    const gateway = new AgentGatewayService(database, { now: () => now });
+    const opened = open(gateway, 'nudge-binding');
+    append(gateway, opened.runId, 'binding-seed', {
+      eventId: 'binding-verification-pass',
+      eventType: 'verification.recorded',
+      actor: 'test',
+      occurredAt: now,
+      outcome: 'passed',
+      payload: { suite: 'focused' },
+    });
+    const service = new CheckpointService(database, () => now);
+    const first = checkpoint(service, opened.runId, 'binding-checkpoint', { changedPaths: ['src/app.ts'] });
+    const firstNudge = service.deliverNudge({
+      runId: opened.runId,
+      idempotencyKey: 'binding-checkpoint',
+      throughSequence: first.acceptedThrough,
+      projection: first.projection,
+      recommendations: first.recommendations,
+    });
+    assert.equal(firstNudge?.code, 'VERIFY_AFTER_MUTATION');
+
+    database.prepare('UPDATE nudge_deliveries SET code = ?, priority = ? WHERE run_id = ?')
+      .run('UNRESOLVED_FAILURE', 3, opened.runId);
+
+    const replay = checkpoint(service, opened.runId, 'binding-checkpoint', { changedPaths: ['src/app.ts'] });
+    assert.throws(
+      () => service.deliverNudge({
+        runId: opened.runId,
+        idempotencyKey: 'binding-checkpoint',
+        throughSequence: replay.acceptedThrough,
+        projection: replay.projection,
+        recommendations: replay.recommendations,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof KiokukoError);
+        assert.equal(error.code, 'INTEGRITY_ERROR');
+        assert.equal(error.message, 'Stored nudge occurrence binding is invalid');
+        assert.equal(error.message.includes('UNRESOLVED_FAILURE'), false);
+        assert.equal(error.message.includes(firstNudge!.occurrenceId), false);
+        return true;
+      },
+    );
   } finally {
     database.close();
   }

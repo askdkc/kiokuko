@@ -5,6 +5,7 @@ import { validateTimestamp } from '../ledger/validate.js';
 import { canonicalContentHash, compareCanonicalStrings } from '../serialization/validate.js';
 import {
   NUDGE_CODES,
+  DEFAULT_NUDGE_RATE_LIMIT,
   NUDGE_MESSAGES,
   NUDGE_POLICY_VERSION,
   NUDGE_PRIORITY,
@@ -98,7 +99,7 @@ export function readNudgeHistory(
     const previous = lastSequenceByCode.get(value.code);
     if (previous === undefined || value.throughSequence > previous) lastSequenceByCode.set(value.code, value.throughSequence);
   }
-  validateStoredNudgeHistory(historyRows, { maxPerResponse: 1, maxPerRun: 3, minSequenceDistancePerCode: 3 });
+  validateStoredNudgeHistory(historyRows, DEFAULT_NUDGE_RATE_LIMIT);
   return {
     deliveredOccurrenceIds,
     runDeliveryCount: rows.length,

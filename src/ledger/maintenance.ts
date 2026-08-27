@@ -7,6 +7,7 @@ import { findSecret } from '../memory/secrets.js';
 import { sanitizeJson } from '../security/sanitize.js';
 import { canonicalJson, GENESIS_HASH, hashLedgerEvent } from './hash.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
+import { DEFAULT_NUDGE_RATE_LIMIT } from '../context/nudges.js';
 import { parseStoredIdentifier, parseStoredNudgeDelivery, validateStoredNudgeHistory, type StoredNudgeDelivery } from '../context/nudge-validation.js';
 import {
   CAPTURE_PROFILES,
@@ -404,7 +405,8 @@ function inspectNudgeDeliveries(database: SqliteDatabase, workspace: string | un
     try {
       parseStoredIdentifier(row.run_id, 'runId');
       stored = parseStoredNudgeDelivery(row);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof KiokukoError) || error.code !== 'INTEGRITY_ERROR') throw error;
       findings.add('nudgeDeliveries', 'invalid_row', 'nudge_deliveries', row.id);
       findings.add('storedValues', 'invalid_nudge_row', 'nudge_deliveries', row.id);
       scanRow(row, 'nudge_deliveries', row.id, findings);
@@ -432,7 +434,7 @@ function inspectNudgeDeliveries(database: SqliteDatabase, workspace: string | un
 
   for (const history of histories.values()) {
     try {
-      validateStoredNudgeHistory(history, { maxPerResponse: 1, maxPerRun: 3, minSequenceDistancePerCode: 3 });
+      validateStoredNudgeHistory(history, DEFAULT_NUDGE_RATE_LIMIT);
     } catch (error) {
       if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
         findings.add('nudgeDeliveries', 'invalid_history', 'nudge_deliveries', history[0]?.id);

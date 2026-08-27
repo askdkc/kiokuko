@@ -8,7 +8,7 @@ import { findSecret } from '../memory/secrets.js';
 import { canonicalJson, compareCanonicalStrings, requireWorkspace } from '../serialization/validate.js';
 import { hashLedgerEvent, GENESIS_HASH } from './hash.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
-import { NUDGE_CODES, NUDGE_POLICY_VERSION, NUDGE_PRIORITY } from '../context/nudges.js';
+import { DEFAULT_NUDGE_RATE_LIMIT, NUDGE_CODES, NUDGE_POLICY_VERSION, NUDGE_PRIORITY } from '../context/nudges.js';
 import { parseStoredNudgeDelivery, validateStoredNudgeHistory } from '../context/nudge-validation.js';
 import {
   CAPTURE_PROFILES,
@@ -947,7 +947,7 @@ function validateGraph(records: Map<ArchiveRecordType, ArchiveRecord[]>, workspa
     }
   }
   for (const history of nudgeHistory.values()) {
-    validateStoredNudgeHistory(history, { maxPerResponse: 1, maxPerRun: 3, minSequenceDistancePerCode: 3 });
+    validateStoredNudgeHistory(history, DEFAULT_NUDGE_RATE_LIMIT);
   }
   const deliveryEntries = new Set<string>();
   for (const entry of records.get('deliveryEntries') ?? []) {

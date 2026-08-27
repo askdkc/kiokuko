@@ -294,9 +294,17 @@ export class CheckpointService {
         checkpointId,
       });
       if (existing !== null) {
-        return candidates.some((candidateValue) => candidateValue.occurrenceId === existing.occurrenceId)
-          ? existing
-          : null;
+        const matchingCandidate = candidates.find(
+          (candidateValue) => candidateValue.occurrenceId === existing.occurrenceId,
+        );
+        if (matchingCandidate === undefined) return null;
+        if (matchingCandidate.code !== existing.code) {
+          throw new KiokukoError(
+            'INTEGRITY_ERROR',
+            'Stored nudge occurrence binding is invalid',
+          );
+        }
+        return existing;
       }
       const history = readNudgeHistory(this.database, input.runId, NUDGE_POLICY_VERSION);
       const selected = selectNudge(candidates, history, input.throughSequence);

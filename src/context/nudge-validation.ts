@@ -82,6 +82,11 @@ function parseStoredIdList(value: unknown, label: string): string[] {
   if (!Array.isArray(parsed) || parsed.length > 16) integrity(`Stored nudge ${label} is invalid`);
   const result = parsed.map((item) => parseStoredIdentifier(item, label));
   if (new Set(result).size !== result.length) integrity(`Stored nudge ${label} is invalid`);
+  for (let index = 1; index < result.length; index += 1) {
+    if (compareCanonicalStrings(result[index - 1]!, result[index]!) > 0) {
+      integrity(`Stored nudge ${label} is invalid`);
+    }
+  }
   if (canonicalJson(result) !== value) integrity(`Stored nudge ${label} is invalid`);
   return result;
 }
