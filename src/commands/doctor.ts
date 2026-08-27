@@ -15,6 +15,7 @@ import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
 import { inspectLedger } from '../ledger/maintenance.js';
 import { findSecret } from '../memory/secrets.js';
 import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
+import { requireHybridSearchProjectionSchema } from '../memory/structured-memory.js';
 import { readEntryRevision } from '../memory/revisions.js';
 import { inspectMigrationSnapshot, loadMigrationSnapshot } from '../db/migrate.js';
 import { inspectLegacyContextDeliveries, type LegacyDeliveryInspectionReport } from '../context/delivery-migration.js';
@@ -163,6 +164,7 @@ async function runtimeCheck(databasePath: string, descriptorPath = getRuntimeDes
 
 interface DoctorCollectionOptions {
   databasePath: string;
+  databaseVersion: number;
   currentVersion: number;
   capabilities: DoctorResult['capabilities'];
   runtimeDescriptorPath?: string;
@@ -175,6 +177,7 @@ async function collectDoctorResult(
 ): Promise<DoctorResult> {
   const integrity = database.prepare('PRAGMA integrity_check').get<{ integrity_check: string }>()?.integrity_check ?? 'unknown';
   const foreignKeyRows = database.prepare('PRAGMA foreign_key_check').all();
+  const currentMemoryFormatAvailable = options.databaseVersion >= 9;
   const fts5 = Boolean(database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'entries_fts'").get());
   const migrationRows = count(database, 'SELECT COUNT(*) AS count FROM schema_migrations');
   const migrationCheck = { ok: migrationRows === options.currentVersion, count: migrationRows, detail: `expected ${options.currentVersion}` };
@@ -182,7 +185,7 @@ async function collectDoctorResult(
   const entryCount = count(database, 'SELECT COUNT(*) AS count FROM entries');
   const ftsCount = fts5 ? count(database, 'SELECT COUNT(*) AS count FROM entries_fts') : 0;
   let ftsCurrentMismatches = 0;
-  if (fts5) {
+  if (fts5 && currentMemoryFormatAvailable) {
     const currentRows = database.prepare(`
       SELECT e.rowid, e.id, r.title, r.body, r.summary, e.current_revision
         FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
@@ -193,7 +196,17 @@ async function collectDoctorResult(
       if (!projected || projected.title !== row.title || projected.body !== row.body || projected.summary !== (row.summary ?? '') || projected.tags_text !== tags.join(' ')) ftsCurrentMismatches += 1;
     }
   }
-  const ftsCheck = { ok: fts5 && entryCount === ftsCount && ftsCurrentMismatches === 0, count: Math.abs(entryCount - ftsCount) + ftsCurrentMismatches + (fts5 ? 0 : 1), detail: `present=${fts5}, entries=${entryCount}, fts=${ftsCount}, currentMismatches=${ftsCurrentMismatches}` };
+  const ftsCheck = !currentMemoryFormatAvailable
+    ? {
+      ok: fts5 && entryCount === ftsCount,
+      count: Math.abs(entryCount - ftsCount) + (fts5 ? 0 : 1),
+      detail: `present=${fts5}, entries=${entryCount}, fts=${ftsCount}, currentMismatches=deferred until migration 009`,
+    }
+    : {
+      ok: fts5 && entryCount === ftsCount && ftsCurrentMismatches === 0,
+      count: Math.abs(entryCount - ftsCount) + ftsCurrentMismatches + (fts5 ? 0 : 1),
+      detail: `present=${fts5}, entries=${entryCount}, fts=${ftsCount}, currentMismatches=${ftsCurrentMismatches}`,
+    };
   const missingCurrentRevisions = count(database, `
     SELECT COUNT(*) AS count FROM entries e
     LEFT JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
@@ -222,45 +235,61 @@ async function collectDoctorResult(
     ? database.prepare('SELECT singleton, algorithm FROM entry_revision_hash_format')
       .all<{ singleton: unknown; algorithm: unknown }>()
     : [];
-  const revisionHashFormatRequired = hashFormatTable?.type === 'table'
-    || count(database, 'SELECT COUNT(*) AS count FROM schema_migrations WHERE version = ?', 9) > 0;
-  let revisionHashMismatches = !revisionHashFormatRequired || hashFormats.length === 1
-    && hashFormats[0]?.singleton === 1
-    && hashFormats[0].algorithm === 'canonical-json-utf16-tags-v1'
-    ? 0
-    : 1;
-  for (const row of revisionRows) {
-    try {
-      // The shared decoder accepts only the canonical JSON preimage and the
-      // single locale-independent revision hash format.
-      readEntryRevision(database, {
-        entryId: row.entry_id,
-        workspace: row.workspace,
-        revision: row.revision,
-      });
-    } catch (error) {
-      if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
-        revisionHashMismatches += 1;
-        continue;
+  let revisionHashMismatches = 0;
+  if (currentMemoryFormatAvailable) {
+    revisionHashMismatches = hashFormats.length === 1
+      && hashFormats[0]?.singleton === 1
+      && hashFormats[0].algorithm === 'canonical-json-utf16-tags-v1'
+      ? 0
+      : 1;
+    for (const row of revisionRows) {
+      try {
+        // The shared decoder accepts only the canonical JSON preimage and the
+        // single locale-independent revision hash format.
+        readEntryRevision(database, {
+          entryId: row.entry_id,
+          workspace: row.workspace,
+          revision: row.revision,
+        });
+      } catch (error) {
+        if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
+          revisionHashMismatches += 1;
+          continue;
+        }
+        throw error;
       }
-      throw error;
     }
   }
-  const hybridCheck = (() => {
-    try {
-      const projection = hybridSearchProjectionStatus(database);
-      return {
-        ok: projection.missingSignals === 0 && projection.extraSignals === 0 && projection.staleTrigram === 0,
-        count: projection.missingSignals + projection.extraSignals + projection.staleTrigram,
-        detail: `entries=${projection.entries}, trigram=${projection.trigram}, signals=${projection.signals}, missingSignals=${projection.missingSignals}, extraSignals=${projection.extraSignals}, staleTrigram=${projection.staleTrigram}`,
-      };
-    } catch (error) {
-      if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
-        return { ok: false, count: 1, detail: 'stored projection source is invalid' };
+  const revisionHashCheck = !currentMemoryFormatAvailable
+    ? { ok: true, count: 0, detail: 'current revision hashes deferred until migration 009' }
+    : { ok: revisionHashMismatches === 0, count: revisionHashMismatches };
+  const hybridCheck = !currentMemoryFormatAvailable
+    ? (() => {
+      try {
+        requireHybridSearchProjectionSchema(database);
+        return { ok: true, count: 0, detail: 'current projection contents deferred until migration 009' };
+      } catch (error) {
+        if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
+          return { ok: false, count: 1, detail: 'search projection schema is invalid' };
+        }
+        throw error;
       }
-      throw error;
-    }
-  })();
+    })()
+    : (() => {
+      try {
+        const projection = hybridSearchProjectionStatus(database);
+        return {
+          ok: projection.missingSignals === 0 && projection.extraSignals === 0 && projection.staleTrigram === 0,
+          count: projection.missingSignals + projection.extraSignals + projection.staleTrigram,
+          detail: `entries=${projection.entries}, trigram=${projection.trigram}, signals=${projection.signals}, missingSignals=${projection.missingSignals}, extraSignals=${projection.extraSignals}, staleTrigram=${projection.staleTrigram}`,
+        };
+      } catch (error) {
+        if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
+          return { ok: false, count: 1, detail: 'stored projection source is invalid' };
+        }
+        throw error;
+      }
+    })();
   const danglingLinks = count(database, `
     SELECT COUNT(*) AS count FROM entry_links l
     LEFT JOIN entries f ON f.id = l.from_entry_id
@@ -330,7 +359,7 @@ async function collectDoctorResult(
     entryRevisions: { ok: missingCurrentRevisions === 0, count: missingCurrentRevisions },
     revisionTags: { ok: orphanRevisionTags === 0, count: orphanRevisionTags },
     deliveryRevisions: { ok: missingDeliveryRevisions === 0, count: missingDeliveryRevisions },
-    revisionHashes: { ok: revisionHashMismatches === 0, count: revisionHashMismatches },
+    revisionHashes: revisionHashCheck,
     migrations: migrationCheck,
     fts: ftsCheck,
     danglingLinks: { ok: danglingLinks === 0, count: danglingLinks },
@@ -379,6 +408,7 @@ async function legacyMigrationPreflight(options: DoctorOptions): Promise<DoctorR
       if (report.invalid > 0 || report.scanTruncated || report.findingsTruncated) {
         result = await collectDoctorResult(database, {
           databasePath,
+          databaseVersion: plan.databaseVersion,
           currentVersion: plan.currentVersion,
           capabilities: null,
           ...(options.runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: options.runtimeDescriptorPath }),
@@ -424,6 +454,7 @@ export async function runDoctor(
     const legacyDeliveries = inspectLegacyContextDeliveries(database);
     doctorResult = await collectDoctorResult(database, {
       databasePath: initialized.databasePath,
+      databaseVersion: initialized.currentVersion,
       currentVersion: initialized.currentVersion,
       capabilities: initialized.capabilities,
       ...(options.runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: options.runtimeDescriptorPath }),

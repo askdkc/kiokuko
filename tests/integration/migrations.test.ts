@@ -8,7 +8,7 @@ import test from 'node:test';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { LedgerStore } from '../../src/ledger/store.js';
-import { recordEntry } from '../../src/memory/entries.js';
+import { recordEntry, type EntryRecord } from '../../src/memory/entries.js';
 import { listContextDeliveries, readContextDelivery } from '../../src/context/delivery.js';
 import {
   inspectLegacyContextDelivery,
@@ -19,6 +19,7 @@ import {
 import { runDoctor } from '../../src/commands/doctor.js';
 import { CheckpointService, FeedbackService } from '../../src/gateway/checkpoint-service.js';
 import { promoteLedgerProposal } from '../../src/ledger/promotion.js';
+import { inspectLedger } from '../../src/ledger/maintenance.js';
 import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 
 const execFileAsync = promisify(execFile);
@@ -179,6 +180,40 @@ function databaseSnapshot(database: ReturnType<typeof openConnection>): unknown 
     name,
     rows: database.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all(),
   }));
+}
+
+const REVISION_IMMUTABILITY_TRIGGER = `CREATE TRIGGER entry_revisions_immutable_update
+BEFORE UPDATE ON entry_revisions
+BEGIN
+    SELECT RAISE(ABORT, 'entry_revisions are immutable');
+END`;
+
+function installLegacyRevisionProjection(database: ReturnType<typeof openConnection>, entry: EntryRecord): void {
+  const legacyTags = [...entry.tags].sort((left, right) => left.localeCompare(right));
+  assert.notDeepEqual(legacyTags, entry.tags);
+  const legacyHash = canonicalContentHash({
+    kind: entry.kind,
+    title: entry.title,
+    body: entry.body,
+    summary: entry.summary,
+    scope: entry.scope,
+    provenance: entry.provenance,
+    tags: legacyTags,
+  });
+  database.exec('DROP TRIGGER entry_revisions_immutable_update');
+  database.prepare('UPDATE entry_revisions SET content_hash = ? WHERE entry_id = ? AND revision = ?')
+    .run(legacyHash, entry.id, entry.revision);
+  database.prepare('DELETE FROM entry_revision_tags WHERE entry_id = ? AND revision = ?')
+    .run(entry.id, entry.revision);
+  const insertTag = database.prepare('INSERT INTO entry_revision_tags (entry_id, revision, tag) VALUES (?, ?, ?)');
+  for (const tag of legacyTags) insertTag.run(entry.id, entry.revision, tag);
+  const updateProjection = (table: 'entries_fts' | 'entries_trigram'): void => {
+    database.prepare(`UPDATE ${table} SET tags_text = ? WHERE rowid = (SELECT rowid FROM entries WHERE id = ?)`)
+      .run(legacyTags.join(' '), entry.id);
+  };
+  updateProjection('entries_fts');
+  updateProjection('entries_trigram');
+  database.exec(REVISION_IMMUTABILITY_TRIGGER);
 }
 
 async function applyContextDeliveryMigration(fixture: { database: ReturnType<typeof openConnection>; migrationsDirectory: string }) {
@@ -704,6 +739,94 @@ test('doctor preflights invalid legacy deliveries from released database version
     ]);
     assert.equal(report.checks.legacyDeliveries.ok, false);
     assert.equal(report.checks.migrations.ok, false);
+    assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 8);
+    assert.deepEqual(databaseSnapshot(fixture.database), before);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('reports a missing nudge table after migration 010 is applied', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-010-missing-nudge-table',
+    entries: [],
+    characterBudget: 100,
+    characterCount: 0,
+  });
+  try {
+    assert.deepEqual((await applyContextDeliveryMigration(fixture)).applied, [12]);
+    fixture.database.exec('DROP TABLE nudge_deliveries');
+
+    const ledger = inspectLedger(fixture.database);
+    assert.equal(ledger.ok, false);
+    assert.equal(ledger.checks.nudgeDeliveries.ok, false);
+    assert.deepEqual(ledger.checks.nudgeDeliveries.findings, [
+      { check: 'nudgeDeliveries', kind: 'missing_table', category: 'nudge_deliveries' },
+    ]);
+
+    const report = await runDoctor({
+      databasePath: fixture.databasePath,
+      migrationsDirectory: fixture.migrationsDirectory,
+      runtimeDescriptorPath: path.join(path.dirname(fixture.migrationsDirectory), 'runtime.json'),
+    });
+    assert.equal(report.ok, false);
+    assert.equal(report.checks.nudgeDeliveries.ok, false);
+    assert.equal(report.checks.nudgeDeliveries.count, 1);
+    assert.match(report.checks.nudgeDeliveries.detail ?? '', /findings=1/u);
+    assert.deepEqual(
+      fixture.database.prepare('SELECT version FROM schema_migrations WHERE version IN (10, 12) ORDER BY version')
+        .all<{ version: number }>().map((row) => row.version),
+      [10, 12],
+    );
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('defers current memory-format checks for a version 8 preflight', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-009-deferred-version-8',
+    entries: [],
+    characterBudget: 100,
+    characterCount: 0,
+    maxMigrationVersion: 8,
+  });
+  try {
+    const entry = recordEntry(fixture.database, {
+      workspace: fixture.workspace,
+      kind: 'lesson',
+      status: 'verified',
+      trustLevel: 'source_verified',
+      confidence: 0.9,
+      title: 'Released locale ordering',
+      body: 'The pre-migration revision uses its released locale-sensitive tag order.',
+      tags: ['Z', 'a'],
+      createdBy: 'migration-test',
+    }, { idFactory: () => 'entry-legacy-locale-order', now: fixture.createdAt });
+    installLegacyRevisionProjection(fixture.database, entry);
+    fixture.database.prepare('UPDATE context_deliveries SET delivery_id = ? WHERE delivery_id = ?')
+      .run('context-forged-deferred-version-8', fixture.deliveryId);
+    await copyMigrationRange(fixture.migrationsDirectory, 9, 12);
+    const before = databaseSnapshot(fixture.database);
+
+    const report = await runDoctor({
+      databasePath: fixture.databasePath,
+      migrationsDirectory: fixture.migrationsDirectory,
+      runtimeDescriptorPath: path.join(path.dirname(fixture.migrationsDirectory), 'runtime.json'),
+    });
+
+    assert.equal(report.ok, false);
+    assert.equal(report.currentVersion, 12);
+    assert.equal(report.checks.legacyDeliveries.ok, false);
+    assert.equal(report.checks.revisionHashes.ok, true);
+    assert.equal(report.checks.revisionHashes.count, 0);
+    assert.match(report.checks.revisionHashes.detail ?? '', /deferred until migration 009/u);
+    assert.equal(report.checks.fts.ok, true);
+    assert.equal(report.checks.fts.count, 0);
+    assert.match(report.checks.fts.detail ?? '', /currentMismatches=deferred until migration 009/u);
+    assert.equal(report.checks.hybridSearch.ok, true);
+    assert.equal(report.checks.hybridSearch.count, 0);
+    assert.match(report.checks.hybridSearch.detail ?? '', /deferred until migration 009/u);
     assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 8);
     assert.deepEqual(databaseSnapshot(fixture.database), before);
   } finally {
