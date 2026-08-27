@@ -63,6 +63,13 @@ export interface CheckpointMutationPort {
   checkpoint(input: unknown): CheckpointMutationResult | PromiseLike<CheckpointMutationResult>;
 }
 
+type PersistedCheckpointAcknowledgement = Omit<CheckpointMutationResult, 'preliminaryRecommendations'> & {
+  readonly recommendations: readonly Recommendation[];
+  readonly nudge: null;
+  readonly context: null;
+  readonly untrusted: true;
+};
+
 function validation(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Invalid checkpoint request');
 }
@@ -248,6 +255,19 @@ function storedCheckpointObject(value: unknown): Record<string, unknown> {
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
   }
   return value;
+}
+
+function serializeCheckpointAcknowledgement(
+  value: CheckpointMutationResult,
+): PersistedCheckpointAcknowledgement {
+  const { preliminaryRecommendations, ...acknowledgement } = value;
+  return {
+    ...acknowledgement,
+    recommendations: preliminaryRecommendations,
+    nudge: null,
+    context: null,
+    untrusted: true,
+  };
 }
 
 function normalizeCheckpointMutationResult(value: unknown): CheckpointMutationResult {
@@ -443,7 +463,9 @@ export class CheckpointMutationService {
     const response = withImmediateTransaction(this.database, () => executeIdempotentInTransaction(
       this.database,
       { scope: `agent.checkpoint.${value.runId}`, key: value.idempotencyKey, request: value.request, createdAt: now },
-      () => mutationValue(this.database, value.runId as string, request, value.idempotencyKey as string, now) as unknown as JsonValue,
+      () => serializeCheckpointAcknowledgement(
+        mutationValue(this.database, value.runId as string, request, value.idempotencyKey as string, now),
+      ) as unknown as JsonValue,
     ));
     return normalizeCheckpointMutationResult(response);
   }

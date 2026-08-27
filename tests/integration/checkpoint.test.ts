@@ -46,6 +46,17 @@ test('checkpoint appends, projects task profile revisions, and replays canonical
     characterBudget: 9000,
   };
   const first = service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-1', request });
+  const stored = db.prepare(
+    'SELECT response_json AS responseJson FROM gateway_idempotency WHERE scope = ?',
+  ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
+  assert.ok(stored);
+  const persisted = JSON.parse(stored.responseJson) as Record<string, unknown>;
+  assert.ok(Object.hasOwn(persisted, 'recommendations'));
+  assert.equal(Object.hasOwn(persisted, 'preliminaryRecommendations'), false);
+  assert.deepEqual(persisted.recommendations, first.recommendations);
+  assert.equal(persisted.nudge, null);
+  assert.equal(persisted.context, null);
+  assert.equal(persisted.untrusted, true);
   const replay = service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-1', request });
   assert.deepEqual(replay, first);
   assert.equal(first.acceptedThrough, 5);
@@ -77,10 +88,9 @@ test('replays pre-refactor checkpoint idempotency records through the legacy ser
       'SELECT response_json AS responseJson FROM gateway_idempotency WHERE scope = ?',
     ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
     assert.ok(stored);
-    const current = JSON.parse(stored.responseJson) as Record<string, unknown>;
     const legacyResponse: Record<string, unknown> = {
-      ...current,
-      recommendations: current.preliminaryRecommendations,
+      ...first,
+      recommendations: first.recommendations,
       nudge: null,
       context: null,
       untrusted: true,

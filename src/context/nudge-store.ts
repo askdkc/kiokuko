@@ -81,23 +81,57 @@ export interface NudgeDeliveryInput {
   readonly deliveredAt: string;
 }
 
-function plainObject(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+const NUDGE_DELIVERY_FIELDS = new Set([
+  'runId',
+  'policyVersion',
+  'code',
+  'occurrenceId',
+  'checkpointId',
+  'throughSequence',
+  'priority',
+  'evidenceEventIds',
+  'referenceIds',
+  'deliveredAt',
+]);
+
+function ownedPlainObject(input: unknown): Record<string, unknown> {
+  try {
+    if (isProxy(input)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Nudge delivery input is invalid');
+    }
+    if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Nudge delivery input is invalid');
+    }
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Nudge delivery input is invalid');
+    }
+
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const result = Object.create(null) as Record<string, unknown>;
+    for (const key of Reflect.ownKeys(input)) {
+      if (typeof key !== 'string' || !NUDGE_DELIVERY_FIELDS.has(key)) {
+        throw new KiokukoError('VALIDATION_ERROR', 'Nudge delivery input is invalid');
+      }
+      const descriptor = descriptors[key];
+      if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) {
+        throw new KiokukoError('VALIDATION_ERROR', 'Nudge delivery input is invalid');
+      }
+      result[key] = descriptor.value;
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof KiokukoError) throw error;
     throw new KiokukoError('VALIDATION_ERROR', 'Nudge delivery input is invalid');
   }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Nudge delivery input is invalid');
-  }
-  return value as Record<string, unknown>;
 }
 
 function inputIdList(value: unknown, label: string): string[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || isProxy(value) || value.length > 16) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Nudge evidence is too large');
-  }
   try {
+    if (isProxy(value) || !Array.isArray(value) || value.length > 16) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Nudge evidence is too large');
+    }
     if (Object.getPrototypeOf(value) !== Array.prototype) {
       throw new KiokukoError('VALIDATION_ERROR', `${label} must be a dense data array`);
     }
@@ -122,23 +156,26 @@ function inputIdList(value: unknown, label: string): string[] {
 }
 
 export function parseNewNudgeDelivery(input: unknown): NewNudgeDelivery {
-  const value = plainObject(input);
+  const value = ownedPlainObject(input);
   const runId = parseInputIdentifier(value.runId, 'runId');
   const policyVersion = parseInputIdentifier(value.policyVersion, 'policyVersion');
   assertNudgePolicyVersion(policyVersion);
   const occurrenceId = parseInputIdentifier(value.occurrenceId, 'occurrenceId');
   const checkpointId = parseInputIdentifier(value.checkpointId, 'checkpointId');
-  if (typeof value.code !== 'string') {
+  const code = value.code;
+  if (typeof code !== 'string') {
     throw new KiokukoError('VALIDATION_ERROR', 'Invalid nudge code');
   }
-  assertNudgeCode(value.code);
-  if (!Number.isSafeInteger(value.throughSequence) || (value.throughSequence as number) < 0) {
+  assertNudgeCode(code);
+  const throughSequence = value.throughSequence;
+  if (!Number.isSafeInteger(throughSequence) || (throughSequence as number) < 0) {
     throw new KiokukoError('VALIDATION_ERROR', 'throughSequence must be a non-negative safe integer');
   }
-  if (!Number.isSafeInteger(value.priority) || (value.priority as number) < 1) {
+  const priority = value.priority;
+  if (!Number.isSafeInteger(priority) || (priority as number) < 1) {
     throw new KiokukoError('VALIDATION_ERROR', 'priority must be a positive safe integer');
   }
-  if (value.priority !== NUDGE_PRIORITY[value.code]) {
+  if (priority !== NUDGE_PRIORITY[code]) {
     throw new KiokukoError('VALIDATION_ERROR', 'priority does not match nudge code');
   }
   const deliveredAt = validateTimestamp(value.deliveredAt, 'deliveredAt');
@@ -149,11 +186,11 @@ export function parseNewNudgeDelivery(input: unknown): NewNudgeDelivery {
     id,
     runId,
     policyVersion,
-    code: value.code,
+    code,
     occurrenceId,
     checkpointId,
-    throughSequence: value.throughSequence as number,
-    priority: value.priority as number,
+    throughSequence: throughSequence as number,
+    priority: priority as number,
     evidenceEventIds,
     referenceIds,
     deliveredAt,

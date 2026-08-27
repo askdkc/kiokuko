@@ -5,7 +5,13 @@ import path from 'node:path';
 import test from 'node:test';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
-import { NUDGE_POLICY_VERSION, readNudgeHistory, recordNudgeDeliveryInTransaction } from '../../src/context/nudge-store.js';
+import {
+  NUDGE_POLICY_VERSION,
+  parseNewNudgeDelivery,
+  readNudgeHistory,
+  recordNudgeDeliveryInTransaction,
+  type NudgeDeliveryInput,
+} from '../../src/context/nudge-store.js';
 
 const migrations = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-27T00:00:00.000Z';
@@ -45,6 +51,20 @@ function deliver(
     priority: code === 'UNRESOLVED_FAILURE' ? 3 : 4,
     deliveredAt: now,
   });
+}
+
+function validInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    runId: 'run-parser',
+    policyVersion: NUDGE_POLICY_VERSION,
+    code: 'UNRESOLVED_FAILURE',
+    occurrenceId: 'occurrence-parser',
+    checkpointId: 'checkpoint-parser',
+    throughSequence: 3,
+    priority: 3,
+    deliveredAt: now,
+    ...overrides,
+  };
 }
 
 test('reads empty history and aggregates delivered occurrences, run count, and latest code sequence', async () => {
@@ -148,6 +168,79 @@ test('rejects sparse nudge evidence without writing a row', async () => {
   } finally {
     database.close();
   }
+});
+
+test('rejects top-level accessors and proxies without invoking getters or writing rows', async () => {
+  const database = await createDatabase();
+  try {
+    insertRun(database, 'run-parser');
+    let reads = 0;
+    const accessorInput = validInput();
+    Object.defineProperty(accessorInput, 'throughSequence', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return 3;
+      },
+    });
+    const reject = (input: unknown) => {
+      assert.throws(
+        () => recordNudgeDeliveryInTransaction(database, input as NudgeDeliveryInput),
+        (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR',
+      );
+    };
+
+    reject(accessorInput);
+    assert.equal(reads, 0);
+    reject(new Proxy(validInput(), {}));
+
+    const revokedObject = Proxy.revocable(validInput(), {});
+    revokedObject.revoke();
+    reject(revokedObject.proxy);
+
+    assert.equal(
+      database.prepare('SELECT COUNT(*) AS count FROM nudge_deliveries WHERE run_id = ?').get<{ count: number }>('run-parser')?.count,
+      0,
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test('rejects revoked evidence arrays as validation errors without writing a row', async () => {
+  const database = await createDatabase();
+  try {
+    insertRun(database, 'run-revoked-evidence');
+    const revokedEvidence = Proxy.revocable(['event-parser'], {});
+    revokedEvidence.revoke();
+    assert.throws(
+      () => recordNudgeDeliveryInTransaction(database, validInput({
+        runId: 'run-revoked-evidence',
+        evidenceEventIds: revokedEvidence.proxy,
+      }) as unknown as NudgeDeliveryInput),
+      (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR',
+    );
+    assert.equal(
+      database.prepare('SELECT COUNT(*) AS count FROM nudge_deliveries WHERE run_id = ?').get<{ count: number }>('run-revoked-evidence')?.count,
+      0,
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test('returns the validated scalar values from an owned snapshot', () => {
+  const parsed = parseNewNudgeDelivery(validInput({
+    code: 'VERIFY_AFTER_MUTATION',
+    occurrenceId: 'occurrence-snapshot',
+    checkpointId: 'checkpoint-snapshot',
+    throughSequence: 8,
+    priority: 4,
+  }));
+  assert.equal(parsed.code, 'VERIFY_AFTER_MUTATION');
+  assert.equal(parsed.throughSequence, 8);
+  assert.equal(parsed.priority, 4);
 });
 
 test('rejects persisted histories that exceed the run cap or violate code cooldown', async () => {
