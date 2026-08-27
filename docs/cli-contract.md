@@ -381,7 +381,7 @@ Checkpoint responses retain the full deterministic `recommendations` array. They
 }
 ```
 
-`recommendations` describe all applicable deterministic conditions. `nudge` is at most one rate-limited presentation selected from the v1 subset and does not remove or mutate recommendations. Nudges are advisory, not commands, never trigger tools or tests, and do not alter the ledger projection. The same logical occurrence is delivered at most once per run and policy version; v1 allows at most three deliveries per run and requires three committed ledger sequence positions between deliveries of the same code. Delivery history is stored in `nudge_deliveries`, separate from `ledger_events`, and timestamps are audit metadata rather than an eligibility signal.
+`recommendations` describe all applicable deterministic conditions. On HTTP checkpoint responses, `nudge` is at most one rate-limited presentation selected from `SIDE_EFFECT_OUTCOME_UNKNOWN`, `UNRESOLVED_FAILURE`, or `VERIFY_AFTER_MUTATION` after capability gating; it does not remove or mutate recommendations. Nudges are advisory, not commands, never trigger tools or tests, and do not alter the ledger projection. The same logical occurrence is delivered at most once per run and policy version; v1 allows at most three deliveries per run and requires three committed ledger sequence positions between deliveries of the same code. Delivery history is stored in `nudge_deliveries`, separate from `ledger_events`, and timestamps are audit metadata rather than an eligibility signal. The stdio MCP `memory_checkpoint` lifecycle is separate and does not return HTTP checkpoint nudges.
 
 ## Existing guide and memory paths
 

@@ -110,16 +110,14 @@ test('uses causal episode state rather than unrelated sequence advancement for o
   assert.notEqual(originalCandidate?.occurrenceId, newCandidate?.occurrenceId);
 });
 
-test('changes occurrences when unresolved failures or contradiction references change', () => {
+test('changes occurrences when unresolved failure state changes', () => {
   const failureRecommendation = recommendation('UNRESOLVED_FAILURE');
   const failureA = deriveNudgeCandidates(projection({ unresolvedFailureEventIds: ['failure-a'] }), [failureRecommendation])[0];
   const failureAReordered = deriveNudgeCandidates(projection({ unresolvedFailureEventIds: ['failure-a', 'failure-a'] }), [failureRecommendation])[0];
   const failureB = deriveNudgeCandidates(projection({ unresolvedFailureEventIds: ['failure-b'] }), [failureRecommendation])[0];
-  const contradiction = (referenceIds: string[]) => deriveNudgeCandidates(projection(), [recommendation('CONTRADICTORY_MEMORY', { metadata: { truncated: false, referenceIds } })])[0];
 
   assert.equal(failureA?.occurrenceId, failureAReordered?.occurrenceId);
   assert.notEqual(failureA?.occurrenceId, failureB?.occurrenceId);
-  assert.notEqual(contradiction(['entry-a', 'entry-b'])?.occurrenceId, contradiction(['entry-a', 'entry-c'])?.occurrenceId);
 });
 
 test('does not create v1 candidates for unsupported recommendation codes', () => {

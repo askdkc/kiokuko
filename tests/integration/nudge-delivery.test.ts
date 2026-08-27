@@ -71,16 +71,36 @@ test('delivers verify-after-mutation once and preserves the original nudge on ex
     const request = { changedPaths: ['src/app.ts'] };
     const first = checkpoint(service, opened.runId, 'verify-checkpoint', request);
     assert.equal(first.recommendations.some((item) => item.code === 'VERIFY_AFTER_MUTATION'), true);
-    assert.equal(first.nudge?.code, 'VERIFY_AFTER_MUTATION');
+    const firstNudge = service.deliverNudge({
+      runId: opened.runId,
+      idempotencyKey: 'verify-checkpoint',
+      throughSequence: first.acceptedThrough,
+      projection: first.projection,
+      recommendations: first.recommendations,
+    });
+    assert.equal(firstNudge?.code, 'VERIFY_AFTER_MUTATION');
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM nudge_deliveries WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count, 1);
 
     const replay = checkpoint(service, opened.runId, 'verify-checkpoint', request);
-    assert.deepEqual(replay, first);
+    const replayNudge = service.deliverNudge({
+      runId: opened.runId,
+      idempotencyKey: 'verify-checkpoint',
+      throughSequence: replay.acceptedThrough,
+      projection: replay.projection,
+      recommendations: replay.recommendations,
+    });
+    assert.deepEqual(replayNudge, firstNudge);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM nudge_deliveries WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count, 1);
 
     const unrelated = checkpoint(service, opened.runId, 'verify-unrelated', { currentStep: 'continue' });
     assert.equal(unrelated.recommendations.some((item) => item.code === 'VERIFY_AFTER_MUTATION'), true);
-    assert.equal(unrelated.nudge, null);
+    assert.equal(service.deliverNudge({
+      runId: opened.runId,
+      idempotencyKey: 'verify-unrelated',
+      throughSequence: unrelated.acceptedThrough,
+      projection: unrelated.projection,
+      recommendations: unrelated.recommendations,
+    }), null);
   } finally {
     database.close();
   }
@@ -101,7 +121,14 @@ test('creates a new unresolved-failure occurrence after the previous episode is 
     });
     const service = new CheckpointService(database, () => now);
     const first = checkpoint(service, opened.runId, 'failure-a-checkpoint', { currentStep: 'diagnose' });
-    assert.equal(first.nudge?.code, 'UNRESOLVED_FAILURE');
+    const firstNudge = service.deliverNudge({
+      runId: opened.runId,
+      idempotencyKey: 'failure-a-checkpoint',
+      throughSequence: first.acceptedThrough,
+      projection: first.projection,
+      recommendations: first.recommendations,
+    });
+    assert.equal(firstNudge?.code, 'UNRESOLVED_FAILURE');
 
     append(gateway, opened.runId, 'failure-a-resolve', {
       eventId: 'failure-a-resolved',
@@ -127,8 +154,15 @@ test('creates a new unresolved-failure occurrence after the previous episode is 
       payload: { step: 'test' },
     });
     const second = checkpoint(service, opened.runId, 'failure-b-checkpoint', { currentStep: 'report' });
-    assert.equal(second.nudge?.code, 'UNRESOLVED_FAILURE');
-    assert.notEqual(second.nudge?.occurrenceId, first.nudge?.occurrenceId);
+    const secondNudge = service.deliverNudge({
+      runId: opened.runId,
+      idempotencyKey: 'failure-b-checkpoint',
+      throughSequence: second.acceptedThrough,
+      projection: second.projection,
+      recommendations: second.recommendations,
+    });
+    assert.equal(secondNudge?.code, 'UNRESOLVED_FAILURE');
+    assert.notEqual(secondNudge?.occurrenceId, firstNudge?.occurrenceId);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM nudge_deliveries WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count, 2);
   } finally {
     database.close();

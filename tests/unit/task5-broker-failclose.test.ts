@@ -27,6 +27,9 @@ function routeContext(failure: unknown, taskType: unknown = 'build', intakeStatu
           },
         };
       },
+      deliverNudge() {
+        return null;
+      },
     },
     service: {
       readRun() {
@@ -90,6 +93,9 @@ test('checkpoint enrichment ignores stale acknowledgement profile fields and use
             source: 'akinator+ledger-revisions',
           },
         };
+      },
+      deliverNudge() {
+        return null;
       },
     },
     service: {
@@ -185,6 +191,9 @@ test('checkpoint preserves exhausted intake and does not apply the ready-only me
             source: 'akinator+ledger-revisions',
           },
         };
+      },
+      deliverNudge() {
+        return null;
       },
     },
     service: {

@@ -43,6 +43,7 @@ const gatewayIndexes = [
   'idx_gateway_idempotency_created_at',
   'nudge_deliveries_run_code_sequence',
   'nudge_deliveries_run_sequence',
+  'nudge_deliveries_run_checkpoint',
 ] as const;
 
 const now = '2026-08-20T00:00:00.000Z';

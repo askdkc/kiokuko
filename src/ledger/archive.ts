@@ -8,6 +8,7 @@ import { findSecret } from '../memory/secrets.js';
 import { canonicalJson, requireWorkspace } from '../serialization/validate.js';
 import { hashLedgerEvent, GENESIS_HASH } from './hash.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
+import { NUDGE_CODES } from '../context/nudges.js';
 import {
   CAPTURE_PROFILES,
   COVERAGE_LEVELS,
@@ -52,6 +53,7 @@ export interface LedgerArchiveCounts {
   evidence: number;
   deliveries: number;
   deliveryEntries: number;
+  nudgeDeliveries: number;
   contextFeedback: number;
   runFeedback: number;
   memoryLinks: number;
@@ -98,6 +100,7 @@ const EMPTY_COUNTS: LedgerArchiveCounts = {
   evidence: 0,
   deliveries: 0,
   deliveryEntries: 0,
+  nudgeDeliveries: 0,
   contextFeedback: 0,
   runFeedback: 0,
   memoryLinks: 0,
@@ -134,6 +137,10 @@ const RECORD_FIELDS: Record<ArchiveRecordType | 'manifest' | 'checksum', readonl
     'policy_version', 'score_schema_version', 'char_budget', 'char_count', 'truncated', 'created_at',
   ],
   deliveryEntries: ['type', 'delivery_id', 'entry_id', 'entry_revision', 'rank', 'score_components_json', 'selection_reason_json', 'origin_scope'],
+  nudgeDeliveries: [
+    'type', 'id', 'run_id', 'policy_version', 'code', 'occurrence_id', 'checkpoint_id',
+    'through_sequence', 'priority', 'evidence_event_ids_json', 'reference_ids_json', 'delivered_at',
+  ],
   contextFeedback: ['type', 'feedback_id', 'delivery_id', 'entry_id', 'run_id', 'verdict', 'comment', 'actor', 'idempotency_key', 'created_at'],
   runFeedback: [
     'type', 'feedback_id', 'run_id', 'outcome', 'recommendation_code', 'recommendation_verdict', 'rating', 'comment',
@@ -155,6 +162,7 @@ const TABLE_FIELDS: Record<ArchiveRecordType, readonly string[]> = {
   evidence: RECORD_FIELDS.evidence.slice(1),
   deliveries: RECORD_FIELDS.deliveries.slice(1),
   deliveryEntries: RECORD_FIELDS.deliveryEntries.slice(1),
+  nudgeDeliveries: RECORD_FIELDS.nudgeDeliveries.slice(1),
   contextFeedback: RECORD_FIELDS.contextFeedback.slice(1),
   runFeedback: RECORD_FIELDS.runFeedback.slice(1),
   memoryLinks: RECORD_FIELDS.memoryLinks.slice(1),
@@ -171,6 +179,7 @@ const TABLE_NAMES: Record<ArchiveRecordType, string> = {
   evidence: 'ledger_evidence',
   deliveries: 'context_deliveries',
   deliveryEntries: 'context_delivery_entries',
+  nudgeDeliveries: 'nudge_deliveries',
   contextFeedback: 'context_feedback',
   runFeedback: 'run_feedback',
   memoryLinks: 'ledger_memory_links',
@@ -187,6 +196,11 @@ const UNIQUE_CONSTRAINT_TARGETS: Record<ArchiveRecordType, readonly string[]> = 
   evidence: ['ledger_evidence.evidence_id'],
   deliveries: ['context_deliveries.delivery_id'],
   deliveryEntries: ['context_delivery_entries.delivery_id, context_delivery_entries.entry_id'],
+  nudgeDeliveries: [
+    'nudge_deliveries.id',
+    'nudge_deliveries.run_id, nudge_deliveries.policy_version, nudge_deliveries.occurrence_id',
+    'nudge_deliveries.run_id, nudge_deliveries.policy_version, nudge_deliveries.checkpoint_id',
+  ],
   contextFeedback: ['context_feedback.feedback_id', 'context_feedback.run_id, context_feedback.actor, context_feedback.idempotency_key'],
   runFeedback: ['run_feedback.feedback_id', 'run_feedback.run_id, run_feedback.actor, run_feedback.idempotency_key'],
   memoryLinks: ['ledger_memory_links.link_id'],
@@ -203,6 +217,7 @@ const RECORD_NAMES: Record<ArchiveRecordType, string> = {
   evidence: 'evidence',
   deliveries: 'delivery',
   deliveryEntries: 'delivery_entry',
+  nudgeDeliveries: 'nudge_delivery',
   contextFeedback: 'context_feedback',
   runFeedback: 'run_feedback',
   memoryLinks: 'memory_link',
@@ -362,6 +377,16 @@ function tagsJson(value: unknown): void {
   for (const tag of value) {
     if (typeof tag !== 'string' || tag.trim().length === 0 || tag.length > 200 || seen.has(tag)) integrity();
     seen.add(tag);
+  }
+}
+
+function nudgeIdListJson(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 16) integrity();
+  const seen = new Set<string>();
+  for (const item of value) {
+    const id = stringValue(item, true, IDENTIFIER_MAX_LENGTH);
+    if (seen.has(id)) integrity();
+    seen.add(id);
   }
 }
 
@@ -529,6 +554,19 @@ function normalizeRecord(type: ArchiveRecordType, source: Row, workspace: string
       normalized.selection_reason_json = parsedJson(raw.selection_reason_json, tagsJson);
       normalized.origin_scope = enumValue(raw.origin_scope, new Set(['project', 'ecosystem', 'global']));
       break;
+    case 'nudgeDeliveries':
+      normalized.id = stringValue(raw.id, true, IDENTIFIER_MAX_LENGTH);
+      normalized.run_id = stringValue(raw.run_id, true, IDENTIFIER_MAX_LENGTH);
+      normalized.policy_version = stringValue(raw.policy_version, true, IDENTIFIER_MAX_LENGTH);
+      normalized.code = enumValue(raw.code, new Set(NUDGE_CODES));
+      normalized.occurrence_id = stringValue(raw.occurrence_id, true, IDENTIFIER_MAX_LENGTH);
+      normalized.checkpoint_id = stringValue(raw.checkpoint_id, true, IDENTIFIER_MAX_LENGTH);
+      normalized.through_sequence = integerValue(raw.through_sequence);
+      normalized.priority = integerValue(raw.priority, 1);
+      normalized.evidence_event_ids_json = parsedJson(raw.evidence_event_ids_json, nudgeIdListJson);
+      normalized.reference_ids_json = parsedJson(raw.reference_ids_json, nudgeIdListJson);
+      normalized.delivered_at = timestampValue(raw.delivered_at);
+      break;
     case 'contextFeedback':
       normalized.feedback_id = stringValue(raw.feedback_id, true, IDENTIFIER_MAX_LENGTH);
       normalized.delivery_id = stringValue(raw.delivery_id, true, IDENTIFIER_MAX_LENGTH);
@@ -604,6 +642,7 @@ function queryRows(database: SqliteDatabase, type: ArchiveRecordType, workspace:
     evidence: { sql: `SELECT e.${TABLE_FIELDS.evidence.join(', e.')} FROM ledger_evidence AS e JOIN ledger_runs AS lr ON lr.run_id = e.run_id WHERE lr.workspace = ? ORDER BY e.run_id ASC, e.evidence_id ASC`, parameters: [workspace] },
     deliveries: { sql: `SELECT d.${TABLE_FIELDS.deliveries.join(', d.')} FROM context_deliveries AS d JOIN ledger_runs AS lr ON lr.run_id = d.run_id WHERE lr.workspace = ? ORDER BY d.run_id ASC, d.delivery_id ASC`, parameters: [workspace] },
     deliveryEntries: { sql: `SELECT c.${TABLE_FIELDS.deliveryEntries.join(', c.')} FROM context_delivery_entries AS c JOIN context_deliveries AS d ON d.delivery_id = c.delivery_id JOIN ledger_runs AS lr ON lr.run_id = d.run_id WHERE lr.workspace = ? ORDER BY c.delivery_id ASC, c.entry_id ASC`, parameters: [workspace] },
+    nudgeDeliveries: { sql: `SELECT n.${TABLE_FIELDS.nudgeDeliveries.join(', n.')} FROM nudge_deliveries AS n JOIN ledger_runs AS lr ON lr.run_id = n.run_id WHERE lr.workspace = ? ORDER BY n.run_id ASC, n.through_sequence ASC, n.id ASC`, parameters: [workspace] },
     contextFeedback: { sql: `SELECT f.${TABLE_FIELDS.contextFeedback.join(', f.')} FROM context_feedback AS f JOIN ledger_runs AS lr ON lr.run_id = f.run_id WHERE lr.workspace = ? ORDER BY f.feedback_id ASC`, parameters: [workspace] },
     runFeedback: { sql: `SELECT f.${TABLE_FIELDS.runFeedback.join(', f.')} FROM run_feedback AS f JOIN ledger_runs AS lr ON lr.run_id = f.run_id WHERE lr.workspace = ? ORDER BY f.feedback_id ASC`, parameters: [workspace] },
     memoryLinks: { sql: `SELECT l.${TABLE_FIELDS.memoryLinks.join(', l.')} FROM ledger_memory_links AS l JOIN ledger_runs AS lr ON lr.run_id = l.run_id WHERE lr.workspace = ? ORDER BY l.link_id ASC`, parameters: [workspace] },
@@ -741,6 +780,7 @@ function identity(type: ArchiveRecordType, record: ArchiveRecord): string {
     case 'evidence': return String(record.evidence_id);
     case 'deliveries': return String(record.delivery_id);
     case 'deliveryEntries': return `${record.delivery_id}\u0000${record.entry_id}`;
+    case 'nudgeDeliveries': return String(record.id);
     case 'contextFeedback': return String(record.feedback_id);
     case 'runFeedback': return String(record.feedback_id);
     case 'memoryLinks': return String(record.link_id);
@@ -859,6 +899,10 @@ function validateGraph(records: Map<ArchiveRecordType, ArchiveRecord[]>, workspa
       if (!intake || intake.session_id !== delivery.intake_session_id) integrity();
     }
   }
+  for (const nudge of records.get('nudgeDeliveries') ?? []) {
+    const run = byId(records, 'runs', String(nudge.run_id));
+    if (!run || Number(nudge.through_sequence) > Number(run.last_sequence)) integrity();
+  }
   const deliveryEntries = new Set<string>();
   for (const entry of records.get('deliveryEntries') ?? []) {
     const key = `${entry.delivery_id}\u0000${entry.entry_id}`;
@@ -955,6 +999,7 @@ function selectExisting(database: SqliteDatabase, type: ArchiveRecordType, recor
     case 'evidence': sql += 'evidence_id = ?'; parameters.push(String(record.evidence_id)); break;
     case 'deliveries': sql += 'delivery_id = ?'; parameters.push(String(record.delivery_id)); break;
     case 'deliveryEntries': sql += 'delivery_id = ? AND entry_id = ?'; parameters.push(String(record.delivery_id), String(record.entry_id)); break;
+    case 'nudgeDeliveries': sql += 'id = ?'; parameters.push(String(record.id)); break;
     case 'contextFeedback': sql += 'feedback_id = ?'; parameters.push(String(record.feedback_id)); break;
     case 'runFeedback': sql += 'feedback_id = ?'; parameters.push(String(record.feedback_id)); break;
     case 'memoryLinks': sql += 'link_id = ?'; parameters.push(String(record.link_id)); break;
@@ -1041,7 +1086,7 @@ function orderedForImport(records: Map<ArchiveRecordType, ArchiveRecord[]>): Arc
   };
   for (const run of runRecords) emitRun(run);
   const orderedTypes: ArchiveRecordType[] = [
-    'sessions', 'answers', 'runIntakes', 'intakeFeedback', 'events', 'evidence', 'deliveries',
+    'sessions', 'answers', 'runIntakes', 'intakeFeedback', 'events', 'evidence', 'deliveries', 'nudgeDeliveries',
     'deliveryEntries', 'contextFeedback', 'runFeedback', 'memoryLinks', 'purgeAudit',
   ];
   for (const type of orderedTypes) output.push(...(records.get(type) ?? []));

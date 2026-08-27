@@ -23,6 +23,7 @@ import { recordContextFeedback } from '../../src/context/feedback.js';
 import { readContextDelivery, recordContextDelivery, type ContextDeliveryInput } from '../../src/context/delivery.js';
 import { inspectLedger } from '../../src/ledger/maintenance.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
+import { recordNudgeDeliveryInTransaction } from '../../src/context/nudge-store.js';
 
 async function setup() {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-ledger-archive-'));
@@ -138,6 +139,7 @@ test('exports an empty workspace as a deterministic ledger manifest without memo
       evidence: 0,
       deliveries: 0,
       deliveryEntries: 0,
+      nudgeDeliveries: 0,
       contextFeedback: 0,
       runFeedback: 0,
       memoryLinks: 0,
@@ -178,7 +180,7 @@ test('exports runs and events with stable allowlisted records and canonical stor
     const archive = exportLedgerArchive(database, { workspace: 'workspace:archive' });
     const lines = archive.content.trimEnd().split('\n').map((line: string) => JSON.parse(line) as Record<string, unknown>);
     assert.deepEqual(lines.slice(1).map((line: Record<string, unknown>) => line.type), ['manifest', 'run', 'event']);
-    assert.deepEqual(archive.counts, { runs: 1, sessions: 0, answers: 0, runIntakes: 0, intakeFeedback: 0, events: 1, evidence: 0, deliveries: 0, deliveryEntries: 0, contextFeedback: 0, runFeedback: 0, memoryLinks: 0, purgeAudit: 0 });
+    assert.deepEqual(archive.counts, { runs: 1, sessions: 0, answers: 0, runIntakes: 0, intakeFeedback: 0, events: 1, evidence: 0, deliveries: 0, deliveryEntries: 0, nudgeDeliveries: 0, contextFeedback: 0, runFeedback: 0, memoryLinks: 0, purgeAudit: 0 });
     assert.equal((lines[2]?.coverage_json as string), '{"approval":"unavailable","command":"declared","file":"unavailable","run":"complete","tool":"best_effort"}');
     assert.equal((lines[2]?.metadata_json as string), '{"a":"stable","z":true}');
     assert.equal((lines[3]?.payload_json as string), '{"a":"two","z":1}');
@@ -247,6 +249,18 @@ test('archives the complete linked ledger graph without curated memory bodies or
     }, { idFactory: () => 'entry-complete-1', now: fixedNow });
     const memoryBefore = exportWorkspace(source, { workspace }).content;
     const graph = seedCompleteGraph(source, workspace, sourceEntry.id);
+    recordNudgeDeliveryInTransaction(source, {
+      runId: graph.runId,
+      policyVersion: 'nudges.v1',
+      code: 'UNRESOLVED_FAILURE',
+      occurrenceId: 'archive-nudge-occurrence',
+      checkpointId: 'archive-nudge-checkpoint',
+      throughSequence: 1,
+      priority: 3,
+      evidenceEventIds: [graph.eventId],
+      referenceIds: [],
+      deliveredAt: fixedNow,
+    });
     const unrelated = new LedgerStore(source, { now: () => fixedNow });
     unrelated.createRun({
       runId: 'unrelated-run', workspace: 'workspace:other', protocolVersion: '1', client: { kind: 'generic' }, captureProfile: 'minimal',
@@ -265,13 +279,17 @@ test('archives the complete linked ledger graph without curated memory bodies or
     assert.equal(archive.content.includes('unrelated-run'), false);
     assert.deepEqual(archive.counts, {
       runs: 1, sessions: 1, answers: 1, runIntakes: 1, intakeFeedback: 1, events: 1, evidence: 1,
-      deliveries: 1, deliveryEntries: 1, contextFeedback: 1, runFeedback: 1, memoryLinks: 1, purgeAudit: 1,
+      deliveries: 1, deliveryEntries: 1, nudgeDeliveries: 1, contextFeedback: 1, runFeedback: 1, memoryLinks: 1, purgeAudit: 1,
     });
     const lines = archive.content.trimEnd().split('\n').map((line: string) => JSON.parse(line) as Record<string, unknown>);
     const delivery = lines.find((line: Record<string, unknown>) => line.type === 'delivery');
     assert.ok(delivery);
     assert.equal('external_sync_summary_json' in delivery, false);
     assert.equal(delivery.score_schema_version, 1);
+    const nudge = lines.find((line: Record<string, unknown>) => line.type === 'nudge_delivery');
+    assert.ok(nudge);
+    assert.equal(nudge.code, 'UNRESOLVED_FAILURE');
+    assert.equal(nudge.evidence_event_ids_json, `["${graph.eventId}"]`);
     const deliveryEntry = lines.find((line: Record<string, unknown>) => line.type === 'delivery_entry');
     assert.ok(deliveryEntry);
     assert.deepEqual(Object.keys(deliveryEntry).sort(), ['delivery_id', 'entry_id', 'entry_revision', 'origin_scope', 'rank', 'score_components_json', 'selection_reason_json', 'type'].sort());

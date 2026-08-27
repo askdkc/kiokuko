@@ -11,7 +11,6 @@ import type { NudgeHistory } from './nudge-store.js';
 export const NUDGE_POLICY_VERSION = 'nudges.v1' as const;
 
 export const NUDGE_CODES = [
-  'CONTRADICTORY_MEMORY',
   'SIDE_EFFECT_OUTCOME_UNKNOWN',
   'UNRESOLVED_FAILURE',
   'VERIFY_AFTER_MUTATION',
@@ -45,14 +44,12 @@ export interface NudgeRateLimitPolicy {
 }
 
 export const NUDGE_PRIORITY: Readonly<Record<NudgeCode, number>> = Object.freeze({
-  CONTRADICTORY_MEMORY: 1,
   SIDE_EFFECT_OUTCOME_UNKNOWN: 2,
   UNRESOLVED_FAILURE: 3,
   VERIFY_AFTER_MUTATION: 4,
 });
 
 export const NUDGE_MESSAGES: Readonly<Record<NudgeCode, string>> = Object.freeze({
-  CONTRADICTORY_MEMORY: 'Verified memory entries contain a contradiction. Consider reviewing the linked entries before relying on them.',
   SIDE_EFFECT_OUTCOME_UNKNOWN: 'A side effect has no known outcome. Consider verifying its result before relying on subsequent work.',
   UNRESOLVED_FAILURE: 'Unresolved failures remain. Consider resolving or explicitly carrying them forward before finishing.',
   VERIFY_AFTER_MUTATION: 'The latest passing verification predates the most recent mutation. Consider re-running the affected verification before finishing.',
@@ -72,6 +69,11 @@ function isNudgeCode(value: string): value is NudgeCode {
 
 function sortedBoundedIds(values: readonly string[], maximum: number): string[] {
   return [...new Set(values)].sort(compareCanonicalStrings).slice(0, maximum);
+}
+
+function canonicalIdentityIds(values: readonly string[]): { count: number; hash: string } {
+  const ids = [...new Set(values)].sort(compareCanonicalStrings);
+  return { count: ids.length, hash: canonicalContentHash(ids) };
 }
 
 function occurrenceId(code: NudgeCode, occurrence: Record<string, unknown>): string {
@@ -122,24 +124,17 @@ export function deriveNudgeCandidates(
   const byCode = recommendationByCode(recommendations);
   const candidates: NudgeCandidate[] = [];
 
-  const contradiction = byCode.get('CONTRADICTORY_MEMORY');
-  if (contradiction !== undefined && contradiction.metadata.referenceIds.length > 0) {
-    candidates.push(candidate('CONTRADICTORY_MEMORY', {
-      referenceIds: sortedBoundedIds(contradiction.metadata.referenceIds, MAX_REFERENCE_IDS),
-    }, contradiction));
-  }
-
   const unknownOutcome = byCode.get('SIDE_EFFECT_OUTCOME_UNKNOWN');
   if (unknownOutcome !== undefined && projection.unknownOutcomeEventIds.length > 0) {
     candidates.push(candidate('SIDE_EFFECT_OUTCOME_UNKNOWN', {
-      unknownOutcomeEventIds: sortedBoundedIds(projection.unknownOutcomeEventIds, MAX_EVIDENCE_EVENT_IDS),
+      unknownOutcomeEventIds: canonicalIdentityIds(projection.unknownOutcomeEventIds),
     }, unknownOutcome));
   }
 
   const failure = byCode.get('UNRESOLVED_FAILURE');
   if (failure !== undefined && projection.unresolvedFailureEventIds.length > 0) {
     candidates.push(candidate('UNRESOLVED_FAILURE', {
-      unresolvedFailureEventIds: sortedBoundedIds(projection.unresolvedFailureEventIds, MAX_EVIDENCE_EVENT_IDS),
+      unresolvedFailureEventIds: canonicalIdentityIds(projection.unresolvedFailureEventIds),
     }, failure));
   }
 
@@ -149,7 +144,7 @@ export function deriveNudgeCandidates(
     && projection.latestMutationSequence !== null) {
     candidates.push(candidate('VERIFY_AFTER_MUTATION', {
       latestMutationSequence: projection.latestMutationSequence,
-      latestMutationEventIds: sortedBoundedIds(projection.latestMutationEventIds, MAX_EVIDENCE_EVENT_IDS),
+      latestMutationEventIds: canonicalIdentityIds(projection.latestMutationEventIds),
     }, verification));
   }
 

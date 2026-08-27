@@ -116,6 +116,13 @@ export function createTask5Route(context: AgentRouteContext): V1RouteHandler {
         if (intakeStatus === 'needs_answer' || gated.broker.projection === null) {
           throw new KiokukoError('INTEGRITY_ERROR', 'Checkpoint context is not bound to finalized intake');
         }
+        const nudge = await context.enqueueWrite(() => context.checkpointService.deliverNudge({
+          runId,
+          idempotencyKey,
+          throughSequence: gated.broker.acceptedThrough,
+          projection: gated.broker.projection!,
+          recommendations: gated.value.recommendations,
+        }));
         const enriched = {
           ...data,
           runStatus: finalRun.status,
@@ -124,6 +131,7 @@ export function createTask5Route(context: AgentRouteContext): V1RouteHandler {
           profileHash: gated.broker.profileHash,
           projection: gated.broker.projection,
           ...gated.value,
+          nudge,
           requestBindingHash,
         };
         return successEnvelope('agent.checkpoint', enriched);
