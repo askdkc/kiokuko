@@ -57,6 +57,55 @@ test('checkpoint appends, projects task profile revisions, and replays canonical
   assert.throws(() => service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-1', request: { apiVersion: '1', currentStep: 'different' } }), (error: unknown) => (error as { code?: string }).code === 'CONFLICT');
 });
 
+test('replays pre-refactor checkpoint idempotency records through the legacy service', async () => {
+  const db = await database();
+  try {
+    const gateway = new AgentGatewayService(db, { now: () => now });
+    const opened = open(gateway, 'checkpoint-legacy-replay');
+    const service = new CheckpointService(db, () => now);
+    const request = {
+      apiVersion: '1',
+      currentStep: 'continue bounded work',
+      characterBudget: 9000,
+    };
+    const first = service.checkpoint({
+      runId: opened.runId,
+      idempotencyKey: 'checkpoint-legacy-replay-1',
+      request,
+    });
+    const stored = db.prepare(
+      'SELECT response_json AS responseJson FROM gateway_idempotency WHERE scope = ?',
+    ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
+    assert.ok(stored);
+    const current = JSON.parse(stored.responseJson) as Record<string, unknown>;
+    const legacyResponse: Record<string, unknown> = {
+      ...current,
+      recommendations: current.preliminaryRecommendations,
+      nudge: null,
+      context: null,
+      untrusted: true,
+    };
+    delete legacyResponse.preliminaryRecommendations;
+    db.prepare('UPDATE gateway_idempotency SET response_json = ? WHERE scope = ?').run(
+      canonicalJson(legacyResponse),
+      `agent.checkpoint.${opened.runId}`,
+    );
+
+    const replay = service.checkpoint({
+      runId: opened.runId,
+      idempotencyKey: 'checkpoint-legacy-replay-1',
+      request,
+    });
+    assert.deepEqual(replay, first);
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count,
+      first.acceptedThrough,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('checkpoint rejects intake runs before appending work events', async () => {
   const db = await database();
   const gateway = new AgentGatewayService(db, { now: () => now });

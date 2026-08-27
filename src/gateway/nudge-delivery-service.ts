@@ -16,6 +16,10 @@ export interface ValidatedNudgeDeliveryRequest {
   readonly recommendations: readonly Recommendation[];
 }
 
+export interface NudgeDeliveryPort {
+  deliver(input: ValidatedNudgeDeliveryRequest): DeliveredNudge | null;
+}
+
 export class NudgeDeliveryService {
   constructor(private readonly database: SqliteDatabase, private readonly now: () => string = () => new Date().toISOString()) {}
 

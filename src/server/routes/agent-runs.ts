@@ -1,7 +1,7 @@
 import { KiokukoError } from '../../errors.js';
 import { successEnvelope } from '../../serialization/envelope.js';
 import type { AgentGatewayService } from '../../gateway/agent-service.js';
-import type { CheckpointService, FeedbackService } from '../../gateway/checkpoint-service.js';
+import type { FeedbackService, LegacyCheckpointServicePort } from '../../gateway/checkpoint-service.js';
 import type { ContextBroker } from '../../context/broker.js';
 import type { AgentCheckpointUseCase } from '../agent-checkpoint-use-case.js';
 import type { V1RouteHandler, V1RouteRequest } from '../router.js';
@@ -15,15 +15,23 @@ const MAX_ID_LENGTH = 256;
 
 type QueryField = 'workspace' | 'client' | 'status' | 'cursor' | 'limit' | 'after' | 'type';
 
-export interface AgentRouteContext {
+type CheckpointComposition =
+  | {
+      readonly agentCheckpoint: AgentCheckpointUseCase;
+      readonly checkpointService?: never;
+    }
+  | {
+      readonly agentCheckpoint?: never;
+      readonly checkpointService: LegacyCheckpointServicePort;
+    };
+
+export type AgentRouteContext = {
   readonly database: import('../../db/adapter.js').SqliteDatabase;
   readonly service: AgentGatewayService;
-  readonly agentCheckpoint?: AgentCheckpointUseCase;
-  readonly checkpointService?: CheckpointService;
   readonly feedbackService: FeedbackService;
   readonly broker: ContextBroker;
   readonly enqueueWrite: <T>(operation: () => T | PromiseLike<T>) => Promise<T>;
-}
+} & CheckpointComposition;
 
 function invalid(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Request is invalid');

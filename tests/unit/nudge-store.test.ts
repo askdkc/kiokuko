@@ -102,18 +102,48 @@ test('rejects priority mismatches at the application and database boundaries', a
       () => recordNudgeDeliveryInTransaction(database, {
         runId: 'run-priority',
         policyVersion: NUDGE_POLICY_VERSION,
-        code: 'UNRESOLVED_FAILURE',
-        occurrenceId: 'occurrence-priority',
-        throughSequence: 1,
-        priority: 999,
-        deliveredAt: now,
-      }),
-      (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR',
-    );
+         code: 'UNRESOLVED_FAILURE',
+         occurrenceId: 'occurrence-priority',
+         checkpointId: 'checkpoint-priority',
+         throughSequence: 1,
+         priority: 999,
+         deliveredAt: now,
+       }),
+       (error: unknown) => (error as { code?: string; message?: string }).code === 'VALIDATION_ERROR'
+         && (error as { message?: string }).message === 'priority does not match nudge code',
+     );
     deliver(database, 'run-priority', 'stored-priority');
     assert.throws(
       () => database.prepare('UPDATE nudge_deliveries SET priority = 999 WHERE run_id = ?').run('run-priority'),
       /invalid nudge delivery/u,
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test('rejects sparse nudge evidence without writing a row', async () => {
+  const database = await createDatabase();
+  try {
+    insertRun(database, 'run-sparse');
+    const sparse = new Array<string>(1);
+    assert.throws(
+      () => recordNudgeDeliveryInTransaction(database, {
+        runId: 'run-sparse',
+        policyVersion: NUDGE_POLICY_VERSION,
+        code: 'UNRESOLVED_FAILURE',
+        occurrenceId: 'sparse-occurrence',
+        checkpointId: 'sparse-checkpoint',
+        throughSequence: 1,
+        priority: 3,
+        evidenceEventIds: sparse,
+        deliveredAt: now,
+      }),
+      (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR',
+    );
+    assert.equal(
+      database.prepare('SELECT COUNT(*) AS count FROM nudge_deliveries WHERE run_id = ?').get<{ count: number }>('run-sparse')?.count,
+      0,
     );
   } finally {
     database.close();

@@ -30,6 +30,11 @@ export interface CheckpointResponse extends Omit<CheckpointMutationResult, 'prel
   readonly untrusted: true;
 }
 
+export interface LegacyCheckpointServicePort {
+  checkpoint(input: unknown): CheckpointResponse;
+  deliverNudge(input: ValidatedNudgeDeliveryRequest): DeliveredNudge | null;
+}
+
 function validation(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Invalid gateway request');
 }

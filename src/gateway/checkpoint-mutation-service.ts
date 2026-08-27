@@ -9,9 +9,14 @@ import { projectLedger, type LedgerProjection } from '../ledger/projection.js';
 import { LedgerStore } from '../ledger/store.js';
 import { sanitizeEvent } from '../ledger/redaction.js';
 import { validateEventBatch, validateTimestamp } from '../ledger/validate.js';
-import type { JsonObject, JsonValue, LedgerEventInput, LedgerEventType, RunStatus } from '../ledger/types.js';
+import { COVERAGE_LEVELS, type JsonObject, type JsonValue, type LedgerEventInput, type LedgerEventType, type RunStatus } from '../ledger/types.js';
 import { executeIdempotentInTransaction } from '../server/idempotency.js';
-import { buildRecommendations, type Recommendation } from '../context/recommendations.js';
+import {
+  buildRecommendations,
+  RECOMMENDATION_CODES,
+  RECOMMENDATION_PRIORITY,
+  type Recommendation,
+} from '../context/recommendations.js';
 import { readContextRunRetrievalState } from '../context/run-state.js';
 import {
   recordContextFeedbackInTransaction,
@@ -54,6 +59,10 @@ export interface CheckpointMutationResult {
   readonly characterBudget: number;
 }
 
+export interface CheckpointMutationPort {
+  checkpoint(input: unknown): CheckpointMutationResult | PromiseLike<CheckpointMutationResult>;
+}
+
 function validation(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Invalid checkpoint request');
 }
@@ -78,6 +87,192 @@ function assertPlainObject(value: unknown): Record<string, unknown> {
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) validation();
   return value as Record<string, unknown>;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || isProxy(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+function isDenseArray(value: unknown): value is readonly unknown[] {
+  if (!Array.isArray(value) || isProxy(value)) return false;
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== value.length + 1 || !keys.includes('length') || keys.some((key) => typeof key !== 'string')) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isStringArray(value: unknown): value is string[] {
+  if (!isDenseArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined || !('value' in descriptor) || typeof descriptor.value !== 'string') return false;
+  }
+  return true;
+}
+
+function isNumberArray(value: unknown): value is number[] {
+  if (!isDenseArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined || !('value' in descriptor)
+      || typeof descriptor.value !== 'number'
+      || !Number.isSafeInteger(descriptor.value)
+      || descriptor.value < 0) return false;
+  }
+  return true;
+}
+
+function isSourceSequenceArray(value: unknown): value is Array<number | null> {
+  if (!isDenseArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined || !('value' in descriptor)
+      || (descriptor.value !== null && (typeof descriptor.value !== 'number'
+        || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0))) return false;
+  }
+  return true;
+}
+
+function isNonNegativeSequence(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isTaskProfile(value: unknown): value is LedgerProjection['taskProfile'] {
+  if (!isPlainRecord(value)) return false;
+  return (value.taskType === null || (typeof value.taskType === 'string'
+    && TASK_TYPES.includes(value.taskType as (typeof TASK_TYPES)[number])))
+    && isNullableString(value.target)
+    && isNullableString(value.expected)
+    && isNullableString(value.constraints);
+}
+
+function isResponseTaskProfile(value: unknown): value is CheckpointMutationResult['taskProfile'] {
+  return isTaskProfile(value) && isPlainRecord(value) && value.source === 'akinator+ledger-revisions';
+}
+
+function isCoverage(value: unknown): boolean {
+  if (!isPlainRecord(value)) return false;
+  return (['run', 'tool', 'command', 'file', 'approval'] as const).every((field) => (
+    typeof value[field] === 'string' && COVERAGE_LEVELS.includes(value[field] as (typeof COVERAGE_LEVELS)[number])
+  ));
+}
+
+function isProjection(value: unknown): value is LedgerProjection {
+  if (!isPlainRecord(value)) return false;
+  const evidenceStates = ['none', 'failed', 'fresh', 'stale'] as const;
+  const missingFields = ['taskType', 'target', 'expected'] as const;
+  return isNonNegativeSequence(value.throughSequence)
+    && isTaskProfile(value.taskProfile)
+    && typeof value.profileHash === 'string'
+    && typeof value.evidenceState === 'string'
+    && evidenceStates.includes(value.evidenceState as (typeof evidenceStates)[number])
+    && isStringArray(value.unresolvedFailureEventIds)
+    && isStringArray(value.unknownOutcomeEventIds)
+    && (value.latestMutationSequence === null || isNonNegativeSequence(value.latestMutationSequence))
+    && isStringArray(value.latestMutationEventIds)
+    && (value.latestPassingVerificationSequence === null || isNonNegativeSequence(value.latestPassingVerificationSequence))
+    && isStringArray(value.latestPassingVerificationEventIds)
+    && (value.coverage === 'complete' || value.coverage === 'partial')
+    && isCoverage(value.declaredCoverage)
+    && typeof value.intakeIncomplete === 'boolean'
+    && isDenseArray(value.missingProfileFields)
+    && value.missingProfileFields.every((field) => typeof field === 'string'
+      && missingFields.includes(field as (typeof missingFields)[number]));
+}
+
+function isRecommendation(value: unknown): value is Recommendation {
+  if (!isPlainRecord(value) || typeof value.code !== 'string'
+    || !RECOMMENDATION_CODES.includes(value.code as (typeof RECOMMENDATION_CODES)[number])
+    || typeof value.message !== 'string'
+    || !isStringArray(value.evidenceEventIds)
+    || typeof value.priority !== 'number'
+    || value.priority !== RECOMMENDATION_PRIORITY[value.code as (typeof RECOMMENDATION_CODES)[number]]
+    || value.untrusted !== true
+    || value.actionable !== false
+    || !isPlainRecord(value.metadata)
+    || typeof value.metadata.truncated !== 'boolean'
+    || !isStringArray(value.metadata.referenceIds)) return false;
+  return value.metadata.incompleteCoverageCategories === undefined
+    || isStringArray(value.metadata.incompleteCoverageCategories);
+}
+
+function isRecommendationArray(value: unknown): value is Recommendation[] {
+  if (!isDenseArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined || !('value' in descriptor) || !isRecommendation(descriptor.value)) return false;
+  }
+  return true;
+}
+
+function isCheckpointMutationResult(value: unknown): value is CheckpointMutationResult {
+  if (!isPlainRecord(value)) return false;
+  return typeof value.runId === 'string'
+    && isNonNegativeSequence(value.acceptedThrough)
+    && isNumberArray(value.localSequences)
+    && isSourceSequenceArray(value.sourceSequences)
+    && isStringArray(value.eventIds)
+    && value.runStatus === 'active'
+    && (value.intakeStatus === 'ready' || value.intakeStatus === 'exhausted')
+    && isResponseTaskProfile(value.taskProfile)
+    && typeof value.profileHash === 'string'
+    && isProjection(value.projection)
+    && isRecommendationArray(value.preliminaryRecommendations)
+    && typeof value.characterBudget === 'number'
+    && Number.isSafeInteger(value.characterBudget)
+    && value.characterBudget >= 1
+    && value.characterBudget <= 100_000;
+}
+
+function storedCheckpointObject(value: unknown): Record<string, unknown> {
+  if (!isPlainRecord(value)) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
+  }
+  return value;
+}
+
+function normalizeCheckpointMutationResult(value: unknown): CheckpointMutationResult {
+  const object = storedCheckpointObject(value);
+  const recommendations = Object.hasOwn(object, 'preliminaryRecommendations')
+    ? object.preliminaryRecommendations
+    : object.recommendations;
+  const normalized = { ...object, preliminaryRecommendations: recommendations };
+  if (!isCheckpointMutationResult(normalized)) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
+  }
+  return {
+    runId: normalized.runId,
+    acceptedThrough: normalized.acceptedThrough,
+    localSequences: normalized.localSequences,
+    sourceSequences: normalized.sourceSequences,
+    eventIds: normalized.eventIds,
+    runStatus: normalized.runStatus,
+    intakeStatus: normalized.intakeStatus,
+    taskProfile: normalized.taskProfile,
+    profileHash: normalized.profileHash,
+    projection: normalized.projection,
+    preliminaryRecommendations: normalized.preliminaryRecommendations,
+    characterBudget: normalized.characterBudget,
+  };
 }
 
 function boundedString(value: unknown, max = MAX_TEXT): string {
@@ -245,10 +440,11 @@ export class CheckpointMutationService {
     if (!run) throw new KiokukoError('NOT_FOUND', 'Ledger run not found');
     const now = validateTimestamp(this.now(), 'createdAt');
     const request = normalizeRequest(value.request, run.workspace, now);
-    return withImmediateTransaction(this.database, () => executeIdempotentInTransaction(
+    const response = withImmediateTransaction(this.database, () => executeIdempotentInTransaction(
       this.database,
       { scope: `agent.checkpoint.${value.runId}`, key: value.idempotencyKey, request: value.request, createdAt: now },
       () => mutationValue(this.database, value.runId as string, request, value.idempotencyKey as string, now) as unknown as JsonValue,
-    ) as unknown as CheckpointMutationResult);
+    ));
+    return normalizeCheckpointMutationResult(response);
   }
 }

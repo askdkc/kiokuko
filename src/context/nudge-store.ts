@@ -1,3 +1,4 @@
+import { isProxy } from 'node:util/types';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { isSqliteUniqueConstraintError } from '../db/sqlite-retry.js';
@@ -67,6 +68,19 @@ export interface NudgeDeliveryInsertRow {
   readonly deliveredAt: string;
 }
 
+export interface NudgeDeliveryInput {
+  readonly runId: string;
+  readonly policyVersion: string;
+  readonly code: NudgeCode;
+  readonly occurrenceId: string;
+  readonly checkpointId: string;
+  readonly throughSequence: number;
+  readonly priority: number;
+  readonly evidenceEventIds?: readonly string[];
+  readonly referenceIds?: readonly string[];
+  readonly deliveredAt: string;
+}
+
 function plainObject(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Nudge delivery input is invalid');
@@ -80,10 +94,31 @@ function plainObject(value: unknown): Record<string, unknown> {
 
 function inputIdList(value: unknown, label: string): string[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 16) {
+  if (!Array.isArray(value) || isProxy(value) || value.length > 16) {
     throw new KiokukoError('VALIDATION_ERROR', 'Nudge evidence is too large');
   }
-  return [...new Set(value.map((item) => parseInputIdentifier(item, label)))].sort(compareCanonicalStrings);
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      throw new KiokukoError('VALIDATION_ERROR', `${label} must be a dense data array`);
+    }
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== value.length + 1 || !keys.includes('length') || keys.some((key) => typeof key !== 'string')) {
+      throw new KiokukoError('VALIDATION_ERROR', `${label} must be a dense data array`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const parsed: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) {
+        throw new KiokukoError('VALIDATION_ERROR', `${label} must be a dense data array`);
+      }
+      parsed.push(parseInputIdentifier(descriptor.value, label));
+    }
+    return [...new Set(parsed)].sort(compareCanonicalStrings);
+  } catch (error) {
+    if (error instanceof KiokukoError) throw error;
+    throw new KiokukoError('VALIDATION_ERROR', `${label} must be a dense data array`);
+  }
 }
 
 export function parseNewNudgeDelivery(input: unknown): NewNudgeDelivery {
@@ -241,7 +276,7 @@ export function readNudgeHistory(
   };
 }
 
-export function recordNudgeDeliveryInTransaction(database: SqliteDatabase, input: unknown): void {
+export function recordNudgeDeliveryInTransaction(database: SqliteDatabase, input: NudgeDeliveryInput): void {
   const delivery = parseNewNudgeDelivery(input);
   insertNudgeDelivery(database, serializeNudgeDelivery(delivery));
 }
