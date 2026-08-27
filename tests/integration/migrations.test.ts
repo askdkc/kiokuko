@@ -10,7 +10,12 @@ import { migrateDatabase } from '../../src/db/migrate.js';
 import { LedgerStore } from '../../src/ledger/store.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { readContextDelivery } from '../../src/context/delivery.js';
-import { inspectLegacyContextDelivery, type LegacyDeliveryRow } from '../../src/context/delivery-migration.js';
+import {
+  inspectLegacyContextDelivery,
+  inspectLegacyContextDeliveries,
+  MAX_FINDINGS,
+  type LegacyDeliveryRow,
+} from '../../src/context/delivery-migration.js';
 import { runDoctor } from '../../src/commands/doctor.js';
 import { CheckpointService, FeedbackService } from '../../src/gateway/checkpoint-service.js';
 import { promoteLedgerProposal } from '../../src/ledger/promotion.js';
@@ -554,6 +559,8 @@ test('doctor reports all invalid legacy deliveries without applying migration 01
     assert.equal(report.legacyDeliveries.scanned, 2);
     assert.equal(report.legacyDeliveries.valid, 0);
     assert.equal(report.legacyDeliveries.invalid, 2);
+    assert.equal(report.legacyDeliveries.scanTruncated, false);
+    assert.equal(report.legacyDeliveries.findingsTruncated, false);
     assert.deepEqual(report.legacyDeliveries.findings, [
       {
         deliveryId: 'context-forged-doctor-identity',
@@ -579,6 +586,109 @@ test('doctor reports all invalid legacy deliveries without applying migration 01
   }
 });
 
+test('doctor preflights invalid legacy deliveries from database version 10', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-doctor-version-10',
+    entries: [],
+    characterBudget: 100,
+    characterCount: 0,
+  });
+  try {
+    // Migration 011 is additive, so removing its marker simulates the same
+    // persisted delivery schema with databaseVersion=10 and pending [11, 12].
+    fixture.database.prepare('DELETE FROM schema_migrations WHERE version = 11').run();
+    fixture.database.prepare('UPDATE context_deliveries SET delivery_id = ? WHERE delivery_id = ?')
+      .run('context-forged-doctor-version-10-1', fixture.deliveryId);
+    fixture.database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash,
+        query_hash, policy_version, external_sync_summary_json, char_budget, char_count,
+        truncated, created_at, score_schema_version
+      ) VALUES (?, ?, 0, ?, ?, ?, 'context-ranking-v3', '{}', 100, 0, 0, ?, 2)
+    `).run(
+      'context-forged-doctor-version-10-2',
+      fixture.runId,
+      fixture.sessionId,
+      fixture.profileHash,
+      'c'.repeat(64),
+      fixture.createdAt,
+    );
+    await copyFile(path.join(initialMigrations, '012_context_delivery_v4.sql'), path.join(fixture.migrationsDirectory, '012_context_delivery_v4.sql'));
+
+    const report = await runDoctor({
+      databasePath: fixture.databasePath,
+      migrationsDirectory: fixture.migrationsDirectory,
+      runtimeDescriptorPath: path.join(path.dirname(fixture.migrationsDirectory), 'runtime.json'),
+    });
+
+    assert.equal(report.ok, false);
+    assert.equal(report.currentVersion, 12);
+    assert.equal(report.legacyDeliveries.scanned, 2);
+    assert.equal(report.legacyDeliveries.valid, 0);
+    assert.equal(report.legacyDeliveries.invalid, 2);
+    assert.equal(report.legacyDeliveries.scanTruncated, false);
+    assert.equal(report.legacyDeliveries.findingsTruncated, false);
+    assert.deepEqual(report.legacyDeliveries.findings.map((finding) => finding.deliveryId), [
+      'context-forged-doctor-version-10-1',
+      'context-forged-doctor-version-10-2',
+    ]);
+    assert.equal(report.checks.migrations.ok, false);
+    assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 10);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('legacy inspection distinguishes finding truncation from scan truncation', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-finding-truncation',
+    entries: [],
+    characterBudget: 100,
+    characterCount: 0,
+  });
+  try {
+    const insert = fixture.database.prepare(`
+      INSERT INTO context_deliveries (
+        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash,
+        query_hash, policy_version, external_sync_summary_json, char_budget, char_count,
+        truncated, created_at, score_schema_version
+      ) VALUES (?, ?, 0, ?, ?, ?, 'context-ranking-v3', '{}', 100, 0, 0, ?, 2)
+    `);
+    for (let index = 0; index <= MAX_FINDINGS; index += 1) {
+      insert.run(
+        `context-invalid-finding-${String(index).padStart(3, '0')}`,
+        fixture.runId,
+        fixture.sessionId,
+        fixture.profileHash,
+        'c'.repeat(64),
+        fixture.createdAt,
+      );
+    }
+
+    const inspection = inspectLegacyContextDeliveries(fixture.database);
+    assert.equal(inspection.scanned, MAX_FINDINGS + 2);
+    assert.equal(inspection.valid, 1);
+    assert.equal(inspection.invalid, MAX_FINDINGS + 1);
+    assert.equal(inspection.findings.length, MAX_FINDINGS);
+    assert.equal(inspection.scanTruncated, false);
+    assert.equal(inspection.findingsTruncated, true);
+
+    await copyFile(path.join(initialMigrations, '012_context_delivery_v4.sql'), path.join(fixture.migrationsDirectory, '012_context_delivery_v4.sql'));
+    const report = await runDoctor({
+      databasePath: fixture.databasePath,
+      migrationsDirectory: fixture.migrationsDirectory,
+      runtimeDescriptorPath: path.join(path.dirname(fixture.migrationsDirectory), 'runtime.json'),
+    });
+    assert.equal(report.legacyDeliveries.findingsTruncated, true);
+    assert.equal(report.legacyDeliveries.scanTruncated, false);
+    assert.equal(report.checks.legacyDeliveries.ok, false);
+    assert.equal(report.checks.legacyDeliveries.count, MAX_FINDINGS + 2);
+    assert.match(report.checks.legacyDeliveries.detail ?? '', /findingsTruncated=true/u);
+  } finally {
+    fixture.database.close();
+  }
+});
+
 test('migration 012 validates legacy scoped delivery accounting without changing identity or references', async () => {
   const directory = await temporaryDirectory('migration-012-context-delivery');
   const migrationsDirectory = path.join(directory, 'migrations');
@@ -598,6 +708,7 @@ test('migration 012 validates legacy scoped delivery accounting without changing
   const createdAt = '2026-08-24T00:00:00.000Z';
   const profile = { taskType: 'build', target: 'migration', expected: 'current format', constraints: null } as const;
   const profileHash = canonicalContentHash(profile);
+  const legacyProfileHash = canonicalContentHash({ ...profile, target: 'legacy caller supplied profile' });
   const queryHash = 'b'.repeat(64);
   const legacyDeliveryId = `context-${canonicalContentHash({ runId, queryHash })}`;
   try {
@@ -662,7 +773,7 @@ test('migration 012 validates legacy scoped delivery accounting without changing
         policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
         score_schema_version
       ) VALUES (?, ?, 1, ?, ?, ?, 'context-ranking-v3', '{}', 1000, 52, 0, ?, 2)
-    `).run(legacyDeliveryId, runId, sessionId, profileHash, queryHash, createdAt);
+    `).run(legacyDeliveryId, runId, sessionId, legacyProfileHash, queryHash, createdAt);
     database.prepare(`
       INSERT INTO context_delivery_entries (
         delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json, origin_scope
@@ -749,11 +860,12 @@ test('migration 012 validates legacy scoped delivery accounting without changing
     await copyFile(path.join(initialMigrations, '012_context_delivery_v4.sql'), path.join(migrationsDirectory, '012_context_delivery_v4.sql'));
     assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [12]);
     const migrated = database.prepare(`
-      SELECT delivery_id, policy_version, score_schema_version, char_budget, char_count, truncated
+      SELECT delivery_id, task_profile_hash, policy_version, score_schema_version, char_budget, char_count, truncated
         FROM context_deliveries WHERE run_id = ?
     `).get<Record<string, unknown>>(runId);
     assert.ok(migrated);
     assert.equal(migrated.delivery_id, legacyDeliveryId);
+    assert.equal(migrated.task_profile_hash, legacyProfileHash);
     assert.equal(migrated.policy_version, 'context-ranking-v3');
     assert.equal(migrated.score_schema_version, 2);
     assert.equal(migrated.char_count, 52);

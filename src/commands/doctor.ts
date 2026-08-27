@@ -108,6 +108,15 @@ function count(database: ReturnType<typeof openConnection>, sql: string, ...para
   return Number(database.prepare(sql).get<{ count: number }>(...parameters)?.count ?? 0);
 }
 
+function hasColumn(database: ReturnType<typeof openConnection>, table: string, column: string): boolean {
+  return Boolean(database.prepare('SELECT 1 AS present FROM pragma_table_info(?) WHERE name = ?').get(table, column));
+}
+
+function legacyDeliverySchemaIsInspectable(database: ReturnType<typeof openConnection>): boolean {
+  return hasColumn(database, 'context_deliveries', 'score_schema_version')
+    && hasColumn(database, 'context_delivery_entries', 'origin_scope');
+}
+
 function balancedMarkers(content: string): boolean {
   return content.split(BEGIN_MARKER).length - 1 === 1 && content.split(END_MARKER).length - 1 === 1;
 }
@@ -305,10 +314,12 @@ async function collectDoctorResult(
     count: ledgerReport.checks.nudgeDeliveries.findingCount,
     detail: `deliveries=${ledgerReport.counts.nudgeDeliveries}, findings=${ledgerReport.checks.nudgeDeliveries.findingCount}`,
   };
+  const legacyDeliveriesTruncated = options.legacyDeliveries.scanTruncated
+    || options.legacyDeliveries.findingsTruncated;
   const legacyDeliveries = {
-    ok: options.legacyDeliveries.invalid === 0 && !options.legacyDeliveries.truncated,
-    count: options.legacyDeliveries.invalid + (options.legacyDeliveries.truncated ? 1 : 0),
-    detail: `scanned=${options.legacyDeliveries.scanned}, valid=${options.legacyDeliveries.valid}, invalid=${options.legacyDeliveries.invalid}, findings=${options.legacyDeliveries.findings.length}, truncated=${options.legacyDeliveries.truncated}`,
+    ok: options.legacyDeliveries.invalid === 0 && !legacyDeliveriesTruncated,
+    count: options.legacyDeliveries.invalid + (legacyDeliveriesTruncated ? 1 : 0),
+    detail: `scanned=${options.legacyDeliveries.scanned}, valid=${options.legacyDeliveries.valid}, invalid=${options.legacyDeliveries.invalid}, findings=${options.legacyDeliveries.findings.length}, scanTruncated=${options.legacyDeliveries.scanTruncated}, findingsTruncated=${options.legacyDeliveries.findingsTruncated}`,
   };
   const runtime = await runtimeCheck(options.databasePath, options.runtimeDescriptorPath);
   const checks = {
@@ -361,9 +372,9 @@ async function legacyMigrationPreflight(options: DoctorOptions): Promise<DoctorR
   try {
     const snapshot = loadMigrationSnapshot(options.migrationsDirectory);
     const plan = inspectMigrationSnapshot(database, snapshot);
-    if (plan.databaseVersion === 11 && plan.pending[0] === 12) {
+    if (plan.pending.includes(12) && legacyDeliverySchemaIsInspectable(database)) {
       const report = inspectLegacyContextDeliveries(database);
-      if (report.invalid > 0 || report.truncated) {
+      if (report.invalid > 0 || report.scanTruncated || report.findingsTruncated) {
         result = await collectDoctorResult(database, {
           databasePath,
           currentVersion: plan.currentVersion,

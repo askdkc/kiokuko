@@ -1,4 +1,5 @@
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
+import { readRunIntakeLink } from '../akinator/store.js';
 import { KiokukoError } from '../errors.js';
 import { canonicalJson } from '../serialization/validate.js';
 import {
@@ -15,7 +16,6 @@ import {
   readContextDelivery,
   type ContextDeliveryView,
 } from './delivery.js';
-import { readContextRunProfileBinding } from './run-state.js';
 
 export const LEGACY_SCOPED_POLICY_VERSIONS = ['context-ranking-v2', 'context-ranking-v3'] as const;
 export const MAX_DELIVERIES = 100_000;
@@ -65,7 +65,8 @@ export interface LegacyDeliveryInspectionReport {
   valid: number;
   invalid: number;
   findings: LegacyDeliveryFinding[];
-  truncated: boolean;
+  scanTruncated: boolean;
+  findingsTruncated: boolean;
 }
 
 interface LegacyDeliveryHeaderRow extends SqliteRow {
@@ -106,7 +107,7 @@ interface LegacyDeliveryMetadata {
 
 interface LegacyDeliveryRows {
   rows: LegacyDeliveryRow[];
-  truncated: boolean;
+  scanTruncated: boolean;
 }
 
 const MAX_IDENTIFIER_BYTES = 256;
@@ -196,7 +197,8 @@ function migrationIntegrity(
 }
 
 function errorCode(error: unknown): string {
-  return error instanceof KiokukoError ? error.code : 'INTEGRITY_ERROR';
+  if (!(error instanceof KiokukoError)) return 'INTEGRITY_ERROR';
+  return safeDiagnosticString(error.details.causeCode) ?? error.code;
 }
 
 function metadataFromRow(row: LegacyDeliveryRow): LegacyDeliveryMetadata {
@@ -228,7 +230,7 @@ function deliveryRows(database: SqliteDatabase): LegacyDeliveryRows {
   `).all<LegacyDeliveryRow>(...LEGACY_SCOPED_POLICY_VERSIONS, MAX_DELIVERIES + 1);
   return {
     rows: rows.slice(0, MAX_DELIVERIES),
-    truncated: rows.length > MAX_DELIVERIES,
+    scanTruncated: rows.length > MAX_DELIVERIES,
   };
 }
 
@@ -287,13 +289,12 @@ function headerStage(
   return undefined;
 }
 
-function profileBindingIsValid(database: SqliteDatabase, header: LegacyDeliveryHeaderRow): boolean {
-  if (!safeIdentifier(header.run_id) || !safeInteger(header.through_sequence)) return false;
+function legacyBindingIsValid(database: SqliteDatabase, header: LegacyDeliveryHeaderRow): boolean {
+  if (!safeIdentifier(header.run_id) || !safeIdentifier(header.run_workspace)) return false;
+  if (header.intake_session_id === null) return true;
   try {
-    const binding = readContextRunProfileBinding(database, header.run_id, header.through_sequence);
-    return binding.workspace === header.run_workspace
-      && binding.intakeSessionId === header.intake_session_id
-      && binding.profileHash === header.task_profile_hash;
+    const link = readRunIntakeLink(database, { workspace: header.run_workspace, runId: header.run_id });
+    return link.workspace === header.run_workspace && link.sessionId === header.intake_session_id;
   } catch {
     return false;
   }
@@ -345,7 +346,7 @@ function diagnosticFailureStage(
   if (header === undefined) return 'legacy-delivery-read';
   const headerFailure = headerStage(row, header);
   if (headerFailure !== undefined) return headerFailure;
-  if (!profileBindingIsValid(database, header)) return 'legacy-delivery-profile-binding';
+  if (!legacyBindingIsValid(database, header)) return 'legacy-delivery-profile-binding';
   const entryFailure = entryStage(database, header);
   if (entryFailure !== undefined) return entryFailure;
   if (!safeIdentifier(header.run_id) || !safeHash(header.query_hash)
@@ -363,7 +364,7 @@ function readLegacyDelivery(database: SqliteDatabase, row: LegacyDeliveryRow): C
   const preliminaryFailure = header === undefined ? 'legacy-delivery-read' : headerStage(row, header);
   if (preliminaryFailure !== undefined) migrationIntegrity(metadataFromHeader(header ?? row as LegacyDeliveryHeaderRow), preliminaryFailure);
   if (header === undefined || !safeIdentifier(header.run_workspace)) migrationIntegrity(metadata, 'legacy-delivery-run-binding');
-  if (!profileBindingIsValid(database, header)) migrationIntegrity(metadataFromHeader(header), 'legacy-delivery-profile-binding');
+  if (!legacyBindingIsValid(database, header)) migrationIntegrity(metadataFromHeader(header), 'legacy-delivery-profile-binding');
   const entryFailure = entryStage(database, header);
   if (entryFailure !== undefined) migrationIntegrity(metadataFromHeader(header), entryFailure);
   if (!safeIdentifier(header.run_id) || !safeHash(header.query_hash)
@@ -422,7 +423,7 @@ export function inspectLegacyContextDeliveries(database: SqliteDatabase): Legacy
           ...(metadata.runId === undefined ? {} : { runId: metadata.runId }),
           ...(metadata.policyVersion === undefined ? {} : { policyVersion: metadata.policyVersion }),
           stage,
-          code: error.code,
+          code: errorCode(error),
         });
       }
     }
@@ -432,13 +433,14 @@ export function inspectLegacyContextDeliveries(database: SqliteDatabase): Legacy
     valid,
     invalid,
     findings,
-    truncated: loaded.truncated,
+    scanTruncated: loaded.scanTruncated,
+    findingsTruncated: invalid > findings.length,
   };
 }
 
 /** Validate released scoped delivery formats inside the caller-owned migration transaction. */
 export function migrateLegacyContextDeliveries(database: SqliteDatabase): void {
   const loaded = deliveryRows(database);
-  if (loaded.truncated) migrationIntegrity({}, 'legacy-delivery-row');
+  if (loaded.scanTruncated) migrationIntegrity({}, 'legacy-delivery-row');
   for (const row of loaded.rows) inspectLegacyContextDelivery(database, row);
 }

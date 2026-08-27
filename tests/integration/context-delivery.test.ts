@@ -871,7 +871,7 @@ test('binds generic and scoped deliveries to the authoritative profile projectio
   }
 });
 
-test('reads legacy scoped deliveries after the scoped policy version advances', async () => {
+test('reads legacy scoped deliveries with opaque caller profile metadata after the scoped policy advances', async () => {
   const database = await temporaryDatabase('context-delivery-legacy-scoped-policy');
   try {
     seedDeliveryTarget(database);
@@ -880,7 +880,7 @@ test('reads legacy scoped deliveries after the scoped policy version advances', 
       runId: 'run-delivery-1',
       throughSequence: 0,
       intakeSessionId: 'session-delivery-1',
-      taskProfileHash,
+      taskProfileHash: 'd'.repeat(64),
       queryHash: 'c'.repeat(64),
       policyVersion: 'context-ranking-v3',
       charBudget: 8_000,

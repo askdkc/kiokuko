@@ -19,6 +19,7 @@ import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin, type ContextEntryOrigin } from './origin.js';
 import { RUN_STATUSES, type RunStatus } from '../ledger/types.js';
 import { RECOMMENDATION_POLICY_VERSION } from './recommendations.js';
+import { readRunIntakeLink } from '../akinator/store.js';
 import { readContextRunProfileBinding } from './run-state.js';
 
 const MAX_IDENTIFIER_BYTES = 256;
@@ -788,13 +789,33 @@ function assertStoredProfileBinding(database: SqliteDatabase, header: ContextDel
     || header.taskProfileHash !== binding.profileHash) integrity();
 }
 
+function assertLegacyStoredIntakeBinding(database: SqliteDatabase, header: ContextDeliveryInput): void {
+  if (header.intakeSessionId === null) return;
+  let link: ReturnType<typeof readRunIntakeLink>;
+  try {
+    link = readRunIntakeLink(database, { workspace: header.workspace, runId: header.runId });
+  } catch (error) {
+    if (isKiokukoError(error) && (error.code === 'NOT_FOUND' || error.code === 'INTEGRITY_ERROR')) integrity();
+    throw error;
+  }
+  if (link.workspace !== header.workspace || link.sessionId !== header.intakeSessionId) integrity();
+}
+
+function assertStoredDeliveryBinding(database: SqliteDatabase, header: ContextDeliveryInput): void {
+  if (LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(header.policyVersion)) {
+    assertLegacyStoredIntakeBinding(database, header);
+    return;
+  }
+  assertStoredProfileBinding(database, header);
+}
+
 function readStoredDelivery(database: SqliteDatabase, workspace: string, deliveryId: string): ContextDeliveryView {
   const row = selectHeaderByDeliveryId(database, deliveryId);
   if (!row) notFound();
   if (row.run_workspace === null || row.run_workspace === undefined) integrity();
   if (row.run_workspace !== workspace) notFound();
   const header = validateStoredHeader(row, workspace);
-  assertStoredProfileBinding(database, header);
+  assertStoredDeliveryBinding(database, header);
   const items = validateStoredEntries(database, header);
   const complete = { ...header, items };
   if ((header.scoreSchemaVersion ?? 1) === 2 && !storedScopedDeliveryIdentityMatches(complete)) scopedIdentityIntegrity();
@@ -927,7 +948,7 @@ export function listContextDeliveries(database: SqliteDatabase, input: unknown):
     const pageRows = rows.slice(0, validated.limit);
     const items = pageRows.map((row) => {
       const header = validateStoredHeader(row, validated.workspace);
-      assertStoredProfileBinding(database, header);
+      assertStoredDeliveryBinding(database, header);
       const storedItems = validateStoredEntries(database, header);
       const complete = { ...header, items: storedItems };
       if ((header.scoreSchemaVersion ?? 1) === 2 && !storedScopedDeliveryIdentityMatches(complete)) scopedIdentityIntegrity();

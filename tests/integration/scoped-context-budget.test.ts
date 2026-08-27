@@ -259,6 +259,7 @@ test('does not replay a legacy delivery even when its query hash matches the cur
     assert.ok(taskProfileHash);
     const state = readContextRunRetrievalState(database, runId);
     const legacyDeliveryId = legacyScopedDeliveryId({ runId, queryHash });
+    const legacyTaskProfileHash = canonicalContentHash({ ...query.taskProfile, expected: 'legacy caller supplied profile' });
     database.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash,
@@ -270,7 +271,7 @@ test('does not replay a legacy delivery even when its query hash matches the cur
       runId,
       state.run.lastSequence,
       state.intakeSessionId,
-      taskProfileHash,
+      legacyTaskProfileHash,
       queryHash,
       query.characterBudget,
       state.run.createdAt,
