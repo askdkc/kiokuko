@@ -751,7 +751,11 @@ function selectDeliveryEntries(database: SqliteDatabase, deliveryId: string): De
 function validateStoredEntries(database: SqliteDatabase, header: ContextDeliveryInput): ContextDeliveryItemInput[] {
   const rows = selectDeliveryEntries(database, header.deliveryId);
   if (rows.length > MAX_ITEMS) integrity();
+  // Migration 009 may remove an invalid entry from a released delivery,
+  // leaving a historical rank gap. New writes still require contiguous ranks.
+  const allowsRankGaps = LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(header.policyVersion);
   const entryIds = new Set<string>();
+  let previousRank = 0;
   let expectedRank = 1;
   return rows.map((row) => {
     const deliveryId = boundedStoredIdentifier(row.delivery_id);
@@ -765,7 +769,8 @@ function validateStoredEntries(database: SqliteDatabase, header: ContextDelivery
     const revisionWorkspace = boundedStoredIdentifier(row.revision_workspace);
     if (revisionWorkspace !== entryWorkspace) integrity();
     const rank = storedPositiveSafeInteger(row.rank);
-    if (rank !== expectedRank) integrity();
+    if (allowsRankGaps ? rank <= previousRank : rank !== expectedRank) integrity();
+    previousRank = rank;
     expectedRank += 1;
     const scoreValue = validateStoredJson(row.score_components_json);
     const reasonValue = validateStoredJson(row.selection_reason_json);

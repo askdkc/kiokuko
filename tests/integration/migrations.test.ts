@@ -481,6 +481,54 @@ test('migration 012 preserves a historical count that differs from current entry
   }
 });
 
+test('migration 012 preserves legacy delivery rank gaps after migration 009 recovers an entry', async () => {
+  const middleEntryId = 'entry-legacy-recovered-middle';
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-recovered-rank-gap',
+    entries: [
+      { entryId: 'entry-legacy-recovered-first', title: 'First entry', body: 'Keep the first entry.' },
+      { entryId: middleEntryId, title: 'Unreadable entry', body: 'Migration 009 removes this entry.' },
+      { entryId: 'entry-legacy-recovered-last', title: 'Last entry', body: 'Keep the last entry.' },
+    ],
+    characterBudget: 100,
+    characterCount: 0,
+    maxMigrationVersion: 8,
+  });
+  try {
+    fixture.database.exec('DROP TRIGGER entry_revisions_immutable_update');
+    fixture.database.prepare('UPDATE entry_revisions SET content_hash = ? WHERE entry_id = ? AND revision = 1')
+      .run('0'.repeat(64), middleEntryId);
+    fixture.database.exec(REVISION_IMMUTABILITY_TRIGGER);
+    await copyMigrationRange(fixture.migrationsDirectory, 9, 12);
+
+    const migrated = migrateDatabase(fixture.database, fixture.migrationsDirectory, {
+      recoverInvalidStoredMemory: true,
+    });
+
+    assert.deepEqual(migrated.applied, [9, 10, 11, 12]);
+    assert.equal(migrated.recoveredEntries, 1);
+    assert.deepEqual(
+      fixture.database.prepare('SELECT entry_id, rank FROM context_delivery_entries WHERE delivery_id = ? ORDER BY rank')
+        .all<{ entry_id: string; rank: number }>(fixture.deliveryId).map((row) => ({ ...row })),
+      [
+        { entry_id: 'entry-legacy-recovered-first', rank: 1 },
+        { entry_id: 'entry-legacy-recovered-last', rank: 3 },
+      ],
+    );
+    assert.equal(fixture.database.prepare('SELECT 1 FROM entries WHERE id = ?').get(middleEntryId), undefined);
+    assert.deepEqual(
+      readContextDelivery(fixture.database, { workspace: fixture.workspace, deliveryId: fixture.deliveryId }).items
+        .map((item) => ({ entryId: item.entryId, rank: item.rank })),
+      [
+        { entryId: 'entry-legacy-recovered-first', rank: 1 },
+        { entryId: 'entry-legacy-recovered-last', rank: 3 },
+      ],
+    );
+  } finally {
+    fixture.database.close();
+  }
+});
+
 test('legacy migration does not expand a bounded preview for an oversized source body', async () => {
   const fixture = await legacyDeliveryFixture({
     prefix: 'migration-012-oversized-source',

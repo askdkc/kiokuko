@@ -309,6 +309,12 @@ function entryStage(
   }
   const rows = selectLegacyDeliveryEntries(database, header.delivery_id);
   if (rows.length > MAX_ITEMS) return 'legacy-delivery-entry-rank';
+  // Migration 009 can remove an invalid entry and its delivery reference.
+  // Released deliveries may therefore retain gaps in their historical ranks.
+  const allowsRankGaps = LEGACY_SCOPED_POLICY_VERSIONS.includes(
+    header.policy_version as (typeof LEGACY_SCOPED_POLICY_VERSIONS)[number],
+  );
+  let previousRank = 0;
   let expectedRank = 1;
   for (const row of rows) {
     if (row.delivery_id !== header.delivery_id
@@ -325,7 +331,11 @@ function entryStage(
         runWorkspace: header.run_workspace,
         entryWorkspace: row.entry_workspace,
       })) return 'legacy-delivery-entry-origin';
-    if (row.rank !== expectedRank || !safeInteger(row.rank, 1)) return 'legacy-delivery-entry-rank';
+    if (!safeInteger(row.rank, 1)
+      || (allowsRankGaps ? row.rank <= previousRank : row.rank !== expectedRank)) {
+      return 'legacy-delivery-entry-rank';
+    }
+    previousRank = row.rank;
     expectedRank += 1;
     if (!validStoredScore(row.score_components_json)) return 'legacy-delivery-entry-score';
     if (!validStoredReasons(row.selection_reason_json)) return 'legacy-delivery-entry-reasons';
