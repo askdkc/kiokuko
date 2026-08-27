@@ -46,6 +46,17 @@ test('checkpoint appends, projects task profile revisions, and replays canonical
     characterBudget: 9000,
   };
   const first = service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-1', request });
+  const stored = db.prepare(
+    'SELECT response_json AS responseJson FROM gateway_idempotency WHERE scope = ?',
+  ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
+  assert.ok(stored);
+  const persisted = JSON.parse(stored.responseJson) as Record<string, unknown>;
+  assert.ok(Object.hasOwn(persisted, 'recommendations'));
+  assert.equal(Object.hasOwn(persisted, 'preliminaryRecommendations'), false);
+  assert.deepEqual(persisted.recommendations, first.recommendations);
+  assert.equal(persisted.nudge, null);
+  assert.equal(persisted.context, null);
+  assert.equal(persisted.untrusted, true);
   const replay = service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-1', request });
   assert.deepEqual(replay, first);
   assert.equal(first.acceptedThrough, 5);
@@ -55,6 +66,54 @@ test('checkpoint appends, projects task profile revisions, and replays canonical
   assert.equal(first.projection.taskProfile.target, 'src/revised.ts');
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count, 5);
   assert.throws(() => service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-1', request: { apiVersion: '1', currentStep: 'different' } }), (error: unknown) => (error as { code?: string }).code === 'CONFLICT');
+});
+
+test('replays pre-refactor checkpoint idempotency records through the legacy service', async () => {
+  const db = await database();
+  try {
+    const gateway = new AgentGatewayService(db, { now: () => now });
+    const opened = open(gateway, 'checkpoint-legacy-replay');
+    const service = new CheckpointService(db, () => now);
+    const request = {
+      apiVersion: '1',
+      currentStep: 'continue bounded work',
+      characterBudget: 9000,
+    };
+    const first = service.checkpoint({
+      runId: opened.runId,
+      idempotencyKey: 'checkpoint-legacy-replay-1',
+      request,
+    });
+    const stored = db.prepare(
+      'SELECT response_json AS responseJson FROM gateway_idempotency WHERE scope = ?',
+    ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
+    assert.ok(stored);
+    const legacyResponse: Record<string, unknown> = {
+      ...first,
+      recommendations: first.recommendations,
+      nudge: null,
+      context: null,
+      untrusted: true,
+    };
+    delete legacyResponse.preliminaryRecommendations;
+    db.prepare('UPDATE gateway_idempotency SET response_json = ? WHERE scope = ?').run(
+      canonicalJson(legacyResponse),
+      `agent.checkpoint.${opened.runId}`,
+    );
+
+    const replay = service.checkpoint({
+      runId: opened.runId,
+      idempotencyKey: 'checkpoint-legacy-replay-1',
+      request,
+    });
+    assert.deepEqual(replay, first);
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count,
+      first.acceptedThrough,
+    );
+  } finally {
+    db.close();
+  }
 });
 
 test('checkpoint rejects intake runs before appending work events', async () => {
