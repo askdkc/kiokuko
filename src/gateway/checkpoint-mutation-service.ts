@@ -22,6 +22,7 @@ import {
   recordContextFeedbackInTransaction,
   validateFeedbackTimestamp,
 } from '../context/feedback.js';
+import { canonicalJson } from '../serialization/validate.js';
 
 const CHECKPOINT_EVENT_TYPES: readonly LedgerEventType[] = [
   'step.started', 'step.completed', 'step.failed', 'file.changed', 'error.recorded',
@@ -270,7 +271,47 @@ function serializeCheckpointAcknowledgement(
   };
 }
 
-function normalizeCheckpointMutationResult(value: unknown): CheckpointMutationResult {
+function sameTaskProfile(
+  left: CheckpointMutationResult['taskProfile'],
+  right: LedgerProjection['taskProfile'],
+): boolean {
+  return left.taskType === right.taskType
+    && left.target === right.target
+    && left.expected === right.expected
+    && left.constraints === right.constraints;
+}
+
+function assertCheckpointMutationInvariants(
+  normalized: CheckpointMutationResult,
+  expected: { runId: string; characterBudget: number },
+): void {
+  if (normalized.runId !== expected.runId
+    || normalized.characterBudget !== expected.characterBudget
+    || normalized.acceptedThrough !== normalized.projection.throughSequence
+    || normalized.profileHash !== normalized.projection.profileHash
+    || !sameTaskProfile(normalized.taskProfile, normalized.projection.taskProfile)
+    || normalized.localSequences.length === 0
+    || normalized.localSequences.length !== normalized.sourceSequences.length
+    || normalized.localSequences.length !== normalized.eventIds.length
+    || normalized.localSequences.at(-1) !== normalized.acceptedThrough) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
+  }
+
+  let recommendations: Recommendation[];
+  try {
+    recommendations = buildRecommendations({ projection: normalized.projection, broker: {} });
+  } catch {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
+  }
+  if (canonicalJson(normalized.preliminaryRecommendations) !== canonicalJson(recommendations)) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
+  }
+}
+
+function normalizeCheckpointMutationResult(
+  value: unknown,
+  expected: { runId: string; characterBudget: number },
+): CheckpointMutationResult {
   const object = storedCheckpointObject(value);
   const recommendations = Object.hasOwn(object, 'preliminaryRecommendations')
     ? object.preliminaryRecommendations
@@ -279,7 +320,7 @@ function normalizeCheckpointMutationResult(value: unknown): CheckpointMutationRe
   if (!isCheckpointMutationResult(normalized)) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
   }
-  return {
+  const result = {
     runId: normalized.runId,
     acceptedThrough: normalized.acceptedThrough,
     localSequences: normalized.localSequences,
@@ -293,6 +334,8 @@ function normalizeCheckpointMutationResult(value: unknown): CheckpointMutationRe
     preliminaryRecommendations: normalized.preliminaryRecommendations,
     characterBudget: normalized.characterBudget,
   };
+  assertCheckpointMutationInvariants(result, expected);
+  return result;
 }
 
 function boundedString(value: unknown, max = MAX_TEXT): string {
@@ -467,6 +510,9 @@ export class CheckpointMutationService {
         mutationValue(this.database, value.runId as string, request, value.idempotencyKey as string, now),
       ) as unknown as JsonValue,
     ));
-    return normalizeCheckpointMutationResult(response);
+    return normalizeCheckpointMutationResult(response, {
+      runId: value.runId as string,
+      characterBudget: request.characterBudget,
+    });
   }
 }

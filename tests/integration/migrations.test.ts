@@ -10,6 +10,9 @@ import { migrateDatabase } from '../../src/db/migrate.js';
 import { LedgerStore } from '../../src/ledger/store.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { readContextDelivery } from '../../src/context/delivery.js';
+import { storedLegacyScopedItems } from '../../src/context/delivery-migration.js';
+import { CheckpointService, FeedbackService } from '../../src/gateway/checkpoint-service.js';
+import { promoteLedgerProposal } from '../../src/ledger/promotion.js';
 import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +21,145 @@ const initialMigrations = path.join(repositoryRoot, 'migrations');
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), `kiokuko-${prefix}-`));
+}
+
+const legacyScoreComponents = {
+  status: 100,
+  trust: 25,
+  confidence: 18,
+  retrieval: 10,
+  taskAffinity: 0,
+  recommendedTags: 0,
+  scopeAffinity: 9,
+  applicability: 0,
+  pathOverlap: 0,
+  errorSignature: 0,
+  exactSignal: 0,
+  feedback: 0,
+  recency: 0,
+  contradiction: 0,
+} as const;
+
+interface LegacyFixtureEntry {
+  entryId: string;
+  title: string;
+  body: string;
+  summary?: string | null;
+}
+
+interface LegacyFixtureOptions {
+  prefix: string;
+  entries: LegacyFixtureEntry[];
+  characterBudget: number;
+  characterCount: number;
+  truncated?: boolean;
+}
+
+async function legacyDeliveryFixture(options: LegacyFixtureOptions) {
+  const directory = await temporaryDirectory(options.prefix);
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  const migrationFiles = await readdir(initialMigrations);
+  for (let version = 1; version <= 11; version += 1) {
+    const prefix = String(version).padStart(3, '0');
+    const name = migrationFiles.find((candidate) => candidate.startsWith(`${prefix}_`));
+    assert.ok(name);
+    await copyFile(path.join(initialMigrations, name), path.join(migrationsDirectory, name));
+  }
+
+  const database = openConnection(path.join(directory, 'data.sqlite3'));
+  const workspace = `workspace:${options.prefix}`;
+  const runId = `run-${options.prefix}`;
+  const sessionId = `session-${options.prefix}`;
+  const createdAt = '2026-08-24T00:00:00.000Z';
+  const profile = { taskType: 'build', target: 'migration', expected: 'legacy replay', constraints: null } as const;
+  const profileHash = canonicalContentHash(profile);
+  const queryHash = 'b'.repeat(64);
+  const deliveryId = `context-${canonicalContentHash({ runId, queryHash })}`;
+
+  migrateDatabase(database, migrationsDirectory);
+  database.prepare(`
+    INSERT INTO ledger_runs (
+      run_id, workspace, client_kind, client_version, source_session_id, parent_run_id,
+      protocol_version, capture_profile, coverage_json, status, title, task_hash,
+      metadata_json, last_sequence, last_source_sequence, started_at, ended_at, created_at, updated_at
+    ) VALUES (?, ?, 'generic', '1.0.0', NULL, NULL, '1', 'standard', ?, 'active', 'Legacy migration', NULL, '{}', 0, NULL, ?, NULL, ?, ?)
+  `).run(
+    runId,
+    workspace,
+    canonicalJson({ approval: 'unavailable', command: 'unavailable', file: 'unavailable', run: 'declared', tool: 'unavailable' }),
+    createdAt,
+    createdAt,
+    createdAt,
+  );
+  database.prepare(`
+    INSERT INTO akinator_sessions (id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
+    VALUES (?, ?, 'Legacy migration', ?, 'ready', 0, ?, ?)
+  `).run(sessionId, workspace, canonicalJson(profile), createdAt, createdAt);
+  database.prepare(`
+    INSERT INTO run_intakes (
+      run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+      initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+    ) VALUES (?, ?, 'v2', 1, ?, ?, ?, ?, ?)
+  `).run(
+    runId,
+    sessionId,
+    canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+    profileHash,
+    canonicalJson(['bot:builder', 'skill:tdd']),
+    createdAt,
+    createdAt,
+  );
+  for (const entry of options.entries) {
+    recordEntry(database, {
+      workspace,
+      kind: 'lesson',
+      status: 'verified',
+      trustLevel: 'source_verified',
+      confidence: 0.9,
+      title: entry.title,
+      body: entry.body,
+      ...(entry.summary === undefined ? {} : { summary: entry.summary }),
+      createdBy: 'migration-test',
+    }, { idFactory: () => entry.entryId, now: createdAt });
+  }
+  database.prepare(`
+    INSERT INTO context_deliveries (
+      delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
+      policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+      score_schema_version
+    ) VALUES (?, ?, 0, ?, ?, ?, 'context-ranking-v3', '{}', ?, ?, ?, ?, 2)
+  `).run(
+    deliveryId,
+    runId,
+    sessionId,
+    profileHash,
+    queryHash,
+    options.characterBudget,
+    options.characterCount,
+    options.truncated === true ? 1 : 0,
+    createdAt,
+  );
+  const insertEntry = database.prepare(`
+    INSERT INTO context_delivery_entries (
+      delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json, origin_scope
+    ) VALUES (?, ?, 1, ?, ?, ?, 'project')
+  `);
+  for (const [index, entry] of options.entries.entries()) {
+    insertEntry.run(
+      deliveryId,
+      entry.entryId,
+      index + 1,
+      canonicalJson(legacyScoreComponents),
+      canonicalJson(['project_origin', 'verified']),
+    );
+  }
+  return { database, migrationsDirectory, workspace, runId, sessionId, deliveryId, createdAt };
+}
+
+async function applyContextDeliveryMigration(fixture: { database: ReturnType<typeof openConnection>; migrationsDirectory: string }) {
+  await copyFile(path.join(initialMigrations, '012_context_delivery_v4.sql'), path.join(fixture.migrationsDirectory, '012_context_delivery_v4.sql'));
+  return migrateDatabase(fixture.database, fixture.migrationsDirectory);
 }
 
 test('applies the initial migration and is idempotent', async () => {
@@ -245,7 +387,97 @@ test('migration 008 preserves project and global delivery rows while enabling ec
   }
 });
 
-test('migration 012 upgrades legacy scoped delivery identity, accounting, and references', async () => {
+test('legacy materialization prefers the persisted summary for bodyPreview', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-summary',
+    entries: [{ entryId: 'entry-legacy-summary', title: 'Legacy title', summary: 'summary text', body: 'different body' }],
+    characterBudget: 100,
+    characterCount: 'summary text'.length,
+  });
+  try {
+    assert.deepEqual((await applyContextDeliveryMigration(fixture)).applied, [12]);
+    const delivery = readContextDelivery(fixture.database, { workspace: fixture.workspace, deliveryId: fixture.deliveryId });
+    const items = storedLegacyScopedItems(fixture.database, delivery);
+    assert.equal(items[0]?.bodyPreview, 'summary text');
+    assert.equal(items[0]?.bodyPreview.includes('different body'), false);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('legacy materialization truncates a body preview at the original budget', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-truncated-body',
+    entries: [{ entryId: 'entry-legacy-truncated', title: 'Legacy title', body: 'abcdefghij' }],
+    characterBudget: 5,
+    characterCount: 5,
+  });
+  try {
+    assert.deepEqual((await applyContextDeliveryMigration(fixture)).applied, [12]);
+    const delivery = readContextDelivery(fixture.database, { workspace: fixture.workspace, deliveryId: fixture.deliveryId });
+    assert.equal(storedLegacyScopedItems(fixture.database, delivery)[0]?.bodyPreview, 'abcde');
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('legacy migration does not expand a bounded preview for an oversized source body', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-oversized-source',
+    entries: [{ entryId: 'entry-legacy-oversized', title: 'Legacy title', body: 'x'.repeat(100_001) }],
+    characterBudget: 7,
+    characterCount: 7,
+  });
+  try {
+    assert.deepEqual((await applyContextDeliveryMigration(fixture)).applied, [12]);
+    const stored = fixture.database.prepare('SELECT char_budget, char_count FROM context_deliveries WHERE delivery_id = ?')
+      .get<{ char_budget: number; char_count: number }>(fixture.deliveryId);
+    assert.deepEqual({ ...stored }, { char_budget: 7, char_count: 7 });
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('legacy migration aborts on incorrect body-preview-only character accounting', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-invalid-count',
+    entries: [{ entryId: 'entry-legacy-invalid-count', title: 'Legacy title', body: 'body text' }],
+    characterBudget: 100,
+    characterCount: 0,
+  });
+  try {
+    await copyFile(path.join(initialMigrations, '012_context_delivery_v4.sql'), path.join(fixture.migrationsDirectory, '012_context_delivery_v4.sql'));
+    assert.throws(
+      () => migrateDatabase(fixture.database, fixture.migrationsDirectory),
+      (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR',
+    );
+    assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 11);
+    assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE delivery_id = ?').get<{ count: number }>(fixture.deliveryId)?.count, 1);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('legacy materialization preserves ranked entries when truncation ends midway through the list', async () => {
+  const fixture = await legacyDeliveryFixture({
+    prefix: 'migration-012-mid-list',
+    entries: [
+      { entryId: 'entry-legacy-first', title: 'a', body: '1234' },
+      { entryId: 'entry-legacy-second', title: 'b', body: '56789' },
+    ],
+    characterBudget: 8,
+    characterCount: 7,
+  });
+  try {
+    assert.deepEqual((await applyContextDeliveryMigration(fixture)).applied, [12]);
+    const delivery = readContextDelivery(fixture.database, { workspace: fixture.workspace, deliveryId: fixture.deliveryId });
+    assert.deepEqual(storedLegacyScopedItems(fixture.database, delivery).map((item) => item.bodyPreview), ['1234', '567']);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test('migration 012 validates legacy scoped delivery accounting without changing identity or references', async () => {
   const directory = await temporaryDirectory('migration-012-context-delivery');
   const migrationsDirectory = path.join(directory, 'migrations');
   await mkdir(migrationsDirectory);
@@ -300,6 +532,18 @@ test('migration 012 upgrades legacy scoped delivery identity, accounting, and re
       createdAt,
       createdAt,
     );
+    const proposalEventId = 'proposal-migration-012';
+    const proposal = {
+      kind: 'lesson',
+      title: 'Promoted migration proposal',
+      body: 'A historical promotion reference must remain resolvable.',
+      summary: null,
+      scope: {},
+      tags: [],
+    } as const;
+    new LedgerStore(database, { now: () => createdAt }).appendBatch(runId, {
+      events: [{ eventId: proposalEventId, eventType: 'memory.proposed', actor: 'agent', occurredAt: createdAt, payload: proposal }],
+    });
     recordEntry(database, {
       workspace,
       kind: 'lesson',
@@ -315,7 +559,7 @@ test('migration 012 upgrades legacy scoped delivery identity, accounting, and re
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
         policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
         score_schema_version
-      ) VALUES (?, ?, 0, ?, ?, ?, 'context-ranking-v3', '{}', 1000, 0, 0, ?, 2)
+      ) VALUES (?, ?, 1, ?, ?, ?, 'context-ranking-v3', '{}', 1000, 52, 0, ?, 2)
     `).run(legacyDeliveryId, runId, sessionId, profileHash, queryHash, createdAt);
     database.prepare(`
       INSERT INTO context_delivery_entries (
@@ -357,6 +601,49 @@ test('migration 012 upgrades legacy scoped delivery identity, accounting, and re
       ) VALUES (?, ?, NULL, ?, NULL, 'delivery', ?, 'operator', 'migration test', ?)
     `).run('purge-migration-012', runId, legacyDeliveryId, legacyDeliveryId, createdAt);
 
+    const promoted = promoteLedgerProposal(database, {
+      workspace,
+      runId,
+      proposalEventId,
+      deliveryId: legacyDeliveryId,
+      actor: 'operator',
+      createdAt,
+      confirmed: true,
+    });
+    const promotionReference = promoted.entry.provenance.reference;
+    assert.equal(typeof promotionReference, 'string');
+    assert.equal(JSON.parse(promotionReference as string).deliveryId, legacyDeliveryId);
+
+    const checkpoint = new CheckpointService(database, () => createdAt).checkpoint({
+      runId,
+      idempotencyKey: 'checkpoint-migration-012',
+      request: {
+        apiVersion: '1',
+        contextFeedback: [{
+          feedbackId: 'feedback-migration-012-checkpoint',
+          deliveryId: legacyDeliveryId,
+          entryId,
+          verdict: 'helpful',
+        }],
+      },
+    });
+    assert.equal(checkpoint.acceptedThrough, 2);
+
+    const standaloneFeedback = new FeedbackService(database, () => createdAt).feedback({
+      runId,
+      idempotencyKey: 'feedback-migration-012-standalone-key',
+      request: {
+        apiVersion: '1',
+        category: 'context',
+        feedbackId: 'feedback-migration-012-standalone',
+        deliveryId: legacyDeliveryId,
+        entryId,
+        verdict: 'helpful',
+      },
+    });
+    assert.equal((standaloneFeedback.record as { deliveryId: string }).deliveryId, legacyDeliveryId);
+    assert.equal(new LedgerStore(database).verifyChain(runId), true);
+
     await copyFile(path.join(initialMigrations, '012_context_delivery_v4.sql'), path.join(migrationsDirectory, '012_context_delivery_v4.sql'));
     assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [12]);
     const migrated = database.prepare(`
@@ -364,19 +651,35 @@ test('migration 012 upgrades legacy scoped delivery identity, accounting, and re
         FROM context_deliveries WHERE run_id = ?
     `).get<Record<string, unknown>>(runId);
     assert.ok(migrated);
-    assert.notEqual(migrated.delivery_id, legacyDeliveryId);
-    assert.equal(migrated.policy_version, 'context-ranking-v4');
+    assert.equal(migrated.delivery_id, legacyDeliveryId);
+    assert.equal(migrated.policy_version, 'context-ranking-v3');
     assert.equal(migrated.score_schema_version, 2);
-    assert.equal(migrated.char_count, 76);
+    assert.equal(migrated.char_count, 52);
     assert.equal(migrated.truncated, 0);
-    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE delivery_id = ?').get<{ count: number }>(legacyDeliveryId)?.count, 0);
-    assert.equal(database.prepare('SELECT delivery_id FROM context_feedback WHERE feedback_id = ?').get<{ delivery_id: string }>('feedback-migration-012')?.delivery_id, migrated.delivery_id);
-    assert.equal(database.prepare('SELECT delivery_id FROM ledger_memory_links WHERE link_id = ?').get<{ delivery_id: string }>('link-migration-012')?.delivery_id, migrated.delivery_id);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE delivery_id = ?').get<{ count: number }>(legacyDeliveryId)?.count, 1);
+    assert.equal(database.prepare('SELECT delivery_id FROM context_feedback WHERE feedback_id = ?').get<{ delivery_id: string }>('feedback-migration-012')?.delivery_id, legacyDeliveryId);
+    assert.equal(database.prepare('SELECT delivery_id FROM ledger_memory_links WHERE link_id = ?').get<{ delivery_id: string }>('link-migration-012')?.delivery_id, legacyDeliveryId);
     assert.deepEqual(
       { ...database.prepare('SELECT delivery_id, target_id FROM ledger_purge_audit WHERE purge_id = ?').get('purge-migration-012') },
-      { delivery_id: migrated.delivery_id, target_id: migrated.delivery_id },
+      { delivery_id: legacyDeliveryId, target_id: legacyDeliveryId },
     );
-    assert.doesNotThrow(() => readContextDelivery(database, { workspace, deliveryId: migrated.delivery_id as string }));
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_feedback WHERE delivery_id = ?').get<{ count: number }>(legacyDeliveryId)?.count, 3);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM ledger_memory_links WHERE delivery_id = ?').get<{ count: number }>(legacyDeliveryId)?.count, 2);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM gateway_idempotency WHERE response_json LIKE ?').get<{ count: number }>(`%${legacyDeliveryId}%`)?.count, 1);
+    const feedbackEvent = database.prepare(`
+      SELECT payload_json FROM ledger_events WHERE run_id = ? AND event_type = 'context.feedback'
+    `).get<{ payload_json: string }>(runId);
+    assert.ok(feedbackEvent);
+    assert.match(feedbackEvent.payload_json, new RegExp(legacyDeliveryId));
+    const promotedReference = database.prepare(`
+      SELECT r.provenance_json FROM entries AS e
+      JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+      WHERE e.id = ?
+    `).get<{ provenance_json: string }>(promoted.entry.id);
+    assert.ok(promotedReference);
+    assert.equal(JSON.parse(promotedReference.provenance_json).reference.includes(legacyDeliveryId), true);
+    assert.equal(new LedgerStore(database).verifyChain(runId), true);
+    assert.doesNotThrow(() => readContextDelivery(database, { workspace, deliveryId: legacyDeliveryId }));
   } finally {
     database.close();
   }

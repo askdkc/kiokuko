@@ -40,6 +40,7 @@ function legacyCheckpointUseCase(context: AgentRouteContext): AgentCheckpointUse
     database: context.database,
     service: context.service,
     checkpointMutation,
+    validateMutationAcknowledgement: false,
     nudgeDelivery,
     broker: context.broker,
     enqueueWrite: context.enqueueWrite,

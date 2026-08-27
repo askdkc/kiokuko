@@ -1,3 +1,3 @@
--- Convert released scoped context delivery identities and accounting to v4.
--- The application migration operation preserves linked feedback and provenance
--- references while replacing only known v2/v3 scoped delivery rows.
+-- Reserve this version for validating released scoped deliveries.
+-- The application migration operation preserves their identities, policy,
+-- accounting, and all historical references.

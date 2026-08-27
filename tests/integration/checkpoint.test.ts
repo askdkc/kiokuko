@@ -116,6 +116,45 @@ test('replays pre-refactor checkpoint idempotency records through the legacy ser
   }
 });
 
+test('rejects type-correct checkpoint acknowledgements that violate request or projection binding', async () => {
+  const corruptions: Array<{ name: string; mutate: (response: Record<string, unknown>) => Record<string, unknown> }> = [
+    { name: 'run id', mutate: (response) => ({ ...response, runId: 'run-forged' }) },
+    { name: 'sequence array lengths', mutate: (response) => ({ ...response, sourceSequences: [] }) },
+    { name: 'accepted sequence', mutate: (response) => ({ ...response, acceptedThrough: (response.acceptedThrough as number) + 1 }) },
+    { name: 'profile hash', mutate: (response) => ({ ...response, profileHash: 'f'.repeat(64) }) },
+  ];
+
+  for (const corruption of corruptions) {
+    const db = await database();
+    try {
+      const gateway = new AgentGatewayService(db, { now: () => now });
+      const opened = open(gateway, `checkpoint-corrupt-${corruption.name}`);
+      const service = new CheckpointService(db, () => now);
+      const request = { apiVersion: '1', currentStep: 'persist one acknowledgement' };
+      service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-corrupt-1', request });
+      const stored = db.prepare(
+        'SELECT response_json AS responseJson FROM gateway_idempotency WHERE scope = ?',
+      ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
+      assert.ok(stored);
+      const response = corruption.mutate(JSON.parse(stored.responseJson) as Record<string, unknown>);
+      db.prepare('UPDATE gateway_idempotency SET response_json = ? WHERE scope = ?').run(
+        canonicalJson(response),
+        `agent.checkpoint.${opened.runId}`,
+      );
+
+      assert.throws(
+        () => service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-corrupt-1', request }),
+        (error: unknown) => error instanceof Error
+          && 'code' in error
+          && error.code === 'INTEGRITY_ERROR',
+        corruption.name,
+      );
+    } finally {
+      db.close();
+    }
+  }
+});
+
 test('checkpoint rejects intake runs before appending work events', async () => {
   const db = await database();
   const gateway = new AgentGatewayService(db, { now: () => now });

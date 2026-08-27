@@ -7,6 +7,8 @@ import type { NudgeDeliveryPort } from '../gateway/nudge-delivery-service.js';
 import type { ContextBroker, ContextBrokerResult } from '../context/broker.js';
 import type { DeliveredNudge } from '../context/nudges.js';
 import type { Recommendation } from '../context/recommendations.js';
+import { buildRecommendations } from '../context/recommendations.js';
+import { canonicalJson } from '../serialization/validate.js';
 import { successEnvelope } from '../serialization/envelope.js';
 import { assertCapabilityCatalogBinding } from '../akinator/capability-binding.js';
 import type { CapabilityGatedIntakeResponse } from './routes/agent-capability-gate.js';
@@ -22,6 +24,7 @@ export interface AgentCheckpointUseCaseDependencies {
   readonly database: import('../db/adapter.js').SqliteDatabase;
   readonly service: AgentGatewayService;
   readonly checkpointMutation: CheckpointMutationPort;
+  readonly validateMutationAcknowledgement?: boolean;
   readonly nudgeDelivery: NudgeDeliveryPort;
   readonly broker: ContextBroker;
   readonly enqueueWrite: <T>(operation: () => T | PromiseLike<T>) => Promise<T>;
@@ -87,6 +90,41 @@ function brokerPersistence(dependencies: AgentCheckpointUseCaseDependencies) {
   };
 }
 
+function sameTaskProfile(
+  left: CheckpointMutationResult['taskProfile'],
+  right: ContextBrokerResult['taskProfile'],
+): boolean {
+  return left.taskType === right.taskType
+    && left.target === right.target
+    && left.expected === right.expected
+    && left.constraints === right.constraints;
+}
+
+function checkpointIntegrity(): never {
+  throw new KiokukoError('INTEGRITY_ERROR', 'Checkpoint mutation acknowledgement is inconsistent');
+}
+
+function assertMutationAcknowledgement(
+  mutation: CheckpointMutationResult,
+  runId: string,
+): void {
+  if (mutation.projection === null
+    || mutation.runId !== runId
+    || mutation.acceptedThrough !== mutation.projection.throughSequence
+    || mutation.profileHash !== mutation.projection.profileHash
+    || !sameTaskProfile(mutation.taskProfile, mutation.projection.taskProfile)) {
+    checkpointIntegrity();
+  }
+  try {
+    if (canonicalJson(mutation.preliminaryRecommendations)
+      !== canonicalJson(buildRecommendations({ projection: mutation.projection, broker: {} }))) {
+      checkpointIntegrity();
+    }
+  } catch {
+    checkpointIntegrity();
+  }
+}
+
 export class AgentCheckpointUseCase {
   constructor(private readonly dependencies: AgentCheckpointUseCaseDependencies) {}
 
@@ -102,6 +140,9 @@ export class AgentCheckpointUseCase {
       idempotencyKey: input.idempotencyKey,
       request: serviceRequest,
     }));
+    if (this.dependencies.validateMutationAcknowledgement !== false) {
+      assertMutationAcknowledgement(mutation, input.runId);
+    }
     const signals = checkpointSignals(serviceRequest);
     const gated = await this.dependencies.broker.queryGated({
       workspace: 'run-bound',
