@@ -1,6 +1,8 @@
 import { KiokukoError } from '../errors.js';
 import { AgentGatewayService } from '../gateway/agent-service.js';
-import { CheckpointService, FeedbackService } from '../gateway/checkpoint-service.js';
+import { FeedbackService } from '../gateway/checkpoint-service.js';
+import { CheckpointMutationService } from '../gateway/checkpoint-mutation-service.js';
+import { NudgeDeliveryService } from '../gateway/nudge-delivery-service.js';
 import { ContextBroker } from '../context/broker.js';
 import { startHttpServer, type HttpApplicationContext, type HttpServerHandle, type HttpServerOptions } from './http.js';
 import type { V1RouteHandler } from './router.js';
@@ -9,6 +11,7 @@ import { createAgentIntakeRoute, agentIntakeOperation } from './routes/agent-int
 import { createAgentRunsRoute, agentRunsOperation, type AgentRouteContext } from './routes/agent-runs.js';
 import { createAgentPromotionsRoute, agentPromotionsOperation } from './routes/agent-promotions.js';
 import { createTask5Route, task5Operation } from './routes/task5.js';
+import { AgentCheckpointUseCase } from './agent-checkpoint-use-case.js';
 
 export type AgentHttpServerOptions = Omit<HttpServerOptions, 'app' | 'v1' | 'applicationFactory'>;
 
@@ -21,13 +24,24 @@ function operationFor(method: string, pathname: string): string | undefined {
 }
 
 export function createAgentV1Handler(context: HttpApplicationContext): V1RouteHandler {
+  const service = new AgentGatewayService(context.database);
+  const checkpointMutation = new CheckpointMutationService(context.database);
+  const nudgeDelivery = new NudgeDeliveryService(context.database);
+  const broker = new ContextBroker(context.database);
   const routeContext: AgentRouteContext = {
     database: context.database,
-    service: new AgentGatewayService(context.database),
-    checkpointService: new CheckpointService(context.database),
+    service,
     feedbackService: new FeedbackService(context.database),
-    broker: new ContextBroker(context.database),
+    broker,
     enqueueWrite: context.enqueueWrite,
+    agentCheckpoint: new AgentCheckpointUseCase({
+      database: context.database,
+      service,
+      checkpointMutation,
+      nudgeDelivery,
+      broker,
+      enqueueWrite: context.enqueueWrite,
+    }),
   };
   const routes: readonly V1RouteHandler[] = [
     createAgentRunsRoute(routeContext),

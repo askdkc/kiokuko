@@ -40,6 +40,7 @@ function deliver(
     policyVersion,
     code,
     occurrenceId,
+    checkpointId: `${occurrenceId}-checkpoint`,
     throughSequence,
     priority: code === 'UNRESOLVED_FAILURE' ? 3 : 4,
     deliveredAt: now,

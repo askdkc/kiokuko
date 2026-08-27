@@ -3,6 +3,7 @@ import { successEnvelope } from '../../serialization/envelope.js';
 import type { AgentGatewayService } from '../../gateway/agent-service.js';
 import type { CheckpointService, FeedbackService } from '../../gateway/checkpoint-service.js';
 import type { ContextBroker } from '../../context/broker.js';
+import type { AgentCheckpointUseCase } from '../agent-checkpoint-use-case.js';
 import type { V1RouteHandler, V1RouteRequest } from '../router.js';
 import { attachCapabilityGatedContext, requestCapabilityCatalog } from './agent-capability-gate.js';
 import { agentRequestBindingHash } from './request-binding.js';
@@ -17,7 +18,8 @@ type QueryField = 'workspace' | 'client' | 'status' | 'cursor' | 'limit' | 'afte
 export interface AgentRouteContext {
   readonly database: import('../../db/adapter.js').SqliteDatabase;
   readonly service: AgentGatewayService;
-  readonly checkpointService: CheckpointService;
+  readonly agentCheckpoint?: AgentCheckpointUseCase;
+  readonly checkpointService?: CheckpointService;
   readonly feedbackService: FeedbackService;
   readonly broker: ContextBroker;
   readonly enqueueWrite: <T>(operation: () => T | PromiseLike<T>) => Promise<T>;

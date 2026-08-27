@@ -498,16 +498,29 @@ interface FinalizeAgentTaskInput {
   fetchImpl?: typeof fetch;
 }
 
-async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<PreparedAgentTask> {
-  let context = currentAgentTaskContext(input.database, input.runId, input.context);
-  let run = authoritativeTaskRun(input.database, input.runId, context.status);
-  if (context.status === 'needs_answer') {
-    return buildPreparedTask(input.project, input.executionContext, context, input.capabilities, {
-      runId: input.runId,
-      status: run.status,
-    }, null, emptySkillDiscovery(input.discoveryMode), 'none');
-  }
+interface PreparedTaskContextQuery {
+  readonly fingerprint: ReturnType<typeof resolveProjectFingerprint>;
+  readonly selectionWorkspaces: readonly string[];
+  readonly queryFor: (context: AkinatorContext) => {
+    project: ResolvedProjectWorkspace;
+    fingerprint: ReturnType<typeof resolveProjectFingerprint>;
+    task: string;
+    taskProfile: TaskProfile;
+    recommendedTags: string[];
+    runId: string;
+    characterBudget: number;
+  };
+  readonly discoveryAttemptIdentity: {
+    runId: string;
+    mode: SkillDiscoveryMode;
+    requestDigest: string;
+  };
+}
 
+function prepareTaskContextQuery(
+  input: FinalizeAgentTaskInput,
+  context: AkinatorContext,
+): PreparedTaskContextQuery {
   const fingerprint = resolveProjectFingerprint(input.database, input.project, input.manifestSnapshot);
   const selectionWorkspaces = [input.project.workspace, GLOBAL_WORKSPACE];
   const queryFor = (current: AkinatorContext) => ({
@@ -536,93 +549,118 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
       mode: input.discoveryMode,
     }),
   };
-  const replayedAttempt = input.discoveryMode === 'off'
-    ? undefined
-    : readAgentTaskSkillDiscoveryAttempt(input.database, discoveryAttemptIdentity);
-  let missingMemoryCapability = memoryCapabilityUnavailableForTask(context, input.capabilities);
-  let preDiscoveryMemoryState: string | null = null;
-  if (missingMemoryCapability && replayedAttempt === undefined && input.discoveryMode !== 'off') {
-    const previewRun = run;
-    const previewContext = context;
-    const preview = await queryScopedContextGated(input.database, queryFor(context), (candidate) => {
-      const memoryUse = scopedMemoryUseSignal(input.database, input.project.workspace, candidate);
-      return {
-        persist: false,
-        value: { candidate, memoryUse },
-        assertBeforePersist: () => {
-          assertAgentTaskSnapshot(input.database, input.runId, previewRun, previewContext);
-          assertCurrentProjectManifest(input.project, input.manifestSnapshot);
-          assertScopedMemoryUseSignal(
-            input.database,
-            input.project.workspace,
-            candidate,
-            memoryUse,
-          );
-        },
-      };
-    });
-    preDiscoveryMemoryState = preview.selectionStateHash;
-    assertCurrentProjectManifest(input.project, input.manifestSnapshot);
-    if (preview.value.memoryUse === 'actionable') {
-      context = currentAgentTaskContext(input.database, input.runId, context);
-      run = authoritativeTaskRun(input.database, input.runId, context.status);
-      if (preview.value.candidate.taskProfileHash !== canonicalContentHash(context.session.profile)) {
-        throw new KiokukoError('CONFLICT', 'Task profile changed while scoped context was being prepared');
-      }
-      return buildPreparedTask(input.project, input.executionContext, context, input.capabilities, {
-        runId: input.runId,
-        status: run.status,
-      }, null, emptySkillDiscovery(input.discoveryMode), preview.value.memoryUse);
-    }
-  }
+  return { fingerprint, selectionWorkspaces, queryFor, discoveryAttemptIdentity };
+}
 
-  run = authoritativeTaskRun(input.database, input.runId, context.status);
+interface MemoryPreviewResult {
+  readonly selectionStateHash: string;
+  readonly memoryUse: MemoryUseSignal;
+  readonly candidate: ScopedContextResult;
+}
+
+async function previewMemoryBeforeDiscovery(
+  input: FinalizeAgentTaskInput,
+  prepared: PreparedTaskContextQuery,
+  run: NonTerminalTaskRun,
+  context: AkinatorContext,
+): Promise<MemoryPreviewResult> {
+  const preview = await queryScopedContextGated(input.database, prepared.queryFor(context), (candidate) => {
+    const memoryUse = scopedMemoryUseSignal(input.database, input.project.workspace, candidate);
+    return {
+      persist: false,
+      value: { candidate, memoryUse },
+      assertBeforePersist: () => {
+        assertAgentTaskSnapshot(input.database, input.runId, run, context);
+        assertCurrentProjectManifest(input.project, input.manifestSnapshot);
+        assertScopedMemoryUseSignal(
+          input.database,
+          input.project.workspace,
+          candidate,
+          memoryUse,
+        );
+      },
+    };
+  });
+  return {
+    selectionStateHash: preview.selectionStateHash,
+    memoryUse: preview.value.memoryUse,
+    candidate: preview.value.candidate,
+  };
+}
+
+interface SkillDiscoveryResolutionInput {
+  readonly input: FinalizeAgentTaskInput;
+  readonly prepared: PreparedTaskContextQuery;
+  readonly run: NonTerminalTaskRun;
+  readonly context: AkinatorContext;
+  readonly preDiscoveryMemoryState: string | null;
+  readonly replayedAttempt: ReturnType<typeof readAgentTaskSkillDiscoveryAttempt>;
+}
+
+async function resolveSkillDiscovery(
+  value: SkillDiscoveryResolutionInput,
+): Promise<SkillDiscoverySummary> {
+  const { input, prepared, run, context, preDiscoveryMemoryState, replayedAttempt } = value;
+  let skillDiscovery = replayedAttempt?.summary ?? emptySkillDiscovery(input.discoveryMode);
+  if (replayedAttempt !== undefined || input.discoveryMode === 'off') return skillDiscovery;
+
   const discoveryRun = run;
   const discoveryContext = context;
   const assertDiscoveryState = (): void => {
     assertAgentTaskSnapshot(input.database, input.runId, discoveryRun, discoveryContext);
     assertCurrentProjectManifest(input.project, input.manifestSnapshot);
     if (preDiscoveryMemoryState !== null) {
-      assertOrdinaryMemoryState(input.database, selectionWorkspaces, preDiscoveryMemoryState);
+      assertOrdinaryMemoryState(input.database, prepared.selectionWorkspaces, preDiscoveryMemoryState);
     }
   };
-  let skillDiscovery = replayedAttempt?.summary ?? emptySkillDiscovery(input.discoveryMode);
-  if (replayedAttempt === undefined && input.discoveryMode !== 'off') {
-    const claimed = claimAgentTaskSkillDiscoveryAttempt(input.database, discoveryAttemptIdentity);
-    if (claimed.kind === 'replay') {
-      skillDiscovery = claimed.summary;
-    } else {
-      try {
-        const discovered = await discoverSkills(input.database, {
-          project: input.project,
-          fingerprint,
-          task: context.session.task,
-          profile: context.session.profile,
-          recommendedTags: context.recommendedTags,
-          ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
-          mode: input.discoveryMode,
-          ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
-        }, {
-          ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
-          assertBeforePersist: assertDiscoveryState,
-        });
-        skillDiscovery = completeAgentTaskSkillDiscoveryAttempt(
-          input.database,
-          discoveryAttemptIdentity,
-          discovered,
-          assertDiscoveryState,
-        );
-      } catch (error) {
-        failAgentTaskSkillDiscoveryAttempt(input.database, discoveryAttemptIdentity, error);
-      }
-    }
+  const claimed = claimAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity);
+  if (claimed.kind === 'replay') return claimed.summary;
+  try {
+    const discovered = await discoverSkills(input.database, {
+      project: input.project,
+      fingerprint: prepared.fingerprint,
+      task: context.session.task,
+      profile: context.session.profile,
+      recommendedTags: context.recommendedTags,
+      ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+      mode: input.discoveryMode,
+      ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+    }, {
+      ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+      assertBeforePersist: assertDiscoveryState,
+    });
+    skillDiscovery = completeAgentTaskSkillDiscoveryAttempt(
+      input.database,
+      prepared.discoveryAttemptIdentity,
+      discovered,
+      assertDiscoveryState,
+    );
+  } catch (error) {
+    failAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity, error);
   }
-  context = currentAgentTaskContext(input.database, input.runId, context);
-  authoritativeTaskRun(input.database, input.runId, context.status);
-  missingMemoryCapability = memoryCapabilityUnavailableForTask(context, input.capabilities);
+  return skillDiscovery;
+}
 
+interface FinalTaskContextResult {
+  readonly context: AkinatorContext;
+  readonly run: NonTerminalTaskRun;
+  readonly scopedContext: ScopedContextResult | null;
+  readonly memoryUse: MemoryUseSignal;
+}
+
+interface FinalTaskContextInput {
+  readonly input: FinalizeAgentTaskInput;
+  readonly prepared: PreparedTaskContextQuery;
+  readonly context: AkinatorContext;
+  readonly missingMemoryCapability: boolean;
+}
+
+async function selectFinalTaskContext(
+  value: FinalTaskContextInput,
+): Promise<FinalTaskContextResult> {
+  const { input, prepared, missingMemoryCapability } = value;
   let approvedEmptyContext: ScopedContextResult | null = null;
-  const gated = await queryScopedContextGated(input.database, queryFor(context), (candidate) => {
+  const gated = await queryScopedContextGated(input.database, prepared.queryFor(value.context), (candidate) => {
     const memoryUse = scopedMemoryUseSignal(input.database, input.project.workspace, candidate);
     const closed = missingMemoryCapability && memoryUse === 'actionable';
     const returnEmptyWithoutDelivery = missingMemoryCapability && !closed && candidate.items.length === 0;
@@ -642,16 +680,67 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
     };
   });
   assertCurrentProjectManifest(input.project, input.manifestSnapshot);
-  context = currentAgentTaskContext(input.database, input.runId, context);
-  run = authoritativeTaskRun(input.database, input.runId, context.status);
+  const context = currentAgentTaskContext(input.database, input.runId, value.context);
+  const run = authoritativeTaskRun(input.database, input.runId, context.status);
   if (gated.value.candidate.taskProfileHash !== canonicalContentHash(context.session.profile)) {
     throw new KiokukoError('CONFLICT', 'Task profile changed while scoped context was being prepared');
   }
   const scopedContext = gated.context ?? (gated.value.closed ? null : approvedEmptyContext);
+  return { context, run, scopedContext, memoryUse: gated.value.memoryUse };
+}
+
+async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<PreparedAgentTask> {
+  let context = currentAgentTaskContext(input.database, input.runId, input.context);
+  let run = authoritativeTaskRun(input.database, input.runId, context.status);
+  if (context.status === 'needs_answer') {
+    return buildPreparedTask(input.project, input.executionContext, context, input.capabilities, {
+      runId: input.runId,
+      status: run.status,
+    }, null, emptySkillDiscovery(input.discoveryMode), 'none');
+  }
+
+  const prepared = prepareTaskContextQuery(input, context);
+  const replayedAttempt = input.discoveryMode === 'off'
+    ? undefined
+    : readAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity);
+  let missingMemoryCapability = memoryCapabilityUnavailableForTask(context, input.capabilities);
+  let preDiscoveryMemoryState: string | null = null;
+  if (missingMemoryCapability && replayedAttempt === undefined && input.discoveryMode !== 'off') {
+    const preview = await previewMemoryBeforeDiscovery(input, prepared, run, context);
+    preDiscoveryMemoryState = preview.selectionStateHash;
+    assertCurrentProjectManifest(input.project, input.manifestSnapshot);
+    if (preview.memoryUse === 'actionable') {
+      context = currentAgentTaskContext(input.database, input.runId, context);
+      run = authoritativeTaskRun(input.database, input.runId, context.status);
+      if (preview.candidate.taskProfileHash !== canonicalContentHash(context.session.profile)) {
+        throw new KiokukoError('CONFLICT', 'Task profile changed while scoped context was being prepared');
+      }
+      return buildPreparedTask(input.project, input.executionContext, context, input.capabilities, {
+        runId: input.runId,
+        status: run.status,
+      }, null, emptySkillDiscovery(input.discoveryMode), preview.memoryUse);
+    }
+  }
+
+  run = authoritativeTaskRun(input.database, input.runId, context.status);
+  const skillDiscovery = await resolveSkillDiscovery({
+    input,
+    prepared,
+    run,
+    context,
+    preDiscoveryMemoryState,
+    replayedAttempt,
+  });
+  context = currentAgentTaskContext(input.database, input.runId, context);
+  authoritativeTaskRun(input.database, input.runId, context.status);
+  missingMemoryCapability = memoryCapabilityUnavailableForTask(context, input.capabilities);
+  const selected = await selectFinalTaskContext({ input, prepared, context, missingMemoryCapability });
+  context = selected.context;
+  run = selected.run;
   return buildPreparedTask(input.project, input.executionContext, context, input.capabilities, {
     runId: input.runId,
     status: run.status,
-  }, scopedContext, skillDiscovery, gated.value.memoryUse);
+  }, selected.scopedContext, skillDiscovery, selected.memoryUse);
 }
 
 export async function prepareAgentTask(database: SqliteDatabase, input: PrepareAgentTaskInput): Promise<PreparedAgentTask> {

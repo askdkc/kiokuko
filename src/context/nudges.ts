@@ -29,22 +29,22 @@ export const NUDGE_CODES = [
 export type NudgeCode = (typeof NUDGE_CODES)[number];
 
 export interface NudgeCandidate {
-  code: NudgeCode;
-  occurrenceId: string;
-  priority: number;
-  message: string;
-  evidenceEventIds: string[];
-  referenceIds: string[];
+  readonly code: NudgeCode;
+  readonly occurrenceId: string;
+  readonly priority: number;
+  readonly message: string;
+  readonly evidenceEventIds: readonly string[];
+  readonly referenceIds: readonly string[];
 }
 
 export interface DeliveredNudge {
-  occurrenceId: string;
-  code: NudgeCode;
-  message: string;
-  evidenceEventIds: string[];
-  referenceIds: string[];
-  priority: number;
-  policyVersion: typeof NUDGE_POLICY_VERSION;
+  readonly occurrenceId: string;
+  readonly code: NudgeCode;
+  readonly message: string;
+  readonly evidenceEventIds: readonly string[];
+  readonly referenceIds: readonly string[];
+  readonly priority: number;
+  readonly policyVersion: typeof NUDGE_POLICY_VERSION;
 }
 
 export interface NudgeRateLimitPolicy {

@@ -1,8 +1,9 @@
-import { assertCapabilityCatalogBinding } from '../../akinator/capability-binding.js';
 import { KiokukoError } from '../../errors.js';
-import { checkpointEligibility } from '../../ledger/checkpoint-eligibility.js';
-import type { RunStatus } from '../../ledger/types.js';
 import { successEnvelope } from '../../serialization/envelope.js';
+import type { CheckpointService } from '../../gateway/checkpoint-service.js';
+import type { CheckpointMutationService, CheckpointMutationResult } from '../../gateway/checkpoint-mutation-service.js';
+import type { NudgeDeliveryService } from '../../gateway/nudge-delivery-service.js';
+import { AgentCheckpointUseCase } from '../agent-checkpoint-use-case.js';
 import type { V1RouteHandler } from '../router.js';
 import {
   decodeRunId,
@@ -11,49 +12,40 @@ import {
   runIdSegment,
   type AgentRouteContext,
 } from './agent-runs.js';
-import { applyAgentCapabilityGate, assertBrokerContextRun, brokerIntakeStatus, deriveBrokerMemoryUseSignal, requestCapabilityCatalog } from './agent-capability-gate.js';
-import { brokerPersistence } from './task5-support.js';
 import { agentRequestBindingHash } from './request-binding.js';
 
 const CHECKPOINTS_SUFFIX = 'checkpoints';
 const FEEDBACK_SUFFIX = 'feedback';
 
-function withoutCapabilityCatalog(value: unknown): unknown {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
-  const result = { ...(value as Record<string, unknown>) };
-  delete result.capabilities;
-  return result;
-}
-
-function checkpointSignalArray(value: unknown): string[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Checkpoint signals are invalid after validation');
+function legacyCheckpointUseCase(context: AgentRouteContext): AgentCheckpointUseCase {
+  const legacy = context.checkpointService;
+  if (legacy === undefined) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Agent checkpoint use case is not configured');
   }
-  return [...value];
-}
-
-function checkpointSignals(value: unknown): { changedPaths: string[]; errorSignatures: string[] } {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Checkpoint signals are invalid after validation');
-  }
-  const request = value as Record<string, unknown>;
-  return {
-    changedPaths: checkpointSignalArray(request.changedPaths),
-    errorSignatures: checkpointSignalArray(request.errorSignatures),
-  };
-}
-
-function assertActiveCheckpointRun(run: { status: RunStatus }): void {
-  const eligibility = checkpointEligibility(run.status);
-  if (eligibility.allowed) return;
-  throw new KiokukoError('CONFLICT', 'Checkpoint is not allowed for a non-active run', {
-    checkpointEligibility: eligibility,
-    runStatus: run.status,
+  const checkpointMutation = {
+    checkpoint: async (input: unknown): Promise<CheckpointMutationResult> => {
+      const value = await legacy.checkpoint(input);
+      return {
+        ...(value as unknown as CheckpointMutationResult),
+        preliminaryRecommendations: [...(value.recommendations ?? [])],
+      };
+    },
+  } as unknown as CheckpointMutationService;
+  const nudgeDelivery = {
+    deliver: (input: Parameters<CheckpointService['deliverNudge']>[0]) => legacy.deliverNudge(input),
+  } as unknown as NudgeDeliveryService;
+  return new AgentCheckpointUseCase({
+    database: context.database,
+    service: context.service,
+    checkpointMutation,
+    nudgeDelivery,
+    broker: context.broker,
+    enqueueWrite: context.enqueueWrite,
   });
 }
 
 export function createTask5Route(context: AgentRouteContext): V1RouteHandler {
+  const checkpoint = context.agentCheckpoint ?? legacyCheckpointUseCase(context);
   return async (request) => {
     if (request.method === 'POST') {
       const rawCheckpointRunId = runIdSegment(request.url.pathname, CHECKPOINTS_SUFFIX);
@@ -67,74 +59,13 @@ export function createTask5Route(context: AgentRouteContext): V1RouteHandler {
           idempotencyKey,
           requestBody: request.body,
         });
-        const catalog = requestCapabilityCatalog(request.body);
-        const run = context.service.readRun({ runId });
-        assertActiveCheckpointRun(run);
-        assertCapabilityCatalogBinding(run.metadata, catalog);
-        const serviceRequest = withoutCapabilityCatalog(request.body);
-        const data = await context.enqueueWrite(() => context.checkpointService.checkpoint({
+        const data = await checkpoint.execute({
           runId,
           idempotencyKey,
-          request: serviceRequest,
-        }));
-        const signals = checkpointSignals(serviceRequest);
-        const brokerInput = {
-          workspace: 'run-bound',
-          runId,
-          characterBudget: data.characterBudget,
-          changedPaths: signals.changedPaths,
-          errorSignatures: signals.errorSignatures,
-        };
-        const gated = await context.broker.queryGated(brokerInput, (candidate) => {
-          assertBrokerContextRun(candidate, runId);
-          const memoryUse = deriveBrokerMemoryUseSignal(context, candidate);
-          const value = applyAgentCapabilityGate({
-            task: run.title ?? '',
-            intakeStatus: brokerIntakeStatus(candidate.status),
-            taskProfile: candidate.taskProfile,
-            recommendedTags: candidate.recommendedTags,
-            catalog,
-            broker: candidate,
-            memoryUseOverride: memoryUse,
-          });
-          return {
-            persist: value.context !== null || candidate.context === null,
-            value,
-            assertBeforePersist: () => {
-              if (deriveBrokerMemoryUseSignal(context, candidate) !== memoryUse) {
-                throw new KiokukoError('CONFLICT', 'Memory capability decision changed before context persistence');
-              }
-            },
-          };
-        }, brokerPersistence(context));
-        const finalRun = context.service.readRun({ runId });
-        assertActiveCheckpointRun(finalRun);
-        if (finalRun.lastSequence !== gated.broker.acceptedThrough) {
-          throw new KiokukoError('CONFLICT', 'Agent run changed while checkpoint context was being prepared');
-        }
-        const intakeStatus = brokerIntakeStatus(gated.broker.status);
-        if (intakeStatus === 'needs_answer' || gated.broker.projection === null) {
-          throw new KiokukoError('INTEGRITY_ERROR', 'Checkpoint context is not bound to finalized intake');
-        }
-        const nudge = await context.enqueueWrite(() => context.checkpointService.deliverNudge({
-          runId,
-          idempotencyKey,
-          throughSequence: gated.broker.acceptedThrough,
-          projection: gated.broker.projection!,
-          recommendations: gated.value.recommendations,
-        }));
-        const enriched = {
-          ...data,
-          runStatus: finalRun.status,
-          intakeStatus,
-          taskProfile: { ...gated.broker.taskProfile, source: 'akinator+ledger-revisions' },
-          profileHash: gated.broker.profileHash,
-          projection: gated.broker.projection,
-          ...gated.value,
-          nudge,
+          body: request.body,
           requestBindingHash,
-        };
-        return successEnvelope('agent.checkpoint', enriched);
+        });
+        return successEnvelope('agent.checkpoint', data);
       }
 
       const rawFeedbackRunId = runIdSegment(request.url.pathname, FEEDBACK_SUFFIX);
