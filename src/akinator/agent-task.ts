@@ -60,7 +60,11 @@ import type { SkillDiscoverySummary, SkillDiscoveryMode } from '../skills/types.
 import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { canonicalDirectory } from '../repository/detect-root.js';
 import { ennoStateForPreparedTask } from '../enno-oduno/service.js';
-import type { EnnoOdunoState } from '../enno-oduno/types.js';
+import {
+  ENNO_MAX_EXTERNAL_SKILLS,
+  ENNO_MAX_TOTAL_SKILL_QUERIES,
+  type EnnoOdunoState,
+} from '../enno-oduno/types.js';
 
 export interface PrepareAgentTaskInput {
   requestId: string;
@@ -618,8 +622,19 @@ async function resolveSkillDiscovery(
       assertOrdinaryMemoryState(input.database, prepared.selectionWorkspaces, preDiscoveryMemoryState);
     }
   };
-  const claimed = claimAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity);
+  const claimed = claimAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity, {
+    queryBudget: ENNO_MAX_TOTAL_SKILL_QUERIES,
+    selectionBudget: ENNO_MAX_EXTERNAL_SKILLS,
+  });
   if (claimed.kind === 'replay') return claimed.summary;
+  if (claimed.queryBudget === 0 || claimed.selectionBudget === 0) {
+    return completeAgentTaskSkillDiscoveryAttempt(
+      input.database,
+      prepared.discoveryAttemptIdentity,
+      emptySkillDiscovery(input.discoveryMode),
+      assertDiscoveryState,
+    );
+  }
   try {
     const discovered = await discoverSkills(input.database, {
       project: input.project,
@@ -629,6 +644,8 @@ async function resolveSkillDiscovery(
       recommendedTags: context.recommendedTags,
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       mode: input.discoveryMode,
+      maxQueries: claimed.queryBudget as 1 | 2 | 3,
+      maxSelectedSkills: claimed.selectionBudget as 1 | 2,
       ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
     }, {
       ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),

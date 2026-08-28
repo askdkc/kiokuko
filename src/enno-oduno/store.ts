@@ -129,13 +129,19 @@ function persistedState(status: EnnoStatus): { status: string; phase: string | n
 }
 
 function workUnits(database: SqliteDatabase, runId: string, revision: number): StoredWorkUnit[] {
-  return database.prepare(`
+  const rows = database.prepare(`
     SELECT work_unit_json, status, attempt_count, result_json
     FROM enno_work_units
     WHERE run_id = ? AND contract_revision = ?
     ORDER BY order_index
-  `).all<WorkUnitRow>(runId, revision).map((row) => ({
-    workUnit: parseWorkPlan({ objective: 'stored unit', units: [parseCanonicalJson(row.work_unit_json, 'Stored Enno WorkUnit is invalid')] }).units[0]!,
+  `).all<WorkUnitRow>(runId, revision);
+  if (rows.length === 0) return [];
+  const parsed = parseWorkPlan({
+    objective: 'stored units',
+    units: rows.map((row) => parseCanonicalJson(row.work_unit_json, 'Stored Enno WorkUnit is invalid')),
+  });
+  return rows.map((row, index) => ({
+    workUnit: parsed.units[index]!,
     status: row.status,
     attemptCount: row.attempt_count,
     result: row.result_json === null

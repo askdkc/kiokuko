@@ -340,48 +340,47 @@ async function discoverZenkiSkills(
   dependencies: EnnoServiceDependencies,
 ): Promise<SkillDiscoverySummary> {
   const intake = snapshot.contract.skillSet.intakeDiscovery;
-  if (snapshot.confirmationState === 'revision_requested') {
-    return snapshot.contract.skillSet.zenkiDiscovery;
-  }
-  const remainingQueries = ENNO_MAX_TOTAL_SKILL_QUERIES - intake.queries.length;
-  const remainingSelections = ENNO_MAX_EXTERNAL_SKILLS - intake.selected.length;
-  if (intake.mode === 'off' || remainingQueries <= 0 || remainingSelections <= 0) return emptyDiscovery(intake.mode);
+  if (intake.mode === 'off') return emptyDiscovery(intake.mode);
   const context = await readRunTaskContext(database, snapshot);
   const attempt = {
     runId: snapshot.runId,
     phase: 'zenki' as const,
     mode: intake.mode,
     requestDigest: canonicalContentHash({
-      version: 1,
+      version: 2,
       runId: snapshot.runId,
       revision: snapshot.revision,
+      mode: intake.mode,
       workPlan: plan.workPlan,
       capabilities: plan.capabilities ?? null,
-      remainingQueries,
-      remainingSelections,
+      skillRequirements: plan.skillRequirements,
     }),
   };
   const replay = readAgentTaskSkillDiscoveryAttempt(database, attempt);
   if (replay !== undefined) return replay.summary;
-  const claimed = claimAgentTaskSkillDiscoveryAttempt(database, attempt);
+  const claimed = claimAgentTaskSkillDiscoveryAttempt(database, attempt, {
+    queryBudget: ENNO_MAX_TOTAL_SKILL_QUERIES,
+    selectionBudget: ENNO_MAX_EXTERNAL_SKILLS,
+  });
   if (claimed.kind === 'replay') return claimed.summary;
+  if (claimed.queryBudget === 0 || claimed.selectionBudget === 0) {
+    return completeAgentTaskSkillDiscoveryAttempt(database, attempt, emptyDiscovery(intake.mode), () => {
+      assertExpected(readEnnoSnapshot(database, identity(plan)), plan.expectedRevision, ['zenki_planning']);
+    });
+  }
   try {
     const summary = await (dependencies.discoverSkills ?? discoverSkills)(database, {
       ...context,
       task: `${context.task}\n${plan.workPlan.objective}`,
       capabilities: plan.capabilities,
       mode: intake.mode,
-      maxQueries: remainingQueries as 1 | 2 | 3,
-      maxSelectedSkills: remainingSelections as 1 | 2,
+      maxQueries: claimed.queryBudget as 1 | 2 | 3,
+      maxSelectedSkills: claimed.selectionBudget as 1 | 2,
       ...(dependencies.fetchImpl === undefined ? {} : { fetchImpl: dependencies.fetchImpl }),
     }, {
       ...(dependencies.fetchImpl === undefined ? {} : { fetchImpl: dependencies.fetchImpl }),
       assertBeforePersist: () => assertExpected(readEnnoSnapshot(database, identity(plan)), plan.expectedRevision, ['zenki_planning']),
     });
-    if (intake.queries.length + summary.queries.length > ENNO_MAX_TOTAL_SKILL_QUERIES
-      || intake.selected.length + summary.selected.length > ENNO_MAX_EXTERNAL_SKILLS) {
-      throw new KiokukoError('INTEGRITY_ERROR', 'Zenki Skill discovery exceeded its run budget');
-    }
     return completeAgentTaskSkillDiscoveryAttempt(database, attempt, summary, () => {
       assertExpected(readEnnoSnapshot(database, identity(plan)), plan.expectedRevision, ['zenki_planning']);
     });
@@ -467,6 +466,10 @@ export async function submitEnnoPlan(
   const includesCodeChanges = planChangesCode(input, before.taskType);
   const includesUiWork = planHasUi(input);
   assertWorkPlanExpertCoverage(input.workPlan, { includesCodeChanges, includesUiWork });
+  assertContractVerifierCwds(before.repositoryRoot, {
+    workPlan: input.workPlan,
+    finalVerifiers: input.finalVerifiers,
+  });
   const zenkiDiscovery = await discoverZenkiSkills(database, before, input, dependencies);
   const requirements = completeRequiredSkillList({
     requested: input.skillRequirements,

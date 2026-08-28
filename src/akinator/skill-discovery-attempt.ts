@@ -6,6 +6,7 @@ import { parseStrictJson } from '../setup/strict-json.js';
 import { SkillProviderError } from '../skills/providers/schema.js';
 import { SkillSourceError, type SkillSourceFailureCode } from '../skills/source/errors.js';
 import type { SkillCandidate, SkillDiscoveryMode, SkillDiscoverySummary, SkillProviderFailureCode } from '../skills/types.js';
+import { ENNO_MAX_EXTERNAL_SKILLS, ENNO_MAX_TOTAL_SKILL_QUERIES } from '../enno-oduno/types.js';
 
 const HASH = /^[0-9a-f]{64}$/u;
 const INVALID_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\uFFFD]/u;
@@ -69,6 +70,10 @@ interface StoredAttemptRow {
   run_id: unknown;
   phase: unknown;
   request_digest: unknown;
+  reserved_query_count: unknown;
+  reserved_selection_count: unknown;
+  consumed_query_count: unknown;
+  consumed_selection_count: unknown;
   state: unknown;
   summary_json: unknown;
   failure_json: unknown;
@@ -89,7 +94,7 @@ export interface AgentTaskSkillDiscoveryAttemptIdentity {
 }
 
 export type AgentTaskSkillDiscoveryAttemptClaim =
-  | { kind: 'execute' }
+  | { kind: 'execute'; queryBudget: number; selectionBudget: number }
   | { kind: 'replay'; summary: SkillDiscoverySummary };
 
 function integrity(): never {
@@ -251,26 +256,64 @@ function validateFailure(value: unknown): StoredDiscoveryFailure {
   return integrity();
 }
 
-function attemptRow(database: SqliteDatabase, runId: string, phase: AgentTaskSkillDiscoveryAttemptIdentity['phase']): StoredAttemptRow | undefined {
+function attemptRow(database: SqliteDatabase, identity: AgentTaskSkillDiscoveryAttemptIdentity): StoredAttemptRow | undefined {
   return database.prepare(`
-    SELECT run_id, phase, request_digest, state, summary_json, failure_json, started_at, finished_at
+    SELECT run_id, phase, request_digest,
+           reserved_query_count, reserved_selection_count,
+           consumed_query_count, consumed_selection_count,
+           state, summary_json, failure_json, started_at, finished_at
     FROM agent_task_skill_discovery_attempts
-    WHERE run_id = ? AND phase = ?
+    WHERE run_id = ? AND phase = ? AND request_digest = ?
+  `).get<StoredAttemptRow>(identity.runId, identity.phase, identity.requestDigest);
+}
+
+function allAttemptRows(database: SqliteDatabase, runId: string): StoredAttemptRow[] {
+  return database.prepare(`
+    SELECT run_id, phase, request_digest,
+           reserved_query_count, reserved_selection_count,
+           consumed_query_count, consumed_selection_count,
+           state, summary_json, failure_json, started_at, finished_at
+    FROM agent_task_skill_discovery_attempts
+    WHERE run_id = ?
+  `).all<StoredAttemptRow>(runId);
+}
+
+function activeAttemptRow(database: SqliteDatabase, runId: string, phase: AgentTaskSkillDiscoveryAttemptIdentity['phase']): StoredAttemptRow | undefined {
+  return database.prepare(`
+    SELECT run_id, phase, request_digest,
+           reserved_query_count, reserved_selection_count,
+           consumed_query_count, consumed_selection_count,
+           state, summary_json, failure_json, started_at, finished_at
+    FROM agent_task_skill_discovery_attempts
+    WHERE run_id = ? AND phase = ? AND state = 'started'
+    LIMIT 1
   `).get<StoredAttemptRow>(runId, phase);
 }
 
-function validateAttemptRow(row: StoredAttemptRow, identity: AgentTaskSkillDiscoveryAttemptIdentity): void {
-  if (row.run_id !== identity.runId
-    || row.phase !== identity.phase
+function boundedBudget(value: unknown, maximum: number): value is number {
+  return nonNegativeSafeInteger(value) && value <= maximum;
+}
+
+function validateAttemptRow(row: StoredAttemptRow, identity?: AgentTaskSkillDiscoveryAttemptIdentity): void {
+  if (typeof row.run_id !== 'string'
+    || typeof row.phase !== 'string'
+    || !['intake', 'zenki'].includes(row.phase)
     || typeof row.request_digest !== 'string'
     || !HASH.test(row.request_digest)
-    || row.request_digest !== identity.requestDigest
+    || !boundedBudget(row.reserved_query_count, ENNO_MAX_TOTAL_SKILL_QUERIES)
+    || !boundedBudget(row.reserved_selection_count, ENNO_MAX_EXTERNAL_SKILLS)
+    || !boundedBudget(row.consumed_query_count, row.reserved_query_count as number)
+    || !boundedBudget(row.consumed_selection_count, row.reserved_selection_count as number)
     || !canonicalTimestamp(row.started_at)
     || !['started', 'completed', 'failed'].includes(String(row.state))) {
     integrity();
   }
+  if (identity !== undefined && (row.run_id !== identity.runId
+    || row.phase !== identity.phase
+    || row.request_digest !== identity.requestDigest)) integrity();
   if (row.state === 'started') {
-    if (row.summary_json !== null || row.failure_json !== null || row.finished_at !== null) integrity();
+    if (row.consumed_query_count !== 0 || row.consumed_selection_count !== 0
+      || row.summary_json !== null || row.failure_json !== null || row.finished_at !== null) integrity();
     return;
   }
   if (!canonicalTimestamp(row.finished_at) || row.finished_at < row.started_at) integrity();
@@ -346,32 +389,70 @@ export function readAgentTaskSkillDiscoveryAttempt(
   database: SqliteDatabase,
   identity: AgentTaskSkillDiscoveryAttemptIdentity,
 ): Extract<AgentTaskSkillDiscoveryAttemptClaim, { kind: 'replay' }> | undefined {
-  const existing = attemptRow(database, identity.runId, identity.phase);
+  const existing = attemptRow(database, identity);
   return existing === undefined ? undefined : resolveExistingAttempt(existing, identity);
+}
+
+function usedDiscoveryBudget(database: SqliteDatabase, runId: string): {
+  queryBudget: number;
+  selectionBudget: number;
+} {
+  let queryBudget = 0;
+  let selectionBudget = 0;
+  for (const row of allAttemptRows(database, runId)) {
+    validateAttemptRow(row);
+    const active = row.state === 'started';
+    queryBudget += active ? row.reserved_query_count as number : row.consumed_query_count as number;
+    selectionBudget += active ? row.reserved_selection_count as number : row.consumed_selection_count as number;
+  }
+  if (queryBudget > ENNO_MAX_TOTAL_SKILL_QUERIES || selectionBudget > ENNO_MAX_EXTERNAL_SKILLS) integrity();
+  return { queryBudget, selectionBudget };
 }
 
 export function claimAgentTaskSkillDiscoveryAttempt(
   database: SqliteDatabase,
   identity: AgentTaskSkillDiscoveryAttemptIdentity,
+  requestedBudget: {
+    queryBudget: number;
+    selectionBudget: number;
+  } = {
+    queryBudget: ENNO_MAX_TOTAL_SKILL_QUERIES,
+    selectionBudget: ENNO_MAX_EXTERNAL_SKILLS,
+  },
 ): AgentTaskSkillDiscoveryAttemptClaim {
   if (!boundedText(identity.runId, 256)
     || !HASH.test(identity.requestDigest)
     || (identity.phase !== 'intake' && identity.phase !== 'zenki')
-    || !DISCOVERY_MODES.includes(identity.mode)) {
+    || !DISCOVERY_MODES.includes(identity.mode)
+    || !boundedBudget(requestedBudget.queryBudget, ENNO_MAX_TOTAL_SKILL_QUERIES)
+    || !boundedBudget(requestedBudget.selectionBudget, ENNO_MAX_EXTERNAL_SKILLS)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Task Skill discovery attempt identity is invalid');
   }
   return withImmediateTransaction(database, () => {
-    const existing = attemptRow(database, identity.runId, identity.phase);
+    const existing = attemptRow(database, identity);
     if (existing === undefined) {
+      const active = activeAttemptRow(database, identity.runId, identity.phase);
+      if (active !== undefined) {
+        validateAttemptRow(active);
+        throw new KiokukoError('CONFLICT', 'Task Skill discovery is already in progress or did not complete');
+      }
+      const used = usedDiscoveryBudget(database, identity.runId);
+      const queryBudget = Math.min(requestedBudget.queryBudget, ENNO_MAX_TOTAL_SKILL_QUERIES - used.queryBudget);
+      const selectionBudget = Math.min(requestedBudget.selectionBudget, ENNO_MAX_EXTERNAL_SKILLS - used.selectionBudget);
+      const grantedQueryBudget = queryBudget === 0 || selectionBudget === 0 ? 0 : queryBudget;
+      const grantedSelectionBudget = queryBudget === 0 || selectionBudget === 0 ? 0 : selectionBudget;
       database.prepare(`
         INSERT INTO agent_task_skill_discovery_attempts (
-          run_id, phase, request_digest, state, summary_json, failure_json, started_at, finished_at
-        ) VALUES (?, ?, ?, 'started', NULL, NULL, ?, NULL)
-      `).run(identity.runId, identity.phase, identity.requestDigest, new Date().toISOString());
-      const inserted = attemptRow(database, identity.runId, identity.phase);
+          run_id, phase, request_digest,
+          reserved_query_count, reserved_selection_count,
+          consumed_query_count, consumed_selection_count,
+          state, summary_json, failure_json, started_at, finished_at
+        ) VALUES (?, ?, ?, ?, ?, 0, 0, 'started', NULL, NULL, ?, NULL)
+      `).run(identity.runId, identity.phase, identity.requestDigest, grantedQueryBudget, grantedSelectionBudget, new Date().toISOString());
+      const inserted = attemptRow(database, identity);
       if (inserted === undefined) integrity();
       validateAttemptRow(inserted, identity);
-      return { kind: 'execute' };
+      return { kind: 'execute', queryBudget: grantedQueryBudget, selectionBudget: grantedSelectionBudget };
     }
     return resolveExistingAttempt(existing, identity);
   });
@@ -387,20 +468,26 @@ export function completeAgentTaskSkillDiscoveryAttempt(
   const serialized = canonicalJson(validated);
   if (serialized.length > MAX_SUMMARY_JSON_CHARS) integrity();
   return withImmediateTransaction(database, () => {
-    const existing = attemptRow(database, identity.runId, identity.phase);
+    const existing = attemptRow(database, identity);
     if (existing === undefined) integrity();
     validateAttemptRow(existing, identity);
     if (existing.state !== 'started') integrity();
+    const reservedQueries = existing.reserved_query_count as number;
+    const reservedSelections = existing.reserved_selection_count as number;
+    if (validated.queries.length > reservedQueries
+      || validated.selected.length > reservedSelections) {
+      integrity();
+    }
     assertBeforeComplete?.();
     const finishedAt = new Date().toISOString();
     const updated = database.prepare(`
       UPDATE agent_task_skill_discovery_attempts
-      SET state = 'completed', summary_json = ?, finished_at = ?
+      SET state = 'completed', summary_json = ?, consumed_query_count = ?, consumed_selection_count = ?, finished_at = ?
       WHERE run_id = ? AND phase = ? AND request_digest = ? AND state = 'started'
       RETURNING state, summary_json
-    `).get<{ state: unknown; summary_json: unknown }>(serialized, finishedAt, identity.runId, identity.phase, identity.requestDigest);
+    `).get<{ state: unknown; summary_json: unknown }>(serialized, validated.queries.length, validated.selected.length, finishedAt, identity.runId, identity.phase, identity.requestDigest);
     if (updated?.state !== 'completed' || updated.summary_json !== serialized) integrity();
-    const completed = attemptRow(database, identity.runId, identity.phase);
+    const completed = attemptRow(database, identity);
     if (completed === undefined) integrity();
     validateAttemptRow(completed, identity);
     if (completed.state !== 'completed' || completed.summary_json !== serialized) integrity();
@@ -417,18 +504,21 @@ export function failAgentTaskSkillDiscoveryAttempt(
   const serialized = canonicalJson(normalized.failure);
   try {
     withImmediateTransaction(database, () => {
-      const existing = attemptRow(database, identity.runId, identity.phase);
+      const existing = attemptRow(database, identity);
       if (existing === undefined) integrity();
       validateAttemptRow(existing, identity);
       if (existing.state !== 'started') integrity();
       const updated = database.prepare(`
         UPDATE agent_task_skill_discovery_attempts
-        SET state = 'failed', failure_json = ?, finished_at = ?
+        SET state = 'failed', failure_json = ?,
+            consumed_query_count = reserved_query_count,
+            consumed_selection_count = reserved_selection_count,
+            finished_at = ?
         WHERE run_id = ? AND phase = ? AND request_digest = ? AND state = 'started'
         RETURNING state, failure_json
       `).get<{ state: unknown; failure_json: unknown }>(serialized, new Date().toISOString(), identity.runId, identity.phase, identity.requestDigest);
       if (updated?.state !== 'failed' || updated.failure_json !== serialized) integrity();
-      const failed = attemptRow(database, identity.runId, identity.phase);
+      const failed = attemptRow(database, identity);
       if (failed === undefined) integrity();
       validateAttemptRow(failed, identity);
       if (failed.state !== 'failed' || failed.failure_json !== serialized) integrity();

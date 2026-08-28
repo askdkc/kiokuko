@@ -335,6 +335,28 @@ test('WorkUnit expertRefs reject unknown, duplicate, or oversized mixtures', () 
   ])), /plan submission is invalid/iu);
 });
 
+test('canonical WorkPlan text rejects embedded control and format characters', () => {
+  const submission = (objective: string) => ({
+    runId: 'canonical-text', workspace: 'workspace', orchestrationId: 'session', expectedRevision: 1, idempotencyKey: 'canonical-plan',
+    scope: ['src/a.ts'], exclusions: [], acceptanceCriteria: [{ id: 'done', description: 'Done' }],
+    workPlan: { objective, units: [{
+      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], skillNames: [],
+      expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the canonical text boundary' }],
+      acceptanceCriteria: ['Done'], focusedVerifiers: [],
+    }] },
+    skillRequirements: [],
+    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: process.cwd(), timeoutMs: 1000 }],
+    maxAttempts: 8,
+    provenance: {
+      scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+      workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+    },
+  });
+  for (const control of ['\r', '\n', '\t', '\u0000', '\u007f', '\u200b']) {
+    assert.throws(() => parsePlanSubmission(submission(`Repair${control}the module`)), /plan submission is invalid/iu);
+  }
+});
+
 test('Enno identifies supported MCP harnesses and rejects contradictory explicit identity', () => {
   assert.equal(identifyEnnoClientKind('codex-mcp-client'), 'codex');
   assert.equal(identifyEnnoClientKind('claude-ai'), 'claude');

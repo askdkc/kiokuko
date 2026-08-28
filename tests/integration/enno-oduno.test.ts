@@ -17,6 +17,8 @@ import {
   submitOdunoIdeal,
   submitOdunoMeditation,
 } from '../../src/enno-oduno/service.js';
+import { readEnnoSnapshot } from '../../src/enno-oduno/store.js';
+import { discoverSkills } from '../../src/skills/discovery-service.js';
 
 const capabilities = [
   { kind: 'skill', name: 'kiokuko-soul', description: 'Routes work to every applicable Kiokuko Skill.' },
@@ -313,6 +315,176 @@ test('Goki cannot start before Oduno derives the ideal and Zenki submits a plan'
       SELECT COUNT(*) AS count FROM ledger_events
       WHERE run_id = ? AND event_type LIKE 'goki.%'
     `).get<{ count: number }>(prepared.run.runId)?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('persisted WorkUnits validate the complete dependency graph during read-back', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'stored-work-unit-dependencies', cwd: root, task: 'Build a dependent module pair',
+      profileHints: { taskType: 'debug', target: 'src/prepare.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-stored-dependencies' }, skillDiscoveryMode: 'off',
+    });
+    const identity = {
+      runId: prepared.run.runId,
+      workspace: prepared.project.workspace,
+      orchestrationId: prepared.intake.sessionId,
+    };
+    submitPreparedIdeal(database, prepared, 'stored-dependencies-ideal');
+    const planned = await submitEnnoPlan(database, {
+      ...identity,
+      expectedRevision: 1,
+      idempotencyKey: 'stored-dependencies-plan',
+      scope: ['src/prepare.js', 'src/finalize.js'],
+      exclusions: [],
+      acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
+      workPlan: {
+        objective: 'Build the dependent module pair',
+        units: [
+          {
+            id: 'prepare', objective: 'Prepare the shared module', scope: ['src/prepare.js'], dependencies: [], skillNames: [],
+            expertRefs: [{ id: 'code.domain.v1', reason: 'Keep the prerequisite module contract deterministic' }],
+            acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
+          },
+          {
+            id: 'finalize', objective: 'Finalize the dependent module', scope: ['src/finalize.js'], dependencies: ['prepare'], skillNames: [],
+            expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the dependent module after its prerequisite completes' }],
+            acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
+          },
+        ],
+      },
+      skillRequirements: [],
+      finalVerifiers: [verifier(prepared.project.repositoryRoot, 'stored-dependencies-final')],
+      maxAttempts: 3,
+      provenance: {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+      capabilities,
+    });
+    assert.equal(planned.ennoOduno.status, 'goki_executing');
+    const snapshot = readEnnoSnapshot(database, identity);
+    assert.deepEqual(snapshot.workUnits.map((unit) => ({
+      id: unit.workUnit.id,
+      dependencies: unit.workUnit.dependencies,
+      status: unit.status,
+    })), [
+      { id: 'prepare', dependencies: [], status: 'in_progress' },
+      { id: 'finalize', dependencies: ['prepare'], status: 'pending' },
+    ]);
+  } finally {
+    database.close();
+  }
+});
+
+test('Zenki discovery uses a new plan digest and only the remaining run budget after replanning', async () => {
+  const { root, database } = await fixture();
+  try {
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { svelte: '^5.0.0' } }));
+    const discoveryCapabilities = [
+      ...capabilities,
+      { kind: 'skill', name: 'memory-reasoning' },
+      { kind: 'skill', name: 'svelte' },
+    ];
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'zenki-discovery-budget', cwd: root, task: 'Repair a Svelte component',
+      profileHints: { taskType: 'debug', target: 'src/component.ts', expected: 'tests pass', constraints: null },
+      capabilities: discoveryCapabilities, client: { kind: 'codex', sessionId: 'codex-zenki-discovery-budget' },
+      skillDiscoveryMode: 'official',
+    });
+    const identity = {
+      runId: prepared.run.runId,
+      workspace: prepared.project.workspace,
+      orchestrationId: prepared.intake.sessionId,
+    };
+    submitPreparedIdeal(database, prepared, 'zenki-discovery-budget-ideal');
+    const calls: Array<{ maxQueries: number | undefined; maxSelectedSkills: number | undefined; task: string }> = [];
+    const discover = async (_database: Parameters<typeof discoverSkills>[0], input: Parameters<typeof discoverSkills>[1]) => {
+      calls.push({ maxQueries: input.maxQueries, maxSelectedSkills: input.maxSelectedSkills, task: input.task });
+      return {
+        attempted: true,
+        mode: input.mode,
+        requirements: ['svelte'],
+        queries: calls.length === 1 ? ['svelte'] : ['svelte', 'svelte debug'],
+        cacheHits: 0,
+        candidates: 0,
+        selected: [],
+        failures: [],
+      };
+    };
+    const planInput = (expectedRevision: number, idempotencyKey: string, objective: string) => ({
+      ...identity,
+      expectedRevision,
+      idempotencyKey,
+      scope: ['src/component.ts'],
+      exclusions: [],
+      acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
+      workPlan: { objective, units: [{
+        id: 'repair', objective: 'Repair the Svelte component', scope: ['src/component.ts'], dependencies: [], skillNames: [],
+        expertRefs: [{ id: 'code.verification.v1', reason: 'Verify each replanned component repair with focused evidence' }],
+        acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
+      }] },
+      skillRequirements: [],
+      finalVerifiers: [verifier(prepared.project.repositoryRoot, 'zenki-discovery-final')],
+      maxAttempts: 5,
+      provenance: {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+      capabilities: discoveryCapabilities,
+    });
+
+    const firstPlan = await submitEnnoPlan(database, planInput(1, 'zenki-discovery-plan-1', 'Repair the first component plan'), {
+      discoverSkills: discover,
+    });
+    assert.equal(firstPlan.ennoOduno.status, 'goki_executing');
+    assert.deepEqual(calls[0], {
+      maxQueries: 3,
+      maxSelectedSkills: 2,
+      task: 'Repair a Svelte component\nRepair the first component plan',
+    });
+    await reportEnnoWork(database, {
+      ...identity,
+      expectedRevision: 2,
+      idempotencyKey: 'zenki-discovery-work-1',
+      workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Initial component repair', mutated: false, changedPaths: [] },
+    });
+    const replanning = await finishEnno(database, {
+      ...identity,
+      expectedRevision: 2,
+      idempotencyKey: 'zenki-discovery-replan-review',
+      review: { decision: 'replan', summary: 'Use a narrower component plan' },
+    });
+    assert.equal(replanning.ennoOduno.status, 'zenki_planning');
+    assert.equal(replanning.ennoOduno.contractRevision, 3);
+
+    const secondPlan = await submitEnnoPlan(database, planInput(3, 'zenki-discovery-plan-2', 'Repair the narrower component plan'), {
+      discoverSkills: discover,
+    });
+    assert.equal(secondPlan.ennoOduno.status, 'goki_executing');
+    assert.deepEqual(calls.map((call) => ({ maxQueries: call.maxQueries, maxSelectedSkills: call.maxSelectedSkills })), [
+      { maxQueries: 3, maxSelectedSkills: 2 },
+      { maxQueries: 2, maxSelectedSkills: 2 },
+    ]);
+    const attempts = database.prepare(`
+      SELECT phase, request_digest AS requestDigest,
+             reserved_query_count AS reservedQueries, consumed_query_count AS consumedQueries,
+             reserved_selection_count AS reservedSelections, consumed_selection_count AS consumedSelections
+      FROM agent_task_skill_discovery_attempts WHERE run_id = ? ORDER BY rowid
+    `).all<{ phase: string; requestDigest: string; reservedQueries: number; consumedQueries: number; reservedSelections: number; consumedSelections: number }>(identity.runId)
+      .map((row) => ({ ...row }));
+    assert.equal(attempts.length, 3);
+    const zenkiAttempts = attempts.filter((attempt) => attempt.phase === 'zenki');
+    assert.equal(zenkiAttempts.length, 2);
+    assert.notEqual(zenkiAttempts[0]?.requestDigest, zenkiAttempts[1]?.requestDigest);
+    assert.deepEqual(zenkiAttempts.map(({ phase: _phase, requestDigest: _digest, ...budget }) => budget), [
+      { reservedQueries: 3, consumedQueries: 1, reservedSelections: 2, consumedSelections: 0 },
+      { reservedQueries: 2, consumedQueries: 2, reservedSelections: 2, consumedSelections: 0 },
+    ]);
   } finally {
     database.close();
   }
