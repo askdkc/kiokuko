@@ -67,6 +67,7 @@ const SUMMARY_FAILURE_STAGES: readonly SkillDiscoverySummary['failures'][number]
 interface StoredAttemptRow {
   [key: string]: unknown;
   run_id: unknown;
+  phase: unknown;
   request_digest: unknown;
   state: unknown;
   summary_json: unknown;
@@ -82,6 +83,7 @@ type StoredDiscoveryFailure =
 
 export interface AgentTaskSkillDiscoveryAttemptIdentity {
   runId: string;
+  phase: 'intake' | 'zenki';
   requestDigest: string;
   mode: SkillDiscoveryMode;
 }
@@ -249,16 +251,17 @@ function validateFailure(value: unknown): StoredDiscoveryFailure {
   return integrity();
 }
 
-function attemptRow(database: SqliteDatabase, runId: string): StoredAttemptRow | undefined {
+function attemptRow(database: SqliteDatabase, runId: string, phase: AgentTaskSkillDiscoveryAttemptIdentity['phase']): StoredAttemptRow | undefined {
   return database.prepare(`
-    SELECT run_id, request_digest, state, summary_json, failure_json, started_at, finished_at
+    SELECT run_id, phase, request_digest, state, summary_json, failure_json, started_at, finished_at
     FROM agent_task_skill_discovery_attempts
-    WHERE run_id = ?
-  `).get<StoredAttemptRow>(runId);
+    WHERE run_id = ? AND phase = ?
+  `).get<StoredAttemptRow>(runId, phase);
 }
 
 function validateAttemptRow(row: StoredAttemptRow, identity: AgentTaskSkillDiscoveryAttemptIdentity): void {
   if (row.run_id !== identity.runId
+    || row.phase !== identity.phase
     || typeof row.request_digest !== 'string'
     || !HASH.test(row.request_digest)
     || row.request_digest !== identity.requestDigest
@@ -343,7 +346,7 @@ export function readAgentTaskSkillDiscoveryAttempt(
   database: SqliteDatabase,
   identity: AgentTaskSkillDiscoveryAttemptIdentity,
 ): Extract<AgentTaskSkillDiscoveryAttemptClaim, { kind: 'replay' }> | undefined {
-  const existing = attemptRow(database, identity.runId);
+  const existing = attemptRow(database, identity.runId, identity.phase);
   return existing === undefined ? undefined : resolveExistingAttempt(existing, identity);
 }
 
@@ -353,18 +356,19 @@ export function claimAgentTaskSkillDiscoveryAttempt(
 ): AgentTaskSkillDiscoveryAttemptClaim {
   if (!boundedText(identity.runId, 256)
     || !HASH.test(identity.requestDigest)
+    || (identity.phase !== 'intake' && identity.phase !== 'zenki')
     || !DISCOVERY_MODES.includes(identity.mode)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Task Skill discovery attempt identity is invalid');
   }
   return withImmediateTransaction(database, () => {
-    const existing = attemptRow(database, identity.runId);
+    const existing = attemptRow(database, identity.runId, identity.phase);
     if (existing === undefined) {
       database.prepare(`
         INSERT INTO agent_task_skill_discovery_attempts (
-          run_id, request_digest, state, summary_json, failure_json, started_at, finished_at
-        ) VALUES (?, ?, 'started', NULL, NULL, ?, NULL)
-      `).run(identity.runId, identity.requestDigest, new Date().toISOString());
-      const inserted = attemptRow(database, identity.runId);
+          run_id, phase, request_digest, state, summary_json, failure_json, started_at, finished_at
+        ) VALUES (?, ?, ?, 'started', NULL, NULL, ?, NULL)
+      `).run(identity.runId, identity.phase, identity.requestDigest, new Date().toISOString());
+      const inserted = attemptRow(database, identity.runId, identity.phase);
       if (inserted === undefined) integrity();
       validateAttemptRow(inserted, identity);
       return { kind: 'execute' };
@@ -383,7 +387,7 @@ export function completeAgentTaskSkillDiscoveryAttempt(
   const serialized = canonicalJson(validated);
   if (serialized.length > MAX_SUMMARY_JSON_CHARS) integrity();
   return withImmediateTransaction(database, () => {
-    const existing = attemptRow(database, identity.runId);
+    const existing = attemptRow(database, identity.runId, identity.phase);
     if (existing === undefined) integrity();
     validateAttemptRow(existing, identity);
     if (existing.state !== 'started') integrity();
@@ -392,11 +396,11 @@ export function completeAgentTaskSkillDiscoveryAttempt(
     const updated = database.prepare(`
       UPDATE agent_task_skill_discovery_attempts
       SET state = 'completed', summary_json = ?, finished_at = ?
-      WHERE run_id = ? AND request_digest = ? AND state = 'started'
+      WHERE run_id = ? AND phase = ? AND request_digest = ? AND state = 'started'
       RETURNING state, summary_json
-    `).get<{ state: unknown; summary_json: unknown }>(serialized, finishedAt, identity.runId, identity.requestDigest);
+    `).get<{ state: unknown; summary_json: unknown }>(serialized, finishedAt, identity.runId, identity.phase, identity.requestDigest);
     if (updated?.state !== 'completed' || updated.summary_json !== serialized) integrity();
-    const completed = attemptRow(database, identity.runId);
+    const completed = attemptRow(database, identity.runId, identity.phase);
     if (completed === undefined) integrity();
     validateAttemptRow(completed, identity);
     if (completed.state !== 'completed' || completed.summary_json !== serialized) integrity();
@@ -413,18 +417,18 @@ export function failAgentTaskSkillDiscoveryAttempt(
   const serialized = canonicalJson(normalized.failure);
   try {
     withImmediateTransaction(database, () => {
-      const existing = attemptRow(database, identity.runId);
+      const existing = attemptRow(database, identity.runId, identity.phase);
       if (existing === undefined) integrity();
       validateAttemptRow(existing, identity);
       if (existing.state !== 'started') integrity();
       const updated = database.prepare(`
         UPDATE agent_task_skill_discovery_attempts
         SET state = 'failed', failure_json = ?, finished_at = ?
-        WHERE run_id = ? AND request_digest = ? AND state = 'started'
+        WHERE run_id = ? AND phase = ? AND request_digest = ? AND state = 'started'
         RETURNING state, failure_json
-      `).get<{ state: unknown; failure_json: unknown }>(serialized, new Date().toISOString(), identity.runId, identity.requestDigest);
+      `).get<{ state: unknown; failure_json: unknown }>(serialized, new Date().toISOString(), identity.runId, identity.phase, identity.requestDigest);
       if (updated?.state !== 'failed' || updated.failure_json !== serialized) integrity();
-      const failed = attemptRow(database, identity.runId);
+      const failed = attemptRow(database, identity.runId, identity.phase);
       if (failed === undefined) integrity();
       validateAttemptRow(failed, identity);
       if (failed.state !== 'failed' || failed.failure_json !== serialized) integrity();

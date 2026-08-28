@@ -114,9 +114,11 @@ function syntheticContext(throughSequence = 1) {
 }
 
 function syntheticIntakeResponse(input: {
+  memoryContextWithheld?: boolean;
   requiredCapabilityUnavailable?: boolean;
   needsAnswer?: boolean;
 } = {}) {
+  const memoryContextWithheld = input.memoryContextWithheld ?? false;
   const needsAnswer = input.needsAnswer ?? false;
   const requiredCapabilityUnavailable = input.requiredCapabilityUnavailable ?? false;
   const profile = needsAnswer
@@ -139,14 +141,23 @@ function syntheticIntakeResponse(input: {
       warnings: [],
       recommendations: [{
         kind: 'skill',
+        name: 'kiokuko-soul',
+        availability: 'unknown',
+        reason: 'Non-trivial Kiokuko work must begin from the master routing Skill.',
+        source: 'akinator_policy',
+        required: true,
+      }],
+    }
+    : memoryContextWithheld
+      ? syntheticCapabilities([{
+        kind: 'skill',
         name: 'memory-reasoning',
         availability: 'unknown',
         reason: 'Relevant stored memory requires the explicit reasoning workflow.',
         source: 'akinator_policy',
         required: true,
-      }],
-    }
-    : syntheticCapabilities();
+      }])
+      : syntheticCapabilities();
   return {
     runId: 'synthetic-run',
     runStatus: needsAnswer ? 'intake' : 'active',
@@ -159,11 +170,11 @@ function syntheticIntakeResponse(input: {
     recommendedTags: needsAnswer ? ['bot:common'] : ['bot:builder', 'skill:tdd'],
     taskProfile: profile,
     profileHash: needsAnswer ? null : syntheticProfileHash,
-    context: needsAnswer || requiredCapabilityUnavailable ? null : syntheticContext(),
+    context: needsAnswer || requiredCapabilityUnavailable || memoryContextWithheld ? null : syntheticContext(),
     untrusted: true,
     recommendations: [],
     capabilities,
-    memoryPolicy: { memoryReasoningRequired: requiredCapabilityUnavailable },
+    memoryPolicy: { memoryReasoningRequired: memoryContextWithheld },
     warnings: [],
     nextAction: needsAnswer
       ? 'answer_from_evidence_or_ask_user'
@@ -383,7 +394,10 @@ test('generic agent CLI opens and answers intake without fabricating lifecycle d
   const value = await fixture();
   try {
     const capabilitiesPath = path.join(value.directory, 'capabilities.json');
-    await writeFile(capabilitiesPath, JSON.stringify([{ kind: 'skill', name: 'memory-reasoning' }]));
+    await writeFile(capabilitiesPath, JSON.stringify([
+      { kind: 'skill', name: 'kiokuko-soul' },
+      { kind: 'skill', name: 'memory-reasoning' },
+    ]));
     const capabilityArguments = ['--capabilities-json', capabilitiesPath];
     const opened = await invoke([
       'agent', 'open', '--workspace', 'cli-workspace', '--client', 'generic', '--task', 'Implement the feature', ...capabilityArguments, '--json',
@@ -430,7 +444,10 @@ test('generic agent CLI opens and answers intake without fabricating lifecycle d
     assert.equal(openBody.captureProfile, 'standard');
     assert.equal(openBody.coverage.run, 'declared');
     assert.equal(openBody.coverage.approval, 'unavailable');
-    assert.deepEqual(openBody.capabilities, [{ kind: 'skill', name: 'memory-reasoning' }]);
+    assert.deepEqual(openBody.capabilities, [
+      { kind: 'skill', name: 'kiokuko-soul' },
+      { kind: 'skill', name: 'memory-reasoning' },
+    ]);
     assert.equal(JSON.stringify(openBody).includes('complete'), false);
   } finally {
     await value.runtime.close();
@@ -440,13 +457,16 @@ test('generic agent CLI opens and answers intake without fabricating lifecycle d
 test('generic agent CLI sends exact write paths, bodies, and one idempotency key per operation', async () => {
   const value = await fixture();
   try {
+    const capabilitiesPath = path.join(value.directory, 'write-capabilities.json');
+    await writeFile(capabilitiesPath, JSON.stringify([{ kind: 'skill', name: 'kiokuko-soul' }]));
+    const capabilityArguments = ['--capabilities-json', capabilitiesPath];
     const opened = await invoke([
-      'agent', 'open', '--workspace', 'cli-write-workspace', '--client', 'codex', '--client-version', '1.0', '--session-id', 's1', '--task', 'Complete task', '--capture-profile', 'full', '--json',
+      'agent', 'open', '--workspace', 'cli-write-workspace', '--client', 'codex', '--client-version', '1.0', '--session-id', 's1', '--task', 'Complete task', '--capture-profile', 'full', ...capabilityArguments, '--json',
     ], value.agent);
     const runId = opened.data.runId as string;
-    const answerOne = await invoke(['agent', 'answer', runId, '--question-id', opened.data.currentQuestion.id, '--value', 'build', '--json'], value.agent);
-    const answerTwo = await invoke(['agent', 'answer', runId, '--question-id', answerOne.data.currentQuestion.id, '--value', 'src/a.ts', '--json'], value.agent);
-    await invoke(['agent', 'answer', runId, '--question-id', answerTwo.data.currentQuestion.id, '--value', 'tests pass', '--json'], value.agent);
+    const answerOne = await invoke(['agent', 'answer', runId, '--question-id', opened.data.currentQuestion.id, '--value', 'build', ...capabilityArguments, '--json'], value.agent);
+    const answerTwo = await invoke(['agent', 'answer', runId, '--question-id', answerOne.data.currentQuestion.id, '--value', 'src/a.ts', ...capabilityArguments, '--json'], value.agent);
+    await invoke(['agent', 'answer', runId, '--question-id', answerTwo.data.currentQuestion.id, '--value', 'tests pass', ...capabilityArguments, '--json'], value.agent);
 
     const inputDirectory = path.join(value.directory, 'inputs');
     await mkdir(inputDirectory);
@@ -465,7 +485,7 @@ test('generic agent CLI sends exact write paths, bodies, and one idempotency key
 
     const events = await invoke(['agent', 'events', runId, '--input-json', eventPath, '--json'], value.agent);
     assert.equal(events.operation, 'agent.events');
-    const checkpoint = await invoke(['agent', 'checkpoint', runId, '--input-json', checkpointPath, '--json'], value.agent);
+    const checkpoint = await invoke(['agent', 'checkpoint', runId, '--input-json', checkpointPath, ...capabilityArguments, '--json'], value.agent);
     assert.equal(checkpoint.operation, 'agent.checkpoint');
     const closed = await invoke(['agent', 'close', runId, '--input-json', closePath, '--json'], value.agent);
     assert.equal(closed.operation, 'agent.close');
@@ -494,9 +514,12 @@ test('generic agent CLI sends exact write paths, bodies, and one idempotency key
 test('generic agent CLI exposes explicit idempotency keys for exact open and answer retries', async () => {
   const value = await fixture();
   try {
+    const capabilitiesPath = path.join(value.directory, 'retry-capabilities.json');
+    await writeFile(capabilitiesPath, JSON.stringify([{ kind: 'skill', name: 'kiokuko-soul' }]));
+    const capabilityArguments = ['--capabilities-json', capabilitiesPath];
     const openArguments = [
       'agent', 'open', '--workspace', 'cli-retry-workspace', '--client', 'codex', '--task', 'Retry this exact open',
-      '--idempotency-key', 'explicit-open-retry', '--json',
+      ...capabilityArguments, '--idempotency-key', 'explicit-open-retry', '--json',
     ];
     const opened = await invoke(openArguments, value.agent);
     const replayedOpen = await invoke(openArguments, value.agent);
@@ -507,7 +530,7 @@ test('generic agent CLI exposes explicit idempotency keys for exact open and ans
 
     const answerArguments = [
       'agent', 'answer', opened.data.runId, '--question-id', opened.data.currentQuestion.id, '--value', 'build',
-      '--idempotency-key', 'explicit-answer-retry', '--json',
+      ...capabilityArguments, '--idempotency-key', 'explicit-answer-retry', '--json',
     ];
     const answered = await invoke(answerArguments, value.agent);
     const replayedAnswer = await invoke(answerArguments, value.agent);
@@ -633,7 +656,24 @@ test('non-JSON agent output names each required unavailable capability', async (
   }));
   assert.equal(captured.result, 0);
   assert.equal(captured.stderr, '');
-  assert.equal(captured.stdout.split('\n', 1)[0], 'Kiokuko agent.open: required_capability_unavailable; required capabilities unavailable: memory-reasoning (unknown)');
+  assert.equal(captured.stdout.split('\n', 1)[0], 'Kiokuko agent.open: required_capability_unavailable; required capabilities unavailable: kiokuko-soul (unknown)');
+});
+
+test('agent CLI accepts a soft memory-reasoning gate with withheld context', async () => {
+  const response = syntheticIntakeResponse({ memoryContextWithheld: true });
+  const captured = await captureOutput(() => runCli([
+    'node', 'kiokuko', 'agent', 'open', '--workspace', 'w', '--client', 'generic', '--task', 'Implement the fix', '--json',
+  ], {
+    agent: {
+      createClient: async () => clientReturning(response),
+      idempotencyKeyFactory: () => 'soft-memory-capability',
+    },
+  }));
+  assert.equal(captured.result, 0);
+  assert.equal(captured.stderr, '');
+  const result = parsed(captured.stdout);
+  assert.equal(result.data.nextAction, 'proceed');
+  assert.equal(result.data.context, null);
 });
 
 test('agent client and idempotency dependency programming failures propagate unchanged', async () => {

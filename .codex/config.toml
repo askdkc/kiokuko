@@ -1,0 +1,6 @@
+# Repository-local development MCP. Build the project before starting Codex.
+[mcp_servers.kiokuko]
+command = "node"
+args = [".codex/kiokuko-dev-mcp.mjs"]
+cwd = "."
+enabled = true

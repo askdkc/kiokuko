@@ -32,6 +32,21 @@ function isCanonicalManagedServer(value: unknown): value is Record<string, unkno
     && isSkillDiscoveryMode(environment[SKILL_DISCOVERY_ENV]);
 }
 
+/** Detect an already managed Claude Kiokuko MCP identity without changing it. */
+export function hasCanonicalClaudeMcpConfig(existing: string | undefined): boolean {
+  if (existing === undefined) return false;
+  assertStrictJsonSyntax(
+    existing,
+    { allowTrailingComma: false, disallowComments: true },
+    'Claude user config is not a valid JSON object with unique keys',
+  );
+  const errors: ParseError[] = [];
+  const parsed = parse(existing, errors, { allowTrailingComma: false, disallowComments: true });
+  const root = object(parsed);
+  if (errors.length > 0 || root === undefined) return false;
+  return isCanonicalManagedServer(object(root.mcpServers)?.kiokuko);
+}
+
 function validation(message: string): never {
   throw new KiokukoError('VALIDATION_ERROR', message);
 }

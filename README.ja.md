@@ -22,11 +22,62 @@ kiokuko setup
 
 `setup`は、インストール済みの対応クライアントを検出し、SQLiteデータベースとMCP接続を自動設定します。
 対話式setupでは、監査済みcommunity Skillも参考資料として利用するか確認します。既定は「いいえ」です。
+Codex、Claude Code、OpenCodeの新規導入では、Enno-Oduno（役小角）Agent Loopも有効になります。既存の管理済み環境は`--enno-oduno on`を明示するまで変更せず、`--enno-oduno off`はEnno-Odunoが所有するhook/pluginだけを削除します。
+setupは、bundled controller Skillの`kiokuko-enno-oduno`を、`kiokuko-single-purpose-functions`および`kiokuko-ui-design-soul`と一緒に、選択した対応clientへ配置します。
 モデル向けの記憶は、capability gateを通るMCPツール `task_prepare` と
-`task_answer` からだけタスクへ渡されます。Kiokukoは、これらの呼び出し前に
-記憶を暗黙取得するclient Hookやpluginをインストールしません。
+`task_answer` からだけタスクへ渡されます。`task_prepare`はEnno-Odunoの入口でもあり、役小角が呼出元ハーネスを特定し、Akinator intakeを所有し、小角の理想像を導出してから、実行可能になった依頼を前鬼へ渡します。hookは記憶を暗黙取得せず、プランニングも迂回しません。canonical repository内で一意なpending active runだけをclient sessionへ結合して、小角、前鬼、後鬼、または最終Reviewの継続をgateします。repository単位の「最新run」は選びません。
 
-設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。
+すべての`task_prepare`呼び出しは、クライアントモデルがその論理タスク用に
+ローカルの`kiokuko-soul`全文を読んだ後で`soulRead: true`を渡す必要があります。
+また、全taskで完全一致するローカル`kiokuko-soul` capabilityを要求し、欠落または
+availability不明ならintake未完了でもfail-closeします。このbooleanは明示的な
+クライアントattestationであり、モデルがSkillを理解・遵守したことのremote proofでは
+ありません。
+
+設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。setupがCodexのStop hookを作成または更新した場合は、Codexで`/hooks`を開き、そのhookを明示的に信頼してください。
+
+### Enno-Oduno（役小角）Agent Loop
+
+`build`、`debug`、`review`、`devops`では、`task_prepare`がrun-bound loopを開始して`ennoOduno`を返します。強制される役割順序は次のとおりです。
+
+```text
+ユーザーの依頼
+  -> task_prepare: 役小角がCodex、Claude Code、OpenCodeを特定
+  -> currentRoleが役小角なら、requiredSkillsのkiokuko-enno-odunoを読み、適用
+  -> 必要なら役小角がAkinatorの質問をユーザーへ返す
+  -> 小角の理想像がtask_prepare handoffとAkinatorが発見した全Skillから最適な到達点を導出
+  -> enno_ideal_submitが理想像を保存し、その後にだけクライアント別の前鬼へ渡す
+  -> 前鬼がrequiredSkillsのkiokuko-single-purpose-functionsを先に読み、計画へ適用
+  -> code変更を一つの凝集した関数/ユースケース契約、一責務、一変更理由、focused test target単位へ分割
+  -> 前鬼がWorkUnitごとにversion付きexpertRefsを1〜3個選び、未選択fragmentは既定で読まない
+  -> 前鬼がWorkPlan、WorkUnit、expert refs、Skill snapshot、検証方法を提出
+  -> 必要なら役小角がユーザー確認を得る
+  -> 後鬼が承認済みWorkUnitだけをオーケストレーション
+  -> 役小角がfreshなfinal verifier証拠をReview
+       -> 成功: 役小角が受け入れ、読み取り専用の小角の瞑想へ移行
+            -> 変更済み・承認済みpathから、根拠のある古いtestまたは関数を探索
+            -> enno_meditation_submitが削除せずに候補を保存し、その後runを完了
+       -> 失敗: 役小角がrevisionを上げ、Review結果を前鬼へ返す
+  -> 前鬼の修正plan提出と必要な確認が終わるまで後鬼は再開不可
+```
+
+したがってintakeが未完了なら、返すのは役小角directiveと`answer_intake`であり、その`requiredSkills`には`kiokuko-enno-oduno`が含まれ、前鬼はまだ開始しません。準備完了したintakeは、まず`oduno_ideal`と`submit_ideal`を返します。`enno_ideal_submit`では、Akinatorが選択したdiscovery setの全Skillについて貢献を正確に一件ずつ指定する必要があり、外部Skillは引き続きuntrusted reference-onlyの指針として扱います。その後にだけ、runはrevision固定の前鬼directiveを返します。このdirectiveは、空のdraft Skill snapshotでもcompact indexである`kiokuko-single-purpose-functions`を`requiredSkills`へ含めます。前鬼はこのindexをWorkUnit選定前に使い、無意味な微小関数を作らず、code変更を凝集した関数またはユースケース契約とfocused test targetへ分割します。各code変更WorkUnitは理由付きの登録済み`expertRefs`を1〜3個選ぶ必要があり、UI WorkUnitは`code.*`と`ui.*`を少なくとも一つずつ要求します。`enno_plan_submit`は欠落、重複、未知、上限超過のmixtureを拒否し、その選択をrevisionとともに保存します。後鬼はSkillの全referenceではなく、そのfragmentだけを読みます。controller Skillはrole単位であり、WorkUnitのSkill snapshotには混ぜません。完全なプランの受理と必要な確認が成功するまで、後鬼には遷移できません。最終Review失敗時も古い後鬼WorkUnitを直接再開しません。却下したplanと検証証拠を旧revisionの履歴として保持し、`zenki_planning`へ戻して新しいplanを必須にします。Reviewを受け入れると、直接完了せず`oduno_meditation`へ移行します。`enno_meditation_submit`はrepositoryを変更せず、検査したrepository-relative pathと根拠付きの古いtestまたは関数の候補を保存してからrunを完了します。応答の`orchestrationId`を全Enno MCP操作で使い、ホスト側session identityとは分離します。推論したscope、達成条件、Skill、expert選択、検証コマンドがある場合、実装前に通常のクライアントUIへ確認を返します。
+
+3役は現在のクライアントモデルを順番に使います。Kiokukoが別モデルを呼ぶことはなく、OpenAI、Anthropic、OpenCodeのAPI keyもKiokuko側には不要です。Codex/Claude Codeは上限付きStop hook、OpenCodeは上限付き`session.idle` pluginを使います。OpenCodeでは子sessionのidleを無視し、同じ完了turnの重複配送を抑止します。`task_prepare`時にホストsessionが不明なら、最初の一致hookがpending active runが一件だけの場合に限って原子的に結合します。曖昧なら推測せず制御を返し、確定済みの結合は変更できません。Claude Codeではネイティブの8回連続block強制解除より前にKiokukoが制御をユーザーへ返します。adapter停止時は固定警告付きでfail-openします。外部Skillは引き続きuntrusted reference-onlyで、自動インストール・自動実行しません。
+
+```bash
+kiokuko setup --clients codex,opencode,claude --enno-oduno on
+kiokuko enno run --role zenki --input-json -
+```
+
+実クライアントE2Eはrelease gateとは分離されています。対応する環境変数がない場合は`not-run`になります。
+
+```bash
+npm run test:e2e:codex
+npm run test:e2e:opencode
+npm run test:e2e:claude
+npm run test:e2e:agents
+```
 
 対応クライアント：
 

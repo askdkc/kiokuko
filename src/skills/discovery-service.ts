@@ -406,7 +406,8 @@ export class SkillDiscoveryService {
     const requirementsToSearch = base.selected.length >= selectedSkillLimit ? [] : unresolved;
     if (requirementsToSearch.length === 0) return base;
     base.attempted = true;
-    const queries = buildSkillQueries({ requirements: requirementsToSearch, profile: input.profile as TaskProfile, mode });
+    const queries = buildSkillQueries({ requirements: requirementsToSearch, profile: input.profile as TaskProfile, mode })
+      .slice(0, input.maxQueries ?? 3);
     base.queries = queries;
     for (const query of queries) {
       if (requirementsForQuery(query, requirementsToSearch).length === 0) throw new KiokukoError('INTEGRITY_ERROR', 'Generated Skill query has no requirement provenance');

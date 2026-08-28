@@ -6,6 +6,8 @@ import type { ContextBroker } from '../../src/context/broker.js';
 import type { AgentRouteContext } from '../../src/server/routes/agent-runs.js';
 import { createTask5Route } from '../../src/server/routes/task5.js';
 
+const SOUL_CAPABILITIES = [{ kind: 'skill', name: 'kiokuko-soul' }] as const;
+
 function routeContext(failure: unknown, taskType: unknown = 'build', intakeStatus: unknown = 'ready'): AgentRouteContext {
   return {
     broker: {
@@ -100,7 +102,7 @@ test('checkpoint enrichment ignores stale acknowledgement profile fields and use
     },
     service: {
       readRun() {
-        return { title: 'Build the broker route', status: 'active', lastSequence: 1, metadata: bindCapabilityCatalog({}, []) };
+        return { title: 'Build the broker route', status: 'active', lastSequence: 1, metadata: bindCapabilityCatalog({}, SOUL_CAPABILITIES) };
       },
     },
     database: {},
@@ -112,7 +114,7 @@ test('checkpoint enrichment ignores stale acknowledgement profile fields and use
     url: new URL('http://127.0.0.1/api/v1/agent/runs/run-current/checkpoints'),
     headers: { 'idempotency-key': 'checkpoint-current' },
     rawHeaders: ['Idempotency-Key', 'checkpoint-current'],
-    body: { apiVersion: '1', capabilities: [] },
+    body: { apiVersion: '1', capabilities: SOUL_CAPABILITIES },
   }) as any;
 
   assert.equal(response.data.intakeStatus, 'ready');
@@ -198,7 +200,7 @@ test('checkpoint preserves exhausted intake and does not apply the ready-only me
     },
     service: {
       readRun() {
-        return { title: 'Build the broker route', status: 'active', lastSequence: 1, metadata: bindCapabilityCatalog({}, []) };
+        return { title: 'Build the broker route', status: 'active', lastSequence: 1, metadata: bindCapabilityCatalog({}, SOUL_CAPABILITIES) };
       },
     },
     database: {},
@@ -210,7 +212,7 @@ test('checkpoint preserves exhausted intake and does not apply the ready-only me
     url: new URL('http://127.0.0.1/api/v1/agent/runs/run-exhausted/checkpoints'),
     headers: { 'idempotency-key': 'checkpoint-exhausted' },
     rawHeaders: ['Idempotency-Key', 'checkpoint-exhausted'],
-    body: { apiVersion: '1', capabilities: [] },
+    body: { apiVersion: '1', capabilities: SOUL_CAPABILITIES },
   }) as any;
 
   assert.equal(persistRequested, true);

@@ -7,10 +7,12 @@ import {
   MEMORY_REASONING_SKILL_NAME,
   compactCapabilityDescription,
   deriveMemoryUseSignal,
+  hasBlockingRequiredCapability,
   memoryReasoningCapabilityAvailability,
   normalizeCapabilityCatalog,
   resolveCapabilities as resolveCapabilitiesCore,
 } from '../../src/akinator/capabilities.js';
+import { STANDARD_SOUL_SKILL_NAME } from '../../src/setup/standard-skills.js';
 
 const buildProfile = {
   taskType: 'build' as const,
@@ -199,6 +201,11 @@ test('reports Akinator skill recommendations as unknown without a client catalog
   assert.equal(result.availableSkillCount, null);
   assert.deepEqual(result.recommendations.map(({ kind, name, availability, source }) => ({ kind, name, availability, source })), [{
     kind: 'skill',
+    name: STANDARD_SOUL_SKILL_NAME,
+    availability: 'unknown',
+    source: 'akinator_policy',
+  }, {
+    kind: 'skill',
     name: 'tdd',
     availability: 'unknown',
     source: 'akinator_policy',
@@ -361,6 +368,66 @@ test('does not recommend the standard function skill for explicitly non-coding w
   }
 });
 
+test('requires the exact master SOUL first for every task type', () => {
+  for (const taskType of ['build', 'debug', 'research', 'review', 'devops', 'writing', 'analysis'] as const) {
+    const missing = resolveCapabilities({
+      task: 'Handle the requested work',
+      profile: { ...buildProfile, taskType },
+      recommendedTags: [],
+      capabilities: [],
+    });
+    const recommendation = missing.recommendations[0];
+    assert.deepEqual(recommendation && {
+      name: recommendation.name,
+      availability: recommendation.availability,
+      required: recommendation.required,
+    }, {
+      name: STANDARD_SOUL_SKILL_NAME,
+      availability: 'missing',
+      required: true,
+    });
+    assert.equal(hasBlockingRequiredCapability(missing), true);
+  }
+
+  const unclassified = resolveCapabilities({
+    task: 'Handle the requested work',
+    profile: { ...buildProfile, taskType: null },
+    recommendedTags: [],
+    capabilities: [],
+  });
+  assert.equal(unclassified.recommendations[0]?.name, STANDARD_SOUL_SKILL_NAME);
+  assert.equal(unclassified.recommendations[0]?.required, true);
+  assert.equal(hasBlockingRequiredCapability(unclassified), true);
+});
+
+test('does not satisfy the required master SOUL with an alias or similarly named capability', () => {
+  for (const capability of [
+    { kind: 'skill' as const, name: `external:${STANDARD_SOUL_SKILL_NAME}` },
+    { kind: 'skill' as const, name: 'kiokuko_soul' },
+    { kind: 'mcp_tool' as const, name: STANDARD_SOUL_SKILL_NAME },
+  ]) {
+    const result = resolveCapabilities({
+      task: 'Build the requested change',
+      profile: buildProfile,
+      recommendedTags: [],
+      capabilities: [capability],
+    });
+    const recommendation = result.recommendations[0];
+    assert.equal(recommendation?.name, STANDARD_SOUL_SKILL_NAME);
+    assert.equal(recommendation?.availability, 'missing');
+    assert.equal(recommendation?.required, true);
+  }
+
+  const available = resolveCapabilities({
+    task: 'Build the requested change',
+    profile: buildProfile,
+    recommendedTags: [],
+    capabilities: [{ kind: 'skill', name: STANDARD_SOUL_SKILL_NAME }],
+  });
+  assert.equal(available.recommendations[0]?.availability, 'available');
+  assert.equal(hasBlockingRequiredCapability(available), false);
+});
+
 test('requires memory-reasoning for actionable build memory and fails closed when unavailable', () => {
   const missing = resolveCapabilities({
     task: 'Implement repository tests for the beacon',
@@ -369,7 +436,7 @@ test('requires memory-reasoning for actionable build memory and fails closed whe
     capabilities: [],
     memoryUse: 'actionable',
   });
-  const recommendation = missing.recommendations.find((item) => item.required === true);
+  const recommendation = missing.recommendations.find((item) => item.name === MEMORY_REASONING_SKILL_NAME);
   assert.deepEqual(recommendation && {
     name: recommendation.name,
     availability: recommendation.availability,
@@ -402,7 +469,7 @@ test('requires memory-reasoning for actionable debug memory', () => {
     capabilities: [],
     memoryUse: 'actionable',
   });
-  const recommendation = result.recommendations.find((item) => item.required === true);
+  const recommendation = result.recommendations.find((item) => item.name === MEMORY_REASONING_SKILL_NAME);
   assert.equal(recommendation?.name, MEMORY_REASONING_SKILL_NAME);
   assert.equal(recommendation?.availability, 'missing');
 });
@@ -416,7 +483,7 @@ test('reports required memory-reasoning as unknown for an absent or malformed ca
       ...(capabilities === undefined ? {} : { capabilities }),
       memoryUse: 'actionable',
     });
-    const recommendation = result.recommendations.find((item) => item.required === true);
+    const recommendation = result.recommendations.find((item) => item.name === MEMORY_REASONING_SKILL_NAME);
     assert.equal(recommendation?.name, MEMORY_REASONING_SKILL_NAME);
     assert.equal(recommendation?.availability, 'unknown');
   }
@@ -490,7 +557,7 @@ test('does not satisfy required memory-reasoning with a namespaced or fetched Sk
       capabilities: [{ kind: 'skill', name }],
       memoryUse: 'actionable',
     });
-    const recommendation = result.recommendations.find((item) => item.required === true);
+    const recommendation = result.recommendations.find((item) => item.name === MEMORY_REASONING_SKILL_NAME);
     assert.equal(recommendation?.name, MEMORY_REASONING_SKILL_NAME);
     assert.equal(recommendation?.availability, 'missing');
   }
@@ -513,7 +580,7 @@ test('does not accept a fetched memory-reasoning descriptor through an undocumen
     capabilities: [{ kind: 'skill', name: MEMORY_REASONING_SKILL_NAME, source: 'fetched' }],
     memoryUse: 'actionable',
   });
-  const recommendation = result.recommendations.find((item) => item.required === true);
+  const recommendation = result.recommendations.find((item) => item.name === MEMORY_REASONING_SKILL_NAME);
   assert.equal(result.availability, 'unknown');
   assert.equal(recommendation?.name, MEMORY_REASONING_SKILL_NAME);
   assert.equal(recommendation?.availability, 'unknown');
@@ -536,7 +603,7 @@ test('does not accept memory-reasoning from a partially malformed catalog', () =
       capabilities,
       memoryUse: 'actionable',
     });
-    const recommendation = result.recommendations.find((item) => item.required === true);
+    const recommendation = result.recommendations.find((item) => item.name === MEMORY_REASONING_SKILL_NAME);
     assert.equal(result.availability, 'unknown');
     assert.equal(recommendation?.availability, 'unknown');
   }

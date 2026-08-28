@@ -1,6 +1,7 @@
 import type { TaskProfile } from './types.js';
 import {
   STANDARD_FUNCTION_SKILL_NAME,
+  STANDARD_SOUL_SKILL_NAME,
   STANDARD_UI_SKILL_NAME,
 } from '../setup/standard-skills.js';
 import { compareCanonicalStrings } from '../serialization/validate.js';
@@ -285,6 +286,7 @@ const SKILL_REASONS: Record<string, string> = {
   research: 'The research task requires source-grounded findings.',
   'code-review': 'The review task benefits from a structured code-review workflow.',
   [MEMORY_REASONING_SKILL_NAME]: 'Relevant stored memory was delivered for a build or debug task; verify its premises, invariants, counterexamples, and tests before changing code.',
+  [STANDARD_SOUL_SKILL_NAME]: 'Every non-trivial Kiokuko-governed task starts with the canonical SOUL router before applying any role-specific, code, or interactive UI Skill.',
   [STANDARD_FUNCTION_SKILL_NAME]: 'The task explicitly involves writing, changing, debugging, or reviewing code and benefits from cohesive function contracts, explicit boundaries, and focused tests.',
   [STANDARD_UI_SKILL_NAME]: 'The task explicitly involves UI implementation, design, or review and benefits from Kiokuko\'s interaction-state and accessibility contract.',
 };
@@ -313,10 +315,10 @@ function tokens(value: string): Set<string> {
 }
 
 function desiredSkills(input: { task: string; profile: TaskProfile; recommendedTags: string[]; memoryUse: MemoryUseSignal }): string[] {
-  const skillNames = input.recommendedTags
+  const skillNames = [STANDARD_SOUL_SKILL_NAME, ...input.recommendedTags
     .filter((tag) => tag.startsWith('skill:'))
     .map((tag) => normalizedName(tag.slice('skill:'.length)))
-    .filter(Boolean);
+    .filter(Boolean)];
   const taskScope = [input.task, input.profile.target ?? '', input.profile.expected ?? '', input.profile.constraints ?? ''].join(' ');
   if (!EXCLUDED_UI_SCOPE.test(taskScope) && EXPLICIT_UI_INTENT.test(taskScope)) skillNames.push(STANDARD_UI_SKILL_NAME);
   if (!EXCLUDED_CODING_SCOPE.test(taskScope) && EXPLICIT_CODING_INTENT.test(taskScope)) {
@@ -332,15 +334,15 @@ function matchingSkill(catalog: CapabilityDescriptor[], desired: string): Capabi
   return catalog.find((candidate) => candidate.kind === 'skill' && nameAliases(candidate.name).has(desired));
 }
 
-function matchingMemoryReasoningSkill(catalog: CapabilityDescriptor[]): CapabilityDescriptor | undefined {
+function matchingExactLocalSkill(catalog: CapabilityDescriptor[], desired: string): CapabilityDescriptor | undefined {
   return catalog.find((candidate) => candidate.kind === 'skill'
-    && candidate.name === MEMORY_REASONING_SKILL_NAME);
+    && candidate.name === desired);
 }
 
 export function memoryReasoningCapabilityAvailability(capabilities: unknown): MemoryReasoningCapabilityAvailability {
   const normalized = normalizeCapabilityCatalog(capabilities);
   if (normalized.availability === 'unknown') return 'unknown';
-  if (matchingMemoryReasoningSkill(normalized.skills)) return 'available';
+  if (matchingExactLocalSkill(normalized.skills, MEMORY_REASONING_SKILL_NAME)) return 'available';
   return 'missing';
 }
 
@@ -355,7 +357,8 @@ function relevantCatalogCapabilities(
   return catalog
     .filter((candidate) => {
       const aliases = nameAliases(candidate.name);
-      if (aliases.has(STANDARD_UI_SKILL_NAME)
+      if (aliases.has(STANDARD_SOUL_SKILL_NAME)
+        || aliases.has(STANDARD_UI_SKILL_NAME)
         || aliases.has(STANDARD_FUNCTION_SKILL_NAME)
         || aliases.has(MEMORY_REASONING_SKILL_NAME)) return false;
       if (candidate.kind === 'mcp_tool') return true;
@@ -400,10 +403,12 @@ export function resolveCapabilities(input: {
   const desired = desiredSkills(input);
   const desiredSkillNames = new Set(desired);
   const skills: CapabilityRecommendation[] = desired.map((desiredName) => {
-    // The required memory workflow is a clean-break contract. A namespaced,
-    // fetched, or similarly named Skill must not satisfy the local capability.
-    const matched = desiredName === MEMORY_REASONING_SKILL_NAME
-      ? matchingMemoryReasoningSkill(normalized.skills)
+    // Mandatory local workflows are clean-break contracts. A namespaced,
+    // fetched, or similarly named Skill must not satisfy either capability.
+    const exactLocalIdentity = desiredName === MEMORY_REASONING_SKILL_NAME
+      || desiredName === STANDARD_SOUL_SKILL_NAME;
+    const matched = exactLocalIdentity
+      ? matchingExactLocalSkill(normalized.skills, desiredName)
       : matchingSkill(catalog, desiredName);
     const availability = desiredName === MEMORY_REASONING_SKILL_NAME && normalized.availability === 'unknown'
       ? 'unknown'
@@ -414,7 +419,10 @@ export function resolveCapabilities(input: {
       availability,
       reason: SKILL_REASONS[desiredName] ?? 'The Akinator task policy recommends this workflow.',
       source: 'akinator_policy',
-      ...(desiredName === MEMORY_REASONING_SKILL_NAME ? { required: true } : {}),
+      ...(desiredName === MEMORY_REASONING_SKILL_NAME
+        || desiredName === STANDARD_SOUL_SKILL_NAME
+        ? { required: true }
+        : {}),
     };
   });
   return {

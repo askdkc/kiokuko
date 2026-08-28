@@ -11,7 +11,8 @@ import { startAgentHttpServer } from '../../src/server/agent-application.js';
 
 const token = 'a'.repeat(64);
 const workspace = 'task5-api';
-const capabilities = [{ kind: 'skill', name: 'memory-reasoning' }];
+const SOUL_CAPABILITIES = [{ kind: 'skill', name: 'kiokuko-soul' }] as const;
+const capabilities = [...SOUL_CAPABILITIES, { kind: 'skill', name: 'memory-reasoning' }] as const;
 
 function openRequest(capabilityCatalog: unknown = capabilities) {
   return {
@@ -246,7 +247,7 @@ test('checkpoint withholds actionable memory and continues without persisting a 
     const opened = await request(runtime.url, '/api/v1/agent/runs', {
       method: 'POST',
       key: 'task5-blocked-open',
-      body: openRequest([]),
+      body: openRequest(SOUL_CAPABILITIES),
     });
     assert.equal(opened.response.status, 200);
     const openedData = dataOf(opened.value);
@@ -279,7 +280,7 @@ test('checkpoint withholds actionable memory and continues without persisting a 
         currentGoal: 'continue implementation',
         changedPaths: ['src/server/routes/task5.ts'],
         characterBudget: 8000,
-        capabilities: [],
+        capabilities: SOUL_CAPABILITIES,
       },
     });
     assert.equal(checkpoint.response.status, 200);
@@ -402,7 +403,7 @@ test('checkpoint fails instead of persisting a revision that changes after capab
 test('checkpoint replay keeps its mutation acknowledgement but gates with the current broker profile', async () => {
   const { runtime, databasePath } = await fixture();
   const body = {
-    ...openRequest([]),
+    ...openRequest(SOUL_CAPABILITIES),
     task: {
       title: 'Implement route context',
       query: 'Implement this route',
@@ -440,7 +441,7 @@ test('checkpoint replay keeps its mutation acknowledgement but gates with the cu
     const firstBody = {
       apiVersion: '1',
       currentGoal: 'research current checkpoint state',
-      capabilities: [],
+      capabilities: SOUL_CAPABILITIES,
     };
     const first = await request(runtime.url, `/api/v1/agent/runs/${openedData.runId}/checkpoints`, {
       method: 'POST',
@@ -471,7 +472,7 @@ test('checkpoint replay keeps its mutation acknowledgement but gates with the cu
         apiVersion: '1',
         currentGoal: 'implement the revised route',
         taskProfileRevision: { taskType: 'build' },
-        capabilities: [],
+        capabilities: SOUL_CAPABILITIES,
       },
     });
     assert.equal(revised.response.status, 200);
@@ -620,7 +621,7 @@ test('Task5 delivery persistence forwards the transaction-time capability assert
 test('exact checkpoint replay re-evaluates current helpful feedback for its weak delivery', async () => {
   const { runtime, databasePath } = await fixture();
   const body = {
-    ...openRequest([]),
+    ...openRequest(SOUL_CAPABILITIES),
     task: {
       title: 'beacon',
       query: 'beacon',
@@ -657,7 +658,7 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
       apiVersion: '1',
       currentGoal: 'switch to implementation',
       taskProfileRevision: { taskType: 'build' },
-      capabilities: [],
+      capabilities: SOUL_CAPABILITIES,
     };
     const checkpoint = await request(runtime.url, `/api/v1/agent/runs/${runId}/checkpoints`, {
       method: 'POST',

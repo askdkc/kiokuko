@@ -3,10 +3,20 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
   loadBundledStandardSkillFiles,
+  STANDARD_ENNO_SKILL_FILES,
+  STANDARD_ENNO_SKILL_MANAGED_MARKER,
+  STANDARD_ENNO_SKILL_NAME,
+  STANDARD_FUNCTION_EXPERT_FILES,
+  STANDARD_FUNCTION_EXPERT_IDS,
   STANDARD_FUNCTION_SKILL_FILES,
   STANDARD_FUNCTION_SKILL_MANAGED_MARKER,
   STANDARD_FUNCTION_SKILL_NAME,
   STANDARD_SKILL_MANIFESTS,
+  STANDARD_SOUL_SKILL_FILES,
+  STANDARD_SOUL_SKILL_MANAGED_MARKER,
+  STANDARD_SOUL_SKILL_NAME,
+  STANDARD_UI_EXPERT_FILES,
+  STANDARD_UI_EXPERT_IDS,
   STANDARD_UI_SKILL_FILES,
   STANDARD_UI_SKILL_MANAGED_MARKER,
   STANDARD_UI_SKILL_NAME,
@@ -34,6 +44,11 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(skill, /references\/ui-checklist\.md/);
   assert.match(skill, /Reduced Motion/);
   assert.match(skill, /WCAG 2\.2/);
+  assert.match(skill, /one to three versioned expert fragments/iu);
+  for (const [index, expertId] of STANDARD_UI_EXPERT_IDS.entries()) {
+    assert.match(skill, new RegExp(expertId.replaceAll('.', '\\.')));
+    assert.equal(uiFiles.some((file) => file.relativePath === STANDARD_UI_EXPERT_FILES[index]), true);
+  }
 
   const checklist = uiFiles.find((file) => file.relativePath === 'references/ui-checklist.md')?.content ?? '';
   for (const principle of ['Purpose', 'Agency', 'Responsibility', 'Familiarity', 'Flexibility', 'Simplicity', 'Craft', 'Delight']) {
@@ -60,18 +75,54 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(functionSkill, /references\/review-checklist\.md/);
   assert.match(functionSkill, /one cohesive externally observable responsibility/);
   assert.match(functionSkill, /across languages, frameworks, and repositories/);
+  assert.match(functionSkill, /mixture-of-experts dispatch/iu);
+  for (const [index, expertId] of STANDARD_FUNCTION_EXPERT_IDS.entries()) {
+    assert.match(functionSkill, new RegExp(expertId.replaceAll('.', '\\.')));
+    assert.equal(functionFiles.some((file) => file.relativePath === STANDARD_FUNCTION_EXPERT_FILES[index]), true);
+  }
   assert.doesNotMatch(functionSkill, /TypeScript in Kiokuko|Build Kiokuko by composing/u);
   assert.match(functionFiles.find((file) => file.relativePath === 'references/kiokuko-patterns.md')?.content ?? '', /Hostile boundary, constrained private core/);
   assert.match(functionFiles.find((file) => file.relativePath === 'references/kiokuko-patterns.md')?.content ?? '', /language-agnostic contracts illustrated with TypeScript/);
   assert.match(functionFiles.find((file) => file.relativePath === 'references/review-checklist.md')?.content ?? '', /Function-contract coding and review checklist/);
   assert.match(functionFiles.find((file) => file.relativePath === 'references/review-checklist.md')?.content ?? '', /any language or repository/);
+
+  const ennoFiles = files.filter((file) => file.skillName === STANDARD_ENNO_SKILL_NAME);
+  assert.deepEqual(ennoFiles.map((file) => file.relativePath), [...STANDARD_ENNO_SKILL_FILES]);
+  assert.ok(ennoFiles.every((file) => file.managedMarker === STANDARD_ENNO_SKILL_MANAGED_MARKER));
+  const ennoSkill = ennoFiles.find((file) => file.relativePath === 'SKILL.md')?.content ?? '';
+  assert.match(ennoSkill, new RegExp(`^---\\nname: ${STANDARD_ENNO_SKILL_NAME}\\ndescription: [^\\n]+\\n---\\n`));
+  assert.match(ennoSkill, /Enno-Oduno alone owns this state machine/);
+  assert.match(ennoSkill, /Do not start Zenki or Goki/);
+  assert.match(ennoSkill, /Never select a repository-wide latest run/);
+  assert.match(ennoSkill, /accepted review advances to `oduno_meditation`/iu);
+  assert.match(ennoSkill, /enno_meditation_submit.*completion follows persistence, not deletion/iu);
+  assert.match(ennoSkill, /one to three versioned `expertRefs`/u);
+
+  const soulFiles = files.filter((file) => file.skillName === STANDARD_SOUL_SKILL_NAME);
+  assert.deepEqual(soulFiles.map((file) => file.relativePath), [...STANDARD_SOUL_SKILL_FILES]);
+  assert.ok(soulFiles.every((file) => file.managedMarker === STANDARD_SOUL_SKILL_MANAGED_MARKER));
+  assert.equal(STANDARD_SKILL_MANIFESTS.at(-1)?.name, STANDARD_SOUL_SKILL_NAME);
+  const soulSkill = soulFiles.find((file) => file.relativePath === 'SKILL.md')?.content ?? '';
+  assert.match(soulSkill, new RegExp(`^---\\nname: ${STANDARD_SOUL_SKILL_NAME}\\ndescription: [^\\n]+\\n---\\n`));
+  assert.match(soulSkill, /Read this Skill before any other bundled Kiokuko Skill/);
+  assert.match(soulSkill, /Do not invent a run, role, revision, WorkUnit, or state transition/);
+  for (const routedSkill of [STANDARD_ENNO_SKILL_NAME, STANDARD_FUNCTION_SKILL_NAME, STANDARD_UI_SKILL_NAME]) {
+    assert.ok(soulSkill.includes('`' + routedSkill + '`'));
+  }
+  assert.match(soulSkill, /Routes compose\. Read every applicable specialist index/);
+  assert.match(soulSkill, /do not load every reference by default/iu);
+  assert.match(soulSkill, /Never install or execute external Skill content automatically/);
 });
 
 test('the packaged skill sources remain readable at their repository locations', async () => {
-  const [uiSkill, functionSkill] = await Promise.all([
+  const [uiSkill, functionSkill, ennoSkill, soulSkill] = await Promise.all([
     readFile(new URL('../../skills/kiokuko-ui-design-soul/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-single-purpose-functions/SKILL.md', import.meta.url), 'utf8'),
+    readFile(new URL('../../skills/kiokuko-enno-oduno/SKILL.md', import.meta.url), 'utf8'),
+    readFile(new URL('../../skills/kiokuko-soul/SKILL.md', import.meta.url), 'utf8'),
   ]);
   assert.match(uiSkill, /^---\nname: kiokuko-ui-design-soul\n/);
   assert.match(functionSkill, /^---\nname: kiokuko-single-purpose-functions\n/);
+  assert.match(ennoSkill, /^---\nname: kiokuko-enno-oduno\n/);
+  assert.match(soulSkill, /^---\nname: kiokuko-soul\n/);
 });

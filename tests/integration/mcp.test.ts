@@ -18,6 +18,12 @@ import { MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS, MAX_RAW_CAPABILITY_DESCRIPTION_
 import { KiokukoError } from '../../src/errors.js';
 import { PACKAGE_VERSION } from '../../src/package-version.js';
 
+const SOUL_CAPABILITY = {
+  kind: 'skill',
+  name: 'kiokuko-soul',
+  description: 'Route Kiokuko work to every applicable bundled Skill.',
+} as const;
+
 function sqliteError(errcode: number, message = 'sqlite operation failed'): Error {
   return Object.assign(new Error(message), { code: 'ERR_SQLITE_ERROR', errcode });
 }
@@ -42,8 +48,36 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(instructions, /executionContext\.repositoryRoot as the filesystem base/u);
     assert.match(instructions, /OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
+    assert.match(instructions, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/iu);
+    assert.match(instructions, /Every `task_prepare` call must set `soulRead: true` only after that read/iu);
+    assert.match(instructions, /exact local `kiokuko-soul` capability is required for every task/iu);
+    assert.match(instructions, /`task_prepare` is the Enno-Oduno orchestration entry point/u);
+    assert.match(instructions, /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
+    assert.match(instructions, /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
+    assert.match(instructions, /While Akinator still needs information, only Enno-Oduno is active/u);
+    assert.match(instructions, /structured handoff.*Oduno ideal.*every Akinator-discovered Skill.*harness-specific Zenki directive/u);
+    assert.match(instructions, /Zenki must read the master SOUL and then the compact `kiokuko-single-purpose-functions` index/u);
+    assert.match(instructions, /focused runnable test target/u);
+    assert.match(instructions, /one to three versioned `expertRefs`/u);
+    assert.match(instructions, /Goki receives only approved, already-decomposed WorkUnits/u);
+    assert.match(instructions, /Goki can start only after Zenki submits a complete WorkPlan/u);
+    assert.match(instructions, /A failed review never returns directly to Goki/u);
+    assert.match(instructions, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
+    assert.match(instructions, /never select a repository-wide latest run/u);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), ['curator_check', 'curator_globalize', 'memory_checkpoint', 'task_answer', 'task_prepare']);
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
+      'curator_check',
+      'curator_globalize',
+      'enno_answer',
+      'enno_finish',
+      'enno_ideal_submit',
+      'enno_meditation_submit',
+      'enno_plan_submit',
+      'enno_work_report',
+      'memory_checkpoint',
+      'task_answer',
+      'task_prepare',
+    ]);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_answer')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.readOnlyHint, false);
@@ -53,26 +87,39 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, false);
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
+    const ennoFinishTool = tools.tools.find((tool) => tool.name === 'enno_finish');
+    const ennoIdealTool = tools.tools.find((tool) => tool.name === 'enno_ideal_submit');
+    const ennoMeditationTool = tools.tools.find((tool) => tool.name === 'enno_meditation_submit');
     assert.match(taskPrepareTool?.description ?? '', /once for one logical user request/);
     assert.match(taskPrepareTool?.description ?? '', /create a new bounded opaque value for each logical request/);
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
     assert.match(taskPrepareTool?.description ?? '', /Reusing an ID with changed bound input is a conflict/);
     assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction before proceeding/);
-    assert.match(taskPrepareTool?.description ?? '', /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
+    assert.match(taskPrepareTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(taskPrepareTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(taskPrepareTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
     assert.match(taskPrepareTool?.description ?? '', /never use ~, \$HOME, or HOME-relative path fragments/u);
+    assert.match(taskPrepareTool?.description ?? '', /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
+    assert.match(taskPrepareTool?.description ?? '', /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
+    assert.match(taskPrepareTool?.description ?? '', /do not start Zenki or Goki/u);
+    assert.match(taskPrepareTool?.description ?? '', /structured handoff.*Oduno ideal.*every Akinator-discovered Skill.*harness-specific Zenki directive/u);
+    assert.match(taskPrepareTool?.description ?? '', /failed review never returns directly to Goki/u);
+    assert.match(taskPrepareTool?.description ?? '', /ennoOduno\.orchestrationId/u);
     assert.match(taskAnswerTool?.description ?? '', /required run ID returned by task_prepare/);
     assert.match(taskAnswerTool?.description ?? '', /Repeat the same capability catalog and context budget/);
     assert.match(taskAnswerTool?.description ?? '', /changed context budget conflicts before intake mutation/);
     assert.match(taskAnswerTool?.description ?? '', /inspect the returned nextAction before proceeding/);
-    assert.match(taskAnswerTool?.description ?? '', /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
+    assert.match(taskAnswerTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskAnswerTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskAnswerTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(taskAnswerTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(ennoFinishTool?.description ?? '', /returns Review feedback to Zenki for a new plan/u);
+    assert.match(ennoFinishTool?.description ?? '', /advances a new run to Oduno meditation instead of completing it directly/iu);
+    assert.match(ennoIdealTool?.description ?? '', /optimal goal.*task_prepare handoff.*every Akinator-discovered Skill.*before Zenki planning/iu);
+    assert.match(ennoMeditationTool?.description ?? '', /obsolete test or function deletion candidates.*without mutating the repository/iu);
     assert.match(taskAnswerTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
     type JsonSchema = {
       type?: string;
@@ -81,14 +128,20 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       properties?: Record<string, JsonSchema>;
       items?: JsonSchema;
       enum?: unknown[];
+      const?: unknown;
       maxItems?: number;
       required?: string[];
     };
     type ToolInputSchema = JsonSchema;
     const taskAnswerSchema = taskAnswerTool?.inputSchema as ToolInputSchema;
     const taskPrepareSchema = taskPrepareTool?.inputSchema as ToolInputSchema;
+    assert.ok(taskPrepareSchema.required?.includes('soulRead'));
+    assert.equal(taskPrepareSchema.properties?.soulRead?.const, true);
+    assert.match(taskPrepareSchema.properties?.soulRead?.description ?? '', /self-attestation.*complete exact local kiokuko-soul/iu);
     assert.ok(taskPrepareSchema.required?.includes('requestId'));
     assert.ok(taskAnswerSchema.required?.includes('runId'));
+    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /normally identifies Codex, Claude Code, or OpenCode from the MCP initialize clientInfo/u);
+    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /host session ID may be omitted and bound later/u);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /Use the exact current question/);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /value must be exactly one returned option/);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /options is null, provide grounded non-empty text/);
@@ -99,6 +152,21 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
         /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u,
       );
       assert.match(schema.properties?.capabilities?.description ?? '', /kind and canonical name/u);
+    }
+    for (const toolName of [
+      'enno_ideal_submit',
+      'enno_plan_submit',
+      'enno_answer',
+      'enno_work_report',
+      'enno_finish',
+      'enno_meditation_submit',
+    ]) {
+      const tool = tools.tools.find((candidate) => candidate.name === toolName);
+      const schema = tool?.inputSchema as ToolInputSchema;
+      assert.match(tool?.description ?? '', /orchestrationId.*not a host client session ID/u);
+      assert.ok(schema.required?.includes('orchestrationId'));
+      assert.equal(schema.required?.includes('clientSessionId'), false);
+      assert.match(schema.properties?.orchestrationId?.description ?? '', /Exact ennoOduno\.orchestrationId returned by task_prepare or task_answer/u);
     }
     assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /call no more tools/);
     const checkpointTool = tools.tools.find((tool) => tool.name === 'memory_checkpoint');
@@ -134,9 +202,24 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(globalizeSchema.properties?.confirmed?.const, true);
     assert.ok(globalizeSchema.required?.includes('confirmed'));
 
+    for (const argumentsValue of [{
+      requestId: 'mcp-missing-soul-read',
+      task: 'Implement the durable beacon',
+      capabilities: [SOUL_CAPABILITY],
+    }, {
+      soulRead: false,
+      requestId: 'mcp-false-soul-read',
+      task: 'Implement the durable beacon',
+      capabilities: [SOUL_CAPABILITY],
+    }]) {
+      const unattested = await client.callTool({ name: 'task_prepare', arguments: argumentsValue });
+      assert.equal(unattested.isError, true);
+    }
+
     const missingRequestId = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         task: 'Implement the durable beacon and add tests',
         profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The durable beacon tests pass' },
         capabilities: [],
@@ -159,6 +242,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     const prepared = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-gated-ready-request',
         task: 'Implement the durable beacon and add tests',
         profileHints: {
@@ -167,6 +251,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
           expected: 'The durable beacon tests pass',
         },
         capabilities: [
+          SOUL_CAPABILITY,
           { kind: 'skill', name: 'tdd', description: 'Implement changes test first' },
           { kind: 'skill', name: 'memory-reasoning', description: 'Verify recalled memory before implementation' },
           { kind: 'mcp_tool', name: 'github_search_code', description: 'Search repository code for durable beacon implementations' },
@@ -179,6 +264,18 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       capabilities: { availability: string; recommendations: Array<{ kind: string; name: string; availability: string }> };
       memoryPolicy: { memoryReasoningRequired: boolean };
       executionContext: { canonicalCwd: string; repositoryRoot: string; cwdIsRepositoryRoot: boolean; pathPolicy: string };
+      ennoOduno: {
+        applicable: boolean;
+        status: string;
+        orchestrationId: string | null;
+        clientBinding: { status: string; clientKind: string | null; clientVersion: string | null; identified: boolean } | null;
+        directive: {
+          role: string;
+          harness: { kind: string | null; continuation: string };
+          handoff: { sourceRole: string; objective: string } | null;
+        } | null;
+        nextAction: string;
+      };
       nextAction: string;
     } & Record<string, unknown>;
     assert.equal(preparedContent.intake.status, 'ready');
@@ -186,6 +283,21 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(preparedContent.intake.reasoning.selectedAction, /src\/beacon\.ts/u);
     assert.equal(preparedContent.intake.reasoning.silo.completeness, 1);
     assert.equal(preparedContent.nextAction, 'proceed');
+    assert.equal(preparedContent.ennoOduno.applicable, true);
+    assert.equal(preparedContent.ennoOduno.status, 'oduno_ideal');
+    assert.equal(preparedContent.ennoOduno.orchestrationId, preparedContent.intake.sessionId);
+    assert.deepEqual(preparedContent.ennoOduno.clientBinding, {
+      status: 'pending',
+      clientKind: null,
+      clientVersion: null,
+      identified: false,
+    });
+    assert.equal(preparedContent.ennoOduno.directive?.role, 'enno-oduno');
+    assert.equal(preparedContent.ennoOduno.directive?.handoff?.sourceRole, 'enno-oduno');
+    assert.match(preparedContent.ennoOduno.directive?.handoff?.objective ?? '', /src\/beacon\.ts/u);
+    assert.equal(preparedContent.ennoOduno.directive?.harness.kind, null);
+    assert.equal(preparedContent.ennoOduno.directive?.harness.continuation, 'unidentified');
+    assert.equal(preparedContent.ennoOduno.nextAction, 'submit_ideal');
     assert.equal(preparedContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(preparedContent.memoryPolicy, { memoryReasoningRequired: true });
     const canonicalRoot = await realpath(root);
@@ -199,28 +311,117 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal('memory' in preparedContent, false);
     assert.equal('references' in preparedContent, false);
     assert.ok(preparedContent.capabilities.recommendations.some((item) => item.kind === 'skill' && item.name === 'tdd' && item.availability === 'available'));
+    assert.ok(preparedContent.capabilities.recommendations.some((item) => item.kind === 'skill' && item.name === 'kiokuko-soul' && item.availability === 'available'));
     assert.ok(preparedContent.capabilities.recommendations.some((item) => item.kind === 'skill' && item.name === 'memory-reasoning' && item.availability === 'available'));
     assert.ok(preparedContent.capabilities.recommendations.some((item) => item.kind === 'mcp_tool' && item.name === 'github_search_code' && item.availability === 'available'));
 
     const answerCapabilities = [
+      SOUL_CAPABILITY,
       { kind: 'skill', name: 'memory-reasoning', description: 'Verify recalled memory before implementation' },
     ];
+    const unclassified = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'mcp-unclassified-enno-intake-request',
+        task: 'Help me with this request',
+        capabilities: answerCapabilities,
+      },
+    });
+    const unclassifiedContent = unclassified.structuredContent as {
+      intake: { status: string; sessionId: string; question: { id: string } };
+      ennoOduno: {
+        applicable: boolean;
+        status: string;
+        orchestrationId: string | null;
+        clientBinding: { status: string; clientKind: string | null; clientVersion: string | null; identified: boolean };
+        contractRevision: number | null;
+        currentRole: string | null;
+        directive: { role: string; handoff: null; objective: string; requiredSkills: string[] } | null;
+        nextAction: string;
+      };
+    };
+    assert.equal(unclassifiedContent.intake.status, 'needs_answer');
+    assert.equal(unclassifiedContent.intake.question.id, 'taskType');
+    assert.equal(unclassifiedContent.ennoOduno.applicable, true);
+    assert.equal(unclassifiedContent.ennoOduno.status, 'intake');
+    assert.equal(unclassifiedContent.ennoOduno.orchestrationId, unclassifiedContent.intake.sessionId);
+    assert.deepEqual(unclassifiedContent.ennoOduno.clientBinding, {
+      status: 'pending', clientKind: null, clientVersion: null, identified: false,
+    });
+    assert.equal(unclassifiedContent.ennoOduno.contractRevision, null);
+    assert.equal(unclassifiedContent.ennoOduno.currentRole, 'enno-oduno');
+    assert.equal(unclassifiedContent.ennoOduno.directive?.role, 'enno-oduno');
+    assert.equal(unclassifiedContent.ennoOduno.directive?.handoff, null);
+    assert.deepEqual(unclassifiedContent.ennoOduno.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-enno-oduno']);
+    assert.match(unclassifiedContent.ennoOduno.directive?.objective ?? '', /exact question.*user/iu);
+    assert.equal(unclassifiedContent.ennoOduno.nextAction, 'answer_intake');
+
+    const research = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'mcp-non-enno-research-request',
+        task: 'Research the durable beacon contract',
+        profileHints: {
+          taskType: 'research',
+          target: 'durable beacon contract',
+          expected: 'a verified explanation',
+          constraints: null,
+        },
+        capabilities: [],
+      },
+    });
+    const researchContent = research.structuredContent as {
+      ennoOduno: { applicable: boolean };
+      nextAction: string;
+      capabilities: { recommendations: Array<{ name: string; availability: string; required?: boolean }> };
+    };
+    assert.equal(researchContent.ennoOduno.applicable, false);
+    assert.equal(researchContent.nextAction, 'required_capability_unavailable');
+    assert.ok(researchContent.capabilities.recommendations.some((item) => item.name === 'kiokuko-soul'
+      && item.availability === 'missing'
+      && item.required === true));
+
     const incomplete = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-gated-incomplete-request',
         task: 'Implement the durable beacon',
         profileHints: { taskType: 'build' },
         capabilities: answerCapabilities,
       },
     });
-    const incompleteContent = incomplete.structuredContent as { intake: { status: string; sessionId: string; question: { id: string } }; context: unknown; run: { runId: string }; nextAction: string } & Record<string, unknown>;
+    const incompleteContent = incomplete.structuredContent as {
+      intake: { status: string; sessionId: string; question: { id: string } };
+      context: unknown;
+      run: { runId: string };
+      nextAction: string;
+      ennoOduno: {
+        applicable: boolean;
+        status: string;
+        orchestrationId: string | null;
+        currentRole: string | null;
+        directive: { role: string; handoff: null; objective: string; requiredSkills: string[] } | null;
+        nextAction: string;
+      };
+    } & Record<string, unknown>;
     assert.equal(incompleteContent.intake.status, 'needs_answer');
     assert.equal(incompleteContent.intake.question.id, 'target');
     assert.equal(incompleteContent.context, null);
     assert.equal('memory' in incompleteContent, false);
     assert.equal('references' in incompleteContent, false);
     assert.equal(incompleteContent.nextAction, 'answer_from_evidence_or_ask_user');
+    assert.equal(incompleteContent.ennoOduno.applicable, true);
+    assert.equal(incompleteContent.ennoOduno.status, 'intake');
+    assert.equal(incompleteContent.ennoOduno.orchestrationId, incompleteContent.intake.sessionId);
+    assert.equal(incompleteContent.ennoOduno.currentRole, 'enno-oduno');
+    assert.equal(incompleteContent.ennoOduno.directive?.role, 'enno-oduno');
+    assert.equal(incompleteContent.ennoOduno.directive?.handoff, null);
+    assert.deepEqual(incompleteContent.ennoOduno.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-enno-oduno']);
+    assert.match(incompleteContent.ennoOduno.directive?.objective ?? '', /exact question.*user/iu);
+    assert.equal(incompleteContent.ennoOduno.nextAction, 'answer_intake');
 
     const missingRunId = await client.callTool({
       name: 'task_answer',
@@ -277,7 +478,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       pathPolicy: 'canonical_absolute_under_repository_root',
     });
     assert.equal(completedContent.capabilities.availability, 'known-nonempty');
-    assert.deepEqual(completedContent.capabilities.diagnostics, { received: 1, accepted: 1, truncated: 0, dropped: 0 });
+    assert.deepEqual(completedContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
     assert.ok(completedContent.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.source === 'akinator_policy'
       && item.availability === 'available'
@@ -288,6 +489,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       const pending = await client.callTool({
         name: 'task_prepare',
         arguments: {
+          soulRead: true,
           requestId: `mcp-gated-${catalogAvailability}-request`,
           task: 'Implement the durable beacon and add tests',
           profileHints: { taskType: 'build' },
@@ -302,7 +504,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       };
       assert.equal(pendingContent.intake.status, 'needs_answer');
       assert.equal(pendingContent.intake.question.id, 'target');
-      assert.equal(pendingContent.nextAction, 'answer_from_evidence_or_ask_user');
+      assert.equal(pendingContent.nextAction, 'required_capability_unavailable');
 
       const target = await client.callTool({
         name: 'task_answer',
@@ -317,7 +519,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       const targetContent = target.structuredContent as { intake: { status: string; question: { id: string } }; nextAction: string };
       assert.equal(targetContent.intake.status, 'needs_answer');
       assert.equal(targetContent.intake.question.id, 'expected');
-      assert.equal(targetContent.nextAction, 'answer_from_evidence_or_ask_user');
+      assert.equal(targetContent.nextAction, 'required_capability_unavailable');
 
       const stopped = await client.callTool({
         name: 'task_answer',
@@ -340,12 +542,16 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
         nextAction: string;
       } & Record<string, unknown>;
       assert.equal(stoppedContent.intake.status, 'ready');
-      assert.equal(stoppedContent.nextAction, 'proceed');
+      assert.equal(stoppedContent.nextAction, 'required_capability_unavailable');
       assert.deepEqual(stoppedContent.memoryPolicy, { memoryReasoningRequired: true });
       assert.equal(stoppedContent.context, null);
       assert.equal('memory' in stoppedContent, false);
       assert.equal('references' in stoppedContent, false);
       assert.ok(stoppedContent.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
+        && item.source === 'akinator_policy'
+        && item.availability === catalogAvailability
+        && item.required === true));
+      assert.ok(stoppedContent.capabilities.recommendations.some((item) => item.name === 'kiokuko-soul'
         && item.source === 'akinator_policy'
         && item.availability === catalogAvailability
         && item.required === true));
@@ -361,6 +567,104 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
   }
 });
 
+test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno derives the ideal', async () => {
+  const clients = [
+    { name: 'codex-mcp-client', expectedKind: 'codex', continuation: 'stop_hook' },
+    { name: 'claude-ai', expectedKind: 'claude', continuation: 'stop_hook' },
+    { name: 'opencode', expectedKind: 'opencode', continuation: 'session_idle_plugin' },
+  ] as const;
+
+  for (const clientFixture of clients) {
+    const root = await mkdtemp(path.join(tmpdir(), `kiokuko-mcp-${clientFixture.expectedKind}-repo-`));
+    execFileSync('git', ['init', '-q', root]);
+    const data = await mkdtemp(path.join(tmpdir(), `kiokuko-mcp-${clientFixture.expectedKind}-data-`));
+    const databasePath = path.join(data, 'kiokuko.sqlite3');
+    const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+    const client = new Client({ name: clientFixture.name, version: 'fixture-version' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const prepared = await client.callTool({
+        name: 'task_prepare',
+        arguments: {
+          soulRead: true,
+          requestId: `mcp-client-info-${clientFixture.expectedKind}`,
+          task: 'Repair the add function and make tests pass',
+          profileHints: {
+            taskType: 'debug',
+            target: 'src/add.js',
+            expected: 'node --test passes',
+          },
+          capabilities: [SOUL_CAPABILITY, {
+            kind: 'skill',
+            name: 'kiokuko-single-purpose-functions',
+            description: 'Focused code contracts and tests.',
+          }],
+        },
+      });
+      assert.equal(prepared.isError, undefined);
+      const content = prepared.structuredContent as {
+        ennoOduno: {
+          status: string;
+          currentRole: string | null;
+          clientBinding: {
+            status: string;
+            clientKind: string | null;
+            clientVersion: string | null;
+            identified: boolean;
+          } | null;
+          directive: {
+            role: string;
+            objective: string;
+            requiredSkills: string[];
+            harness: { kind: string | null; version: string | null; continuation: string; instructions: string[] };
+            handoff: { sourceRole: string; taskType: string } | null;
+          } | null;
+        };
+      };
+      assert.equal(content.ennoOduno.status, 'oduno_ideal');
+      assert.equal(content.ennoOduno.currentRole, 'enno-oduno');
+      assert.deepEqual(content.ennoOduno.clientBinding, {
+        status: 'pending',
+        clientKind: clientFixture.expectedKind,
+        clientVersion: 'fixture-version',
+        identified: true,
+      });
+      assert.equal(content.ennoOduno.directive?.role, 'enno-oduno');
+      assert.equal(content.ennoOduno.directive?.harness.kind, clientFixture.expectedKind);
+      assert.equal(content.ennoOduno.directive?.harness.version, 'fixture-version');
+      assert.equal(content.ennoOduno.directive?.harness.continuation, clientFixture.continuation);
+      assert.ok(content.ennoOduno.directive?.harness.instructions.some((instruction) => /Own intake.*state transitions/iu.test(instruction)));
+      assert.ok(content.ennoOduno.directive?.harness.instructions.some((instruction) => /kiokuko-enno-oduno/iu.test(instruction)));
+      assert.deepEqual(content.ennoOduno.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-enno-oduno']);
+      assert.match(content.ennoOduno.directive?.objective ?? '', /optimal goal.*task_prepare handoff/iu);
+      assert.match(content.ennoOduno.directive?.objective ?? '', /call enno_ideal_submit/iu);
+      assert.equal(content.ennoOduno.directive?.handoff?.sourceRole, 'enno-oduno');
+      assert.equal(content.ennoOduno.directive?.handoff?.taskType, 'debug');
+
+      if (clientFixture.expectedKind === 'codex') {
+        const conflict = await client.callTool({
+          name: 'task_prepare',
+          arguments: {
+            soulRead: true,
+            requestId: 'mcp-client-info-conflict',
+            task: 'Repair another function',
+            profileHints: { taskType: 'debug', target: 'src/other.js', expected: 'tests pass' },
+            capabilities: [],
+            client: { kind: 'claude' },
+          },
+        });
+        assert.equal(conflict.isError, true);
+        assert.match(JSON.stringify(conflict.content), /conflict/iu);
+      }
+    } finally {
+      await client.close();
+      if (server.isConnected()) await server.close();
+    }
+  }
+});
+
 test('memory_checkpoint returns actionable MCP guidance during intake and succeeds after task_answer finalizes the run', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-repo-'));
   execFileSync('git', ['init', '-q', root]);
@@ -372,10 +676,11 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
   await server.connect(serverTransport);
   await client.connect(clientTransport);
   try {
-    const capabilities = [{ kind: 'skill', name: 'memory-reasoning' }];
+    const capabilities = [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }];
     const prepared = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-checkpoint-recovery-request',
         task: 'Implement the checkpoint recovery behavior',
         profileHints: { taskType: 'build' },
@@ -523,6 +828,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     });
     const sentinel = 'capability-secret-sentinel-private-path';
     const oversizedCapabilities = [
+      SOUL_CAPABILITY,
       { kind: 'skill', name: 'tdd', description: `${sentinel}${'x'.repeat(64_001)}` },
       { kind: 'mcp_tool', name: 'repository_search', description: `${sentinel}${'y'.repeat(64_001)}` },
       { kind: 'invalid', name: 'discarded' },
@@ -530,6 +836,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     const result = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-oversized-catalog-request',
         task: 'Implement the oversized catalog beacon and add tests',
         profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
@@ -553,7 +860,8 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     assert.equal('memory' in content, false);
     assert.equal('references' in content, false);
     assert.equal(content.capabilities.availability, 'unknown');
-    assert.deepEqual(content.capabilities.diagnostics, { received: 3, accepted: 2, truncated: 2, dropped: 1 });
+    assert.deepEqual(content.capabilities.diagnostics, { received: 4, accepted: 3, truncated: 2, dropped: 1 });
+    assert.ok(content.capabilities.recommendations.some((item) => item.name === 'kiokuko-soul' && item.availability === 'available'));
     assert.ok(content.capabilities.recommendations.some((item) => item.name === 'tdd' && item.availability === 'available'));
     assert.ok(content.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.availability === 'unknown'));
     assert.equal(content.nextAction, 'proceed');
@@ -564,10 +872,11 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     const available = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-available-catalog-request',
         task: 'Implement the oversized catalog beacon and add tests',
         profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
-        capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+        capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
       },
     });
     const availableContent = available.structuredContent as {
@@ -580,12 +889,13 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     };
     assert.equal(availableContent.nextAction, 'proceed');
     assert.equal(availableContent.capabilities.availability, 'known-nonempty');
-    assert.deepEqual(availableContent.capabilities.diagnostics, { received: 1, accepted: 1, truncated: 0, dropped: 0 });
+    assert.deepEqual(availableContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
     assert.equal(availableContent.context.policyVersion, 'context-ranking-v4');
 
     const exactBoundary = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-exact-boundary-catalog-request',
         task: 'Implement the oversized catalog beacon and add tests',
         profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
@@ -602,6 +912,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     const boundary = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-over-boundary-catalog-request',
         task: 'Implement the oversized catalog beacon and add tests',
         profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
@@ -624,6 +935,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     const budget = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-budget-catalog-request',
         task: 'Implement the oversized catalog beacon and add tests',
         profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
@@ -637,7 +949,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
 
     const incomplete = await client.callTool({
       name: 'task_prepare',
-      arguments: { requestId: 'mcp-oversized-incomplete-request', task: 'Implement the oversized catalog beacon', profileHints: { taskType: 'build' }, capabilities: oversizedCapabilities },
+      arguments: { soulRead: true, requestId: 'mcp-oversized-incomplete-request', task: 'Implement the oversized catalog beacon', profileHints: { taskType: 'build' }, capabilities: oversizedCapabilities },
     });
     const incompleteContent = incomplete.structuredContent as { intake: { sessionId: string; question: { id: string } }; run: { runId: string } };
     const target = await client.callTool({
@@ -668,10 +980,10 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       task: 'Implement the oversized catalog beacon and add tests',
       profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
     };
-    const explicitEmpty = await client.callTool({ name: 'task_prepare', arguments: { ...catalogBase, requestId: 'mcp-explicit-empty-catalog-request', capabilities: [] } });
-    const omitted = await client.callTool({ name: 'task_prepare', arguments: { ...catalogBase, requestId: 'mcp-omitted-catalog-request' } });
-    const whollyInvalid = await client.callTool({ name: 'task_prepare', arguments: { ...catalogBase, requestId: 'mcp-invalid-catalog-request', capabilities: [{ kind: 'invalid', name: 'invalid' }] } });
-    const nonArray = await client.callTool({ name: 'task_prepare', arguments: { ...catalogBase, requestId: 'mcp-non-array-catalog-request', capabilities: { kind: 'skill', name: 'memory-reasoning' } } });
+    const explicitEmpty = await client.callTool({ name: 'task_prepare', arguments: { soulRead: true, ...catalogBase, requestId: 'mcp-explicit-empty-catalog-request', capabilities: [] } });
+    const omitted = await client.callTool({ name: 'task_prepare', arguments: { soulRead: true, ...catalogBase, requestId: 'mcp-omitted-catalog-request' } });
+    const whollyInvalid = await client.callTool({ name: 'task_prepare', arguments: { soulRead: true, ...catalogBase, requestId: 'mcp-invalid-catalog-request', capabilities: [{ kind: 'invalid', name: 'invalid' }] } });
+    const nonArray = await client.callTool({ name: 'task_prepare', arguments: { soulRead: true, ...catalogBase, requestId: 'mcp-non-array-catalog-request', capabilities: { kind: 'skill', name: 'memory-reasoning' } } });
     assert.equal((explicitEmpty.structuredContent as { capabilities: { availability: string } }).capabilities.availability, 'known-empty');
     assert.equal((omitted.structuredContent as { capabilities: { availability: string } }).capabilities.availability, 'unknown');
     assert.equal((whollyInvalid.structuredContent as { capabilities: { availability: string } }).capabilities.availability, 'unknown');
@@ -742,6 +1054,7 @@ test('task_prepare accepts stored v2 curator memory whose legacy tag is not mana
     const result = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-legacy-curator-task-prepare',
         task: 'Fix the Kiokuko task intake integrity error',
         profileHints: {
@@ -749,7 +1062,7 @@ test('task_prepare accepts stored v2 curator memory whose legacy tag is not mana
           target: 'Kiokuko task intake',
           expected: 'The focused regression passes',
         },
-        capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+        capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
       },
     });
     assert.equal(result.isError, undefined);
@@ -811,6 +1124,7 @@ test('task_prepare proceeds without memory-reasoning for managed curator global 
     const result = await client.callTool({
       name: 'task_prepare',
       arguments: {
+        soulRead: true,
         requestId: 'mcp-curator-trust-task-prepare',
         task: 'Repair the Kiokuko intake capability failure',
         profileHints: {
@@ -818,7 +1132,7 @@ test('task_prepare proceeds without memory-reasoning for managed curator global 
           target: 'Kiokuko intake capability',
           expected: 'The focused regression passes',
         },
-        capabilities: [],
+        capabilities: [SOUL_CAPABILITY],
       },
     });
     assert.equal(result.isError, undefined);
@@ -851,7 +1165,7 @@ test('MCP tool failures redact arbitrary internal error messages', async () => {
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { requestId: 'untyped-error-boundary-request', task: 'Boundary failure', profileHints: { taskType: 'review' }, capabilities: [] },
+      arguments: { soulRead: true, requestId: 'untyped-error-boundary-request', task: 'Boundary failure', profileHints: { taskType: 'review' }, capabilities: [] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -876,7 +1190,7 @@ test('MCP cwd-bearing tools reject relative paths without reporting an internal 
     const calls = [
       {
         name: 'task_prepare',
-        arguments: { requestId: 'relative-cwd-request', task: 'Review', cwd: 'Sites/project', capabilities: [] },
+        arguments: { soulRead: true, requestId: 'relative-cwd-request', task: 'Review', cwd: 'Sites/project', capabilities: [] },
       },
       {
         name: 'task_answer',
@@ -923,7 +1237,7 @@ test('task_prepare reports a missing absolute cwd as not found instead of an int
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { requestId: 'missing-cwd-request', task: 'Review', cwd: missing, capabilities: [] },
+      arguments: { soulRead: true, requestId: 'missing-cwd-request', task: 'Review', cwd: missing, capabilities: [] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -962,7 +1276,7 @@ test('task_prepare reports exhausted SQLite locking as service backpressure', as
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { requestId: 'locked-database-request', task: 'Review', cwd: root, capabilities: [] },
+      arguments: { soulRead: true, requestId: 'locked-database-request', task: 'Review', cwd: root, capabilities: [] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -984,7 +1298,7 @@ test('MCP identity schemas reject padding instead of normalizing identities', as
   await client.connect(clientTransport);
   try {
     const calls = [
-      { name: 'task_prepare', arguments: { requestId: 'identity-prepare', task: 'Review', client: { sessionId: ' padded-client-session ' } } },
+      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'identity-prepare', task: 'Review', client: { sessionId: ' padded-client-session ' } } },
       { name: 'task_answer', arguments: { sessionId: ' padded-session ', runId: 'run-1', questionId: 'taskType', value: 'review' } },
       { name: 'task_answer', arguments: { sessionId: 'session-1', runId: ' padded-run ', questionId: 'taskType', value: 'review' } },
       { name: 'curator_check', arguments: { workspace: ' project:workspace ' } },
@@ -1016,7 +1330,7 @@ test('MCP preserves only typed database failures as DATABASE_ERROR', async () =>
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { requestId: 'database-error-request', task: 'Database failure', capabilities: [] },
+      arguments: { soulRead: true, requestId: 'database-error-request', task: 'Database failure', capabilities: [] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -1042,7 +1356,7 @@ test('MCP tool failures sanitize typed Kiokuko errors instead of trusting their 
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { requestId: 'typed-error-boundary-request', task: 'Typed boundary failure', profileHints: { taskType: 'review' }, capabilities: [] },
+      arguments: { soulRead: true, requestId: 'typed-error-boundary-request', task: 'Typed boundary failure', profileHints: { taskType: 'review' }, capabilities: [] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);

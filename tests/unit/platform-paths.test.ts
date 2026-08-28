@@ -10,7 +10,9 @@ import {
   getClaudeInstructionsPath,
   getClaudeMcpConfigPath,
   getClaudeSkillsDirectory,
+  getClaudeSettingsPath,
   getCodexConfigPath,
+  getCodexHooksPath,
   getCodexInstructionsPath,
   getCodexSkillsDirectory,
   getDatabaseLockPath,
@@ -20,6 +22,7 @@ import {
   getLegacyClaudePromptHookSettingsPath,
   getLegacyOpenCodeLoopGuardPath,
   getOpenCodeConfigDirectory,
+  getOpenCodeEnnoPluginPath,
   getOpenCodeInstructionsPath,
   getOpenCodeSkillsDirectory,
   getHermesSkillsDirectory,
@@ -94,6 +97,52 @@ test('uses XDG data home on Linux', () => {
   );
 });
 
+test('uses an explicit isolated Kiokuko data directory for database and runtime state', () => {
+  const options = {
+    platform: 'darwin' as const,
+    env: {
+      HOME: '/Users/test',
+      KIOKUKO_DATA_DIR: '/work/kiokuko/.kiokuko-dev/../.kiokuko-dev',
+    },
+  };
+  assert.equal(getGlobalDatabasePath(options), '/work/kiokuko/.kiokuko-dev/kiokuko.sqlite3');
+  assert.equal(getRuntimeDirectory(options), '/work/kiokuko/.kiokuko-dev');
+  assert.equal(getRuntimeDescriptorPath(options), '/work/kiokuko/.kiokuko-dev/server.json');
+});
+
+test('an explicit Kiokuko data directory overrides Linux XDG data and runtime directories', () => {
+  const options = {
+    platform: 'linux' as const,
+    env: {
+      HOME: '/home/test',
+      XDG_DATA_HOME: '/xdg/data',
+      XDG_RUNTIME_DIR: '/xdg/runtime',
+      KIOKUKO_DATA_DIR: '/work/kiokuko-data',
+    },
+  };
+  assert.equal(getGlobalDatabasePath(options), '/work/kiokuko-data/kiokuko.sqlite3');
+  assert.equal(getRuntimeDirectory(options), '/work/kiokuko-data');
+});
+
+test('rejects unsafe Kiokuko data-directory overrides without echoing them', () => {
+  for (const configured of ['', 'relative/data', ' /tmp/data', '/tmp/data ', '/', `/${'x'.repeat(4096)}`, '/tmp/bad\0path']) {
+    assert.throws(
+      () => getGlobalDatabasePath({ platform: 'darwin', env: { HOME: '/Users/test', KIOKUKO_DATA_DIR: configured } }),
+      (error: unknown) => {
+        assert.ok(error instanceof KiokukoError);
+        assert.equal(error.code, 'VALIDATION_ERROR');
+        assert.equal(
+          error.message,
+          configured === '/'
+            ? 'KIOKUKO_DATA_DIR must not be a filesystem root'
+            : 'KIOKUKO_DATA_DIR must be a bounded absolute path',
+        );
+        return true;
+      },
+    );
+  }
+});
+
 test('falls back to the platform home data directory', () => {
   assert.equal(
     getGlobalDatabasePath({
@@ -124,16 +173,19 @@ test('derives documented global Codex, OpenCode, and Claude paths without touchi
     env: { HOME: '/tmp/fake-home', XDG_CONFIG_HOME: '/tmp/fake-config' },
   };
   assert.equal(getCodexConfigPath(options), '/tmp/fake-home/.codex/config.toml');
+  assert.equal(getCodexHooksPath(options), '/tmp/fake-home/.codex/hooks.json');
   assert.equal(getCodexInstructionsPath(options), '/tmp/fake-home/.codex/AGENTS.md');
   assert.equal(getCodexSkillsDirectory(options), '/tmp/fake-home/.agents/skills');
   assert.equal(getOpenCodeConfigDirectory(options), '/tmp/fake-config/opencode');
   assert.equal(getOpenCodeInstructionsPath(options), '/tmp/fake-config/opencode/AGENTS.md');
   assert.equal(getOpenCodeSkillsDirectory(options), '/tmp/fake-config/opencode/skills');
+  assert.equal(getOpenCodeEnnoPluginPath(options), '/tmp/fake-config/opencode/plugins/kiokuko-enno-oduno.js');
   assert.equal(getClaudeConfigDirectory(options), '/tmp/fake-home/.claude');
   assert.equal(getClaudeMcpConfigPath(options), '/tmp/fake-home/.claude.json');
   assert.equal(getClaudeInstructionsPath(options), '/tmp/fake-home/.claude/CLAUDE.md');
   assert.equal(getClaudeSkillsDirectory(options), '/tmp/fake-home/.claude/skills');
   assert.equal(getLegacyClaudePromptHookSettingsPath(options), '/tmp/fake-home/.claude/settings.json');
+  assert.equal(getClaudeSettingsPath(options), '/tmp/fake-home/.claude/settings.json');
   assert.equal(getLegacyOpenCodeLoopGuardPath(options), '/tmp/fake-config/opencode/plugins/kiokuko-loop-guard.js');
   assert.equal(getCodexConfigPath({ ...options, env: { ...options.env, CODEX_HOME: '/tmp/custom-codex' } }), '/tmp/custom-codex/config.toml');
   assert.equal(getClaudeMcpConfigPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/.claude.json');

@@ -14,6 +14,7 @@ import { startAgentHttpServer } from '../../src/server/agent-application.js';
 
 const token = 'd'.repeat(64);
 const task = 'beacon';
+const SOUL_CAPABILITY = { kind: 'skill', name: 'kiokuko-soul' } as const;
 const profileHints = {
   taskType: 'build' as const,
   target: 'src/new.ts',
@@ -46,7 +47,7 @@ test('prior cross-run helpful feedback withholds the same weak memory without st
       cwd: repositoryRoot,
       task,
       profileHints,
-      capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
       client: { kind: 'test', sessionId: 'feedback-prior' },
       skillDiscoveryMode: 'off',
     });
@@ -82,7 +83,7 @@ test('prior cross-run helpful feedback withholds the same weak memory without st
       cwd: repositoryRoot,
       task,
       profileHints,
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'feedback-mcp-missing' },
       skillDiscoveryMode: 'off',
     });
@@ -124,7 +125,7 @@ test('prior cross-run helpful feedback withholds the same weak memory without st
           file: 'unavailable',
           approval: 'unavailable',
         },
-        capabilities: [],
+        capabilities: [SOUL_CAPABILITY],
       }),
     });
     assert.equal(response.status, 200);

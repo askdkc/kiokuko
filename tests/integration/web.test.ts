@@ -361,6 +361,7 @@ test('legacy Web mounts the same known Agent v1 route before legacy handling', a
         },
         captureProfile: 'standard',
         coverage: { run: 'declared', tool: 'declared', command: 'declared', file: 'declared', approval: 'unavailable' },
+        capabilities: [{ kind: 'skill', name: 'kiokuko-soul' }],
       }),
     });
     const body = await response.json() as {
@@ -379,7 +380,7 @@ test('legacy Web mounts the same known Agent v1 route before legacy handling', a
     assert.equal(body.data.context, null);
     assert.ok(body.data.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.required === true
-      && item.availability === 'unknown'));
+      && item.availability === 'missing'));
   } finally {
     await web.close();
   }

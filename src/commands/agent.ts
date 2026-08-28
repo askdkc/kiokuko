@@ -771,11 +771,16 @@ function validateProjectionSchema(value: unknown): Record<string, JsonValue> {
   return object;
 }
 
+interface ValidatedCapabilityGate {
+  readonly nextAction: string;
+  readonly memoryContextWithheld: boolean;
+}
+
 function validateCapabilityGate(
   object: Record<string, JsonValue>,
   intakeNeedsAnswer: boolean,
   requiresMemoryReasoning: boolean,
-): string {
+): ValidatedCapabilityGate {
   const capabilities = validateCapabilities(object.capabilities);
   const warnings = validateCapabilityWarnings(object.warnings);
   if (!sameResponseValue(warnings, capabilities.warnings)) throw responseIntegrityError();
@@ -787,28 +792,38 @@ function validateCapabilityGate(
   const required = capabilityRecommendations.filter((recommendation) => (
     (recommendation as Record<string, JsonValue>).required === true
   )) as Array<Record<string, JsonValue>>;
+  if (required.some((recommendation) => recommendation.source !== 'akinator_policy')) {
+    throw responseIntegrityError();
+  }
   const memoryRecommendations = capabilityRecommendations.filter((recommendation) => (
     (recommendation as Record<string, JsonValue>).name === MEMORY_REASONING_SKILL_NAME
   )) as Array<Record<string, JsonValue>>;
   let memoryAvailability: JsonValue | undefined;
   if (requiresMemoryReasoning) {
-    if (required.length !== 1 || memoryRecommendations.length !== 1) throw responseIntegrityError();
+    if (memoryRecommendations.length !== 1) throw responseIntegrityError();
     const memory = memoryRecommendations[0] as Record<string, JsonValue>;
     if (memory.kind !== 'skill' || memory.name !== MEMORY_REASONING_SKILL_NAME
       || memory.source !== 'akinator_policy' || memory.required !== true) throw responseIntegrityError();
     memoryAvailability = memory.availability;
-  } else if (required.length !== 0 || memoryRecommendations.length !== 0) {
+  } else if (memoryRecommendations.length !== 0) {
     throw responseIntegrityError();
   }
+  const hasBlockingRequiredCapability = required.some((recommendation) => (
+    recommendation.name !== MEMORY_REASONING_SKILL_NAME
+      && recommendation.availability !== 'available'
+  ));
   const expectedAction = intakeNeedsAnswer
     ? 'answer_from_evidence_or_ask_user'
-    : requiresMemoryReasoning && memoryAvailability !== 'available'
+    : hasBlockingRequiredCapability
       ? 'required_capability_unavailable'
       : 'proceed';
   if (nextAction !== expectedAction) throw responseIntegrityError();
   if (nextAction === 'required_capability_unavailable'
     && (object.context !== null || (object.recommendations as JsonValue[]).length !== 0)) throw responseIntegrityError();
-  return nextAction;
+  return {
+    nextAction,
+    memoryContextWithheld: requiresMemoryReasoning && memoryAvailability !== 'available',
+  };
 }
 
 function validateMemoryPolicy(value: unknown): boolean {
@@ -860,9 +875,11 @@ function validateIntakeResponse(value: JsonValue, binding: AgentResponseBinding)
     throw responseIntegrityError();
   }
   const requiresMemoryReasoning = validateMemoryPolicy(object.memoryPolicy);
-  const nextAction = validateCapabilityGate(object, needsAnswer, requiresMemoryReasoning);
+  const capabilityGate = validateCapabilityGate(object, needsAnswer, requiresMemoryReasoning);
   if (!needsAnswer) {
-    if (nextAction === 'proceed' && context === null) throw responseIntegrityError();
+    if (capabilityGate.nextAction === 'proceed' && context === null && !capabilityGate.memoryContextWithheld) {
+      throw responseIntegrityError();
+    }
   }
   return object;
 }
@@ -896,9 +913,9 @@ function validateCheckpointResponse(value: JsonValue, binding: AgentResponseBind
     throw responseIntegrityError();
   }
   const requiresMemoryReasoning = validateMemoryPolicy(object.memoryPolicy);
-  const nextAction = validateCapabilityGate(object, false, requiresMemoryReasoning);
-  if (nextAction === 'proceed') {
-    if (context === null) throw responseIntegrityError();
+  const capabilityGate = validateCapabilityGate(object, false, requiresMemoryReasoning);
+  if (capabilityGate.nextAction === 'proceed') {
+    if (context === null && !capabilityGate.memoryContextWithheld) throw responseIntegrityError();
   }
   return object;
 }

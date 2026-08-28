@@ -16,6 +16,11 @@ import { importSkillSnapshot } from '../../src/skills/store.js';
 import { validateSkillSnapshot } from '../../src/skills/source/snapshot-validator.js';
 
 const token = 'c'.repeat(64);
+const SOUL_CAPABILITY = { kind: 'skill', name: 'kiokuko-soul' } as const;
+
+function soulCapabilities(...additional: unknown[]): unknown[] {
+  return [SOUL_CAPABILITY, ...additional];
+}
 
 async function request(
   baseUrl: string,
@@ -154,10 +159,10 @@ async function makePriorContextActionable(
   return (await request(baseUrl, '/api/v1/agent/runs', { key: openKey, body })).data;
 }
 
-test('generic Agent API withholds actionable repair memory but continues when the bound catalog is missing', async () => {
+test('generic Agent API withholds actionable repair memory but continues when memory-reasoning is missing', async () => {
   const value = await fixture('missing');
   try {
-    const body = openBody(value.workspace, []);
+    const body = openBody(value.workspace, soulCapabilities());
     const first = await request(value.runtime.url, '/api/v1/agent/runs', { key: 'missing-open', body });
     assert.equal(first.response.status, 200);
     const before = openConnection(value.databasePath);
@@ -185,7 +190,7 @@ test('generic Agent API withholds actionable repair memory but continues when th
 test('generic Agent API proceeds with actionable repair memory only for the exact available local skill', async () => {
   const value = await fixture('available');
   try {
-    const body = openBody(value.workspace, [{ kind: 'skill', name: 'memory-reasoning' }]);
+    const body = openBody(value.workspace, soulCapabilities({ kind: 'skill', name: 'memory-reasoning' }));
     const first = await request(value.runtime.url, '/api/v1/agent/runs', { key: 'available-open', body });
     assert.equal(first.response.status, 200);
     const proceeded = await makePriorContextActionable(value.runtime.url, 'available-open', body, first.data, value);
@@ -225,7 +230,7 @@ test('exact open replay keeps one mutation acknowledgement but re-evaluates curr
     capabilityToken: token,
   });
   const body = {
-    ...openBody(workspace, []),
+    ...openBody(workspace, soulCapabilities()),
     task: {
       title: 'beacon',
       query: 'beacon',
@@ -297,7 +302,7 @@ test('exact open replay keeps one mutation acknowledgement but re-evaluates curr
 test('exact open replay gates against the current broker profile after a checkpoint revision', async () => {
   const value = await fixture('current-profile-replay');
   const body = {
-    ...openBody(value.workspace, []),
+    ...openBody(value.workspace, soulCapabilities()),
     task: {
       title: 'Beacon implementation regression workflow',
       query: 'Beacon implementation regression workflow',
@@ -337,7 +342,7 @@ test('exact open replay gates against the current broker profile after a checkpo
         apiVersion: '1',
         currentGoal: 'implement the verified change',
         taskProfileRevision: { taskType: 'build' },
-        capabilities: [],
+        capabilities: soulCapabilities(),
       },
     });
     assert.equal(revised.response.status, 200);
@@ -489,7 +494,7 @@ test('generic Agent build does not treat managed external skill references as or
     const opened = await request(runtime.url, '/api/v1/agent/runs', {
       key: 'generic-external-reference-open',
       body: {
-        ...openBody(workspace, []),
+        ...openBody(workspace, soulCapabilities()),
         task: {
           title: 'Implement a Svelte component',
           query: 'Implement a Svelte component',
@@ -517,11 +522,11 @@ test('generic Agent build does not treat managed external skill references as or
 test('generic Agent open and answer apply identical missing, unknown, and available capability gates', async () => {
   const value = await fixture('open-answer-parity');
   const scenarios = [
-    { label: 'missing', catalog: [] as unknown[], availability: 'missing', nextAction: 'proceed', withheld: true },
-    { label: 'unknown', catalog: undefined, availability: 'unknown', nextAction: 'proceed', withheld: true },
+    { label: 'missing', catalog: soulCapabilities(), availability: 'missing', nextAction: 'proceed', withheld: true },
+    { label: 'unknown', catalog: soulCapabilities({ kind: 'invalid', name: 'invalid' }), availability: 'unknown', nextAction: 'proceed', withheld: true },
     {
       label: 'available',
-      catalog: [{ kind: 'skill', name: 'memory-reasoning' }] as unknown[],
+      catalog: soulCapabilities({ kind: 'skill', name: 'memory-reasoning' }),
       availability: 'available',
       nextAction: 'proceed',
       withheld: false,
@@ -578,7 +583,7 @@ test('generic Agent open and answer apply identical missing, unknown, and availa
 
 test('exact open replay of the initial intake acknowledgement uses the current answered candidate', async () => {
   const value = await fixture('answered-open-replay');
-  const body = intakeOpenBody(value.workspace, []);
+  const body = intakeOpenBody(value.workspace, soulCapabilities());
   try {
     const opened = await request(value.runtime.url, '/api/v1/agent/runs', {
       key: 'answered-open-replay-key',
@@ -594,7 +599,7 @@ test('exact open replay of the initial intake acknowledgement uses the current a
         apiVersion: '1',
         questionId: 'target',
         value: 'src/beacon.ts',
-        capabilities: [],
+        capabilities: soulCapabilities(),
       },
     });
     assert.equal(answered.response.status, 200);
@@ -663,7 +668,7 @@ test('generic Agent open fails instead of persisting a revision that changes aft
 
     const opened = await request(value.runtime.url, '/api/v1/agent/runs', {
       key: 'generic-revision-race-open',
-      body: openBody(value.workspace, [{ kind: 'skill', name: 'memory-reasoning' }]),
+      body: openBody(value.workspace, soulCapabilities({ kind: 'skill', name: 'memory-reasoning' })),
     });
     assert.equal(persistenceAttempted, true, JSON.stringify(opened.data));
     assert.ok(persistenceFailure instanceof Error, JSON.stringify(opened.data));

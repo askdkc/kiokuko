@@ -28,6 +28,7 @@ import type { SqliteDatabase } from './db/adapter.js';
 import { answerAkinator, startAkinator } from './akinator/orchestrator.js';
 import {
   parseSetupClients,
+  parseEnnoSetupMode,
   parseSetupSkillDiscoveryMode,
   promptCommunitySkillDiscovery,
   promptReplaceConflictingMcp,
@@ -43,6 +44,7 @@ import { globalizeCuratorCandidate } from './memory/curator.js';
 import { detectInstalledClients } from './setup/client-detection.js';
 import type { PathEnvironment } from './config/paths.js';
 import { registerSkillsCommands, type SkillsCommandDependencies } from './commands/skills.js';
+import { registerEnnoCommand } from './commands/enno.js';
 import { normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from './skills/config.js';
 import { PACKAGE_VERSION } from './package-version.js';
 import { parseStrictJson } from './setup/strict-json.js';
@@ -769,8 +771,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option('--dry-run', 'Validate and show planned changes without writing')
     .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
     .option('--skill-discovery <mode>', 'External Skill discovery: off,official,community')
+    .option('--enno-oduno <mode>', 'Enno-Oduno agent loop: on,off')
     .option('--json', 'Emit a JSON response')
-    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; standardSkills: boolean; skillDiscovery?: string }) => {
+    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; standardSkills: boolean; skillDiscovery?: string; ennoOduno?: string }) => {
       const optionSkillDiscoveryMode = options.skillDiscovery === undefined
         ? undefined
         : parseSetupSkillDiscoveryMode(options.skillDiscovery);
@@ -810,6 +813,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         dryRun: options.dryRun === true,
         standardSkills: options.standardSkills,
         ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
+        ...(options.ennoOduno === undefined ? {} : { ennoOduno: parseEnnoSetupMode(options.ennoOduno) }),
       };
       let data: Awaited<ReturnType<typeof setupGlobalClients>>;
       const replacementClients = new Set<SetupClient>();
@@ -1006,6 +1010,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerAgentCommand(cli, dependencies.agent);
   registerLedgerCommands(cli, { withDatabase });
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });
+  registerEnnoCommand(cli, { withDatabase });
 
   cli.command('web').description('Start the local Kiokuko web UI')
     .option('--host <host>', 'Loopback host', '127.0.0.1')
