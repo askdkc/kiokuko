@@ -1,5 +1,14 @@
 ALTER TABLE agent_task_skill_discovery_attempts RENAME TO agent_task_skill_discovery_attempts_v14;
 
+-- A v14 started attempt belongs to a process that cannot be resumed safely
+-- across this schema change. Preserve the row as a terminal, retryable
+-- failure before adding the one-active-attempt index below.
+UPDATE agent_task_skill_discovery_attempts_v14
+SET state = 'failed',
+    failure_json = '{"kind":"kiokuko","code":"CONFLICT"}',
+    finished_at = started_at
+WHERE state = 'started';
+
 CREATE TABLE agent_task_skill_discovery_attempts (
     run_id TEXT NOT NULL REFERENCES ledger_runs(run_id) ON DELETE CASCADE,
     phase TEXT NOT NULL CHECK (phase IN ('intake', 'zenki')),

@@ -22,6 +22,11 @@ Kiokuko is a model-agnostic local control plane with three deliberately separate
   execution-ledger commands still call the gateway over HTTP; they never open
   SQLite for agent-event operations.
 - The loopback Web UI reads the same server/service composition and preserves legacy memory routes.
+- Enno-MoA advisory rounds are host-mediated. The parent client may run three
+  fixed read-only advisor slots for the ideal, plan, and final-review phases,
+  then submits bounded canonical contributions through `enno_advice_submit`.
+  The round has its own phase/revision/mutation identity and never adds a main
+  `EnnoStatus` or lets an advisor mutate the contract.
 
 The gateway is not a transparent provider-traffic reverse proxy. Provider credentials and model APIs are outside the v1 boundary.
 

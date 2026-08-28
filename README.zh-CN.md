@@ -170,6 +170,10 @@ Kiokuko 不会保存完整对话。
 
 保存的记忆始终作为参考信息处理。当前代码、配置和执行结果优先于过去的记忆。
 
+## MoA advisory round
+
+在 ideal、planning 和 final review 阶段，parent host 可以 fan-out 恰好三个固定的隔离只读 Advisor slot。Advisor 不是由 Kiokuko 启动的，prompt 本身也不能证明隔离；无法验证隔离的 slot 必须报告为 `unavailable`。只有 parent Aggregator 可以把不含 identity 的结构化结果提交到 `enno_advice_submit`。结果记录为 `host_reported`，不保存 provider/model identity 或 raw subagent 输出；每个 Round 都绑定 phase、revision、mutation revision、policy、slot 定义和 context digest。
+
 ## 注意
 
 Kiokuko 不是拦截提示词的机制。由于自动使用依赖于各 AI 客户端和模型对 MCP 的调用，因此不保证每一轮都会调用。

@@ -10,7 +10,7 @@ import { openConnection } from '../../src/db/connection.js';
 import { KiokukoError } from '../../src/errors.js';
 import { retrieveFederatedMemory } from '../../src/memory/federated-retrieval.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
-import { SkillProviderError } from '../../src/skills/providers/schema.js';
+import { canonicalJson } from '../../src/serialization/validate.js';
 import { setExternalSkillState } from '../../src/skills/store.js';
 
 const COMMIT = 'd'.repeat(40);
@@ -260,7 +260,7 @@ test('replays a completed no-delivery discovery attempt without another provider
   }
 });
 
-test('persists and replays a malformed-provider failure without retrying discovery', async () => {
+test('persists and replays a malformed-provider summary without retrying discovery', async () => {
   const root = await repository('attempt-replay-provider-failure', {
     file: 'package.json',
     value: { dependencies: { svelte: '^5.0.0' } },
@@ -279,44 +279,39 @@ test('persists and replays a malformed-provider failure without retrying discove
   };
   try {
     let providerCalls = 0;
-    await assert.rejects(
-      prepareAgentTask(database, {
-        ...request,
-        fetchImpl: async () => {
-          providerCalls += 1;
-          return jsonResponse({ skills: 'invalid' });
-        },
-      }),
-      (error: unknown) => error instanceof SkillProviderError
-        && error.code === 'registry_invalid_response'
-        && error.message === 'registry_invalid_response',
-    );
+    const prepared = await prepareAgentTask(database, {
+      ...request,
+      fetchImpl: async () => {
+        providerCalls += 1;
+        return jsonResponse({ skills: 'invalid' });
+      },
+    });
     assert.equal(providerCalls, 1);
+    assert.deepEqual(prepared.skillDiscovery.failures, [{ stage: 'search', code: 'registry_invalid_response' }]);
+    assert.deepEqual(prepared.skillDiscovery.selected, []);
 
-    await assert.rejects(
-      prepareAgentTask(database, {
-        ...request,
-        fetchImpl: async () => {
-          providerCalls += 1;
-          throw new Error('failed discovery replay must not call the provider');
-        },
-      }),
-      (error: unknown) => error instanceof SkillProviderError
-        && error.code === 'registry_invalid_response'
-        && error.message === 'registry_invalid_response',
-    );
+    const replay = await prepareAgentTask(database, {
+      ...request,
+      fetchImpl: async () => {
+        providerCalls += 1;
+        throw new Error('completed discovery replay must not call the provider');
+      },
+    });
     assert.equal(providerCalls, 1);
+    assert.deepEqual(replay.skillDiscovery, prepared.skillDiscovery);
     const attempt = database.prepare(`
       SELECT state, summary_json AS summaryJson, failure_json AS failureJson
       FROM agent_task_skill_discovery_attempts
     `).get<{ state: string; summaryJson: string | null; failureJson: string | null }>();
     assert.deepEqual({ ...attempt }, {
-      state: 'failed',
-      summaryJson: null,
-      failureJson: '{"code":"registry_invalid_response","kind":"skill_provider","retryAfterSeconds":null}',
+      state: 'completed',
+      summaryJson: canonicalJson(prepared.skillDiscovery),
+      failureJson: null,
     });
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{ count: number }>()?.count, 1);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM skill_discovery_cache').get<{ count: number }>()?.count, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM external_skills').get<{ count: number }>()?.count, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 0);
   } finally {
     database.close();

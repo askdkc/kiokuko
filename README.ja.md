@@ -183,6 +183,10 @@ Kiokukoは会話全文を保存しません。
 
 保存された記憶は常に参考情報として扱われます。過去の記憶より、現在のコード、設定、実行結果が優先されます。
 
+## MoA Advisory Round
+
+理想像・計画・最終Reviewでは、親ホストが固定3スロットの隔離されたread-only Advisorをfan-outできます。Advisorを起動するのはKiokukoではなく親ホストであり、promptだけでは隔離の証明になりません。隔離を検証できないslotは`unavailable`として報告し、親Aggregatorだけがidentityを含まない構造化結果を`enno_advice_submit`へ送ります。結果は`host_reported`として記録し、provider/model identityやraw subagent出力は保存しません。各Roundはphase、revision、mutation revision、policy、slot定義、context digestに固定されます。
+
 ## 注意
 
 Kiokukoはプロンプトを横取りする仕組みではありません。自動利用は各AIクライアントとモデルのMCP呼び出しに依存するため、すべてのターンで必ず呼び出される保証はありません。

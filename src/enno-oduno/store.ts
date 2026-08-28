@@ -11,6 +11,7 @@ import {
   parseEnnoRequestHandoff,
   parseOdunoIdeal,
   parseOdunoMeditation,
+  parseVerifierSpec,
   parseWorkReportResult,
   parseWorkPlan,
 } from './schemas.js';
@@ -28,6 +29,7 @@ import {
   type OdunoMeditation,
   type StoredWorkUnit,
   type VerifierRunResult,
+  type VerifierRunStatus,
   type VerifierSpec,
   type WorkPlan,
   type WorkReportResult,
@@ -70,6 +72,19 @@ interface ReceiptRow extends SqliteRow {
   response_json: string | null;
 }
 
+interface VerifierResultRow extends SqliteRow {
+  verifier_id: string;
+  verifier_json: string;
+  status: VerifierRunStatus;
+  exit_code: number | null;
+  signal: string | null;
+  duration_ms: number;
+  stdout_preview: string;
+  stderr_preview: string;
+  stdout_digest: string;
+  stderr_digest: string;
+}
+
 export interface EnnoIdentity {
   runId: string;
   workspace: string;
@@ -77,7 +92,7 @@ export interface EnnoIdentity {
 }
 
 export interface OperationIdentity {
-  operation: 'ideal_submit' | 'plan_submit' | 'answer' | 'work_report' | 'finish' | 'meditation_submit';
+  operation: 'ideal_submit' | 'advice_submit' | 'plan_submit' | 'answer' | 'work_report' | 'finish' | 'meditation_submit';
   idempotencyKey: string;
   requestDigest: string;
 }
@@ -473,6 +488,45 @@ export function finishVerifierRunsInTransaction(
       verifierRunId,
     );
     if (updated?.verifierRunId !== verifierRunId) throw new KiokukoError('CONFLICT', 'Enno verifier state changed concurrently');
+  });
+}
+
+export function readFreshFinalVerifierResults(database: SqliteDatabase, input: {
+  runId: string;
+  revision: number;
+  mutationRevision: number;
+  verifiers: readonly VerifierSpec[];
+}): VerifierRunResult[] | undefined {
+  const rows = database.prepare(`
+    SELECT verifier_id, verifier_json, status, exit_code, signal, duration_ms,
+           stdout_preview, stderr_preview, stdout_digest, stderr_digest
+    FROM enno_verifier_runs
+    WHERE run_id = ? AND work_unit_id IS NULL
+      AND contract_revision = ? AND mutation_revision = ?
+    ORDER BY verifier_id
+  `).all<VerifierResultRow>(input.runId, input.revision, input.mutationRevision);
+  if (rows.length !== input.verifiers.length || rows.some((row) => row.status === 'started')) return undefined;
+  const byId = new Map(rows.map((row) => [row.verifier_id, row]));
+  if (byId.size !== input.verifiers.length || input.verifiers.some((verifier) => !byId.has(verifier.id))) return undefined;
+  for (const verifier of input.verifiers) {
+    const row = byId.get(verifier.id)!;
+    const storedVerifier = parseVerifierSpec(parseCanonicalJson(row.verifier_json, 'Stored Enno verifier is invalid'));
+    if (canonicalJson(storedVerifier) !== canonicalJson(verifier)) return undefined;
+  }
+  return input.verifiers.map((verifier) => {
+    const row = byId.get(verifier.id)!;
+    const storedVerifier = parseVerifierSpec(parseCanonicalJson(row.verifier_json, 'Stored Enno verifier is invalid'));
+    return {
+      verifier: { ...storedVerifier, args: [...storedVerifier.args] },
+      status: row.status as Exclude<VerifierRunStatus, 'started'>,
+      exitCode: row.exit_code,
+      signal: row.signal,
+      durationMs: row.duration_ms,
+      stdoutPreview: row.stdout_preview,
+      stderrPreview: row.stderr_preview,
+      stdoutDigest: row.stdout_digest,
+      stderrDigest: row.stderr_digest,
+    };
   });
 }
 

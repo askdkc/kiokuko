@@ -18,6 +18,7 @@ import type {
   UserFacingConfirmation,
   WorkUnit,
 } from './types.js';
+import { advisoryDirectiveForSnapshot } from './advisory.js';
 
 const REPORT_SCHEMAS = {
   intake: {
@@ -148,6 +149,7 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
   const role = roleForStatus(snapshot.status);
   if (role === null) return null;
   const requiredSkills = requiredSkillNames(snapshot.contract.skillSet.entries);
+  const advisoryRound = advisoryDirectiveForSnapshot(snapshot);
   if (role === 'zenki') {
     return {
       protocolVersion: 1,
@@ -174,6 +176,7 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
         'Do not mutate the repository',
       ],
       reportSchema: REPORT_SCHEMAS.plan,
+      ...(advisoryRound === undefined ? {} : { advisoryRound }),
     };
   }
   if (role === 'goki') {
@@ -237,7 +240,8 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
         ? REPORT_SCHEMAS.confirmation
         : snapshot.status === 'oduno_meditation'
           ? REPORT_SCHEMAS.meditation
-          : REPORT_SCHEMAS.verification,
+        : REPORT_SCHEMAS.verification,
+    ...(advisoryRound === undefined ? {} : { advisoryRound }),
     ...(snapshot.status === 'needs_confirmation'
       ? { userFacingConfirmation: confirmationFor(snapshot) }
       : {}),

@@ -7,6 +7,7 @@ import { claimAgentTaskSkillDiscoveryAttempt, completeAgentTaskSkillDiscoveryAtt
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { KiokukoError } from '../../src/errors.js';
+import { SkillProviderError } from '../../src/skills/providers/schema.js';
 import type { SkillDiscoverySummary } from '../../src/skills/types.js';
 import { LedgerStore } from '../../src/ledger/store.js';
 
@@ -143,6 +144,45 @@ test('failed discovery consumes its reserved budget while a changed digest can u
       kind: 'execute', queryBudget: 2, selectionBudget: 1,
     });
     completeAgentTaskSkillDiscoveryAttempt(database, retry, summary([]));
+  } finally {
+    database.close();
+  }
+});
+
+test('generic attempt replay preserves typed provider failures and rejects unknown stored codes', async () => {
+  const database = await temporaryDatabase('discovery-provider-failure-boundary');
+  try {
+    const malformed = identity('f'.repeat(64), 'zenki');
+    claimAgentTaskSkillDiscoveryAttempt(database, malformed, { queryBudget: 1, selectionBudget: 1 });
+    assert.throws(
+      () => failAgentTaskSkillDiscoveryAttempt(database, malformed, new SkillProviderError('registry_invalid_response')),
+      (error: unknown) => error instanceof SkillProviderError && error.code === 'registry_invalid_response',
+    );
+    assert.throws(
+      () => readAgentTaskSkillDiscoveryAttempt(database, malformed),
+      (error: unknown) => error instanceof SkillProviderError && error.code === 'registry_invalid_response',
+    );
+
+    const unknown = identity('0'.repeat(64), 'intake');
+    database.prepare(`
+      INSERT INTO agent_task_skill_discovery_attempts (
+        run_id, phase, request_digest,
+        reserved_query_count, reserved_selection_count,
+        consumed_query_count, consumed_selection_count,
+        state, summary_json, failure_json, started_at, finished_at
+      ) VALUES (?, ?, ?, 0, 0, 0, 0, 'failed', NULL, ?, ?, ?)
+    `).run(
+      unknown.runId,
+      unknown.phase,
+      unknown.requestDigest,
+      '{"code":"registry_future_failure","kind":"skill_provider","retryAfterSeconds":null}',
+      '2026-08-28T00:00:00.000Z',
+      '2026-08-28T00:00:00.000Z',
+    );
+    assert.throws(
+      () => readAgentTaskSkillDiscoveryAttempt(database, unknown),
+      (error: unknown) => error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR',
+    );
   } finally {
     database.close();
   }

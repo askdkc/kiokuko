@@ -8,7 +8,7 @@ import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { decideAdapterContinuation, renderStopHookDecision } from '../../src/enno-oduno/adapters.js';
-import { canonicalJson } from '../../src/serialization/validate.js';
+import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 import {
   answerEnno,
   finishEnno,
@@ -17,7 +17,11 @@ import {
   submitOdunoIdeal,
   submitOdunoMeditation,
 } from '../../src/enno-oduno/service.js';
-import { readEnnoSnapshot } from '../../src/enno-oduno/store.js';
+import {
+  finishVerifierRunsInTransaction,
+  readEnnoSnapshot,
+  startVerifierRunsInTransaction,
+} from '../../src/enno-oduno/store.js';
 import { discoverSkills } from '../../src/skills/discovery-service.js';
 
 const capabilities = [
@@ -488,6 +492,143 @@ test('Zenki discovery uses a new plan digest and only the remaining run budget a
   } finally {
     database.close();
   }
+});
+
+test('Zenki recovers migrated malformed-provider attempts without relaxing digest or budget boundaries', async (t) => {
+  const prepare = async (requestId: string) => {
+    const testFixture = await fixture();
+    const discoveryCapabilities = [
+      ...capabilities,
+      { kind: 'skill', name: 'memory-reasoning' },
+      { kind: 'skill', name: 'svelte' },
+    ];
+    const prepared = await prepareAgentTask(testFixture.database, {
+      requestId,
+      cwd: testFixture.root,
+      task: 'Repair a Svelte component',
+      profileHints: { taskType: 'debug', target: 'src/component.ts', expected: 'tests pass', constraints: null },
+      capabilities: discoveryCapabilities,
+      client: { kind: 'codex', sessionId: `codex-${requestId}` },
+      skillDiscoveryMode: 'official',
+    });
+    submitPreparedIdeal(testFixture.database, prepared, `${requestId}-ideal`);
+    const identity = {
+      runId: prepared.run.runId,
+      workspace: prepared.project.workspace,
+      orchestrationId: prepared.intake.sessionId,
+    };
+    const plan = {
+      ...identity,
+      expectedRevision: 1,
+      idempotencyKey: `${requestId}-plan`,
+      scope: ['src/component.ts'],
+      exclusions: [],
+      acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
+      workPlan: { objective: 'Repair the Svelte component', units: [{
+        id: 'repair', objective: 'Repair the Svelte component', scope: ['src/component.ts'], dependencies: [],
+        skillNames: [],
+        expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the recovered plan with focused evidence' }],
+        acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
+      }] },
+      skillRequirements: [],
+      finalVerifiers: [verifier(prepared.project.repositoryRoot, `${requestId}-final`)],
+      maxAttempts: 5,
+      provenance: {
+        scope: 'explicit_user' as const, exclusions: 'explicit_user' as const, acceptanceCriteria: 'explicit_user' as const,
+        workPlan: 'explicit_user' as const, skillSet: 'explicit_user' as const, finalVerifiers: 'explicit_user' as const, maxAttempts: 'explicit_user' as const,
+      },
+      capabilities: discoveryCapabilities,
+    };
+    const digest = canonicalContentHash({
+      version: 2,
+      runId: prepared.run.runId,
+      revision: 1,
+      mode: prepared.skillDiscovery.mode,
+      workPlan: plan.workPlan,
+      capabilities: plan.capabilities,
+      skillRequirements: plan.skillRequirements,
+    });
+    const insertFailedAttempt = (requestDigest: string) => testFixture.database.prepare(`
+      INSERT INTO agent_task_skill_discovery_attempts (
+        run_id, phase, request_digest,
+        reserved_query_count, reserved_selection_count,
+        consumed_query_count, consumed_selection_count,
+        state, summary_json, failure_json, started_at, finished_at
+      ) VALUES (?, 'zenki', ?, 3, 2, 3, 2, 'failed', NULL, ?, ?, ?)
+    `).run(
+      prepared.run.runId,
+      requestDigest,
+      '{"code":"registry_invalid_response","kind":"skill_provider","retryAfterSeconds":null}',
+      '2026-08-28T00:00:00.000Z',
+      '2026-08-28T00:00:00.000Z',
+    );
+    return { ...testFixture, prepared, identity, plan, digest, insertFailedAttempt };
+  };
+
+  await t.test('same digest replays a safe failure summary and exact operation replay remains stable', async () => {
+    const context = await prepare('legacy-malformed-same-digest');
+    try {
+      context.insertFailedAttempt(context.digest);
+      const planned = await submitEnnoPlan(context.database, context.plan);
+      assert.equal(planned.ennoOduno.status, 'goki_executing');
+      assert.deepEqual(readEnnoSnapshot(context.database, context.identity).contract.skillSet.zenkiDiscovery, {
+        attempted: false,
+        mode: 'official',
+        requirements: [],
+        queries: [],
+        cacheHits: 0,
+        candidates: 0,
+        selected: [],
+        failures: [{ stage: 'search', code: 'registry_invalid_response' }],
+      });
+      assert.deepEqual(await submitEnnoPlan(context.database, context.plan), planned);
+      await assert.rejects(submitEnnoPlan(context.database, {
+        ...context.plan,
+        maxAttempts: 4,
+      }), /idempotency|conflict/iu);
+      assert.equal(context.database.prepare(`
+        SELECT state FROM agent_task_skill_discovery_attempts
+        WHERE run_id = ? AND phase = 'zenki' AND request_digest = ?
+      `).get<{ state: string }>(context.identity.runId, context.digest)?.state, 'failed');
+    } finally {
+      context.database.close();
+    }
+  });
+
+  await t.test('changed digest proceeds only with the remaining run-wide budget', async () => {
+    const context = await prepare('legacy-malformed-changed-digest');
+    try {
+      context.insertFailedAttempt('e'.repeat(64));
+      const planned = await submitEnnoPlan(context.database, context.plan);
+      assert.equal(planned.ennoOduno.status, 'goki_executing');
+      assert.deepEqual(context.database.prepare(`
+        SELECT request_digest AS requestDigest, state,
+               reserved_query_count AS reservedQueries, consumed_query_count AS consumedQueries,
+               reserved_selection_count AS reservedSelections, consumed_selection_count AS consumedSelections
+        FROM agent_task_skill_discovery_attempts
+        WHERE run_id = ? AND phase = 'zenki' ORDER BY request_digest
+      `).all(context.identity.runId).map((row) => ({ ...row })), [
+        {
+          requestDigest: context.digest,
+          state: 'completed',
+          reservedQueries: 0,
+          consumedQueries: 0,
+          reservedSelections: 0,
+          consumedSelections: 0,
+        },
+        {
+          requestDigest: 'e'.repeat(64),
+          state: 'failed',
+          reservedQueries: 3,
+          consumedQueries: 3,
+          reservedSelections: 2,
+          consumedSelections: 2,
+        },
+      ].sort((left, right) => left.requestDigest.localeCompare(right.requestDigest)));
+    } finally {
+      context.database.close();
+    }
+  });
 });
 
 test('Zenki cannot submit a code WorkUnit without a selected expert fragment', async () => {
@@ -1310,6 +1451,56 @@ test('focused verifier process can write the same database because no transactio
     });
     assert.equal(reported.verifierResults?.[0]?.status, 'passed');
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM enno_lock_probe').get<{ count: number }>()?.count, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('final verifier evidence is reused for the same revision and mutation without a second subprocess', async () => {
+  const { root, database } = await fixture();
+  try {
+    const planned = await plannedExecution(database, root, 'final-evidence-replay', verifier(root, 'final-replay'));
+    await reportEnnoWork(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'final-replay-work', workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Prepared final verification', mutated: false, changedPaths: [] },
+    });
+    const current = readEnnoSnapshot(database, planned.identity);
+    const verifierSpec = current.contract.finalVerifiers[0]!;
+    const verifierRunIds = startVerifierRunsInTransaction(database, {
+      runId: planned.identity.runId,
+      workUnitId: null,
+      revision: current.revision,
+      mutationRevision: current.mutationRevision,
+      verifiers: current.contract.finalVerifiers,
+    });
+    finishVerifierRunsInTransaction(database, verifierRunIds, [{
+      verifier: verifierSpec,
+      status: 'passed',
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+      stdoutPreview: '',
+      stderrPreview: '',
+      stdoutDigest: '0'.repeat(64),
+      stderrDigest: '0'.repeat(64),
+    }]);
+    let spawnCalls = 0;
+    const finished = await finishEnno(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'final-replay-finish',
+      review: { decision: 'accept', summary: 'Reuse the fresh final evidence' },
+    }, {
+      spawn: (() => {
+        spawnCalls += 1;
+        throw new Error('final verifier must not be started again');
+      }) as never,
+    });
+    assert.equal(finished.ennoOduno.status, 'oduno_meditation');
+    assert.equal(finished.verifierResults?.[0]?.status, 'passed');
+    assert.equal(spawnCalls, 0);
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) AS count FROM enno_verifier_runs
+      WHERE run_id = ? AND work_unit_id IS NULL AND contract_revision = ? AND mutation_revision = ?
+    `).get<{ count: number }>(planned.identity.runId, current.revision, current.mutationRevision)?.count, 1);
   } finally {
     database.close();
   }

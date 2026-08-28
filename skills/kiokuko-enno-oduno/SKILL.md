@@ -13,6 +13,25 @@ Control one Kiokuko run from intake to a verified terminal decision while keepin
 
 Enno-Oduno is a role directive for the current client model. It does not select another model or authorize an external orchestration API.
 
+## MoA advisory rounds
+
+At `oduno_ideal`, `zenki_planning`, and `enno_verifying`, the parent host may
+fan out exactly the three fixed advisor slots in the returned
+`directive.advisoryRound`. Kiokuko never launches these advisors. The host
+must provide and verify isolated read-only subagents; a prompt instruction is
+not proof of isolation, and a host without that capability reports
+`unavailable` for the slot.
+
+Advisor input is deliberately identity-free: do not pass `runId`, `workspace`,
+`orchestrationId`, contract or mutation revision, or an idempotency key to an
+advisor. The parent aggregator alone calls `enno_advice_submit`, in slot-rank
+order, with one structured result per fixed slot. Provider/model names and raw
+subagent output are never stored. Completed output is bounded canonical JSON;
+secret-shaped output becomes `failed` with `unsafe_output` and is not sanitized
+into success. The advisory round is a phase-local substate: submitting it does
+not advance the main Enno status. Pass its returned digest to the existing
+phase submit operation when the host is using MoA.
+
 ## Activation boundary
 
 Apply this Skill only when one of these is true:

@@ -189,6 +189,17 @@ to include audited community candidates. External skills are commit-pinned,
 stored as untrusted candidate references, and are never installed or executed
 automatically.
 
+## MoA advisory rounds
+
+At the ideal, planning, and final-review phases, the parent host may fan out
+exactly three fixed, isolated read-only advisor slots. Kiokuko does not launch
+those advisors and prompt wording is not proof of isolation. Hosts report
+`unavailable` when isolation cannot be verified; only the parent aggregator
+submits identity-free structured contributions to `enno_advice_submit`.
+Results are recorded as `host_reported`, without provider/model identity or
+raw subagent output, and each round is bound to its phase, revisions, policy,
+slot definitions, and context digest.
+
 ## Note
 
 Kiokuko is not a prompt interception mechanism. Automatic use depends on MCP calls from each AI client and model, so there is no guarantee that it will be called on every turn.

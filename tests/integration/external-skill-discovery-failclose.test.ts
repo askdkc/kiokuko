@@ -411,38 +411,47 @@ test('rejects unknown search, curated, audit, and source failures', async (t) =>
 
 });
 
-test('reports a typed malformed registry response without caching or fabricating a source path', async () => {
+test('records a malformed registry response as an optional discovery failure without caching or fabricating a source path', async () => {
   const database = await databaseFixture('kiokuko-discovery-invalid-provider-response-');
   let searchCalls = 0;
   const fetched: string[] = [];
   try {
-    await assert.rejects(discoverSkills(database, input('svelte', 'official'), {
+    const result = await discoverSkills(database, input('svelte', 'official'), {
       provider: { id: 'fixture-invalid', async search() { searchCalls += 1; throw new SkillProviderError('registry_invalid_response'); } },
       sourceFetcher: { async fetch(skill) { fetched.push(skill.slug); throw new SkillSourceError('candidate_not_found_at_source'); } },
       now: () => '2026-08-25T00:00:00.000Z',
-    }), (error: unknown) => error instanceof SkillProviderError && error.code === 'registry_invalid_response');
+    });
 
-    assert.ok(searchCalls > 0);
+    assert.equal(searchCalls, 1);
+    assert.deepEqual(result.failures, [{ stage: 'search', code: 'registry_invalid_response' }]);
+    assert.equal(result.candidates, 0);
+    assert.deepEqual(result.selected, []);
     assert.deepEqual(fetched, []);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM skill_discovery_cache').get<{ count: number }>()?.count, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM external_skills').get<{ count: number }>()?.count, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
   } finally {
     database.close();
   }
 });
 
-test('reports malformed curated and audit operations explicitly without caching or importing their candidates', async (t) => {
+test('records malformed curated and audit operations without caching or importing their candidates', async (t) => {
   await t.test('curated', async () => {
     const database = await databaseFixture('kiokuko-discovery-invalid-curated-response-');
     try {
-      await assert.rejects(discoverSkills(database, input('react', 'official'), {
+      const result = await discoverSkills(database, input('react', 'official'), {
         provider: {
           id: 'fixture-invalid-curated',
           async search() { return { provider: 'fixture-invalid-curated', experimental: false, candidates: [] }; },
           async curated() { throw new SkillProviderError('registry_invalid_response'); },
         },
         now: () => '2026-08-25T00:00:00.000Z',
-      }), (error: unknown) => error instanceof SkillProviderError && error.code === 'registry_invalid_response');
+      });
+      assert.deepEqual(result.failures, [{ stage: 'search', code: 'registry_invalid_response' }]);
+      assert.deepEqual(result.selected, []);
       assert.equal(database.prepare("SELECT COUNT(*) AS count FROM skill_discovery_cache WHERE query_text = '__curated__'").get<{ count: number }>()?.count, 0);
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM external_skills').get<{ count: number }>()?.count, 0);
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
     } finally { database.close(); }
   });
 
@@ -451,7 +460,7 @@ test('reports malformed curated and audit operations explicitly without caching 
     const community = candidate('community/react-helper', 'react-helper', 'unknown');
     let sourceCalls = 0;
     try {
-      await assert.rejects(discoverSkills(database, input('react', 'community'), {
+      const result = await discoverSkills(database, input('react', 'community'), {
         provider: {
           id: 'fixture-invalid-audit',
           async search(searchInput) { return { provider: 'fixture-invalid-audit', experimental: false, candidates: searchInput.owner === undefined ? [{ ...providerCandidate(community), provider: 'fixture-invalid-audit', id: `fixture-invalid-audit:${community.source}:${community.slug}` }] : [] }; },
@@ -459,8 +468,13 @@ test('reports malformed curated and audit operations explicitly without caching 
         },
         sourceFetcher: { async fetch() { sourceCalls += 1; return snapshot(community); } },
         now: () => '2026-08-25T00:00:00.000Z',
-      }), (error: unknown) => error instanceof SkillProviderError && error.code === 'registry_invalid_response');
+      });
+      assert.deepEqual(result.failures, [{ stage: 'search', code: 'registry_invalid_response' }]);
+      assert.deepEqual(result.selected, []);
       assert.equal(sourceCalls, 0);
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM skill_audit_failure_cache').get<{ count: number }>()?.count, 0);
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM external_skills').get<{ count: number }>()?.count, 0);
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
     } finally { database.close(); }
   });
 });

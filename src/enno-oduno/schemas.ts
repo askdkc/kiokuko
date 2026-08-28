@@ -9,6 +9,10 @@ import {
   STANDARD_UI_SKILL_NAME,
 } from '../setup/standard-skills.js';
 import {
+  ADVISORY_FAILURE_CODES,
+  ADVISORY_OUTCOMES,
+  ADVISORY_PHASES,
+  ADVISORY_SLOT_DEFINITIONS,
   ENNO_MAX_ATTEMPTS,
   ENNO_MIN_ATTEMPTS,
   ENNO_PROVENANCE_KEYS,
@@ -154,6 +158,50 @@ const skillSetEntrySchema = z.object({
 const orchestrationIdSchema = canonicalText(256)
   .describe('Exact ennoOduno.orchestrationId returned by task_prepare or task_answer; this is not a host client session ID');
 
+const advisorySlotIds = ADVISORY_SLOT_DEFINITIONS.map((slot) => slot.slotId) as [string, ...string[]];
+const advisoryContextSchema = z.object({
+  objective: canonicalText(16_384),
+  scope: z.array(repositoryRelativePath).max(256),
+  constraints: z.array(canonicalText(8_192)).max(32),
+  acceptanceCriteria: z.array(canonicalText(8_192)).max(128),
+  reference: canonicalText(16_384),
+}).strict();
+
+const advisoryEvidenceSchema = z.object({
+  path: repositoryRelativePath,
+  statement: canonicalText(8_192),
+}).strict();
+
+const advisoryContributionSchema = z.union([
+  z.object({
+    slotId: z.enum(advisorySlotIds),
+    outcome: z.literal('completed'),
+    summary: canonicalText(8_192),
+    recommendations: z.array(canonicalText(8_192)).max(32).default([]),
+    risks: z.array(canonicalText(8_192)).max(32).default([]),
+    evidence: z.array(advisoryEvidenceSchema).max(32).default([]),
+  }).strict(),
+  z.object({
+    slotId: z.enum(advisorySlotIds),
+    outcome: z.enum(ADVISORY_OUTCOMES.filter((outcome) => outcome !== 'completed') as ['failed', 'timeout', 'unavailable']),
+    reasonCode: z.enum(ADVISORY_FAILURE_CODES),
+  }).strict(),
+]);
+
+export const adviceSubmissionSchema = z.object({
+  runId: identifier,
+  workspace: canonicalText(256),
+  orchestrationId: orchestrationIdSchema,
+  expectedRevision: z.number().int().min(1),
+  mutationRevision: z.number().int().min(0),
+  idempotencyKey: identifier,
+  phase: z.enum(ADVISORY_PHASES),
+  allowlistedContext: advisoryContextSchema,
+  contributions: z.array(advisoryContributionSchema).length(3),
+}).strict();
+
+const advisoryRoundDigestSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+
 export const ennoContractSchema = z.object({
   revision: z.number().int().min(1),
   scope: z.array(boundedPath).max(256),
@@ -230,6 +278,7 @@ export const idealSubmissionSchema = z.object({
   orchestrationId: orchestrationIdSchema,
   expectedRevision: z.number().int().min(1),
   idempotencyKey: identifier,
+  advisoryRoundDigest: advisoryRoundDigestSchema.optional(),
   ideal: odunoIdealSchema,
 }).strict();
 
@@ -239,6 +288,7 @@ export const planSubmissionSchema = z.object({
   orchestrationId: orchestrationIdSchema,
   expectedRevision: z.number().int().min(1),
   idempotencyKey: identifier,
+  advisoryRoundDigest: advisoryRoundDigestSchema.optional(),
   scope: z.array(boundedPath).min(1).max(256),
   exclusions: z.array(boundedPath).max(256),
   acceptanceCriteria: z.array(acceptanceCriterionSchema).min(1).max(128),
@@ -307,6 +357,7 @@ export const finishSchema = z.object({
   orchestrationId: orchestrationIdSchema,
   expectedRevision: z.number().int().min(1),
   idempotencyKey: identifier,
+  advisoryRoundDigest: advisoryRoundDigestSchema.optional(),
   review: z.object({
     decision: z.enum(['accept', 'replan']),
     summary: canonicalText(16_384),
@@ -358,6 +409,10 @@ export function parseWorkReportResult(input: unknown): WorkReportResult {
 
 export function parsePlanSubmission(input: unknown): z.infer<typeof planSubmissionSchema> {
   return parseBoundary(planSubmissionSchema, input, 'Enno plan submission is invalid');
+}
+
+export function parseAdviceSubmission(input: unknown): z.infer<typeof adviceSubmissionSchema> {
+  return parseBoundary(adviceSubmissionSchema, input, 'Enno advisory submission is invalid');
 }
 
 export function parseIdealSubmission(input: unknown): z.infer<typeof idealSubmissionSchema> {

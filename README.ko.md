@@ -172,6 +172,10 @@ Kiokuko는 전체 대화를 저장하지 않습니다.
 
 저장된 메모리는 항상 참고 정보로 취급됩니다. 과거 메모리보다 현재 코드, 설정, 실행 결과가 우선합니다.
 
+## MoA advisory round
+
+ideal, planning, final review 단계에서는 parent host가 정확히 세 개의 고정된 격리 read-only Advisor slot을 fan-out할 수 있습니다. Advisor를 실행하는 것은 Kiokuko가 아니라 parent host이며 prompt만으로 격리를 증명하지 않습니다. 격리를 검증할 수 없는 slot은 `unavailable`로 보고하고, parent Aggregator만 identity가 없는 구조화 결과를 `enno_advice_submit`에 제출합니다. 결과는 `host_reported`로 기록하며 provider/model identity와 raw subagent 출력은 저장하지 않습니다. 각 Round는 phase, revision, mutation revision, policy, slot 정의와 context digest에 고정됩니다.
+
 ## 주의
 
 Kiokuko는 프롬프트를 가로채는 방식이 아닙니다. 자동 사용은 각 AI 클라이언트와 모델의 MCP 호출에 의존하므로 모든 턴에서 반드시 호출된다는 보장은 없습니다.
