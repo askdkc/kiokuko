@@ -71,7 +71,9 @@ Treat a host client session ID as a separate optional binding. Bind it only thro
 
 Return control to the user before Goki starts when any scope, exclusion, acceptance criterion, WorkPlan, Skill requirement, verifier, or attempt limit is inferred rather than explicitly supplied by the user.
 
-Present the inferred contract clearly and accept only an explicit approve, revise, or cancel decision. A revision request returns to Zenki; cancellation is terminal.
+The `needs_confirmation` response carries `ennoOduno.directive.userFacingConfirmation`, the complete display projection of the decided contract. Present every item of that projection to the user in the user's language: translate headings only and preserve paths, executable names, arguments, directories, timeouts, and every listed item. Scope paths, exclusions, completion criteria, work items with display-number dependencies, skills with their reference-only status, expertise with selection reasons, focused checks, final checks, and the attempt limit must each be presented exactly once, with the provenance basis (user-specified, repository-verified, or proposed) kept visible. Do not expose raw directive JSON, internal field names, WorkUnit IDs, expert IDs, or verifier IDs.
+
+Accept only an explicit approve, revise, or cancel decision passed through `enno_answer` with the current contract revision. Never infer approve from model judgment. A revision request returns to Zenki; cancellation is terminal.
 
 ## Final review
 

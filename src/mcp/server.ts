@@ -281,7 +281,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
 
   server.registerTool('enno_plan_submit', {
     title: 'Submit an Enno-Oduno WorkPlan',
-    description: `Zenki submits one revision-bound WorkPlan, Skill requirement set, and verifier contract. ${ENNO_TOOL_IDENTITY_CONTRACT} Missing capabilities alone use shared Skill discovery. Required unavailable Skills block execution; non-user-explicit fields require confirmation.`,
+    description: `Zenki submits one revision-bound WorkPlan, Skill requirement set, and verifier contract. ${ENNO_TOOL_IDENTITY_CONTRACT} Missing capabilities alone use shared Skill discovery. Required unavailable Skills block execution; non-user-explicit fields require confirmation. A needs_confirmation response carries the decided ennoOduno.directive.userFacingConfirmation projection; present every item of it to the user in the user's language without raw directive JSON or internal identifiers, then stop and wait for an explicit approve, revise, or cancel.`,
     inputSchema: planSubmissionSchema.shape,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await submitEnnoPlan(database, input)))));
@@ -295,7 +295,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
 
   server.registerTool('enno_answer', {
     title: 'Answer an Enno-Oduno contract confirmation',
-    description: `Apply explicit user approval, revision, or cancellation. ${ENNO_TOOL_IDENTITY_CONTRACT} Only Enno-Oduno advances state.`,
+    description: `Apply explicit user approval, revision, or cancellation. ${ENNO_TOOL_IDENTITY_CONTRACT} Only Enno-Oduno advances state. Pass only the action the user explicitly chose after seeing the userFacingConfirmation projection; never infer approve from model judgment.`,
     inputSchema: ennoAnswerSchema.shape,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(answerEnno(database, input)))));

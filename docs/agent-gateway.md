@@ -100,3 +100,5 @@ The former context-delivery listing route was removed because a GET request has 
 ## Coverage
 
 Each category is one of `complete`, `best_effort`, `declared`, or `unavailable`. `complete` is reserved for a versioned bridge with a clean-room contract test. Generic CLI runs normally use `declared` or `unavailable`. UI and recommendations must display incomplete coverage rather than call the ledger a complete transcript.
+
+The Enno-Oduno user-confirmation display contract is delivered only through the MCP boundary (`enno_plan_submit` returns the `userFacingConfirmation` projection; `enno_answer` receives the explicit approve, revise, or cancel). The Agent Event Gateway does not expose, replicate, or continue Enno runs, and no gateway endpoint substitutes for an explicit user confirmation.

@@ -158,6 +158,56 @@ export interface EnnoHarnessDirective {
   instructions: string[];
 }
 
+export type ConfirmationBasis = 'user' | 'repository' | 'proposal';
+
+export type UserFacingConfirmationAction = 'approve' | 'revise' | 'cancel';
+
+export interface UserFacingVerifier {
+  category: 'test' | 'typecheck' | 'build' | 'lint' | 'custom';
+  executable: string;
+  arguments: string[];
+  directory: string;
+  timeoutMs: number;
+}
+
+export interface UserFacingSkill {
+  label: string;
+  basis: ConfirmationBasis;
+  required: boolean;
+  purposes: string[];
+  referenceOnly: boolean;
+}
+
+export interface UserFacingExpertise {
+  area: string;
+  basis: ConfirmationBasis;
+  reason: string;
+}
+
+export interface UserFacingWorkItem {
+  number: number;
+  summary: string;
+  paths: string[];
+  dependsOn: number[];
+  doneWhen: string[];
+  checks: UserFacingVerifier[];
+  expertise: UserFacingExpertise[];
+}
+
+export interface UserFacingConfirmation {
+  presentationVersion: 1;
+  title: string;
+  summary: { basis: ConfirmationBasis; text: string };
+  scope: { basis: ConfirmationBasis; paths: string[] };
+  exclusions: { basis: ConfirmationBasis; paths: string[] };
+  completion: { basis: ConfirmationBasis; items: string[] };
+  skills: UserFacingSkill[];
+  workItems: UserFacingWorkItem[];
+  finalChecks: { basis: ConfirmationBasis; checks: UserFacingVerifier[] };
+  attemptLimit: { basis: ConfirmationBasis; maxAttempts: number };
+  actions: [UserFacingConfirmationAction, UserFacingConfirmationAction, UserFacingConfirmationAction];
+}
+
 export interface RoleDirective {
   protocolVersion: 1;
   runId: string;
@@ -170,6 +220,7 @@ export interface RoleDirective {
   workUnit: WorkUnit | null;
   stopConditions: string[];
   reportSchema: Record<string, unknown>;
+  userFacingConfirmation?: UserFacingConfirmation;
 }
 
 export interface EnnoOdunoState {

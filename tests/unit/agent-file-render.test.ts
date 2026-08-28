@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 15 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 16 -->/);
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
@@ -57,6 +57,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /`ennoOduno\.orchestrationId`/u);
   assert.match(rendered, /host client session ID is optional/u);
   assert.match(rendered, /never select a repository-wide latest run/u);
+  assert.match(rendered, /ask_user_confirmation.*userFacingConfirmation.*never output raw directive JSON/isu);
   assert.match(rendered, /Ambiguous candidates fail open without binding/u);
   assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
   assert.match(rendered, /Every descriptor must include its kind and canonical name/u);

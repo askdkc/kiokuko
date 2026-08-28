@@ -4,7 +4,7 @@ import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../
 import { ENNO_ORCHESTRATION_ENTRY_CONTRACT } from '../enno-oduno/instructions.js';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../setup/standard-skills.js';
 
-export const AGENT_TEMPLATE_VERSION = 15;
+export const AGENT_TEMPLATE_VERSION = 16;
 
 export interface AgentTemplateValues {
   repositoryId: string;

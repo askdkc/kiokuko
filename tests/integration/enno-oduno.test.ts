@@ -566,6 +566,172 @@ test('fake agent completes the Enno-Zenki-Goki loop in ledger order with fresh v
   }
 });
 
+function confirmationProjectionPlanInput(
+  identity: { runId: string; workspace: string; orchestrationId: string },
+  repositoryRoot: string,
+  idempotencyKey: string,
+  objective: string,
+  provenance: Record<'scope' | 'exclusions' | 'acceptanceCriteria' | 'workPlan' | 'skillSet' | 'finalVerifiers' | 'maxAttempts', 'explicit_user' | 'repository_evidence' | 'inferred'>,
+) {
+  return {
+    ...identity, expectedRevision: 1, idempotencyKey,
+    scope: ['src/add.js'], exclusions: [],
+    acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
+    workPlan: { objective, units: [{
+      id: 'repair-add', objective: 'Repair the add implementation', scope: ['src/add.js'], dependencies: [],
+      skillNames: ['kiokuko-single-purpose-functions'],
+      expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the add regression with focused tests' }],
+      acceptanceCriteria: ['node --test passes'],
+      focusedVerifiers: [verifier(repositoryRoot, 'focused-test')],
+    }] },
+    skillRequirements: [],
+    finalVerifiers: [verifier(repositoryRoot, 'final-test')], maxAttempts: 5,
+    provenance,
+    capabilities,
+  };
+}
+
+test('a needs_confirmation plan presents a complete user-facing confirmation projection', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'confirmation-projection', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-confirmation' }, skillDiscoveryMode: 'off',
+    });
+    const repositoryRoot = prepared.project.repositoryRoot;
+    const identity = { runId: prepared.run.runId, workspace: prepared.project.workspace, orchestrationId: prepared.intake.sessionId };
+    submitPreparedIdeal(database, prepared, 'projection-ideal');
+    const plan = await submitEnnoPlan(database, confirmationProjectionPlanInput(
+      identity, repositoryRoot, 'projection-plan-1', 'Repair add behind the confirmation',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'inferred', skillSet: 'repository_evidence', finalVerifiers: 'explicit_user', maxAttempts: 'inferred',
+      },
+    ));
+    assert.equal(plan.ennoOduno.status, 'needs_confirmation');
+    assert.equal(plan.ennoOduno.nextAction, 'ask_user_confirmation');
+    assert.match(plan.ennoOduno.directive?.objective ?? '', /Return every item in userFacingConfirmation to the user in the user's language/iu);
+    assert.deepEqual(plan.ennoOduno.directive?.reportSchema.required, ['runId', 'expectedRevision', 'idempotencyKey', 'action']);
+    const projection = plan.ennoOduno.directive?.userFacingConfirmation;
+    assert.ok(projection !== undefined);
+    assert.equal(projection.presentationVersion, 1);
+    assert.deepEqual(projection.actions, ['approve', 'revise', 'cancel']);
+    assert.deepEqual(projection.summary, { basis: 'proposal', text: 'Repair add behind the confirmation' });
+    assert.deepEqual(projection.scope, { basis: 'user', paths: ['src/add.js'] });
+    assert.deepEqual(projection.exclusions, { basis: 'user', paths: [] });
+    assert.deepEqual(projection.completion, { basis: 'user', items: ['node --test passes'] });
+    assert.equal(projection.workItems.length, 1);
+    assert.equal(projection.workItems[0]?.number, 1);
+    assert.equal(projection.workItems[0]?.summary, 'Repair the add implementation');
+    assert.deepEqual(projection.workItems[0]?.dependsOn, []);
+    assert.deepEqual(projection.workItems[0]?.expertise, [{
+      area: 'Regression prevention and verification design', basis: 'proposal', reason: 'Prove the add regression with focused tests',
+    }]);
+    assert.deepEqual(projection.workItems[0]?.checks, [{
+      category: 'test', executable: process.execPath, arguments: ['--eval', 'process.exit(0)'], directory: '.', timeoutMs: 5000,
+    }]);
+    assert.deepEqual(projection.finalChecks.checks[0]?.directory, '.');
+    assert.deepEqual(projection.attemptLimit, { basis: 'proposal', maxAttempts: 5 });
+    assert.equal(projection.skills.every((skill) => skill.referenceOnly === false), true);
+    const rendered = JSON.stringify(projection);
+    for (const forbidden of [
+      'repair-add', 'focused-test', 'final-test', 'code.verification.v1',
+      'WorkUnit', 'workPlan', 'expertRefs', 'focusedVerifiers', 'finalVerifiers',
+      'workUnitId', 'skillNames', 'acceptanceCriteria', 'provenance',
+    ]) {
+      assert.equal(rendered.includes(forbidden), false, `projection leaked internal token: ${forbidden}`);
+    }
+
+    const replay = await submitEnnoPlan(database, confirmationProjectionPlanInput(
+      identity, repositoryRoot, 'projection-plan-1', 'Repair add behind the confirmation',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'inferred', skillSet: 'repository_evidence', finalVerifiers: 'explicit_user', maxAttempts: 'inferred',
+      },
+    ));
+    assert.deepEqual(replay, plan);
+
+    const stale = answerEnno(database, {
+      ...identity, expectedRevision: 2, idempotencyKey: 'projection-stale-approve', action: 'approve',
+    });
+    assert.throws(() => answerEnno(database, {
+      ...identity, expectedRevision: 99, idempotencyKey: 'projection-older-approve', action: 'approve',
+    }), /revision changed/iu);
+    assert.equal(stale.ennoOduno.status, 'goki_executing');
+    assert.equal('userFacingConfirmation' in (stale.ennoOduno.directive ?? {}), false);
+  } finally {
+    database.close();
+  }
+});
+
+test('revise returns to Zenki for a fresh projection and cancel terminates without one', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'confirmation-revise-cancel', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-revision' }, skillDiscoveryMode: 'off',
+    });
+    const repositoryRoot = prepared.project.repositoryRoot;
+    const identity = { runId: prepared.run.runId, workspace: prepared.project.workspace, orchestrationId: prepared.intake.sessionId };
+    submitPreparedIdeal(database, prepared, 'revision-ideal');
+    const provenance = {
+      scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+      workPlan: 'inferred', skillSet: 'repository_evidence', finalVerifiers: 'explicit_user', maxAttempts: 'inferred',
+    } as const;
+    await submitEnnoPlan(database, confirmationProjectionPlanInput(
+      identity, repositoryRoot, 'revision-plan-1', 'Repair add behind the confirmation', provenance,
+    ));
+    const revised = answerEnno(database, {
+      ...identity, expectedRevision: 2, idempotencyKey: 'revision-revise', action: 'revise',
+      requestedChanges: 'Narrow the plan to the add regression only',
+    });
+    assert.equal(revised.ennoOduno.status, 'zenki_planning');
+    assert.equal(revised.ennoOduno.contractRevision, 3);
+    assert.equal('userFacingConfirmation' in (revised.ennoOduno.directive ?? {}), false);
+    const replanned = await submitEnnoPlan(database, {
+      ...confirmationProjectionPlanInput(identity, repositoryRoot, 'revision-plan-2', 'Repair add with a narrower scope', provenance),
+      expectedRevision: 3,
+    });
+    assert.equal(replanned.ennoOduno.status, 'needs_confirmation');
+    assert.equal(replanned.ennoOduno.contractRevision, 4);
+    assert.equal(replanned.ennoOduno.directive?.userFacingConfirmation?.summary.text, 'Repair add with a narrower scope');
+    const cancelled = answerEnno(database, {
+      ...identity, expectedRevision: 4, idempotencyKey: 'revision-cancel', action: 'cancel',
+    });
+    assert.equal(cancelled.ennoOduno.status, 'cancelled');
+    assert.equal(cancelled.ennoOduno.directive, null);
+  } finally {
+    database.close();
+  }
+});
+
+test('an all-explicit plan skips confirmation and carries no projection', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'explicit-skips-confirmation', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-explicit' }, skillDiscoveryMode: 'off',
+    });
+    const repositoryRoot = prepared.project.repositoryRoot;
+    const identity = { runId: prepared.run.runId, workspace: prepared.project.workspace, orchestrationId: prepared.intake.sessionId };
+    submitPreparedIdeal(database, prepared, 'explicit-ideal');
+    const plan = await submitEnnoPlan(database, confirmationProjectionPlanInput(
+      identity, repositoryRoot, 'explicit-plan-1', 'Repair add without confirmation',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+    ));
+    assert.equal(plan.ennoOduno.status, 'goki_executing');
+    assert.equal('userFacingConfirmation' in (plan.ennoOduno.directive ?? {}), false);
+  } finally {
+    database.close();
+  }
+});
+
 test('a pre-migration active run without an Oduno ideal keeps its legacy completion path', async () => {
   const { root, database } = await fixture();
   try {

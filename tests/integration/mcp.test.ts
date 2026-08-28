@@ -64,6 +64,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /A failed review never returns directly to Goki/u);
     assert.match(instructions, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
     assert.match(instructions, /never select a repository-wide latest run/u);
+    assert.match(instructions, /ask_user_confirmation.*userFacingConfirmation.*never output raw directive JSON/isu);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'curator_check',
@@ -118,6 +119,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskAnswerTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(ennoFinishTool?.description ?? '', /returns Review feedback to Zenki for a new plan/u);
     assert.match(ennoFinishTool?.description ?? '', /advances a new run to Oduno meditation instead of completing it directly/iu);
+    const ennoPlanTool = tools.tools.find((tool) => tool.name === 'enno_plan_submit');
+    const ennoAnswerTool = tools.tools.find((tool) => tool.name === 'enno_answer');
+    assert.match(ennoPlanTool?.description ?? '', /needs_confirmation response carries the decided ennoOduno\.directive\.userFacingConfirmation projection/u);
+    assert.match(ennoPlanTool?.description ?? '', /without raw directive JSON or internal identifiers/u);
+    assert.match(ennoAnswerTool?.description ?? '', /only the action the user explicitly chose after seeing the userFacingConfirmation projection/iu);
+    assert.match(ennoAnswerTool?.description ?? '', /never infer approve from model judgment/iu);
     assert.match(ennoIdealTool?.description ?? '', /optimal goal.*task_prepare handoff.*every Akinator-discovered Skill.*before Zenki planning/iu);
     assert.match(ennoMeditationTool?.description ?? '', /obsolete test or function deletion candidates.*without mutating the repository/iu);
     assert.match(taskAnswerTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
@@ -665,8 +672,136 @@ test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno deri
   }
 });
 
-test('memory_checkpoint returns actionable MCP guidance during intake and succeeds after task_answer finalizes the run', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-repo-'));
+test('enno_plan_submit returns the userFacingConfirmation projection over the MCP boundary', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-confirmation-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-confirmation-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'kiokuko-confirmation-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const capabilities = [SOUL_CAPABILITY, {
+      kind: 'skill',
+      name: 'kiokuko-single-purpose-functions',
+      description: 'Focused code contracts and tests.',
+    }];
+    const prepared = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'mcp-confirmation-request',
+        task: 'Repair the add function and make tests pass',
+        profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'node --test passes' },
+        capabilities,
+      },
+    });
+    const preparedContent = prepared.structuredContent as {
+      run: { runId: string };
+      project: { workspace: string };
+      intake: { sessionId: string };
+      ennoOduno: { status: string };
+    };
+    assert.equal(preparedContent.ennoOduno.status, 'oduno_ideal');
+    const identity = {
+      runId: preparedContent.run.runId,
+      workspace: preparedContent.project.workspace,
+      orchestrationId: preparedContent.intake.sessionId,
+    };
+    const ideal = await client.callTool({
+      name: 'enno_ideal_submit',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'mcp-confirmation-ideal',
+        ideal: {
+          objective: 'Repair the add function with focused verification',
+          principles: ['Preserve the public API'],
+          skillContributions: [],
+          successSignals: ['node --test passes'],
+        },
+      },
+    });
+    const idealContent = ideal.structuredContent as { ennoOduno: { status: string } };
+    assert.equal(idealContent.ennoOduno.status, 'zenki_planning');
+    const plan = await client.callTool({
+      name: 'enno_plan_submit',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'mcp-confirmation-plan',
+        scope: ['src/add.js'],
+        exclusions: [],
+        acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
+        workPlan: {
+          objective: 'Repair add behind the confirmation',
+          units: [{
+            id: 'repair-add',
+            objective: 'Repair the add implementation',
+            scope: ['src/add.js'],
+            dependencies: [],
+            skillNames: ['kiokuko-single-purpose-functions'],
+            expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the add regression with focused tests' }],
+            acceptanceCriteria: ['node --test passes'],
+            focusedVerifiers: [],
+          }],
+        },
+        skillRequirements: [],
+        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000 }],
+        maxAttempts: 5,
+        provenance: {
+          scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+          workPlan: 'inferred', skillSet: 'repository_evidence', finalVerifiers: 'explicit_user', maxAttempts: 'inferred',
+        },
+        capabilities,
+      },
+    });
+    assert.equal(plan.isError, undefined);
+    const planContent = plan.structuredContent as {
+      ennoOduno: {
+        status: string;
+        contractRevision: number;
+        directive: {
+          objective: string;
+          userFacingConfirmation?: {
+            presentationVersion: number;
+            summary: { basis: string; text: string };
+            scope: { basis: string; paths: string[] };
+            workItems: Array<{ number: number; summary: string; expertise: Array<{ area: string; reason: string }> }>;
+            finalChecks: { checks: Array<{ executable: string; arguments: string[]; directory: string; timeoutMs: number }> };
+            attemptLimit: { basis: string; maxAttempts: number };
+            actions: string[];
+          };
+        } | null;
+      };
+    };
+    assert.equal(planContent.ennoOduno.status, 'needs_confirmation');
+    assert.equal(planContent.ennoOduno.contractRevision, 2);
+    assert.match(planContent.ennoOduno.directive?.objective ?? '', /Return every item in userFacingConfirmation/iu);
+    const projection = planContent.ennoOduno.directive?.userFacingConfirmation;
+    assert.ok(projection !== undefined);
+    assert.equal(projection.presentationVersion, 1);
+    assert.equal(projection.summary.basis, 'proposal');
+    assert.equal(projection.scope.basis, 'user');
+    assert.equal(projection.workItems[0]?.number, 1);
+    assert.equal(projection.workItems[0]?.expertise[0]?.area, 'Regression prevention and verification design');
+    assert.deepEqual(projection.finalChecks.checks[0], {
+      category: 'test', executable: process.execPath, arguments: ['--eval', 'process.exit(0)'], directory: '.', timeoutMs: 5000,
+    });
+    assert.deepEqual(projection.actions, ['approve', 'revise', 'cancel']);
+    const rendered = JSON.stringify(projection);
+    for (const forbidden of ['repair-add', 'final-test', 'code.verification.v1', 'expertRefs', 'focusedVerifiers', 'finalVerifiers', 'provenance']) {
+      assert.equal(rendered.includes(forbidden), false, `MCP projection leaked internal token: ${forbidden}`);
+    }
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('memory_checkpoint returns actionable MCP guidance during intake and succeeds after task_answer finalizes the run', async () => {  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-repo-'));
   execFileSync('git', ['init', '-q', root]);
   const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-data-'));
   const databasePath = path.join(data, 'kiokuko.sqlite3');
