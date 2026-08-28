@@ -8,6 +8,7 @@ import { initializeDatabase } from '../../src/commands/init.js';
 import { startAgentHttpServer } from '../../src/server/agent-application.js';
 
 const token = 'b'.repeat(64);
+const SOUL_CAPABILITIES = [{ kind: 'skill', name: 'kiokuko-soul' }] as const;
 
 async function rawDuplicateHeader(baseUrl: string, body: string): Promise<string> {
   const port = Number(new URL(baseUrl).port);
@@ -41,6 +42,7 @@ function ambiguousRequest() {
     client: { kind: 'generic' },
     task: { title: 'Ambiguous task', query: 'Please help with this request' },
     captureProfile: 'minimal',
+    capabilities: SOUL_CAPABILITIES,
     coverage: {
       run: 'unavailable',
       tool: 'unavailable',
@@ -105,7 +107,7 @@ test('HTTP intake preserves needs_answer without context, then atomically reache
     const first = await jsonRequest(runtime.url, `/api/v1/agent/runs/${runId}/intake/answers`, {
       method: 'POST',
       key: 'intake-answer-type',
-      body: { apiVersion: '1', questionId: 'taskType', value: 'build' },
+      body: { apiVersion: '1', questionId: 'taskType', value: 'build', capabilities: SOUL_CAPABILITIES },
     });
     assert.equal(first.response.status, 200);
     assert.equal(first.body.operation, 'agent.answer');
@@ -117,7 +119,7 @@ test('HTTP intake preserves needs_answer without context, then atomically reache
     const replay = await jsonRequest(runtime.url, `/api/v1/agent/runs/${runId}/intake/answers`, {
       method: 'POST',
       key: 'intake-answer-type',
-      body: { apiVersion: '1', questionId: 'taskType', value: 'build' },
+      body: { apiVersion: '1', questionId: 'taskType', value: 'build', capabilities: SOUL_CAPABILITIES },
     });
     assert.equal(replay.response.status, 200);
     assert.deepEqual(replay.body, first.body);
@@ -125,7 +127,7 @@ test('HTTP intake preserves needs_answer without context, then atomically reache
     const conflict = await jsonRequest(runtime.url, `/api/v1/agent/runs/${runId}/intake/answers`, {
       method: 'POST',
       key: 'intake-answer-type',
-      body: { apiVersion: '1', questionId: 'taskType', value: 'debug' },
+      body: { apiVersion: '1', questionId: 'taskType', value: 'debug', capabilities: SOUL_CAPABILITIES },
     });
     assert.equal(conflict.response.status, 409);
     assert.equal(conflict.body.operation, 'agent.answer');
@@ -134,7 +136,7 @@ test('HTTP intake preserves needs_answer without context, then atomically reache
     const second = await jsonRequest(runtime.url, `/api/v1/agent/runs/${runId}/intake/answers`, {
       method: 'POST',
       key: 'intake-answer-target',
-      body: { apiVersion: '1', questionId: 'target', value: 'src/feature.ts' },
+      body: { apiVersion: '1', questionId: 'target', value: 'src/feature.ts', capabilities: SOUL_CAPABILITIES },
     });
     assert.equal(second.body.data.runStatus, 'intake');
     assert.equal(second.body.data.currentQuestion.id, 'expected');
@@ -144,7 +146,7 @@ test('HTTP intake preserves needs_answer without context, then atomically reache
     const ready = await jsonRequest(runtime.url, `/api/v1/agent/runs/${runId}/intake/answers`, {
       method: 'POST',
       key: 'intake-answer-expected',
-      body: { apiVersion: '1', questionId: 'expected', value: 'tests pass' },
+      body: { apiVersion: '1', questionId: 'expected', value: 'tests pass', capabilities: SOUL_CAPABILITIES },
     });
     assert.equal(ready.response.status, 200);
     assert.equal(ready.body.data.runStatus, 'active');

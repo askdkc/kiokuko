@@ -24,6 +24,7 @@ function openRequest(workspace = 'workspace-http') {
       },
     },
     captureProfile: 'standard',
+    capabilities: [{ kind: 'skill', name: 'kiokuko-soul' }],
     coverage: {
       run: 'declared',
       tool: 'best_effort',

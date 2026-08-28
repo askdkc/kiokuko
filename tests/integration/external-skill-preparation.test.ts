@@ -14,6 +14,7 @@ import { SkillProviderError } from '../../src/skills/providers/schema.js';
 import { setExternalSkillState } from '../../src/skills/store.js';
 
 const COMMIT = 'd'.repeat(40);
+const SOUL_CAPABILITY = { kind: 'skill', name: 'kiokuko-soul' } as const;
 
 interface Deferred {
   promise: Promise<void>;
@@ -42,6 +43,7 @@ async function within<T>(promise: Promise<T>, milliseconds: number, label: strin
 
 function taskCapabilities(): Array<{ kind: 'skill'; name: string }> {
   return [
+    SOUL_CAPABILITY,
     { kind: 'skill', name: 'kiokuko-ui-design-soul' },
     { kind: 'skill', name: 'memory-reasoning' },
   ];
@@ -201,7 +203,7 @@ test('replays a completed no-delivery discovery attempt without another provider
     cwd: root,
     task: 'Implement a Svelte component',
     profileHints: { taskType: 'build' as const, target: 'Svelte component', expected: 'tests pass', constraints: null },
-    capabilities: [] as unknown[],
+    capabilities: [SOUL_CAPABILITY] as unknown[],
     skillDiscoveryMode: 'official' as const,
   };
   try {
@@ -272,7 +274,7 @@ test('persists and replays a malformed-provider failure without retrying discove
     cwd: root,
     task: 'Implement a Svelte component',
     profileHints: { taskType: 'build' as const, target: 'Svelte component', expected: 'tests pass', constraints: null },
-    capabilities: [] as unknown[],
+    capabilities: [SOUL_CAPABILITY] as unknown[],
     skillDiscoveryMode: 'official' as const,
   };
   try {
@@ -336,7 +338,7 @@ test('redacts unexpected Kiokuko discovery failure details before persisting and
     cwd: root,
     task: 'Implement a Svelte component',
     profileHints: { taskType: 'build' as const, target: 'Svelte component', expected: 'tests pass', constraints: null },
-    capabilities: [] as unknown[],
+    capabilities: [SOUL_CAPABILITY] as unknown[],
     skillDiscoveryMode: 'official' as const,
   };
   try {
@@ -388,7 +390,7 @@ test('conflicts a concurrent exact retry while the run-owned discovery attempt i
     cwd: root,
     task: 'Implement a Svelte component',
     profileHints: { taskType: 'build' as const, target: 'Svelte component', expected: 'tests pass', constraints: null },
-    capabilities: [] as unknown[],
+    capabilities: [SOUL_CAPABILITY] as unknown[],
     skillDiscoveryMode: 'official' as const,
   };
   let blocked = false;
@@ -449,8 +451,8 @@ test('discovers reference-only context when a build client lacks or does not rep
   let networkCalls = 0;
   const successfulProvider = fixtureFetch();
   for (const request of [
-    { client: { kind: 'test', sessionId: 'missing-memory-reasoning' }, capabilities: [{ kind: 'skill', name: 'kiokuko-ui-design-soul' }] },
-    { client: { kind: 'test', sessionId: 'unknown-memory-reasoning' }, capabilities: undefined },
+    { client: { kind: 'test', sessionId: 'missing-memory-reasoning' }, capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'kiokuko-ui-design-soul' }] },
+    { client: { kind: 'test', sessionId: 'unknown-memory-reasoning' }, capabilities: [SOUL_CAPABILITY, { kind: 'invalid', name: 'invalid' }] },
   ] as const) {
     const data = await mkdtemp(path.join(tmpdir(), `kiokuko-post-discovery-capability-gate-${request.client.sessionId}-`));
     const databasePath = path.join(data, 'kiokuko.sqlite3');
@@ -463,7 +465,7 @@ test('discovers reference-only context when a build client lacks or does not rep
         task: 'Implement a SvelteKit component with current Svelte guidance',
         profileHints: { taskType: 'build', target: 'SvelteKit component', expected: 'tests pass', constraints: null },
         client: request.client,
-        ...(request.capabilities === undefined ? {} : { capabilities: request.capabilities }),
+        capabilities: request.capabilities,
         skillDiscoveryMode: 'official',
         fetchImpl: async (...args) => { networkCalls += 1; return successfulProvider(...args); },
       });
@@ -641,7 +643,7 @@ test('starts a new discovery run when the effective mode changes from off to off
     cwd: root,
     task: 'Implement a SvelteKit component with current Svelte guidance',
     profileHints: { taskType: 'build' as const, target: 'SvelteKit component', expected: 'tests pass', constraints: null },
-    capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+    capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
     client: { kind: 'test', sessionId: 'mode-identity' },
   };
   try {
@@ -688,14 +690,14 @@ test('starts a new discovery run when relevant client skills become missing', as
     const satisfied = await prepareAgentTask(database, {
       ...request,
       requestId: 'external-skill-capabilities-satisfied',
-      capabilities: [{ kind: 'skill', name: 'memory-reasoning' }, { kind: 'skill', name: 'svelte' }, { kind: 'skill', name: 'sveltekit' }],
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }, { kind: 'skill', name: 'svelte' }, { kind: 'skill', name: 'sveltekit' }],
       fetchImpl: async () => { throw new Error('available skills must suppress discovery'); },
     });
     let fetchCalls = 0;
     const missing = await prepareAgentTask(database, {
       ...request,
       requestId: 'external-skill-capabilities-missing',
-      capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
       fetchImpl: async (...args) => { fetchCalls += 1; return fixtureFetch()(...args); },
     });
 
@@ -725,7 +727,7 @@ test('allows Akinator external Skill discovery to be explicitly disabled', async
       cwd: root,
       task: 'Implement a SvelteKit component',
       profileHints: { taskType: 'build', target: 'SvelteKit component', expected: 'tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'off',
       fetchImpl: async () => { networkCalls += 1; throw new Error('disabled discovery must not use the network'); },
     });
@@ -750,7 +752,7 @@ test('does not expose a Svelte external skill to an unrelated Laravel project', 
       cwd: svelteRoot,
       task: 'Implement a SvelteKit component',
       profileHints: { taskType: 'build', target: 'SvelteKit component', expected: 'tests pass', constraints: null },
-      capabilities: [{ kind: 'skill', name: 'memory-reasoning' }, { kind: 'skill', name: 'unrelated-skill' }],
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }, { kind: 'skill', name: 'unrelated-skill' }],
       skillDiscoveryMode: 'official',
       fetchImpl: fixtureFetch(),
     });
@@ -781,7 +783,7 @@ test('keeps task preparation successful when the registry is unavailable', async
       cwd: root,
       task: 'Implement a SvelteKit component',
       profileHints: { taskType: 'build', target: 'SvelteKit component', expected: 'tests pass', constraints: null },
-      capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
       skillDiscoveryMode: 'official',
       fetchImpl: async () => { throw Object.assign(new TypeError(offlineSentinel), { cause: { code: 'ENETUNREACH' } }); },
     });
@@ -842,7 +844,7 @@ test('keeps task preparation ready without fabricating a catalog source after a 
       cwd: root,
       task: 'Research current Svelte component guidance',
       profileHints: { taskType: 'research', target: 'Svelte component', expected: 'verified guidance', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'official',
       fetchImpl,
     });

@@ -22,11 +22,59 @@ kiokuko setup
 
 `setup` detects supported clients that are installed and automatically configures the SQLite database and MCP connection.
 Interactive setup asks whether audited community Skills may also be used as reference material; the default answer is no.
+For new Codex, Claude Code, and OpenCode installations, setup also enables the Enno-Oduno agent loop. Existing managed installations are preserved until `--enno-oduno on` is explicitly selected; `--enno-oduno off` removes only Enno-Oduno-owned hooks or plugins.
+Setup installs the bundled `kiokuko-enno-oduno` controller Skill alongside `kiokuko-single-purpose-functions` and `kiokuko-ui-design-soul` in every selected supported client.
 Model-facing memory enters a task only through the capability-gated `task_prepare`
-and `task_answer` MCP tools. Kiokuko installs no client hook or plugin that
-silently recalls memory before those calls.
+and `task_answer` MCP tools. `task_prepare` is also the Enno-Oduno entry point: Enno-Oduno identifies the calling harness and owns Akinator intake before it hands an actionable request to Zenki. Hooks do not recall memory or bypass planning; they bind only the single unambiguous pending active run in the canonical repository, then gate Zenki, Goki, or final-review continuation. They never select a repository-wide latest run.
 
-After setup, launch the target AI client and use it as usual. If it is already running, quit it once and restart it.
+Every `task_prepare` call requires `soulRead: true` after the client model reads
+the complete local `kiokuko-soul` Skill for that logical request. It also
+requires the exact local `kiokuko-soul` capability for every task; missing or
+unknown availability fails closed even during incomplete intake. The boolean is
+an explicit client attestation, not remote proof that the model understood or
+followed the Skill.
+
+After setup, launch the target AI client and use it as usual. If it is already running, quit it once and restart it. When setup creates or updates the Codex Stop hook, open `/hooks` in Codex and explicitly trust that hook.
+
+### Enno-Oduno agent loop
+
+For `build`, `debug`, `review`, and `devops` tasks, `task_prepare` starts the run-bound loop and returns `ennoOduno`. The enforced role order is:
+
+```text
+User request
+  -> task_prepare: Enno-Oduno identifies Codex, Claude Code, or OpenCode
+  -> when currentRole is Enno-Oduno, it reads and applies kiokuko-enno-oduno from requiredSkills
+  -> Enno-Oduno returns any required Akinator question to the user
+  -> Enno-Oduno gives an actionable structured handoff to harness-specific Zenki
+  -> Zenki first reads and applies kiokuko-single-purpose-functions from requiredSkills
+  -> code changes are split into one cohesive function/use-case contract, responsibility, reason to change, and focused test target
+  -> Zenki selects 1-3 versioned expertRefs per WorkUnit and reads no unselected fragments by default
+  -> Zenki submits the WorkPlan, WorkUnits, expert refs, Skill snapshot, and verifiers
+  -> Enno-Oduno obtains any required user confirmation
+  -> Goki orchestrates only the approved WorkUnits
+  -> Enno-Oduno reviews fresh final-verifier evidence
+       -> pass: Enno-Oduno alone accepts and completes the run
+       -> fail: Enno-Oduno increments the revision and returns feedback to Zenki
+  -> Goki can resume only after Zenki submits the revised plan and confirmation succeeds
+```
+
+Incomplete intake therefore returns an Enno-Oduno directive and `answer_intake`; its `requiredSkills` contains `kiokuko-enno-oduno`, and Zenki is not started yet. Final-review Enno-Oduno directives require the same controller Skill. A ready intake returns a revision-bound Zenki directive whose `requiredSkills` includes the compact `kiokuko-single-purpose-functions` index even while the draft Skill snapshot is empty. Before choosing WorkUnits, Zenki uses that index to divide code changes into cohesive function or use-case contracts with focused test targets, without meaningless micro-functions. Each code-changing WorkUnit must select one to three registered `expertRefs` with reasons; UI WorkUnits require both a `code.*` and a `ui.*` expert. `enno_plan_submit` rejects missing, duplicate, unknown, or oversized mixtures and then persists the exact selection with the revision. Goki reads those fragments rather than every Skill reference. The controller Skill is role-level and is not inserted into WorkUnit Skill snapshots. Goki cannot be entered until Zenki's complete plan has been accepted and required confirmation has succeeded. A failed final review never reactivates an old Goki WorkUnit. It preserves the rejected plan and verifier evidence under their old revision, advances to `zenki_planning`, and requires a new revision-bound plan. The response's `orchestrationId` is used by every Enno MCP operation and is separate from the host session identity. Inferred scope, acceptance criteria, Skills, expert selections, or verifier commands are returned for normal user confirmation before execution.
+
+The three roles use the current client model; Kiokuko does not call a second model or require OpenAI, Anthropic, or OpenCode API credentials. Codex and Claude Code use bounded Stop hooks, while OpenCode uses a bounded `session.idle` plugin. OpenCode ignores child-session idle events and deduplicates repeated delivery of the same completed turn. If the host session was unavailable at `task_prepare`, the first matching hook atomically binds it only when exactly one pending active run matches; ambiguity returns control without guessing. A completed binding is immutable. Kiokuko returns control before Claude Code's native eighth consecutive Stop-block override. Adapter failure allows the client to stop with a fixed warning. External Skills remain untrusted reference-only and are never installed or executed automatically.
+
+```bash
+kiokuko setup --clients codex,opencode,claude --enno-oduno on
+kiokuko enno run --role zenki --input-json -
+```
+
+Real-client tests are optional and separated from the release gate. Without their matching environment flags, they report `not-run`:
+
+```bash
+npm run test:e2e:codex
+npm run test:e2e:opencode
+npm run test:e2e:claude
+npm run test:e2e:agents
+```
 
 Supported clients:
 

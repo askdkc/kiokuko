@@ -94,6 +94,7 @@ test('generic CLI completes the gateway lifecycle over real TCP and persists one
   }
 
   const capabilitiesPath = await writeJson(inputs, 'capabilities.json', [
+    { kind: 'skill', name: 'kiokuko-soul' },
     { kind: 'skill', name: 'memory-reasoning' },
   ]);
   const runtime = await startAgentHttpServer({ databasePath, runtimeDirectory, descriptorPath });

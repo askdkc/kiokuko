@@ -35,6 +35,21 @@ function isCanonicalManagedServer(value: unknown): value is Record<string, unkno
     && isSkillDiscoveryMode(environment[SKILL_DISCOVERY_ENV]);
 }
 
+/** Detect an already managed OpenCode Kiokuko MCP identity without changing it. */
+export function hasCanonicalOpenCodeMcpConfig(existing: string | undefined): boolean {
+  if (existing === undefined) return false;
+  assertStrictJsonSyntax(
+    existing,
+    { allowTrailingComma: true, disallowComments: false },
+    'OpenCode config is not a valid JSON/JSONC object with unique keys',
+  );
+  const errors: ParseError[] = [];
+  const parsed = parse(existing, errors, { allowTrailingComma: true, disallowComments: false });
+  const root = object(parsed);
+  if (errors.length > 0 || root === undefined) return false;
+  return isCanonicalManagedServer(object(root.mcp)?.kiokuko);
+}
+
 function validation(message: string): never {
   throw new KiokukoError('VALIDATION_ERROR', message);
 }

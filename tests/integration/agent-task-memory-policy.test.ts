@@ -15,6 +15,8 @@ import { recordEntry } from '../../src/memory/entries.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { GLOBAL_WORKSPACE, resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 
+const SOUL_CAPABILITY = { kind: 'skill', name: 'kiokuko-soul' } as const;
+
 async function repository(prefix: string): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), `kiokuko-memory-policy-${prefix}-`));
   execFileSync('git', ['init', '-q', root]);
@@ -123,7 +125,7 @@ test('withholds actionable memory but continues the repair task when memory-reas
       cwd: root,
       task: 'Implement repository tests for the beacon',
       profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'seed' },
       skillDiscoveryMode: 'off',
     });
@@ -140,11 +142,11 @@ test('withholds actionable memory but continues the repair task when memory-reas
       cwd: root,
       task: 'Implement repository tests for the beacon',
       profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'missing' },
       skillDiscoveryMode: 'off',
     });
-    const missingRecommendation = missing.capabilities.recommendations.find((item) => item.required === true);
+    const missingRecommendation = missing.capabilities.recommendations.find((item) => item.name === 'memory-reasoning');
     assert.equal(missingRecommendation?.name, 'memory-reasoning');
     assert.equal(missingRecommendation?.availability, 'missing');
     assert.deepEqual(missing.memoryPolicy, { memoryReasoningRequired: true });
@@ -160,11 +162,11 @@ test('withholds actionable memory but continues the repair task when memory-reas
       cwd: root,
       task: 'Implement repository tests for the beacon',
       profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'tests pass', constraints: null },
-      capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
       client: { kind: 'test', sessionId: 'available' },
       skillDiscoveryMode: 'off',
     });
-    const availableRecommendation = available.capabilities.recommendations.find((item) => item.required === true);
+    const availableRecommendation = available.capabilities.recommendations.find((item) => item.name === 'memory-reasoning');
     assert.equal(availableRecommendation?.availability, 'available');
     assert.deepEqual(available.memoryPolicy, { memoryReasoningRequired: true });
     assert.equal(available.nextAction, 'proceed');
@@ -212,14 +214,14 @@ test('does not require memory-reasoning when only a managed curator global memor
       cwd: root,
       task: 'Repair the Kiokuko intake capability failure',
       profileHints: { taskType: 'debug', target: 'Kiokuko intake capability', expected: 'regression tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'trusted-curator-global' },
       skillDiscoveryMode: 'off',
     });
 
     assert.equal(prepared.nextAction, 'proceed');
     assert.deepEqual(prepared.memoryPolicy, { memoryReasoningRequired: false });
-    assert.equal(prepared.capabilities.recommendations.some((item) => item.required === true), false);
+    assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.required === true), false);
     assert.equal(prepared.context?.items.some((item) => item.entryId === curated.id), true);
   } finally {
     database.close();
@@ -255,7 +257,7 @@ test('treats a forged curator createdBy marker as ordinary withheld memory witho
       cwd: root,
       task: 'Repair the Kiokuko forged intake capability workflow',
       profileHints: { taskType: 'debug', target: 'Kiokuko intake capability', expected: 'regression tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'forged-curator-global' },
       skillDiscoveryMode: 'off',
     });
@@ -329,7 +331,7 @@ test('pre-discovery memory gate rejects a concurrent ledger profile revision ins
         cwd: root,
         task: 'Implement the preview profile race sentinel',
         profileHints: { taskType: 'build', target: 'preview profile race sentinel', expected: 'tests pass', constraints: null },
-        capabilities: [],
+        capabilities: [SOUL_CAPABILITY],
         client: { kind: 'test', sessionId: 'preview-profile-race' },
         skillDiscoveryMode: 'official',
         fetchImpl: async () => { networkCalls += 1; throw new Error('discovery must remain behind the memory gate'); },
@@ -358,7 +360,7 @@ test('task_answer rejects a replacement capability catalog before mutating intak
       cwd: root,
       task: 'Implement the catalog-bound beacon',
       profileHints: { taskType: 'build' },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'catalog-binding' },
       skillDiscoveryMode: 'off',
     });
@@ -371,7 +373,7 @@ test('task_answer rejects a replacement capability catalog before mutating intak
       sessionId: prepared.intake.sessionId,
       questionId: 'target',
       value: 'src/beacon.ts',
-      capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
       skillDiscoveryMode: 'off',
     }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
     assert.deepEqual(rejectedAnswerState(database), before);
@@ -390,7 +392,7 @@ test('task_answer rejects a changed manifest before mutating the bound intake ru
       cwd: root,
       task: 'Implement the manifest-bound component',
       profileHints: { taskType: 'build' },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'manifest-binding' },
       skillDiscoveryMode: 'off',
     });
@@ -417,7 +419,7 @@ test('task_answer rejects a changed manifest before mutating the bound intake ru
       sessionId: prepared.intake.sessionId,
       questionId: 'target',
       value: 'src/component.ts',
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'off',
     }), (error: unknown) => error instanceof Error
       && 'code' in error
@@ -454,7 +456,7 @@ test('task_answer rejects a changed discovery request before mutation or network
       cwd: root,
       task: 'Implement the discovery-bound component',
       profileHints: { taskType: 'build' },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'discovery-binding' },
       skillDiscoveryMode: 'off',
     });
@@ -478,7 +480,7 @@ test('task_answer rejects a changed discovery request before mutation or network
       sessionId: prepared.intake.sessionId,
       questionId: 'target',
       value: 'src/component.ts',
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'official',
       fetchImpl: async () => { networkCalls += 1; throw new Error('discovery must not run'); },
     }), (error: unknown) => error instanceof Error
@@ -518,6 +520,7 @@ test('reordered capability descriptors replay the same task run', async () => {
     skillDiscoveryMode: 'off' as const,
   };
   const firstCatalog = [
+    SOUL_CAPABILITY,
     { kind: 'skill', name: 'memory-reasoning', description: 'Reason about stored memory.' },
     { kind: 'skill', name: 'kiokuko-ui-design-soul', description: 'Review UI design.' },
   ];
@@ -542,7 +545,7 @@ test('requestId identifies one logical task request and conflicts on changed bou
     cwd: root,
     task: 'Research the request identity boundary',
     profileHints: { taskType: 'research' as const, target: 'request identity', expected: 'one run per logical request', constraints: null },
-    capabilities: [] as unknown[],
+    capabilities: [SOUL_CAPABILITY] as unknown[],
     client: { kind: 'test', sessionId: 'request-identity' },
     skillDiscoveryMode: 'off' as const,
   };
@@ -594,7 +597,7 @@ test('task_answer rejects a changed bound context budget before mutating intake'
       cwd: root,
       task: 'Implement the context-budget beacon',
       profileHints: { taskType: 'build' },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       maxContextChars: 4_000,
       skillDiscoveryMode: 'off',
     });
@@ -608,7 +611,7 @@ test('task_answer rejects a changed bound context budget before mutating intake'
       sessionId: prepared.intake.sessionId,
       questionId: 'target',
       value: 'src/beacon.ts',
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       maxContextChars: 4_001,
       skillDiscoveryMode: 'off',
     }), (error: unknown) => error instanceof Error
@@ -623,7 +626,7 @@ test('task_answer rejects a changed bound context budget before mutating intake'
       sessionId: prepared.intake.sessionId,
       questionId: 'target',
       value: 'src/beacon.ts',
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       maxContextChars: 4_000,
       skillDiscoveryMode: 'off',
     });
@@ -643,7 +646,7 @@ test('task_answer rejects an unregistered cwd without registering or touching ei
       cwd: root,
       task: 'Implement the cwd-bound beacon',
       profileHints: { taskType: 'build' },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'off',
     });
     assert.equal(prepared.intake.question?.id, 'target');
@@ -656,7 +659,7 @@ test('task_answer rejects an unregistered cwd without registering or touching ei
       sessionId: prepared.intake.sessionId,
       questionId: 'target',
       value: 'src/beacon.ts',
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'off',
     }), (error: unknown) => error instanceof Error
       && 'code' in error
@@ -677,7 +680,7 @@ test('task_answer rejects a cwd rebound to another repository without touching e
       cwd: root,
       task: 'Implement the rebound-safe beacon',
       profileHints: { taskType: 'build' },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'off',
     });
     assert.equal(prepared.intake.question?.id, 'target');
@@ -715,7 +718,7 @@ test('task_answer rejects a cwd rebound to another repository without touching e
       sessionId: prepared.intake.sessionId,
       questionId: 'target',
       value: 'src/beacon.ts',
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'off',
     }), (error: unknown) => error instanceof Error
       && 'code' in error
@@ -737,7 +740,7 @@ test('task_answer rechecks the cwd binding inside the intake mutation transactio
       cwd: root,
       task: 'Implement the rebound-race-safe beacon',
       profileHints: { taskType: 'build' },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'off',
     });
     assert.equal(prepared.intake.question?.id, 'target');
@@ -783,7 +786,7 @@ test('task_answer rechecks the cwd binding inside the intake mutation transactio
       sessionId: prepared.intake.sessionId,
       questionId: 'target',
       value: 'src/beacon.ts',
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       skillDiscoveryMode: 'off',
     }), (error: unknown) => error instanceof Error
       && 'code' in error
@@ -815,7 +818,7 @@ test('requestId rejects empty, padded, control-bearing, and oversized values bef
         cwd: root,
         task: 'Research request ID validation',
         profileHints: { taskType: 'research', target: 'request ID', expected: 'validation', constraints: null },
-        capabilities: [],
+        capabilities: [SOUL_CAPABILITY],
         skillDiscoveryMode: 'off',
       }), (error: unknown) => error instanceof Error
         && 'code' in error
@@ -836,13 +839,13 @@ test('does not require memory-reasoning for a ready repair task without actionab
       cwd: root,
       task: 'Implement a new beacon',
       profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'empty' },
       skillDiscoveryMode: 'off',
     });
     assert.equal(prepared.context?.items.length, 0);
     assert.equal(prepared.context?.deliveryId, null);
-    assert.equal(prepared.capabilities.recommendations.some((item) => item.required === true), false);
+    assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.required === true), false);
     assert.deepEqual(prepared.memoryPolicy, { memoryReasoningRequired: false });
     assert.equal(prepared.nextAction, 'proceed');
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
@@ -862,7 +865,7 @@ test('withholds actionable memory before external Skill discovery and continues 
       cwd: root,
       task: 'Implement a Svelte component using the beacon workflow',
       profileHints: { taskType: 'build', target: 'Svelte beacon component', expected: 'tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'seed-no-external-fallback' },
       skillDiscoveryMode: 'off',
     });
@@ -880,7 +883,7 @@ test('withholds actionable memory before external Skill discovery and continues 
       cwd: root,
       task: 'Implement a Svelte component using the beacon workflow',
       profileHints: { taskType: 'build', target: 'Svelte beacon component', expected: 'tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'missing-no-external-fallback' },
       skillDiscoveryMode: 'official',
       fetchImpl: async () => { networkCalls += 1; throw new Error('external discovery must not run'); },
@@ -914,7 +917,7 @@ test('exact task_prepare replay uses current helpful feedback for the bound weak
       cwd: root,
       task: 'beacon',
       profileHints: { taskType: 'build' as const, target: 'src/new.ts', expected: 'passes', constraints: null },
-      capabilities: [] as unknown[],
+      capabilities: [SOUL_CAPABILITY] as unknown[],
       client: { kind: 'test', sessionId: 'same-run-helpful-replay' },
       skillDiscoveryMode: 'off' as const,
     };
@@ -970,7 +973,7 @@ test('exact task_prepare replay reranks when new actionable ordinary memory appe
       cwd: root,
       task: 'beacon',
       profileHints: { taskType: 'build' as const, target: 'src/new.ts', expected: 'passes', constraints: null },
-      capabilities: [] as unknown[],
+      capabilities: [SOUL_CAPABILITY] as unknown[],
       client: { kind: 'test', sessionId: 'same-run-new-memory-replay' },
       skillDiscoveryMode: 'off' as const,
     };
@@ -1021,7 +1024,7 @@ test('exact task_prepare replay gates the current ledger-revised profile', async
       cwd: root,
       task: 'Research the current profile replay sentinel',
       profileHints: { taskType: 'research' as const, target: 'current profile replay sentinel', expected: 'verified result', constraints: null },
-      capabilities: [] as unknown[],
+      capabilities: [SOUL_CAPABILITY] as unknown[],
       client: { kind: 'test', sessionId: 'current-profile-replay' },
       skillDiscoveryMode: 'off' as const,
     };
@@ -1062,7 +1065,7 @@ test('exact task_prepare replay rejects a run completed by memory_checkpoint', a
     cwd: root,
     task: 'Research the terminal replay boundary',
     profileHints: { taskType: 'research' as const, target: 'terminal replay', expected: 'one active run', constraints: null },
-    capabilities: [] as unknown[],
+    capabilities: [SOUL_CAPABILITY] as unknown[],
     client: { kind: 'test', sessionId: 'terminal-replay' },
     skillDiscoveryMode: 'off' as const,
   };
@@ -1133,7 +1136,7 @@ test('missing memory-reasoning still discovers reference-only external skills wh
       cwd: root,
       task: 'Implement a Svelte component',
       profileHints: { taskType: 'build', target: 'Svelte component', expected: 'tests pass', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'external-reference-not-memory' },
       skillDiscoveryMode: 'official',
       fetchImpl,
@@ -1179,7 +1182,7 @@ test('discovery rolls back external imports when the task run becomes terminal d
         cwd: root,
         task: 'Implement a Svelte component',
         profileHints: { taskType: 'build', target: 'Svelte component', expected: 'tests pass', constraints: null },
-        capabilities: [],
+        capabilities: [SOUL_CAPABILITY],
         client: { kind: 'test', sessionId: 'terminal-during-discovery' },
         skillDiscoveryMode: 'official',
         fetchImpl,
@@ -1219,7 +1222,7 @@ test('discovery rolls back external imports when the live manifest changes durin
         cwd: root,
         task: 'Implement a Svelte component',
         profileHints: { taskType: 'build', target: 'Svelte component', expected: 'tests pass', constraints: null },
-        capabilities: [],
+        capabilities: [SOUL_CAPABILITY],
         client: { kind: 'test', sessionId: 'manifest-during-discovery' },
         skillDiscoveryMode: 'official',
         fetchImpl,
@@ -1247,7 +1250,7 @@ test('defers malformed manifest parsing while intake needs an answer and canonic
     requestId: 'memory-policy-deferred-manifest',
     cwd: root,
     task: 'Implement the requested change',
-    capabilities: [] as unknown[],
+    capabilities: [SOUL_CAPABILITY] as unknown[],
     skillDiscoveryMode: 'official' as const,
     fetchImpl: async () => { networkCalls += 1; throw new Error('discovery must wait for intake'); },
   };
@@ -1299,7 +1302,7 @@ test('exposes only code-point-bounded scoped context for prepared memory', async
       cwd: root,
       task: 'abc',
       profileHints: { taskType: 'research', target: 'abc', expected: 'bounded reference', constraints: null },
-      capabilities: [],
+      capabilities: [SOUL_CAPABILITY],
       maxContextChars: 5,
       client: { kind: 'test', sessionId: 'unicode-reference-budget' },
       skillDiscoveryMode: 'off',

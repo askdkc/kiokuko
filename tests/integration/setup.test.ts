@@ -12,11 +12,17 @@ import {
 } from '../../src/agent-file/atomic-write.js';
 import { buildCli } from '../../src/cli.js';
 import { useRepository } from '../../src/commands/use.js';
-import { setupGlobalClients } from '../../src/commands/setup.js';
+import { setupGlobalClients, type SetupOptions } from '../../src/commands/setup.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { GLOBAL_REPOSITORY_ID, GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
 import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
+import {
+  STANDARD_ENNO_SKILL_FILES,
+  STANDARD_FUNCTION_SKILL_FILES,
+  STANDARD_SOUL_SKILL_FILES,
+  STANDARD_UI_SKILL_FILES,
+} from '../../src/setup/standard-skills.js';
 import {
   LEGACY_CLAUDE_PROMPT_HOOK,
   legacyOpenCodeLoopGuardFixture,
@@ -24,10 +30,16 @@ import {
 
 const STANDARD_SKILL_FIXTURES = [{
   name: 'kiokuko-ui-design-soul',
-  files: ['SKILL.md', 'references/ui-checklist.md'],
+  files: STANDARD_UI_SKILL_FILES,
 }, {
   name: 'kiokuko-single-purpose-functions',
-  files: ['SKILL.md', 'references/kiokuko-patterns.md', 'references/review-checklist.md'],
+  files: STANDARD_FUNCTION_SKILL_FILES,
+}, {
+  name: 'kiokuko-enno-oduno',
+  files: STANDARD_ENNO_SKILL_FILES,
+}, {
+  name: 'kiokuko-soul',
+  files: STANDARD_SOUL_SKILL_FILES,
 }] as const;
 
 function standardSkillPaths(
@@ -136,6 +148,8 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     await assert.rejects(access(String(dryRun.data.databasePath)));
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md')));
+    await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-enno-oduno', 'SKILL.md')));
+    await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-soul', 'SKILL.md')));
 
     const first = await runCliJson(platform, env, ['setup', '--json']);
     assert.equal(first.ok, true);
@@ -145,6 +159,8 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     await access(path.join(hermesHome, 'config.yaml'));
     await access(path.join(hermesHome, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'));
     await access(path.join(hermesHome, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'));
+    await access(path.join(hermesHome, 'skills', 'kiokuko-enno-oduno', 'SKILL.md'));
+    await access(path.join(hermesHome, 'skills', 'kiokuko-soul', 'SKILL.md'));
     assert.match(await readFile(path.join(hermesHome, 'config.yaml'), 'utf8'), /command: kiokuko/);
     assert.match(await readFile(path.join(hermesHome, 'config.yaml'), 'utf8'), /command: other/);
     await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));
@@ -191,15 +207,15 @@ test('CLI uses hermes config path to select a profile when active_profile is una
   await assert.rejects(access(path.join(temporary.home, '.hermes', 'config.yaml')));
 });
 
-test('CLI Claude setup does not create or manage settings.json hooks', async () => {
+test('CLI Claude setup enables Enno-Oduno for a new installation', async () => {
   const temporary = await temporaryEnvironment('cli-no-claude-hook-management');
   const result = await runCliJson('linux', temporary.env, [
     'setup', '--clients', 'claude', '--no-standard-skills', '--json',
   ]);
   assert.equal(result.ok, true);
   const files = result.data.files as Array<{ purpose: string }>;
-  assert.deepEqual(files.map((file) => file.purpose).sort(), ['instructions', 'mcp-config']);
-  await assert.rejects(access(path.join(temporary.home, '.claude', 'settings.json')));
+  assert.deepEqual(files.map((file) => file.purpose).sort(), ['enno-hook', 'instructions', 'mcp-config']);
+  assert.match(await readFile(path.join(temporary.home, '.claude', 'settings.json'), 'utf8'), /enno hook --client claude/u);
 });
 
 test('CLI batch setup persists an explicit community discovery choice', async () => {
@@ -252,6 +268,7 @@ test('Windows OpenCode dry-run plans every artifact below the XDG-style global r
     [
       path.win32.join(canonicalRoot, 'AGENTS.md'),
       path.win32.join(canonicalRoot, 'opencode.json'),
+      path.win32.join(canonicalRoot, 'plugins', 'kiokuko-enno-oduno.js'),
       ...standardSkillPaths(path.win32.join(canonicalRoot, 'skills'), path.win32.join),
     ].sort(),
   );
@@ -291,6 +308,18 @@ test('Windows OpenCode dry-run honors XDG_CONFIG_HOME before APPDATA', async () 
     'kiokuko-single-purpose-functions',
     'SKILL.md',
   )));
+  assert.ok(result.files.some((file) => file.path === path.win32.join(
+    xdgRoot,
+    'skills',
+    'kiokuko-enno-oduno',
+    'SKILL.md',
+  )));
+  assert.ok(result.files.some((file) => file.path === path.win32.join(
+    xdgRoot,
+    'skills',
+    'kiokuko-soul',
+    'SKILL.md',
+  )));
 });
 
 test('setup safely merges Codex, OpenCode, and Claude Code global configuration and is idempotent', async () => {
@@ -315,10 +344,11 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     databasePath: temporary.databasePath,
   });
   assert.equal(first.standardSkills, true);
-  assert.equal(first.files.length, 27);
+  assert.equal(first.files.length, 10 + standardSkillPaths('ignored').length * 4);
   assert.equal(first.files.filter((file) => file.action === 'updated').length, 6);
-  assert.equal(first.files.filter((file) => file.action === 'created').length, 21);
-  assert.equal(first.files.filter((file) => file.purpose === 'standard-skill').length, 20);
+  assert.equal(first.files.filter((file) => file.action === 'created').length, 4 + standardSkillPaths('ignored').length * 4);
+  assert.equal(first.files.filter((file) => file.purpose === 'standard-skill').length, standardSkillPaths('ignored').length * 4);
+  assert.match(first.nextStep, /run \/hooks in Codex and trust the new Kiokuko Stop hook/u);
 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
   assert.match(codexConfig, /^model = "gpt-test"/);
@@ -343,7 +373,9 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     args: ['mcp'],
     env: { KIOKUKO_SKILL_DISCOVERY: 'official' },
   });
-  await assert.rejects(access(path.join(claudeDirectory, 'settings.json')));
+  assert.match(await readFile(path.join(claudeDirectory, 'settings.json'), 'utf8'), /enno hook --client claude/u);
+  assert.match(await readFile(path.join(codexDirectory, 'hooks.json'), 'utf8'), /enno hook --client codex/u);
+  assert.match(await readFile(path.join(openCodeDirectory, 'plugins', 'kiokuko-enno-oduno.js'), 'utf8'), /session\.idle/u);
   const hermesConfig = await readFile(path.join(temporary.home, '.hermes', 'config.yaml'), 'utf8');
   assert.match(hermesConfig, /Managed by `kiokuko setup`\./);
   assert.match(hermesConfig, /command: kiokuko/);
@@ -374,6 +406,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
       await readFile(path.join(skillsDirectory, 'kiokuko-single-purpose-functions', 'references', 'review-checklist.md'), 'utf8'),
       /Function-contract coding and review checklist/,
     );
+    assert.match(
+      await readFile(path.join(skillsDirectory, 'kiokuko-enno-oduno', 'SKILL.md'), 'utf8'),
+      /Enno-Oduno alone owns this state machine/,
+    );
   }
 
   for (const instructionsPath of [path.join(codexDirectory, 'AGENTS.md'), path.join(openCodeDirectory, 'AGENTS.md'), path.join(claudeDirectory, 'CLAUDE.md')]) {
@@ -391,9 +427,22 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /curator_check/);
     assert.match(instructions, /curator_globalize/);
     assert.match(instructions, /Optional external skill discovery is feature-flagged and reference-only/);
+    assert.match(instructions, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/iu);
+    assert.match(instructions, /`task_prepare` is the Enno-Oduno orchestration entry point/u);
+    assert.match(instructions, /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
+    assert.match(instructions, /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
+    assert.match(instructions, /read and apply `kiokuko-enno-oduno` after the master SOUL/u);
+    assert.match(instructions, /Zenki must read the master SOUL and then the compact `kiokuko-single-purpose-functions` index/u);
+    assert.match(instructions, /one to three versioned `expertRefs`/u);
+    assert.match(instructions, /Goki receives only approved, already-decomposed WorkUnits/u);
+    assert.match(instructions, /Goki can start only after Zenki submits a complete WorkPlan/u);
+    assert.match(instructions, /A failed review never returns directly to Goki/u);
+    assert.match(instructions, /`ennoOduno\.orchestrationId`/u);
+    assert.match(instructions, /never select a repository-wide latest run/u);
+    assert.match(instructions, /Ambiguous candidates fail open without binding/u);
     assert.match(instructions, /Inspect `nextAction` after every `task_prepare` and `task_answer` response/);
     assert.match(instructions, /`memory-reasoning` is missing or unknown.*`nextAction=proceed`/u);
-    assert.match(instructions, /`required_capability_unavailable` remains a hard stop only for another explicitly required capability/);
+    assert.match(instructions, /`required_capability_unavailable` is a hard stop for missing or unknown `kiokuko-soul`/);
     assert.match(instructions, /created by `kiokuko-curator` and matching the current deterministic Curator projection is `system_verified`/);
     assert.match(instructions, /does not by itself require `memory-reasoning`/);
     assert.match(instructions, /continue from repository evidence/);
@@ -437,7 +486,48 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     databasePath: temporary.databasePath,
   });
   assert.ok(second.files.every((file) => file.action === 'unchanged'));
-  assert.deepEqual(await Promise.all(second.files.map((file) => readFile(file.path, 'utf8'))), before);
+  assert.doesNotMatch(second.nextStep, /\/hooks/u);
+  assert.deepEqual(await Promise.all(first.files.map((file) => readFile(file.path, 'utf8'))), before);
+});
+
+test('setup keeps upgrades unchanged until explicit Enno-Oduno ON and OFF preserves user hooks', async () => {
+  const temporary = await temporaryEnvironment('enno-upgrade-toggle');
+  const options: SetupOptions = {
+    clients: ['codex', 'opencode', 'claude'],
+    platform: 'linux' as const,
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  };
+  await setupGlobalClients({ ...options, ennoOduno: 'off' });
+  const codexHooks = path.join(temporary.home, '.codex', 'hooks.json');
+  const claudeSettings = path.join(temporary.home, '.claude', 'settings.json');
+  const openCodePlugin = path.join(temporary.config, 'opencode', 'plugins', 'kiokuko-enno-oduno.js');
+  for (const filePath of [codexHooks, claudeSettings, openCodePlugin]) await assert.rejects(access(filePath));
+
+  const preserved = await setupGlobalClients(options);
+  assert.equal(preserved.ennoOduno, 'new-installs-only');
+  assert.equal(preserved.files.some((file) => file.purpose === 'enno-hook'), false);
+  for (const filePath of [codexHooks, claudeSettings, openCodePlugin]) await assert.rejects(access(filePath));
+
+  const enabled = await setupGlobalClients({ ...options, ennoOduno: 'on' });
+  assert.equal(enabled.files.filter((file) => file.purpose === 'enno-hook').length, 3);
+  assert.match(enabled.nextStep, /run \/hooks in Codex and trust the new Kiokuko Stop hook/u);
+  const codex = JSON.parse(await readFile(codexHooks, 'utf8')) as { hooks: { Stop: unknown[] } };
+  const claude = JSON.parse(await readFile(claudeSettings, 'utf8')) as { hooks: { Stop: unknown[] } };
+  codex.hooks.Stop.unshift({ matcher: 'user', hooks: [{ type: 'command', command: 'user-codex-hook' }] });
+  claude.hooks.Stop.unshift({ matcher: 'user', hooks: [{ type: 'command', command: 'user-claude-hook' }] });
+  await writeFile(codexHooks, `${JSON.stringify(codex, null, 2)}\n`);
+  await writeFile(claudeSettings, `${JSON.stringify(claude, null, 2)}\n`);
+
+  const disabled = await setupGlobalClients({ ...options, ennoOduno: 'off' });
+  assert.equal(disabled.files.filter((file) => file.purpose === 'enno-hook').length, 3);
+  assert.doesNotMatch(disabled.nextStep, /\/hooks/u);
+  assert.match(await readFile(codexHooks, 'utf8'), /user-codex-hook/u);
+  assert.doesNotMatch(await readFile(codexHooks, 'utf8'), /enno hook/u);
+  assert.match(await readFile(claudeSettings, 'utf8'), /user-claude-hook/u);
+  assert.doesNotMatch(await readFile(claudeSettings, 'utf8'), /enno hook/u);
+  await assert.rejects(access(openCodePlugin));
 });
 
 test('setup removes exact retired Claude and OpenCode automation once, then is idempotent', async () => {
@@ -467,12 +557,14 @@ test('setup removes exact retired Claude and OpenCode automation once, then is i
   });
   assert.deepEqual(
     first.files.filter((file) => file.purpose === 'legacy-cleanup').map((file) => ({ client: file.client, action: file.action })),
-    [{ client: 'opencode', action: 'deleted' }, { client: 'claude', action: 'updated' }],
+    [{ client: 'opencode', action: 'deleted' }],
   );
+  assert.ok(first.files.some((file) => file.client === 'claude' && file.purpose === 'enno-hook' && file.action === 'updated'));
   await assert.rejects(access(pluginPath));
-  const cleaned = JSON.parse(await readFile(settingsPath, 'utf8')) as { permissions: object; hooks: { UserPromptSubmit: unknown[] } };
+  const cleaned = JSON.parse(await readFile(settingsPath, 'utf8')) as { permissions: object; hooks: { UserPromptSubmit: unknown[]; Stop: unknown[] } };
   assert.deepEqual(cleaned.permissions, { allow: ['Read'] });
   assert.deepEqual(cleaned.hooks.UserPromptSubmit, [{ matcher: 'human', hooks: [{ type: 'command', command: 'echo keep' }] }]);
+  assert.equal(cleaned.hooks.Stop.length, 1);
 
   const second = await setupGlobalClients({
     clients: ['opencode', 'claude'],
@@ -675,7 +767,7 @@ test('setup rejects malformed or duplicate conflict-replacement authorization be
   }
 });
 
-test('setup does not inspect or modify existing Claude settings', async () => {
+test('new Claude setup preserves existing settings while adding only the managed Stop hook', async () => {
   const temporary = await temporaryEnvironment('claude-settings-preserved');
   const claudeDirectory = path.join(temporary.home, '.claude');
   const settingsPath = path.join(claudeDirectory, 'settings.json');
@@ -691,8 +783,11 @@ test('setup does not inspect or modify existing Claude settings', async () => {
     standardSkills: false,
   });
 
-  assert.deepEqual(result.files.map((file) => file.purpose).sort(), ['instructions', 'mcp-config']);
-  assert.equal(await readFile(settingsPath, 'utf8'), settings);
+  assert.deepEqual(result.files.map((file) => file.purpose).sort(), ['enno-hook', 'instructions', 'mcp-config']);
+  const updated = JSON.parse(await readFile(settingsPath, 'utf8')) as { permissions: object; customSetting: object; hooks: { Stop: unknown[] } };
+  assert.deepEqual(updated.permissions, { allow: ['Bash(git status)'] });
+  assert.deepEqual(updated.customSetting, { keep: true });
+  assert.equal(updated.hooks.Stop.length, 1);
 });
 
 test('setup dry-run validates but writes no files or database', async () => {
@@ -752,9 +847,9 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
-    `human project rule\n${staleAgent.replace('kiokuko-template-version: 10', 'kiokuko-template-version: 9')}`,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 14', 'kiokuko-template-version: 13')}`,
   );
-  await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 9 }, null, 2)}\n`);
+  await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 12 }, null, 2)}\n`);
 
   await initializeDatabase({ databasePath: temporary.databasePath });
   const locationOnlyCanonicalRoot = await realpath(locationOnlyRoot);
@@ -801,7 +896,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   await assert.rejects(access(path.join(locationOnlyRoot, '.kiokuko.json')));
   await assert.rejects(access(path.join(locationOnlyRoot, 'AGENTS.md')));
   assert.equal(await readFile(locationOnlyGitignorePath, 'utf8'), 'node_modules/\r\n');
-  assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 9/u);
+  assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 13/u);
 
   const result = await setupGlobalClients({
     clients: [],
@@ -841,11 +936,11 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.match(refreshedAgent, /kiokuko-template-version: 10/u);
-  assert.equal(refreshedAgent.includes('kiokuko-template-version: 9'), false);
+  assert.match(refreshedAgent, /kiokuko-template-version: 14/u);
+  assert.equal(refreshedAgent.includes('kiokuko-template-version: 13'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
-  assert.equal(refreshedBinding.templateVersion, 10);
+  assert.equal(refreshedBinding.templateVersion, 14);
 
   const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
@@ -858,7 +953,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryId: 'repo_setup_refresh_location_only',
     workspace: 'project:setup-refresh-location-only',
     agentFile: 'AGENTS.md',
-    templateVersion: 10,
+    templateVersion: 14,
   });
   assert.equal(
     await readFile(locationOnlyGitignorePath, 'utf8'),
@@ -924,32 +1019,12 @@ test('setup resolves a sticky named Hermes profile without crossing into another
     action: 'created',
     purpose: 'mcp-config',
     client: 'hermes',
-  }, {
-    path: path.join(mainProfile, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'),
-    action: 'created',
-    purpose: 'standard-skill',
-    client: 'hermes',
-  }, {
-    path: path.join(mainProfile, 'skills', 'kiokuko-ui-design-soul', 'references', 'ui-checklist.md'),
-    action: 'created',
-    purpose: 'standard-skill',
-    client: 'hermes',
-  }, {
-    path: path.join(mainProfile, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'),
-    action: 'created',
-    purpose: 'standard-skill',
-    client: 'hermes',
-  }, {
-    path: path.join(mainProfile, 'skills', 'kiokuko-single-purpose-functions', 'references', 'kiokuko-patterns.md'),
-    action: 'created',
-    purpose: 'standard-skill',
-    client: 'hermes',
-  }, {
-    path: path.join(mainProfile, 'skills', 'kiokuko-single-purpose-functions', 'references', 'review-checklist.md'),
-    action: 'created',
-    purpose: 'standard-skill',
-    client: 'hermes',
-  }]);
+  }, ...standardSkillPaths(path.join(mainProfile, 'skills')).map((filePath) => ({
+    path: filePath,
+    action: 'created' as const,
+    purpose: 'standard-skill' as const,
+    client: 'hermes' as const,
+  }))]);
   assert.match(result.nextStep, /Hermes Agent/);
   assert.match(result.nextStep, /\/reload-mcp/);
   await access(path.join(mainProfile, 'config.yaml'));
@@ -961,10 +1036,16 @@ test('setup can skip new standard-skill installation without deleting an existin
   const temporary = await temporaryEnvironment('no-standard-skills');
   const skillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md');
   const functionSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md');
+  const ennoSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-enno-oduno', 'SKILL.md');
+  const soulSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-soul', 'SKILL.md');
   await mkdir(path.dirname(skillPath), { recursive: true });
   await mkdir(path.dirname(functionSkillPath), { recursive: true });
+  await mkdir(path.dirname(ennoSkillPath), { recursive: true });
+  await mkdir(path.dirname(soulSkillPath), { recursive: true });
   await writeFile(skillPath, 'human-owned skill\n');
   await writeFile(functionSkillPath, 'human-owned function skill\n');
+  await writeFile(ennoSkillPath, 'human-owned Enno skill\n');
+  await writeFile(soulSkillPath, 'human-owned SOUL skill\n');
 
   const result = await setupGlobalClients({
     clients: ['codex'],
@@ -978,6 +1059,8 @@ test('setup can skip new standard-skill installation without deleting an existin
   assert.equal(result.files.some((file) => file.purpose === 'standard-skill'), false);
   assert.equal(await readFile(skillPath, 'utf8'), 'human-owned skill\n');
   assert.equal(await readFile(functionSkillPath, 'utf8'), 'human-owned function skill\n');
+  assert.equal(await readFile(ennoSkillPath, 'utf8'), 'human-owned Enno skill\n');
+  assert.equal(await readFile(soulSkillPath, 'utf8'), 'human-owned SOUL skill\n');
 });
 
 test('setup upgrades an older managed standard skill and then reports it unchanged', async () => {
@@ -996,15 +1079,22 @@ test('setup upgrades an older managed standard skill and then reports it unchang
     env: temporary.env,
     databasePath: temporary.databasePath,
   });
-  assert.deepEqual(
-    first.files.filter((file) => file.purpose === 'standard-skill').map((file) => file.action),
-    ['updated', 'updated', 'created', 'created', 'created'],
-  );
-  assert.match(await readFile(skillPath, 'utf8'), /description: Prevent common UI\/UX failures/);
+  const standardSkillActions = first.files.filter((file) => file.purpose === 'standard-skill').map((file) => file.action);
+  assert.equal(standardSkillActions.filter((action) => action === 'updated').length, 2);
+  assert.equal(standardSkillActions.filter((action) => action === 'created').length, standardSkillPaths('ignored').length - 2);
+  assert.match(await readFile(skillPath, 'utf8'), /description: Prevent common UI and UX failures/);
   assert.match(await readFile(checklistPath, 'utf8'), /Eight-principle map/);
   assert.match(
     await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'), 'utf8'),
-    /one cohesive contract per function/,
+    /one cohesive externally observable responsibility/,
+  );
+  assert.match(
+    await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-enno-oduno', 'SKILL.md'), 'utf8'),
+    /Enno-Oduno alone owns this state machine/,
+  );
+  assert.match(
+    await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-soul', 'SKILL.md'), 'utf8'),
+    /mandatory first-read SOUL router/,
   );
 
   const second = await setupGlobalClients({
@@ -1138,11 +1228,13 @@ test('setup exposes the initiating failure and every failed restore after attemp
     assert.equal(error.errors[0], initiatingFailure);
     assert.equal(error.errors[1], agentRestoreFailure);
     assert.equal(error.errors[2], configRestoreFailure);
+    assert.equal(error.errors[3], configRestoreFailure);
     return true;
   });
 
   assert.deepEqual(restoreAttempts.map((filePath) => path.basename(filePath)), [
     'AGENTS.md',
+    'kiokuko-enno-oduno.js',
     'opencode.json',
   ]);
 });
@@ -1764,6 +1856,7 @@ test('setup resolves the Hermes profile once for config and standard-skill desti
   await access(path.join(profile, 'config.yaml'));
   await access(path.join(profile, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'));
   await access(path.join(profile, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'));
+  await access(path.join(profile, 'skills', 'kiokuko-enno-oduno', 'SKILL.md'));
 });
 
 test('setup rejects invalid UTF-8 managed text before database mutation', async () => {

@@ -4,10 +4,10 @@ Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-sco
 
 | Client | Global MCP registration | Global instructions | Managed standard skills | Hooks/plugins |
 |---|---|---|---|---|
-| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/{kiokuko-ui-design-soul,kiokuko-single-purpose-functions}` | not installed |
-| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/{kiokuko-ui-design-soul,kiokuko-single-purpose-functions}` | none |
-| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/{kiokuko-ui-design-soul,kiokuko-single-purpose-functions}` | none |
-| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/{kiokuko-ui-design-soul,kiokuko-single-purpose-functions}` | none |
+| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | not installed |
+| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
+| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
+| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | not installed | none |
 
 OpenCode global configuration follows XDG paths on every platform:
@@ -19,8 +19,8 @@ Codex's current official documentation supports stdio MCP servers and global
 configuration. OpenCode's current official documentation supports local MCP
 commands and global rules. Claude Code supports user-scoped stdio MCP servers,
 global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
-instruction surfaces and installs the bundled `kiokuko-ui-design-soul` and
-`kiokuko-single-purpose-functions` skills in the selected supported clients by
+instruction surfaces and installs the bundled `kiokuko-soul`, `kiokuko-enno-oduno`,
+`kiokuko-single-purpose-functions`, and `kiokuko-ui-design-soul` skills in the selected supported clients by
 default. The skills are copied from a fixed package manifest and never downloaded
 during setup. `--no-standard-skills`
 skips placement without deleting an existing copy.
@@ -69,10 +69,26 @@ lifecycle after one-time setup; it does not mean Kiokuko intercepts every prompt
 or response. For Hermes specifically, automatic/model use is best effort from
 MCP tool descriptions.
 
+The `kiokuko-soul` standard skill is the canonical first-read router. Managed
+instruction surfaces require it before another bundled Kiokuko skill. Every
+`task_prepare` call requires `soulRead: true` as an explicit claim that the
+complete local Skill was read for that logical request, and the capability gate
+requires an exact local `kiokuko-soul` descriptor for every task. Omission or
+false attestation is invalid; missing or unknown capability availability returns
+`required_capability_unavailable` even while intake needs an answer. A
+namespaced, fetched, or reference-only skill does not satisfy the required
+master SOUL. The boolean attestation is enforceable protocol evidence, not
+remote proof that a model understood or followed the Skill.
+
 The UI standard skill is intended for explicit UI, UX, frontend, screen, SwiftUI,
 accessibility, and equivalent Japanese-language tasks. `task_prepare` treats it
 as a first-party recommendation only for such concrete terms; generic `design`,
 backend-only work, and image-only generation do not trigger it.
+
+The UI and function standard Skills use progressive disclosure. Their short
+`SKILL.md` files are mandatory indexes, while versioned expert fragments are
+selected for the concrete component, function, design decision, or WorkUnit.
+Normal execution reads one to three fragments rather than every reference.
 
 The single-purpose-functions standard skill applies to writing, modifying,
 reviewing, debugging, and refactoring code across languages and repositories.
@@ -82,6 +98,16 @@ framework. `task_prepare` treats it as a first-party recommendation for concrete
 coding terms in English or Japanese. Explicit no-code, documentation-only, and
 image-only work do not trigger it. Kiokuko does not claim that availability alone
 forces model use.
+
+The Enno-Oduno standard skill is the role-level controller contract. Every
+Enno-Oduno directive and WorkUnit retains `kiokuko-soul` first. Enno-Oduno
+directives then require `kiokuko-enno-oduno` during intake, confirmation, and
+final review. The controller skill itself is not inserted into Zenki's WorkUnit
+Skill snapshot; Zenki continues to require the single-purpose-functions skill
+for every code-changing plan. Every code-changing WorkUnit persists one to
+three registered `expertRefs`; UI WorkUnits include at least one `code.*` and
+one `ui.*` expert. Unknown, duplicate, missing, or oversized expert mixtures
+are rejected before Skill discovery or repository mutation.
 
 Kiokuko does not install hooks or plugins in any supported client. During an
 upgrade, setup removes only the byte-exact retired OpenCode guard and the one
@@ -115,23 +141,22 @@ The normalized context budget is part of the bound request and every
 
 The legacy ungated `guide context` path was removed. Task-aware context must use
 `task_prepare` / `task_answer` or the generic Agent bridge so the same
-`memory-reasoning` hard gate applies. External Skill discovery belongs to
+`kiokuko-soul` hard gate applies. External Skill discovery belongs to
 `task_prepare` or the explicit `skills find` / `skills import` commands.
 
 Every `task_answer` request must include the exact `run.runId`, capability
 catalog, and context budget supplied to `task_prepare`; clients must not fall
 back to session-only run lookup or replace those bindings between answers. Inspect
-`nextAction` after every `task_prepare` and `task_answer` response. For a ready
-build/debug task with actionable recalled context, the local `memory-reasoning`
-capability is a hard gate. If the catalog says `missing` or `unknown`, Kiokuko
-returns `required_capability_unavailable`; the client must report the boundary
-and stop instead of continuing through `catalog_similarity`, legacy
-instructions, external Skill discovery, fetched skills, or any other fallback.
-When it is available, the client must read the local `memory-reasoning` Skill
-before modifying code and convert recalled claims that affect the task into
-verified premises, falsifiable invariants, concrete counterexamples, and
-regression tests. Catalog availability alone does not satisfy this execution
-contract.
+`nextAction` after every `task_prepare` and `task_answer` response. Every task
+requires the exact local `kiokuko-soul`; missing or unknown availability returns
+`required_capability_unavailable`, even while intake needs an answer. For a ready
+build/debug task with actionable ordinary memory, missing or unknown
+`memory-reasoning` alone withholds that memory and leaves `nextAction=proceed` so
+the client can continue from repository evidence. When it is available, the
+client must read the local `memory-reasoning` Skill before modifying code and
+convert recalled claims that affect the task into verified premises, falsifiable
+invariants, concrete counterexamples, and regression tests. Catalog availability
+alone does not satisfy this execution contract.
 If the client cannot obtain the Kiokuko policy for a non-trivial build/debug
 request, it must also stop and report that boundary. Repository-only
 continuation for such a request is allowed only after the policy establishes

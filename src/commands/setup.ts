@@ -20,12 +20,14 @@ import {
   getClaudeMcpConfigPath,
   getClaudeSkillsDirectory,
   getCodexConfigPath,
+  getCodexHooksPath,
   getCodexInstructionsPath,
   getCodexSkillsDirectory,
   getGlobalDatabasePath,
   getLegacyClaudePromptHookSettingsPath,
   getLegacyOpenCodeLoopGuardPath,
   getOpenCodeConfigDirectory,
+  getOpenCodeEnnoPluginPath,
   getOpenCodeInstructionsPath,
   getOpenCodeSkillsDirectory,
   resolveHermesProfilePaths,
@@ -38,9 +40,9 @@ import { ensureGlobalWorkspace } from '../memory/workspaces.js';
 import { KiokukoError } from '../errors.js';
 import { isSkillDiscoveryMode, normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
 import type { SkillDiscoveryMode } from '../skills/types.js';
-import { renderOpenCodeConfig } from '../setup/opencode-config.js';
-import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
-import { renderClaudeConfig } from '../setup/claude-config.js';
+import { hasCanonicalOpenCodeMcpConfig, renderOpenCodeConfig } from '../setup/opencode-config.js';
+import { hasCanonicalCodexMcpConfig, renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
+import { hasCanonicalClaudeMcpConfig, renderClaudeConfig } from '../setup/claude-config.js';
 import { renderHermesConfig } from '../setup/hermes-config.js';
 import { detectInstalledClients } from '../setup/client-detection.js';
 import {
@@ -61,6 +63,12 @@ import {
   findMissingRepositoryLocations,
   removeMissingRepositoryLocations,
 } from '../repository/binding.js';
+import {
+  renderEnnoStopHook,
+  renderOpenCodeEnnoPlugin,
+  type EnnoSetupMode,
+  type OptionalRenderedFile,
+} from '../setup/enno-client-config.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
@@ -90,7 +98,7 @@ interface PlannedFile {
   original: RegularFileSnapshot | undefined;
   mustRemainAbsent?: readonly string[];
   action: SetupAction;
-  purpose: 'mcp-config' | 'instructions' | 'standard-skill' | 'legacy-cleanup';
+  purpose: 'mcp-config' | 'instructions' | 'standard-skill' | 'legacy-cleanup' | 'enno-hook';
   client: SetupClient;
   report: boolean;
 }
@@ -104,6 +112,7 @@ export interface SetupOptions extends PathEnvironment {
   standardSkills?: boolean;
   skillDiscoveryMode?: SkillDiscoveryMode;
   replaceConflictingMcpServers?: readonly SetupClient[];
+  ennoOduno?: EnnoSetupMode;
 }
 
 export interface SetupCommandDependencies {
@@ -125,6 +134,7 @@ export interface SetupResult {
   files: Array<Pick<PlannedFile, 'path' | 'action' | 'purpose' | 'client'>>;
   projectAgentFiles: ProjectAgentRefreshResult[];
   standardSkills: boolean;
+  ennoOduno: EnnoSetupMode | 'new-installs-only';
   dryRun: boolean;
   nextStep: string;
 }
@@ -145,6 +155,13 @@ export function parseSetupClients(value: string): SetupClient[] {
 export function parseSetupSkillDiscoveryMode(value: string): SkillDiscoveryMode {
   if (!isSkillDiscoveryMode(value)) {
     throw new KiokukoError('VALIDATION_ERROR', 'skill discovery must be off, official, or community');
+  }
+  return value;
+}
+
+export function parseEnnoSetupMode(value: string): EnnoSetupMode {
+  if (value !== 'on' && value !== 'off') {
+    throw new KiokukoError('VALIDATION_ERROR', 'enno-oduno must be on or off');
   }
   return value;
 }
@@ -261,6 +278,16 @@ function replacementClientSet(value: readonly SetupClient[] | undefined): Readon
     );
   }
   return new Set(value);
+}
+
+function wasManagedBeforeSetup(
+  original: string | undefined,
+  replacementAuthorized: boolean,
+  isCanonical: (source: string | undefined) => boolean,
+): boolean {
+  if (original === undefined) return false;
+  if (replacementAuthorized) return true;
+  return isCanonical(original);
 }
 
 /** Ask both setup questions through one readline session so buffered input remains intact. */
@@ -445,24 +472,58 @@ async function planFile(
   };
 }
 
-async function planLegacyClaudeHookCleanup(
+async function planOptionalFile(
   planning: SetupPlanningContext,
-  options: PathEnvironment,
+  filePath: string,
+  client: SetupClient,
+  purpose: PlannedFile['purpose'],
+  render: (existing: string | undefined) => OptionalRenderedFile,
 ): Promise<PlannedFile> {
-  const filePath = getLegacyClaudePromptHookSettingsPath(options);
   const { parentDirectory, snapshot: original } = await readPlannedRegularFile(planning, filePath);
-  const content = original === undefined ? undefined : cleanupLegacyClaudePromptHook(original.content);
-  const changed = original !== undefined && content !== original.content;
+  const rendered = render(original?.content);
+  const action: SetupAction = original === undefined
+    ? rendered.content === undefined ? 'unchanged' : 'created'
+    : rendered.content === undefined ? 'deleted'
+      : rendered.content === original.content ? 'unchanged' : 'updated';
   return {
     path: filePath,
     parentDirectory,
-    content,
+    content: rendered.content,
     mode: original?.mode ?? 0o600,
     original,
-    action: changed ? 'updated' : 'unchanged',
-    purpose: 'legacy-cleanup',
+    action,
+    purpose,
+    client,
+    report: action !== 'unchanged',
+  };
+}
+
+async function planClaudeEnnoHooks(
+  planning: SetupPlanningContext,
+  options: PathEnvironment,
+  command: string,
+  mode: EnnoSetupMode | undefined,
+): Promise<PlannedFile> {
+  const filePath = getLegacyClaudePromptHookSettingsPath(options);
+  const { parentDirectory, snapshot: original } = await readPlannedRegularFile(planning, filePath);
+  const cleaned = original === undefined ? undefined : cleanupLegacyClaudePromptHook(original.content);
+  const rendered = mode === undefined
+    ? { content: cleaned, action: cleaned === original?.content ? 'unchanged' as const : 'updated' as const }
+    : renderEnnoStopHook(cleaned, 'claude', command, mode);
+  const action: SetupAction = original === undefined
+    ? rendered.content === undefined ? 'unchanged' : 'created'
+    : rendered.content === undefined ? 'deleted'
+      : rendered.content === original.content ? 'unchanged' : 'updated';
+  return {
+    path: filePath,
+    parentDirectory,
+    content: rendered.content,
+    mode: original?.mode ?? 0o600,
+    original,
+    action,
+    purpose: mode === undefined ? 'legacy-cleanup' : 'enno-hook',
     client: 'claude',
-    report: changed,
+    report: action !== 'unchanged',
   };
 }
 
@@ -534,7 +595,13 @@ async function restoreFiles(
   return failures;
 }
 
-function setupNextStep(clients: SetupClient[], standardSkills: boolean): string {
+function setupNextStep(clients: SetupClient[], standardSkills: boolean, files: readonly PlannedFile[]): string {
+  const codexHookNeedsTrust = files.some((file) => (
+    file.client === 'codex'
+    && file.purpose === 'enno-hook'
+    && (file.action === 'created' || file.action === 'updated')
+    && file.content?.includes('enno hook --client codex') === true
+  ));
   return clients.map((client) => {
     if (client === 'hermes') {
       return standardSkills
@@ -542,7 +609,10 @@ function setupNextStep(clients: SetupClient[], standardSkills: boolean): string 
         : 'Restart Hermes Agent or use /reload-mcp to reload its profile-scoped MCP configuration.';
     }
     const label = client === 'codex' ? 'Codex' : client === 'opencode' ? 'OpenCode' : 'Claude Code';
-    return `Restart ${label} so it reloads global MCP and instruction configuration${standardSkills ? ' and standard skills' : ''}.`;
+    const reload = `Restart ${label} so it reloads global MCP and instruction configuration${standardSkills ? ' and standard skills' : ''}.`;
+    return client === 'codex' && codexHookNeedsTrust
+      ? `${reload} Then run /hooks in Codex and trust the new Kiokuko Stop hook.`
+      : reload;
   }).join(' ');
 }
 
@@ -678,6 +748,9 @@ export async function setupGlobalClients(
   if (options.skillDiscoveryMode !== undefined && !isSkillDiscoveryMode(options.skillDiscoveryMode)) {
     throw new KiokukoError('VALIDATION_ERROR', 'skill discovery must be off, official, or community');
   }
+  if (options.ennoOduno !== undefined && options.ennoOduno !== 'on' && options.ennoOduno !== 'off') {
+    throw new KiokukoError('VALIDATION_ERROR', 'ennoOduno must be on or off');
+  }
   const replaceConflictingMcpServers = replacementClientSet(options.replaceConflictingMcpServers);
   const clients = options.clients ?? await detectInstalledClients(pathEnvironment);
   if (!Array.isArray(clients) || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
@@ -702,7 +775,7 @@ export async function setupGlobalClients(
     : undefined;
 
   if (clients.includes('codex')) {
-    files.push(await planFile(
+    const mcpFile = await planFile(
       planning,
       getCodexConfigPath(pathEnvironment),
       'codex',
@@ -713,12 +786,28 @@ export async function setupGlobalClients(
         skillDiscoveryMode,
         { replaceConflictingIdentity: replaceConflictingMcpServers.has('codex') },
       ),
-    ));
+    );
+    files.push(mcpFile);
+    const ennoMode = options.ennoOduno
+      ?? (wasManagedBeforeSetup(
+        mcpFile.original?.content,
+        replaceConflictingMcpServers.has('codex'),
+        hasCanonicalCodexMcpConfig,
+      ) ? undefined : 'on');
+    if (ennoMode !== undefined) {
+      files.push(await planOptionalFile(
+        planning,
+        getCodexHooksPath(pathEnvironment),
+        'codex',
+        'enno-hook',
+        (existing) => renderEnnoStopHook(existing, 'codex', command, ennoMode),
+      ));
+    }
     files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
   }
   if (clients.includes('opencode')) {
     const selectedConfig = await openCodeConfigPath(planning, pathEnvironment);
-    files.push(await planFile(
+    const mcpFile = await planFile(
       planning,
       selectedConfig.path,
       'opencode',
@@ -730,12 +819,28 @@ export async function setupGlobalClients(
         { replaceConflictingIdentity: replaceConflictingMcpServers.has('opencode') },
       ),
       selectedConfig.mustRemainAbsent,
-    ));
+    );
+    files.push(mcpFile);
+    const ennoMode = options.ennoOduno
+      ?? (wasManagedBeforeSetup(
+        mcpFile.original?.content,
+        replaceConflictingMcpServers.has('opencode'),
+        hasCanonicalOpenCodeMcpConfig,
+      ) ? undefined : 'on');
+    if (ennoMode !== undefined) {
+      files.push(await planOptionalFile(
+        planning,
+        getOpenCodeEnnoPluginPath(pathEnvironment),
+        'opencode',
+        'enno-hook',
+        (existing) => renderOpenCodeEnnoPlugin(existing, command, ennoMode),
+      ));
+    }
     files.push(await planFile(planning, getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
     files.push(await planLegacyOpenCodeGuardCleanup(planning, pathEnvironment));
   }
   if (clients.includes('claude')) {
-    files.push(await planFile(
+    const mcpFile = await planFile(
       planning,
       getClaudeMcpConfigPath(pathEnvironment),
       'claude',
@@ -746,9 +851,16 @@ export async function setupGlobalClients(
         skillDiscoveryMode,
         { replaceConflictingIdentity: replaceConflictingMcpServers.has('claude') },
       ),
-    ));
+    );
+    files.push(mcpFile);
+    const ennoMode = options.ennoOduno
+      ?? (wasManagedBeforeSetup(
+        mcpFile.original?.content,
+        replaceConflictingMcpServers.has('claude'),
+        hasCanonicalClaudeMcpConfig,
+      ) ? undefined : 'on');
     files.push(await planFile(planning, getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
-    files.push(await planLegacyClaudeHookCleanup(planning, pathEnvironment));
+    files.push(await planClaudeEnnoHooks(planning, pathEnvironment, command, ennoMode));
   }
   if (clients.includes('hermes')) {
     if (hermesProfile === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Hermes profile was not bound during setup planning');
@@ -794,8 +906,9 @@ export async function setupGlobalClients(
       .map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
     projectAgentFiles: [],
     standardSkills,
+    ennoOduno: options.ennoOduno ?? 'new-installs-only',
     dryRun: options.dryRun ?? false,
-    nextStep: setupNextStep(clients, standardSkills),
+    nextStep: setupNextStep(clients, standardSkills, files),
   };
   if (options.dryRun) {
     const registeredProjectLocations = readDryRunProjectLocations(

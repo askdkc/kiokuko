@@ -137,6 +137,7 @@ export interface DiscoverSkillsInput {
   capabilities?: unknown;
   mode: SkillDiscoveryMode;
   maxSelectedSkills?: 1 | 2;
+  maxQueries?: 1 | 2 | 3;
   fetchImpl?: typeof fetch;
   now?: string;
 }

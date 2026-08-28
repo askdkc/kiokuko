@@ -19,9 +19,32 @@ function selectedEnvironment({ platform = process.platform, env = process.env }:
   return { platform, env };
 }
 
+function configuredDataDirectory(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | undefined {
+  const configured = env.KIOKUKO_DATA_DIR;
+  if (configured === undefined) return undefined;
+
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  if (
+    configured.length === 0
+    || configured.length > 4096
+    || configured !== configured.trim()
+    || configured.includes('\0')
+    || !platformPath.isAbsolute(configured)
+  ) {
+    throw new KiokukoError('VALIDATION_ERROR', 'KIOKUKO_DATA_DIR must be a bounded absolute path');
+  }
+  const normalized = platformPath.normalize(configured);
+  if (normalized === platformPath.parse(normalized).root) {
+    throw new KiokukoError('VALIDATION_ERROR', 'KIOKUKO_DATA_DIR must not be a filesystem root');
+  }
+  return normalized;
+}
+
 export function getPlatformDataDirectory(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  const configured = configuredDataDirectory(platform, env);
+  if (configured !== undefined) return configured;
 
   if (platform === 'win32') {
     const root = env.LOCALAPPDATA ?? env.APPDATA ?? env.USERPROFILE;
@@ -45,6 +68,8 @@ export function getPlatformDataDirectory(options: PathEnvironment = {}): string 
 export function getRuntimeDirectory(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  const configured = configuredDataDirectory(platform, env);
+  if (configured !== undefined) return configured;
 
   if (platform === 'linux' && env.XDG_RUNTIME_DIR) {
     return join(env.XDG_RUNTIME_DIR, 'kiokuko');
@@ -93,6 +118,13 @@ export function getCodexConfigPath(options: PathEnvironment = {}): string {
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(getCodexHome(options), 'config.toml');
+}
+
+/** Codex personal hooks configuration. */
+export function getCodexHooksPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getCodexHome(options), 'hooks.json');
 }
 
 export function getCodexInstructionsPath(options: PathEnvironment = {}): string {
@@ -149,6 +181,11 @@ export function getLegacyClaudePromptHookSettingsPath(options: PathEnvironment =
   return join(getClaudeConfigDirectory(options), 'settings.json');
 }
 
+/** Claude Code personal settings, including lifecycle hooks. */
+export function getClaudeSettingsPath(options: PathEnvironment = {}): string {
+  return getLegacyClaudePromptHookSettingsPath(options);
+}
+
 /** OpenCode's documented global configuration directory. */
 export function getOpenCodeConfigDirectory(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);
@@ -175,6 +212,14 @@ export function getLegacyOpenCodeLoopGuardPath(options: PathEnvironment = {}): s
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-loop-guard.js');
+}
+
+
+/** Managed OpenCode Enno-Oduno session.idle plugin. */
+export function getOpenCodeEnnoPluginPath(options: PathEnvironment = {}): string {
+  const { platform } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-enno-oduno.js');
 }
 
 function getHermesRoot(options: PathEnvironment): string {
