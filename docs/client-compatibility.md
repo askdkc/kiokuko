@@ -116,6 +116,25 @@ three registered `expertRefs`; UI WorkUnits include at least one `code.*` and
 one `ui.*` expert. Unknown, duplicate, missing, or oversized expert mixtures
 are rejected before Skill discovery or repository mutation.
 
+A `needs_confirmation` response carries
+`ennoOduno.directive.userFacingConfirmation`, a deterministic display
+projection of the decided contract. It presents scope paths, exclusions,
+completion criteria, work items with display-number dependencies, skills with
+their reference-only status, expertise with selection reasons, focused and
+final checks (executable, arguments, directory, and timeout kept separate, never
+joined into a shell command), and the attempt limit, each labeled with its
+provenance basis (`user`, `repository`, or `proposal` for inferred fields). The
+directive also carries a fixed confirmation report schema and objective, so the
+client model presents every item in the user's language, translating headings
+only, without raw directive JSON, internal field names, WorkUnit IDs, expert
+IDs, or verifier IDs, and then waits for an explicit approve, revise, or cancel
+through `enno_answer` at the confirmed contract revision. Projection content
+that resembles a secret or exceeds the 64 KiB display bound rejects the plan
+submit instead of being redacted or truncated. `needs_confirmation` stays
+outside the Codex Stop hook, Claude Code Stop hook, and OpenCode
+`session.idle` continuation candidates, so no client auto-continues through a
+user confirmation.
+
 Kiokuko does not install hooks or plugins in any supported client. During an
 upgrade, setup removes only the byte-exact retired OpenCode guard and the one
 exact retired Claude prompt handler. A modified, duplicate, relocated, or

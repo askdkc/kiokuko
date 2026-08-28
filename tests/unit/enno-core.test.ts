@@ -7,7 +7,7 @@ import {
   identifyEnnoClientKind,
   resolveTaskPrepareClient,
 } from '../../src/enno-oduno/harness.js';
-import { generateRoleDirective, parseRoleJson } from '../../src/enno-oduno/role-runner.js';
+import { generateRoleDirective, parseRoleJson, serializeRoleOutput, MAX_ROLE_OUTPUT_BYTES } from '../../src/enno-oduno/role-runner.js';
 import { runVerifier } from '../../src/enno-oduno/verifier.js';
 import { assertWorkPlanExpertCoverage } from '../../src/enno-oduno/experts.js';
 import {
@@ -132,6 +132,69 @@ test('role scripts reject revision conflicts and generate only the role owning t
   assert.ok(meditation.stopConditions.some((condition) => /Do not mutate or delete/iu.test(condition)));
   assert.deepEqual(meditation.reportSchema.required, ['runId', 'expectedRevision', 'meditation']);
   assert.throws(() => parseRoleJson(Buffer.from('{"x":1,"x":2}')), /strict JSON/iu);
+});
+
+test('confirmation directives carry the projection, fixed instruction, and confirmation report schema', () => {
+  const discovery = { attempted: false, mode: 'off', requirements: [], queries: [], cacheHits: 0, candidates: 0, selected: [], failures: [] };
+  const contract = {
+    revision: 2,
+    scope: ['src/add.js'],
+    exclusions: [],
+    acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
+    workPlan: {
+      objective: 'Fix add behind the confirmation',
+      units: [{
+        id: 'fix-add', objective: 'Fix add', scope: ['src/add.js'], dependencies: [],
+        skillNames: ['kiokuko-single-purpose-functions'],
+        expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the regression with focused tests' }],
+        acceptanceCriteria: ['node --test passes'], focusedVerifiers: [],
+      }],
+    },
+    skillSet: {
+      entries: [{
+        name: 'kiokuko-single-purpose-functions', purposes: ['implementation'], required: true,
+        availability: 'local', referenceId: null,
+      }],
+      intakeDiscovery: discovery,
+      zenkiDiscovery: discovery,
+    },
+    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: process.cwd(), timeoutMs: 1000 }],
+    maxAttempts: 5,
+    provenance: {
+      scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+      workPlan: 'inferred', skillSet: 'repository_evidence', finalVerifiers: 'explicit_user', maxAttempts: 'inferred',
+    },
+  };
+  const input = {
+    runId: 'run-confirm', taskType: 'debug', status: 'needs_confirmation', contractRevision: 2,
+    confirmationState: 'pending', clientKind: 'codex', clientVersion: '1.0.0',
+    contract, handoff: requestHandoff('debug'),
+    workUnits: [{ workUnit: contract.workPlan.units[0], status: 'pending', attemptCount: 0, result: null }],
+  };
+  const directive = generateRoleDirective('enno-oduno', input);
+  assert.equal(directive.role, 'enno-oduno');
+  assert.match(directive.objective, /Return every item in userFacingConfirmation to the user in the user's language/iu);
+  assert.match(directive.objective, /Do not expose raw directive JSON, internal field names/iu);
+  assert.match(directive.objective, /Wait for explicit approve, revise, or cancel before calling enno_answer/iu);
+  assert.deepEqual(directive.reportSchema.required, ['runId', 'expectedRevision', 'idempotencyKey', 'action']);
+  const projection = directive.userFacingConfirmation;
+  assert.ok(projection !== undefined);
+  assert.equal(projection.summary.basis, 'proposal');
+  assert.equal(projection.scope.basis, 'user');
+  assert.equal(projection.skills[0]?.basis, 'repository');
+  assert.equal(projection.skills[0]?.referenceOnly, false);
+  assert.equal(projection.workItems[0]?.expertise[0]?.area, 'Regression prevention and verification design');
+  assert.deepEqual(projection.actions, ['approve', 'revise', 'cancel']);
+  const serialized = serializeRoleOutput(directive);
+  assert.ok(Buffer.byteLength(serialized, 'utf8') <= MAX_ROLE_OUTPUT_BYTES);
+  assert.deepEqual(JSON.parse(serialized), directive);
+  const goki = generateRoleDirective('goki', { ...input, status: 'goki_executing', confirmationState: 'approved' });
+  assert.equal('userFacingConfirmation' in goki, false);
+  const zenki = generateRoleDirective('zenki', { ...input, status: 'zenki_planning', confirmationState: 'revision_requested' });
+  assert.equal('userFacingConfirmation' in zenki, false);
+  const verification = generateRoleDirective('enno-oduno', { ...input, status: 'enno_verifying', confirmationState: 'approved' });
+  assert.equal('userFacingConfirmation' in verification, false);
+  assert.deepEqual(verification.reportSchema.required, ['runId', 'expectedRevision', 'review']);
 });
 
 test('Zenki directive binds Akinator, repository, local capability, and reference-only Skill context', () => {
@@ -270,6 +333,28 @@ test('WorkUnit expertRefs reject unknown, duplicate, or oversized mixtures', () 
     { id: 'code.effects.v1', reason: 'Three' },
     { id: 'code.protocol.v1', reason: 'Four is too many' },
   ])), /plan submission is invalid/iu);
+});
+
+test('canonical WorkPlan text rejects embedded control and format characters', () => {
+  const submission = (objective: string) => ({
+    runId: 'canonical-text', workspace: 'workspace', orchestrationId: 'session', expectedRevision: 1, idempotencyKey: 'canonical-plan',
+    scope: ['src/a.ts'], exclusions: [], acceptanceCriteria: [{ id: 'done', description: 'Done' }],
+    workPlan: { objective, units: [{
+      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], skillNames: [],
+      expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the canonical text boundary' }],
+      acceptanceCriteria: ['Done'], focusedVerifiers: [],
+    }] },
+    skillRequirements: [],
+    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: process.cwd(), timeoutMs: 1000 }],
+    maxAttempts: 8,
+    provenance: {
+      scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+      workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+    },
+  });
+  for (const control of ['\r', '\n', '\t', '\u0000', '\u007f', '\u200b']) {
+    assert.throws(() => parsePlanSubmission(submission(`Repair${control}the module`)), /plan submission is invalid/iu);
+  }
 });
 
 test('Enno identifies supported MCP harnesses and rejects contradictory explicit identity', () => {

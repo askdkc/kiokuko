@@ -227,8 +227,8 @@ test('applies the initial migration and is idempotent', async () => {
   const connection = openConnection(databasePath);
   try {
     const first = migrateDatabase(connection, initialMigrations);
-    assert.deepEqual(first.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 14);
+    assert.deepEqual(first.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 16);
     for (const table of [
       'repositories',
       'repository_locations',
@@ -284,7 +284,7 @@ test('applies the initial migration and is idempotent', async () => {
   }
 });
 
-test('migration 013 constrains each run and phase to one terminally consistent Skill discovery attempt', async () => {
+test('migration 015 keys Skill discovery attempts by digest and bounds active budget reservations', async () => {
   const directory = await temporaryDirectory('skill-discovery-attempt-schema');
   const connection = openConnection(path.join(directory, 'data.sqlite3'));
   try {
@@ -306,39 +306,164 @@ test('migration 013 constrains each run and phase to one terminally consistent S
     });
     const insert = connection.prepare(`
       INSERT INTO agent_task_skill_discovery_attempts (
-        run_id, phase, request_digest, state, summary_json, failure_json, started_at, finished_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        run_id, phase, request_digest,
+        reserved_query_count, reserved_selection_count,
+        consumed_query_count, consumed_selection_count,
+        state, summary_json, failure_json, started_at, finished_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const digest = 'a'.repeat(64);
-    assert.throws(() => insert.run('missing-run', 'intake', digest, 'started', null, null, timestamp, null), /foreign key/iu);
+    const started = (runId: string, phase: string, requestDigest: string, summary: string | null = null) =>
+      insert.run(runId, phase, requestDigest, 3, 2, 0, 0, 'started', summary, null, timestamp, null);
+    assert.throws(() => started('missing-run', 'intake', digest), /foreign key/iu);
     for (const invalidDigest of ['a'.repeat(63), 'A'.repeat(64), `${'a'.repeat(63)}g`]) {
-      assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', invalidDigest, 'started', null, null, timestamp, null), /check constraint/iu);
+      assert.throws(() => started('run-skill-discovery-attempt', 'intake', invalidDigest), /check constraint/iu);
     }
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'other', digest, 'started', null, null, timestamp, null), /check constraint/iu);
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 'waiting', null, null, timestamp, null), /check constraint/iu);
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 'started', '{}', null, timestamp, null), /check constraint/iu);
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 'completed', null, null, timestamp, timestamp), /check constraint/iu);
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 'completed', '{}', '{}', timestamp, timestamp), /check constraint/iu);
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 'failed', null, null, timestamp, timestamp), /check constraint/iu);
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 'failed', '{}', '{}', timestamp, timestamp), /check constraint/iu);
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 'failed', null, '{}', timestamp, '2026-08-25T23:59:59.999Z'), /check constraint/iu);
+    for (const budgets of [
+      [1.5, 2, 0, 0],
+      [3, 1.5, 0, 0],
+      [3, 2, 1.5, 0],
+      [3, 2, 0, 1.5],
+    ]) {
+      assert.throws(() => insert.run(
+        'run-skill-discovery-attempt', 'intake', digest,
+        ...budgets, 'started', null, null, timestamp, null,
+      ), /check constraint/iu);
+    }
+    assert.throws(() => started('run-skill-discovery-attempt', 'other', digest), /check constraint/iu);
+    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 3, 2, 0, 0, 'waiting', null, null, timestamp, null), /check constraint/iu);
+    assert.throws(() => started('run-skill-discovery-attempt', 'intake', digest, '{}'), /check constraint/iu);
+    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 3, 2, 0, 0, 'completed', null, null, timestamp, timestamp), /check constraint/iu);
+    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 3, 2, 0, 0, 'completed', '{}', '{}', timestamp, timestamp), /check constraint/iu);
+    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 3, 2, 0, 0, 'failed', null, null, timestamp, timestamp), /check constraint/iu);
+    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 3, 2, 0, 0, 'failed', '{}', '{}', timestamp, timestamp), /check constraint/iu);
+    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 3, 2, 0, 0, 'failed', null, '{}', timestamp, '2026-08-25T23:59:59.999Z'), /check constraint/iu);
 
-    insert.run('run-skill-discovery-attempt', 'intake', digest, 'started', null, null, timestamp, null);
-    assert.throws(() => insert.run('run-skill-discovery-attempt', 'intake', digest, 'started', null, null, timestamp, null), /unique constraint/iu);
-    insert.run('run-skill-discovery-attempt', 'zenki', digest, 'started', null, null, timestamp, null);
+    started('run-skill-discovery-attempt', 'intake', digest);
+    assert.throws(() => started('run-skill-discovery-attempt', 'intake', digest), /unique constraint/iu);
+    assert.throws(() => started('run-skill-discovery-attempt', 'intake', 'b'.repeat(64)), /unique constraint/iu);
+    started('run-skill-discovery-attempt', 'zenki', digest);
     assert.throws(() => connection.prepare(`
       UPDATE agent_task_skill_discovery_attempts
-      SET state = 'completed', finished_at = ?
-      WHERE run_id = 'run-skill-discovery-attempt' AND phase = 'intake'
-    `).run(timestamp), /check constraint/iu);
+      SET state = 'completed', finished_at = ?, consumed_query_count = 0, consumed_selection_count = 0
+      WHERE run_id = 'run-skill-discovery-attempt' AND phase = 'intake' AND request_digest = ?
+    `).run(timestamp, digest), /check constraint/iu);
     connection.prepare(`
       UPDATE agent_task_skill_discovery_attempts
-      SET state = 'completed', summary_json = '{}', finished_at = ?
-      WHERE run_id = 'run-skill-discovery-attempt' AND phase = 'intake'
-    `).run(timestamp);
+      SET state = 'completed', summary_json = '{}', consumed_query_count = 0, consumed_selection_count = 0, finished_at = ?
+      WHERE run_id = 'run-skill-discovery-attempt' AND phase = 'intake' AND request_digest = ?
+    `).run(timestamp, digest);
     connection.prepare("DELETE FROM ledger_runs WHERE run_id = 'run-skill-discovery-attempt'").run();
     assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM agent_task_skill_discovery_attempts')
       .get<{ count: number }>()?.count, 0);
+  } finally {
+    connection.close();
+  }
+});
+
+test('migration 015 terminalizes legacy started discovery rows before adding the active-attempt index', async () => {
+  const directory = await temporaryDirectory('skill-discovery-started-upgrade');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await copyMigrationRange(migrationsDirectory, 1, 14);
+  const connection = openConnection(path.join(directory, 'data.sqlite3'));
+  try {
+    migrateDatabase(connection, migrationsDirectory);
+    const timestamp = '2026-08-26T00:00:00.000Z';
+    new LedgerStore(connection, { now: () => timestamp }).createRun({
+      runId: 'run-started-discovery-upgrade',
+      workspace: 'workspace:started-discovery-upgrade',
+      protocolVersion: '1',
+      client: { kind: 'test' },
+      captureProfile: 'minimal',
+      coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      task: {
+        title: 'Preserve started discovery row',
+        query: 'Preserve started discovery row',
+        profileHints: { taskType: 'build', target: null, expected: null, constraints: null },
+      },
+      startedAt: timestamp,
+    });
+    const insert = connection.prepare(`
+      INSERT INTO agent_task_skill_discovery_attempts (
+        run_id, phase, request_digest, state, summary_json, failure_json, started_at, finished_at
+      ) VALUES (?, ?, ?, 'started', NULL, NULL, ?, NULL)
+    `);
+    insert.run('run-started-discovery-upgrade', 'intake', 'a'.repeat(64), timestamp);
+
+    await copyFile(path.join(initialMigrations, '015_skill_discovery_attempt_digests.sql'), path.join(migrationsDirectory, '015_skill_discovery_attempt_digests.sql'));
+    assert.deepEqual(migrateDatabase(connection, migrationsDirectory).applied, [15]);
+    const rows = connection.prepare(`
+      SELECT state, failure_json AS failureJson, reserved_query_count AS reservedQueries,
+             consumed_query_count AS consumedQueries
+      FROM agent_task_skill_discovery_attempts
+      WHERE run_id = ? ORDER BY request_digest
+    `).all<{ state: string; failureJson: string; reservedQueries: number; consumedQueries: number }>('run-started-discovery-upgrade')
+      .map((row) => ({ ...row }));
+    assert.deepEqual(rows, [
+      { state: 'failed', failureJson: '{"kind":"kiokuko","code":"CONFLICT"}', reservedQueries: 3, consumedQueries: 3 },
+    ]);
+    assert.equal(connection.prepare(`
+      SELECT COUNT(*) AS count FROM agent_task_skill_discovery_attempts WHERE state = 'started'
+    `).get<{ count: number }>()?.count, 0);
+  } finally {
+    connection.close();
+  }
+});
+
+test('migration 015 preserves legacy malformed-provider failures as terminal budget-consuming attempts', async () => {
+  const directory = await temporaryDirectory('skill-discovery-provider-failure-upgrade');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await copyMigrationRange(migrationsDirectory, 1, 14);
+  const connection = openConnection(path.join(directory, 'data.sqlite3'));
+  try {
+    migrateDatabase(connection, migrationsDirectory);
+    const timestamp = '2026-08-26T00:00:00.000Z';
+    new LedgerStore(connection, { now: () => timestamp }).createRun({
+      runId: 'run-provider-failure-upgrade',
+      workspace: 'workspace:provider-failure-upgrade',
+      protocolVersion: '1',
+      client: { kind: 'test' },
+      captureProfile: 'minimal',
+      coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      task: {
+        title: 'Preserve malformed provider failure',
+        query: 'Preserve malformed provider failure',
+        profileHints: { taskType: 'debug', target: null, expected: null, constraints: null },
+      },
+      startedAt: timestamp,
+    });
+    connection.prepare(`
+      INSERT INTO agent_task_skill_discovery_attempts (
+        run_id, phase, request_digest, state, summary_json, failure_json, started_at, finished_at
+      ) VALUES (?, 'zenki', ?, 'failed', NULL, ?, ?, ?)
+    `).run(
+      'run-provider-failure-upgrade',
+      'c'.repeat(64),
+      '{"code":"registry_invalid_response","kind":"skill_provider","retryAfterSeconds":null}',
+      timestamp,
+      timestamp,
+    );
+
+    await copyFile(path.join(initialMigrations, '015_skill_discovery_attempt_digests.sql'), path.join(migrationsDirectory, '015_skill_discovery_attempt_digests.sql'));
+    assert.deepEqual(migrateDatabase(connection, migrationsDirectory).applied, [15]);
+    const preserved = connection.prepare(`
+      SELECT phase, request_digest AS requestDigest, state, failure_json AS failureJson,
+             reserved_query_count AS reservedQueries, consumed_query_count AS consumedQueries,
+             reserved_selection_count AS reservedSelections, consumed_selection_count AS consumedSelections
+      FROM agent_task_skill_discovery_attempts WHERE run_id = ?
+    `).get('run-provider-failure-upgrade');
+    assert.deepEqual(preserved === undefined ? undefined : { ...preserved }, {
+      phase: 'zenki',
+      requestDigest: 'c'.repeat(64),
+      state: 'failed',
+      failureJson: '{"code":"registry_invalid_response","kind":"skill_provider","retryAfterSeconds":null}',
+      reservedQueries: 3,
+      consumedQueries: 3,
+      reservedSelections: 2,
+      consumedSelections: 2,
+    });
   } finally {
     connection.close();
   }
@@ -1505,7 +1630,7 @@ test('concurrent processes initialize one migration exactly once', async () => {
 
   const connection = openConnection(databasePath);
   try {
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 14);
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 16);
   } finally {
     connection.close();
   }

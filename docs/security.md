@@ -56,6 +56,16 @@ Setup installs no client hook or plugin. Model-facing task memory is returned
 only by `task_prepare` / `task_answer`; explicit CLI and Web memory inspection
 is a human/operator management surface, not an ungated model fallback.
 
+MoA advisors are not subprocesses launched by Kiokuko. A parent host is
+responsible for proving read-only isolation before it reports a slot; hosts
+that cannot do so must report `unavailable`. Advisor payloads contain no Enno
+identity or provider/model identity. The parent aggregator is the only caller
+of `enno_advice_submit`. Contributions are strict, slot-complete, canonical
+JSON with 16 KiB per-slot and 48 KiB per-round UTF-8 limits. Secret-shaped
+completed output is converted to the fixed `unsafe_output` failure without
+persisting or forwarding the raw value; failed/timeout/unavailable slots carry
+only fixed reason codes.
+
 ## Pre-persistence sanitization
 
 Every captured task, profile hint, intake answer, event, evidence summary, feedback comment, and proposal follows this order:

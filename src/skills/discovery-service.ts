@@ -39,7 +39,7 @@ function containsAlias(value: string, alias: string): boolean {
   const escaped = alias.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, 'iu').test(value);
 }
-type RecoverableProviderFailureCode = Exclude<SkillProviderError['code'], 'registry_invalid_response'>;
+type RecoverableProviderFailureCode = SkillProviderError['code'];
 
 function providerFailureCode(error: unknown): RecoverableProviderFailureCode | undefined {
   if (!(error instanceof SkillProviderError)) return undefined;
@@ -48,8 +48,8 @@ function providerFailureCode(error: unknown): RecoverableProviderFailureCode | u
     case 'registry_authentication_failed':
     case 'registry_unavailable':
     case 'registry_rate_limited':
-      return code;
     case 'registry_invalid_response':
+      return code;
     default:
       throw error;
   }
@@ -557,7 +557,9 @@ export class SkillDiscoveryService {
         providerRequestsLatched = true;
         communityAudit.set(key, { allowed: false });
         communityAuditLatched = true;
-        if (!communityAuditUnavailableReported) {
+        if (code === 'registry_invalid_response') {
+          base.failures.push({ stage: 'search', code });
+        } else if (!communityAuditUnavailableReported) {
           base.failures.push({ stage: 'validation', code: 'community_audit_unavailable' });
           communityAuditUnavailableReported = true;
         }

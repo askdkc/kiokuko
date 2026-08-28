@@ -40,6 +40,88 @@ export const ENNO_MAX_ATTEMPTS = 20;
 export const ENNO_MAX_TOTAL_SKILL_QUERIES = 3;
 export const ENNO_MAX_EXTERNAL_SKILLS = 2;
 
+export const ADVISORY_POLICY_VERSION = 1;
+export const ADVISORY_MAX_SLOT_BYTES = 16 * 1024;
+export const ADVISORY_MAX_ROUND_BYTES = 48 * 1024;
+export const ADVISORY_PHASES = ['ideal', 'planning', 'final_review'] as const;
+export type AdvisoryPhase = (typeof ADVISORY_PHASES)[number];
+export const ADVISORY_OUTCOMES = ['completed', 'failed', 'timeout', 'unavailable'] as const;
+export type AdvisoryOutcome = (typeof ADVISORY_OUTCOMES)[number];
+export const ADVISORY_FAILURE_CODES = [
+  'unsafe_output',
+  'host_read_only_unavailable',
+  'host_execution_failed',
+  'host_timeout',
+  'invalid_response',
+] as const;
+export type AdvisoryFailureCode = (typeof ADVISORY_FAILURE_CODES)[number];
+
+export const ADVISORY_SLOT_DEFINITIONS = [
+  { phase: 'ideal', slotId: 'constraint_guardian', rank: 0, role: 'Constraint guardian' },
+  { phase: 'ideal', slotId: 'skill_trust_analyst', rank: 1, role: 'Skill trust analyst' },
+  { phase: 'ideal', slotId: 'success_signal_critic', rank: 2, role: 'Success-signal critic' },
+  { phase: 'planning', slotId: 'workunit_architect', rank: 0, role: 'WorkUnit architect' },
+  { phase: 'planning', slotId: 'protocol_risk_reviewer', rank: 1, role: 'Protocol-risk reviewer' },
+  { phase: 'planning', slotId: 'verification_designer', rank: 2, role: 'Verification designer' },
+  { phase: 'final_review', slotId: 'acceptance_auditor', rank: 0, role: 'Acceptance auditor' },
+  { phase: 'final_review', slotId: 'regression_adversary', rank: 1, role: 'Regression adversary' },
+  { phase: 'final_review', slotId: 'evidence_freshness_reviewer', rank: 2, role: 'Evidence-freshness reviewer' },
+] as const;
+export type AdvisorySlotId = (typeof ADVISORY_SLOT_DEFINITIONS)[number]['slotId'];
+export type AdvisorySource = 'host_reported';
+
+export interface AdvisoryEvidence {
+  path: string;
+  statement: string;
+}
+
+export interface AdvisoryContribution {
+  slotId: AdvisorySlotId;
+  outcome: AdvisoryOutcome;
+  summary?: string;
+  recommendations?: string[];
+  risks?: string[];
+  evidence?: AdvisoryEvidence[];
+  reasonCode?: AdvisoryFailureCode;
+}
+
+export interface AdvisoryContext {
+  objective: string;
+  scope: string[];
+  constraints: string[];
+  acceptanceCriteria: string[];
+  reference: string;
+}
+
+export interface AdvisorySlotDirective {
+  slotId: AdvisorySlotId;
+  rank: number;
+  role: string;
+  instructions: string;
+}
+
+export interface AdvisoryFanoutDirective {
+  protocolVersion: 1;
+  phase: AdvisoryPhase;
+  policyVersion: number;
+  readOnlyRequired: true;
+  hostMustVerifyIsolation: true;
+  context: AdvisoryContext;
+  slots: AdvisorySlotDirective[];
+}
+
+export interface StoredAdvisoryRound {
+  phase: AdvisoryPhase;
+  contractRevision: number;
+  mutationRevision: number;
+  inputDigest: string;
+  policyVersion: number;
+  source: AdvisorySource;
+  state: 'advice_submitted' | 'aggregated' | 'consumed';
+  degraded: boolean;
+  contributions: AdvisoryContribution[];
+}
+
 export type SkillPurpose = 'planning' | 'implementation' | 'ui' | 'testing' | 'review' | 'operations';
 export type ContractProvenance = 'explicit_user' | 'repository_evidence' | 'inferred';
 export const ENNO_PROVENANCE_KEYS = [
@@ -158,6 +240,56 @@ export interface EnnoHarnessDirective {
   instructions: string[];
 }
 
+export type ConfirmationBasis = 'user' | 'repository' | 'proposal';
+
+export type UserFacingConfirmationAction = 'approve' | 'revise' | 'cancel';
+
+export interface UserFacingVerifier {
+  category: 'test' | 'typecheck' | 'build' | 'lint' | 'custom';
+  executable: string;
+  arguments: string[];
+  directory: string;
+  timeoutMs: number;
+}
+
+export interface UserFacingSkill {
+  label: string;
+  basis: ConfirmationBasis;
+  required: boolean;
+  purposes: string[];
+  referenceOnly: boolean;
+}
+
+export interface UserFacingExpertise {
+  area: string;
+  basis: ConfirmationBasis;
+  reason: string;
+}
+
+export interface UserFacingWorkItem {
+  number: number;
+  summary: string;
+  paths: string[];
+  dependsOn: number[];
+  doneWhen: string[];
+  checks: UserFacingVerifier[];
+  expertise: UserFacingExpertise[];
+}
+
+export interface UserFacingConfirmation {
+  presentationVersion: 1;
+  title: string;
+  summary: { basis: ConfirmationBasis; text: string };
+  scope: { basis: ConfirmationBasis; paths: string[] };
+  exclusions: { basis: ConfirmationBasis; paths: string[] };
+  completion: { basis: ConfirmationBasis; items: string[] };
+  skills: UserFacingSkill[];
+  workItems: UserFacingWorkItem[];
+  finalChecks: { basis: ConfirmationBasis; checks: UserFacingVerifier[] };
+  attemptLimit: { basis: ConfirmationBasis; maxAttempts: number };
+  actions: [UserFacingConfirmationAction, UserFacingConfirmationAction, UserFacingConfirmationAction];
+}
+
 export interface RoleDirective {
   protocolVersion: 1;
   runId: string;
@@ -170,6 +302,8 @@ export interface RoleDirective {
   workUnit: WorkUnit | null;
   stopConditions: string[];
   reportSchema: Record<string, unknown>;
+  advisoryRound?: AdvisoryFanoutDirective;
+  userFacingConfirmation?: UserFacingConfirmation;
 }
 
 export interface EnnoOdunoState {

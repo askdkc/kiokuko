@@ -13,6 +13,25 @@ Control one Kiokuko run from intake to a verified terminal decision while keepin
 
 Enno-Oduno is a role directive for the current client model. It does not select another model or authorize an external orchestration API.
 
+## MoA advisory rounds
+
+At `oduno_ideal`, `zenki_planning`, and `enno_verifying`, the parent host may
+fan out exactly the three fixed advisor slots in the returned
+`directive.advisoryRound`. Kiokuko never launches these advisors. The host
+must provide and verify isolated read-only subagents; a prompt instruction is
+not proof of isolation, and a host without that capability reports
+`unavailable` for the slot.
+
+Advisor input is deliberately identity-free: do not pass `runId`, `workspace`,
+`orchestrationId`, contract or mutation revision, or an idempotency key to an
+advisor. The parent aggregator alone calls `enno_advice_submit`, in slot-rank
+order, with one structured result per fixed slot. Provider/model names and raw
+subagent output are never stored. Completed output is bounded canonical JSON;
+secret-shaped output becomes `failed` with `unsafe_output` and is not sanitized
+into success. The advisory round is a phase-local substate: submitting it does
+not advance the main Enno status. Pass its returned digest to the existing
+phase submit operation when the host is using MoA.
+
 ## Activation boundary
 
 Apply this Skill only when one of these is true:
@@ -71,7 +90,9 @@ Treat a host client session ID as a separate optional binding. Bind it only thro
 
 Return control to the user before Goki starts when any scope, exclusion, acceptance criterion, WorkPlan, Skill requirement, verifier, or attempt limit is inferred rather than explicitly supplied by the user.
 
-Present the inferred contract clearly and accept only an explicit approve, revise, or cancel decision. A revision request returns to Zenki; cancellation is terminal.
+The `needs_confirmation` response carries `ennoOduno.directive.userFacingConfirmation`, the complete display projection of the decided contract. Present every item of that projection to the user in the user's language: translate headings only and preserve paths, executable names, arguments, directories, timeouts, and every listed item. Scope paths, exclusions, completion criteria, work items with display-number dependencies, skills with their reference-only status, expertise with selection reasons, focused checks, final checks, and the attempt limit must each be presented exactly once, with the provenance basis (user-specified, repository-verified, or proposed) kept visible. Do not expose raw directive JSON, internal field names, WorkUnit IDs, expert IDs, or verifier IDs.
+
+Accept only an explicit approve, revise, or cancel decision passed through `enno_answer` with the current contract revision. Never infer approve from model judgment. A revision request returns to Zenki; cancellation is terminal.
 
 ## Final review
 
