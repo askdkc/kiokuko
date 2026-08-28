@@ -104,7 +104,7 @@ test('fresh migration applies the current schema and every gateway table and ind
   const directory = await temporaryDirectory('gateway-fresh');
   const database = openConnection(path.join(directory, 'data.sqlite3'));
   try {
-    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    assert.deepEqual(migrateDatabase(database, migrationsDirectory).applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     assert.deepEqual(
       gatewayTables.filter((table) => !exists(database, 'table', table)),
       [],
