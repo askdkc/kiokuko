@@ -9,6 +9,8 @@ import { parseStrictJson } from '../setup/strict-json.js';
 import {
   parseEnnoContract,
   parseEnnoRequestHandoff,
+  parseOdunoIdeal,
+  parseOdunoMeditation,
   parseWorkReportResult,
   parseWorkPlan,
 } from './schemas.js';
@@ -22,6 +24,8 @@ import {
   type EnnoRequestHandoff,
   type EnnoRunSnapshot,
   type EnnoStatus,
+  type OdunoIdeal,
+  type OdunoMeditation,
   type StoredWorkUnit,
   type VerifierRunResult,
   type VerifierSpec,
@@ -41,12 +45,15 @@ interface ContractRow extends SqliteRow {
   repository_root: string;
   task_type: EnnoRunSnapshot['taskType'];
   status: string;
+  phase: string | null;
   revision: number;
   confirmation_state: EnnoRunSnapshot['confirmationState'];
   attempts: number;
   mutation_revision: number;
   contract_json: string;
   handoff_json: string;
+  ideal_json: string | null;
+  meditation_json: string | null;
   blocker: string | null;
 }
 
@@ -70,7 +77,7 @@ export interface EnnoIdentity {
 }
 
 export interface OperationIdentity {
-  operation: 'plan_submit' | 'answer' | 'work_report' | 'finish';
+  operation: 'ideal_submit' | 'plan_submit' | 'answer' | 'work_report' | 'finish' | 'meditation_submit';
   idempotencyKey: string;
   requestDigest: string;
 }
@@ -106,6 +113,19 @@ function validateContractRow(row: ContractRow): void {
     || !Number.isSafeInteger(row.mutation_revision) || row.mutation_revision < 0) {
     integrity('Stored Enno run state is invalid');
   }
+}
+
+function exposedStatus(row: Pick<ContractRow, 'status' | 'phase'>): EnnoStatus {
+  if (row.phase === null) return row.status as EnnoStatus;
+  if (row.phase === 'oduno_ideal' && row.status === 'zenki_planning') return row.phase;
+  if (row.phase === 'oduno_meditation' && row.status === 'enno_verifying') return row.phase;
+  return integrity('Stored Oduno phase is inconsistent');
+}
+
+function persistedState(status: EnnoStatus): { status: string; phase: string | null } {
+  if (status === 'oduno_ideal') return { status: 'zenki_planning', phase: status };
+  if (status === 'oduno_meditation') return { status: 'enno_verifying', phase: status };
+  return { status, phase: null };
 }
 
 function workUnits(database: SqliteDatabase, runId: string, revision: number): StoredWorkUnit[] {
@@ -151,8 +171,20 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
   }
   const contract = parseEnnoContract(parseCanonicalJson(row.contract_json, 'Stored Enno contract is invalid'));
   const handoff = parseEnnoRequestHandoff(parseCanonicalJson(row.handoff_json, 'Stored Enno request handoff is invalid'));
+  const ideal = row.ideal_json === null
+    ? null
+    : parseOdunoIdeal(parseCanonicalJson(row.ideal_json, 'Stored Oduno ideal is invalid'));
+  const meditation = row.meditation_json === null
+    ? null
+    : parseOdunoMeditation(parseCanonicalJson(row.meditation_json, 'Stored Oduno meditation is invalid'));
+  const status = exposedStatus(row);
   if (contract.revision !== row.revision) integrity('Stored Enno contract revision is inconsistent');
   if (handoff.taskType !== row.task_type) integrity('Stored Enno request handoff is inconsistent');
+  if (status === 'oduno_ideal' && ideal !== null) integrity('Stored Oduno ideal phase is inconsistent');
+  if (status === 'oduno_meditation' && (ideal === null || meditation !== null)) {
+    integrity('Stored Oduno meditation phase is inconsistent');
+  }
+  if (meditation !== null && status !== 'completed') integrity('Stored Oduno meditation result is inconsistent');
   return {
     runId: row.run_id,
     workspace: row.workspace,
@@ -162,11 +194,13 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
     clientSessionId: row.client_session_id,
     repositoryRoot: row.repository_root,
     taskType: row.task_type,
-    status: row.status as EnnoStatus,
+    status,
     revision: row.revision,
     confirmationState: row.confirmation_state,
     attempts: row.attempts,
     mutationRevision: row.mutation_revision,
+    ideal,
+    meditation,
     contract,
     handoff,
     workUnits: workUnits(database, identity.runId, row.revision),
@@ -238,7 +272,8 @@ export function createEnnoDraft(database: SqliteDatabase, input: EnnoIdentity & 
         repository_root, task_type, status, revision,
         confirmation_state, attempts, mutation_revision, contract_json, handoff_json,
         intake_discovery_json, plan_digest, blocker, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'zenki_planning', 1, 'not_required', 0, 0, ?, ?, ?, NULL, NULL, ?, ?)
+        , phase, ideal_json, meditation_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'zenki_planning', 1, 'not_required', 0, 0, ?, ?, ?, NULL, NULL, ?, ?, 'oduno_ideal', NULL, NULL)
     `).run(
       input.runId,
       input.workspace,
@@ -288,20 +323,32 @@ export function updateContractInTransaction(database: SqliteDatabase, snapshot: 
   attempts?: number;
   mutationRevision?: number;
   planDigest?: string | null;
+  ideal?: OdunoIdeal | null;
+  meditation?: OdunoMeditation | null;
 }): void {
+  const nextState = persistedState(input.status);
+  const currentState = persistedState(snapshot.status);
   const updated = database.prepare(`
     UPDATE enno_contracts
-    SET status = ?, revision = ?, confirmation_state = ?, attempts = ?, mutation_revision = ?,
-        contract_json = ?, plan_digest = ?, blocker = ?, updated_at = ?
-    WHERE run_id = ? AND workspace = ? AND orchestration_session_id = ? AND revision = ? AND status = ?
+    SET status = ?, phase = ?, revision = ?, confirmation_state = ?, attempts = ?, mutation_revision = ?,
+        contract_json = ?, ideal_json = ?, meditation_json = ?, plan_digest = ?, blocker = ?, updated_at = ?
+    WHERE run_id = ? AND workspace = ? AND orchestration_session_id = ? AND revision = ?
+      AND status = ? AND phase IS ?
     RETURNING run_id AS runId
   `).get<{ runId: string }>(
-    input.status,
+    nextState.status,
+    nextState.phase,
     input.contract.revision,
     input.confirmationState,
     input.attempts ?? snapshot.attempts,
     input.mutationRevision ?? snapshot.mutationRevision,
     canonicalJson(input.contract),
+    input.ideal === undefined
+      ? snapshot.ideal === null ? null : canonicalJson(snapshot.ideal)
+      : input.ideal === null ? null : canonicalJson(input.ideal),
+    input.meditation === undefined
+      ? snapshot.meditation === null ? null : canonicalJson(snapshot.meditation)
+      : input.meditation === null ? null : canonicalJson(input.meditation),
     input.planDigest ?? null,
     input.blocker ?? null,
     new Date().toISOString(),
@@ -309,7 +356,8 @@ export function updateContractInTransaction(database: SqliteDatabase, snapshot: 
     snapshot.workspace,
     snapshot.orchestrationId,
     snapshot.revision,
-    snapshot.status,
+    currentState.status,
+    currentState.phase,
   );
   if (updated?.runId !== snapshot.runId) throw new KiokukoError('CONFLICT', 'Enno state changed concurrently');
 }

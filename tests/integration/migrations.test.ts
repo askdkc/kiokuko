@@ -227,8 +227,8 @@ test('applies the initial migration and is idempotent', async () => {
   const connection = openConnection(databasePath);
   try {
     const first = migrateDatabase(connection, initialMigrations);
-    assert.deepEqual(first.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 13);
+    assert.deepEqual(first.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 14);
     for (const table of [
       'repositories',
       'repository_locations',
@@ -374,6 +374,84 @@ test('migration 013 preserves every legacy discovery attempt as the intake phase
     assert.deepEqual(preserved === undefined ? undefined : { ...preserved }, {
       phase: 'intake', requestDigest: 'b'.repeat(64), state: 'completed', summaryJson: '{}',
     });
+  } finally {
+    connection.close();
+  }
+});
+
+test('migration 014 adds Oduno reflection phases and preserves legacy operation receipts', async () => {
+  const directory = await temporaryDirectory('oduno-reflection-phase-upgrade');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await copyMigrationRange(migrationsDirectory, 1, 13);
+  const connection = openConnection(path.join(directory, 'data.sqlite3'));
+  try {
+    migrateDatabase(connection, migrationsDirectory);
+    const timestamp = '2026-08-28T00:00:00.000Z';
+    const runId = 'run-oduno-phase-upgrade';
+    const workspace = 'workspace:oduno-phase-upgrade';
+    const sessionId = 'session-oduno-phase-upgrade';
+    const profile = { taskType: 'debug', target: 'src/add.ts', expected: 'tests pass', constraints: null } as const;
+    new LedgerStore(connection, { now: () => timestamp }).createRun({
+      runId, workspace, protocolVersion: '1', client: { kind: 'test' }, captureProfile: 'minimal',
+      coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      task: { title: 'Preserve Enno receipt', query: 'Preserve Enno receipt', profileHints: profile },
+      startedAt: timestamp,
+    });
+    connection.prepare(`
+      INSERT INTO akinator_sessions (id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
+      VALUES (?, ?, 'Preserve Enno receipt', ?, 'ready', 0, ?, ?)
+    `).run(sessionId, workspace, canonicalJson(profile), timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO run_intakes (
+        run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+        initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+      ) VALUES (?, ?, 'v2', 1, ?, ?, '[]', ?, ?)
+    `).run(
+      runId,
+      sessionId,
+      canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+      canonicalContentHash(profile),
+      timestamp,
+      timestamp,
+    );
+    connection.prepare(`
+      INSERT INTO enno_contracts (
+        run_id, workspace, orchestration_session_id, repository_root, task_type, status,
+        revision, confirmation_state, contract_json, handoff_json, intake_discovery_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, '/tmp/repository', 'debug', 'zenki_planning', 1, 'not_required', '{}', '{}', '{}', ?, ?)
+    `).run(runId, workspace, sessionId, timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO enno_operation_receipts (
+        run_id, operation, idempotency_key, request_digest, state, response_json, created_at, finished_at
+      ) VALUES (?, 'plan_submit', 'legacy-plan', ?, 'completed', '{}', ?, ?)
+    `).run(runId, 'a'.repeat(64), timestamp, timestamp);
+
+    await copyFile(path.join(initialMigrations, '014_oduno_reflection_phases.sql'), path.join(migrationsDirectory, '014_oduno_reflection_phases.sql'));
+    assert.deepEqual(migrateDatabase(connection, migrationsDirectory).applied, [14]);
+    const preservedReceipt = connection.prepare(`
+      SELECT operation, idempotency_key AS idempotencyKey, state, response_json AS responseJson
+      FROM enno_operation_receipts WHERE run_id = ?
+    `).get<{ operation: string; idempotencyKey: string; state: string; responseJson: string }>(runId);
+    assert.deepEqual(preservedReceipt === undefined ? undefined : { ...preservedReceipt }, {
+      operation: 'plan_submit', idempotencyKey: 'legacy-plan', state: 'completed', responseJson: '{}',
+    });
+    const columns = connection.prepare('PRAGMA table_info(enno_contracts)')
+      .all<{ name: string }>().map((column) => column.name);
+    assert.ok(columns.includes('phase'));
+    assert.ok(columns.includes('ideal_json'));
+    assert.ok(columns.includes('meditation_json'));
+    const insertReceipt = connection.prepare(`
+      INSERT INTO enno_operation_receipts (
+        run_id, operation, idempotency_key, request_digest, state, response_json, created_at, finished_at
+      ) VALUES (?, ?, ?, ?, 'started', NULL, ?, NULL)
+    `);
+    insertReceipt.run(runId, 'ideal_submit', 'ideal', 'b'.repeat(64), timestamp);
+    insertReceipt.run(runId, 'meditation_submit', 'meditation', 'c'.repeat(64), timestamp);
+    assert.throws(() => insertReceipt.run(runId, 'delete', 'invalid', 'd'.repeat(64), timestamp), /check constraint/iu);
+    connection.prepare("UPDATE enno_contracts SET phase = 'oduno_ideal' WHERE run_id = ?").run(runId);
+    assert.throws(() => connection.prepare("UPDATE enno_contracts SET phase = 'unknown' WHERE run_id = ?").run(runId), /check constraint/iu);
   } finally {
     connection.close();
   }
@@ -1427,7 +1505,7 @@ test('concurrent processes initialize one migration exactly once', async () => {
 
   const connection = openConnection(databasePath);
   try {
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 13);
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 14);
   } finally {
     connection.close();
   }

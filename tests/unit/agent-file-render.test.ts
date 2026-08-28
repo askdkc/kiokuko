@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 14 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 15 -->/);
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
@@ -43,7 +43,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /read and apply `kiokuko-enno-oduno` after the master SOUL/u);
   assert.match(rendered, /While Akinator still needs information, only Enno-Oduno is active/u);
   assert.match(rendered, /do not start Zenki or Goki/u);
-  assert.match(rendered, /structured handoff.*harness-specific Zenki directive/u);
+  assert.match(rendered, /structured handoff.*Oduno ideal.*every Akinator-discovered Skill.*harness-specific Zenki directive/u);
   assert.match(rendered, /Zenki must read the master SOUL and then the compact `kiokuko-single-purpose-functions` index/u);
   assert.match(rendered, /one cohesive function or use-case contract/u);
   assert.match(rendered, /focused runnable test target/u);
@@ -52,6 +52,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /Every Goki WorkUnit retains the master SOUL and directly required specialist indexes/u);
   assert.match(rendered, /Goki can start only after Zenki submits a complete WorkPlan/u);
   assert.match(rendered, /A failed review never returns directly to Goki/u);
+  assert.match(rendered, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
   assert.match(rendered, /requires a new plan plus any required confirmation before Goki can resume/u);
   assert.match(rendered, /`ennoOduno\.orchestrationId`/u);
   assert.match(rendered, /host client session ID is optional/u);

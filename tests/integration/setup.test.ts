@@ -410,6 +410,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
       await readFile(path.join(skillsDirectory, 'kiokuko-enno-oduno', 'SKILL.md'), 'utf8'),
       /Enno-Oduno alone owns this state machine/,
     );
+    assert.match(
+      await readFile(path.join(skillsDirectory, 'kiokuko-enno-oduno', 'SKILL.md'), 'utf8'),
+      /oduno_ideal[\s\S]*enno_ideal_submit[\s\S]*oduno_meditation[\s\S]*enno_meditation_submit/u,
+    );
   }
 
   for (const instructionsPath of [path.join(codexDirectory, 'AGENTS.md'), path.join(openCodeDirectory, 'AGENTS.md'), path.join(claudeDirectory, 'CLAUDE.md')]) {
@@ -432,11 +436,13 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
     assert.match(instructions, /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
     assert.match(instructions, /read and apply `kiokuko-enno-oduno` after the master SOUL/u);
+    assert.match(instructions, /derives and persists the Oduno ideal.*every Akinator-discovered Skill/iu);
     assert.match(instructions, /Zenki must read the master SOUL and then the compact `kiokuko-single-purpose-functions` index/u);
     assert.match(instructions, /one to three versioned `expertRefs`/u);
     assert.match(instructions, /Goki receives only approved, already-decomposed WorkUnits/u);
     assert.match(instructions, /Goki can start only after Zenki submits a complete WorkPlan/u);
     assert.match(instructions, /A failed review never returns directly to Goki/u);
+    assert.match(instructions, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
     assert.match(instructions, /`ennoOduno\.orchestrationId`/u);
     assert.match(instructions, /never select a repository-wide latest run/u);
     assert.match(instructions, /Ambiguous candidates fail open without binding/u);
@@ -847,7 +853,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
-    `human project rule\n${staleAgent.replace('kiokuko-template-version: 14', 'kiokuko-template-version: 13')}`,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 15', 'kiokuko-template-version: 14')}`,
   );
   await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 12 }, null, 2)}\n`);
 
@@ -896,7 +902,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   await assert.rejects(access(path.join(locationOnlyRoot, '.kiokuko.json')));
   await assert.rejects(access(path.join(locationOnlyRoot, 'AGENTS.md')));
   assert.equal(await readFile(locationOnlyGitignorePath, 'utf8'), 'node_modules/\r\n');
-  assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 13/u);
+  assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 14/u);
 
   const result = await setupGlobalClients({
     clients: [],
@@ -936,11 +942,11 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.match(refreshedAgent, /kiokuko-template-version: 14/u);
-  assert.equal(refreshedAgent.includes('kiokuko-template-version: 13'), false);
+  assert.match(refreshedAgent, /kiokuko-template-version: 15/u);
+  assert.equal(refreshedAgent.includes('kiokuko-template-version: 14'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
-  assert.equal(refreshedBinding.templateVersion, 14);
+  assert.equal(refreshedBinding.templateVersion, 15);
 
   const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
@@ -953,7 +959,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryId: 'repo_setup_refresh_location_only',
     workspace: 'project:setup-refresh-location-only',
     agentFile: 'AGENTS.md',
-    templateVersion: 14,
+    templateVersion: 15,
   });
   assert.equal(
     await readFile(locationOnlyGitignorePath, 'utf8'),

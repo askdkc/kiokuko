@@ -2,10 +2,12 @@ import type { SkillDiscoverySummary } from '../skills/types.js';
 
 export const ENNO_STATUSES = [
   'intake',
+  'oduno_ideal',
   'zenki_planning',
   'needs_confirmation',
   'goki_executing',
   'enno_verifying',
+  'oduno_meditation',
   'completed',
   'blocked',
   'cancelled',
@@ -20,10 +22,12 @@ export type EnnoClientKind = (typeof ENNO_CLIENT_KINDS)[number];
 
 export const ENNO_NEXT_ACTIONS = [
   'answer_intake',
+  'submit_ideal',
   'submit_plan',
   'ask_user_confirmation',
   'execute_work_unit',
   'run_final_verification',
+  'submit_meditation',
   'report_blocker',
   'complete',
 ] as const;
@@ -110,6 +114,32 @@ export interface EnnoOdunoContract {
   provenance: Record<EnnoProvenanceKey, ContractProvenance>;
 }
 
+export interface OdunoIdealSkillContribution {
+  skillName: string;
+  contribution: string;
+}
+
+export interface OdunoIdeal {
+  objective: string;
+  principles: string[];
+  skillContributions: OdunoIdealSkillContribution[];
+  successSignals: string[];
+}
+
+export interface OdunoDeletionCandidate {
+  kind: 'test' | 'function';
+  path: string;
+  name: string;
+  reason: string;
+  evidence: string[];
+}
+
+export interface OdunoMeditation {
+  summary: string;
+  inspectedPaths: string[];
+  deletionCandidates: OdunoDeletionCandidate[];
+}
+
 export interface EnnoRequestHandoff {
   sourceRole: 'enno-oduno';
   taskType: (typeof ENNO_APPLICABLE_TASK_TYPES)[number];
@@ -153,6 +183,8 @@ export interface EnnoOdunoState {
     identified: boolean;
   } | null;
   contractRevision: number | null;
+  ideal: OdunoIdeal | null;
+  meditation: OdunoMeditation | null;
   currentRole: EnnoRole | null;
   directive: RoleDirective | null;
   nextAction: EnnoNextAction;
@@ -207,6 +239,8 @@ export interface EnnoRunSnapshot {
   confirmationState: 'not_required' | 'pending' | 'approved' | 'revision_requested' | 'cancelled';
   attempts: number;
   mutationRevision: number;
+  ideal: OdunoIdeal | null;
+  meditation: OdunoMeditation | null;
   contract: EnnoOdunoContract;
   handoff: EnnoRequestHandoff;
   workUnits: StoredWorkUnit[];

@@ -55,13 +55,14 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
     assert.match(instructions, /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
     assert.match(instructions, /While Akinator still needs information, only Enno-Oduno is active/u);
-    assert.match(instructions, /structured handoff.*harness-specific Zenki directive/u);
+    assert.match(instructions, /structured handoff.*Oduno ideal.*every Akinator-discovered Skill.*harness-specific Zenki directive/u);
     assert.match(instructions, /Zenki must read the master SOUL and then the compact `kiokuko-single-purpose-functions` index/u);
     assert.match(instructions, /focused runnable test target/u);
     assert.match(instructions, /one to three versioned `expertRefs`/u);
     assert.match(instructions, /Goki receives only approved, already-decomposed WorkUnits/u);
     assert.match(instructions, /Goki can start only after Zenki submits a complete WorkPlan/u);
     assert.match(instructions, /A failed review never returns directly to Goki/u);
+    assert.match(instructions, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
     assert.match(instructions, /never select a repository-wide latest run/u);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
@@ -69,6 +70,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'curator_globalize',
       'enno_answer',
       'enno_finish',
+      'enno_ideal_submit',
+      'enno_meditation_submit',
       'enno_plan_submit',
       'enno_work_report',
       'memory_checkpoint',
@@ -85,6 +88,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
     const ennoFinishTool = tools.tools.find((tool) => tool.name === 'enno_finish');
+    const ennoIdealTool = tools.tools.find((tool) => tool.name === 'enno_ideal_submit');
+    const ennoMeditationTool = tools.tools.find((tool) => tool.name === 'enno_meditation_submit');
     assert.match(taskPrepareTool?.description ?? '', /once for one logical user request/);
     assert.match(taskPrepareTool?.description ?? '', /create a new bounded opaque value for each logical request/);
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
@@ -100,7 +105,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
     assert.match(taskPrepareTool?.description ?? '', /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
     assert.match(taskPrepareTool?.description ?? '', /do not start Zenki or Goki/u);
-    assert.match(taskPrepareTool?.description ?? '', /structured handoff.*harness-specific Zenki directive/u);
+    assert.match(taskPrepareTool?.description ?? '', /structured handoff.*Oduno ideal.*every Akinator-discovered Skill.*harness-specific Zenki directive/u);
     assert.match(taskPrepareTool?.description ?? '', /failed review never returns directly to Goki/u);
     assert.match(taskPrepareTool?.description ?? '', /ennoOduno\.orchestrationId/u);
     assert.match(taskAnswerTool?.description ?? '', /required run ID returned by task_prepare/);
@@ -112,6 +117,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskAnswerTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(taskAnswerTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(ennoFinishTool?.description ?? '', /returns Review feedback to Zenki for a new plan/u);
+    assert.match(ennoFinishTool?.description ?? '', /advances a new run to Oduno meditation instead of completing it directly/iu);
+    assert.match(ennoIdealTool?.description ?? '', /optimal goal.*task_prepare handoff.*every Akinator-discovered Skill.*before Zenki planning/iu);
+    assert.match(ennoMeditationTool?.description ?? '', /obsolete test or function deletion candidates.*without mutating the repository/iu);
     assert.match(taskAnswerTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
     type JsonSchema = {
       type?: string;
@@ -145,7 +153,14 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       );
       assert.match(schema.properties?.capabilities?.description ?? '', /kind and canonical name/u);
     }
-    for (const toolName of ['enno_plan_submit', 'enno_answer', 'enno_work_report', 'enno_finish']) {
+    for (const toolName of [
+      'enno_ideal_submit',
+      'enno_plan_submit',
+      'enno_answer',
+      'enno_work_report',
+      'enno_finish',
+      'enno_meditation_submit',
+    ]) {
       const tool = tools.tools.find((candidate) => candidate.name === toolName);
       const schema = tool?.inputSchema as ToolInputSchema;
       assert.match(tool?.description ?? '', /orchestrationId.*not a host client session ID/u);
@@ -269,7 +284,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(preparedContent.intake.reasoning.silo.completeness, 1);
     assert.equal(preparedContent.nextAction, 'proceed');
     assert.equal(preparedContent.ennoOduno.applicable, true);
-    assert.equal(preparedContent.ennoOduno.status, 'zenki_planning');
+    assert.equal(preparedContent.ennoOduno.status, 'oduno_ideal');
     assert.equal(preparedContent.ennoOduno.orchestrationId, preparedContent.intake.sessionId);
     assert.deepEqual(preparedContent.ennoOduno.clientBinding, {
       status: 'pending',
@@ -277,12 +292,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       clientVersion: null,
       identified: false,
     });
-    assert.equal(preparedContent.ennoOduno.directive?.role, 'zenki');
+    assert.equal(preparedContent.ennoOduno.directive?.role, 'enno-oduno');
     assert.equal(preparedContent.ennoOduno.directive?.handoff?.sourceRole, 'enno-oduno');
     assert.match(preparedContent.ennoOduno.directive?.handoff?.objective ?? '', /src\/beacon\.ts/u);
     assert.equal(preparedContent.ennoOduno.directive?.harness.kind, null);
     assert.equal(preparedContent.ennoOduno.directive?.harness.continuation, 'unidentified');
-    assert.equal(preparedContent.ennoOduno.nextAction, 'submit_plan');
+    assert.equal(preparedContent.ennoOduno.nextAction, 'submit_ideal');
     assert.equal(preparedContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(preparedContent.memoryPolicy, { memoryReasoningRequired: true });
     const canonicalRoot = await realpath(root);
@@ -552,7 +567,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
   }
 });
 
-test('task_prepare identifies Codex, Claude Code, and OpenCode from MCP clientInfo before Zenki planning', async () => {
+test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno derives the ideal', async () => {
   const clients = [
     { name: 'codex-mcp-client', expectedKind: 'codex', continuation: 'stop_hook' },
     { name: 'claude-ai', expectedKind: 'claude', continuation: 'stop_hook' },
@@ -608,23 +623,23 @@ test('task_prepare identifies Codex, Claude Code, and OpenCode from MCP clientIn
           } | null;
         };
       };
-      assert.equal(content.ennoOduno.status, 'zenki_planning');
-      assert.equal(content.ennoOduno.currentRole, 'zenki');
+      assert.equal(content.ennoOduno.status, 'oduno_ideal');
+      assert.equal(content.ennoOduno.currentRole, 'enno-oduno');
       assert.deepEqual(content.ennoOduno.clientBinding, {
         status: 'pending',
         clientKind: clientFixture.expectedKind,
         clientVersion: 'fixture-version',
         identified: true,
       });
-      assert.equal(content.ennoOduno.directive?.role, 'zenki');
+      assert.equal(content.ennoOduno.directive?.role, 'enno-oduno');
       assert.equal(content.ennoOduno.directive?.harness.kind, clientFixture.expectedKind);
       assert.equal(content.ennoOduno.directive?.harness.version, 'fixture-version');
       assert.equal(content.ennoOduno.directive?.harness.continuation, clientFixture.continuation);
-      assert.ok(content.ennoOduno.directive?.harness.instructions.some((instruction) => /Create WorkUnits/iu.test(instruction)));
-      assert.ok(content.ennoOduno.directive?.harness.instructions.some((instruction) => /kiokuko-single-purpose-functions/iu.test(instruction)));
-      assert.deepEqual(content.ennoOduno.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-single-purpose-functions']);
-      assert.match(content.ennoOduno.directive?.objective ?? '', /one cohesive externally observable function or use-case contract/iu);
-      assert.match(content.ennoOduno.directive?.objective ?? '', /focused runnable test target/iu);
+      assert.ok(content.ennoOduno.directive?.harness.instructions.some((instruction) => /Own intake.*state transitions/iu.test(instruction)));
+      assert.ok(content.ennoOduno.directive?.harness.instructions.some((instruction) => /kiokuko-enno-oduno/iu.test(instruction)));
+      assert.deepEqual(content.ennoOduno.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-enno-oduno']);
+      assert.match(content.ennoOduno.directive?.objective ?? '', /optimal goal.*task_prepare handoff/iu);
+      assert.match(content.ennoOduno.directive?.objective ?? '', /call enno_ideal_submit/iu);
       assert.equal(content.ennoOduno.directive?.handoff?.sourceRole, 'enno-oduno');
       assert.equal(content.ennoOduno.directive?.handoff?.taskType, 'debug');
 

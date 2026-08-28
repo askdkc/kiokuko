@@ -94,7 +94,8 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(ennoSkill, /Enno-Oduno alone owns this state machine/);
   assert.match(ennoSkill, /Do not start Zenki or Goki/);
   assert.match(ennoSkill, /Never select a repository-wide latest run/);
-  assert.match(ennoSkill, /Only Enno-Oduno may accept the review and complete the run/);
+  assert.match(ennoSkill, /accepted review advances to `oduno_meditation`/iu);
+  assert.match(ennoSkill, /enno_meditation_submit.*completion follows persistence, not deletion/iu);
   assert.match(ennoSkill, /one to three versioned `expertRefs`/u);
 
   const soulFiles = files.filter((file) => file.skillName === STANDARD_SOUL_SKILL_NAME);

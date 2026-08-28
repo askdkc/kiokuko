@@ -8,7 +8,13 @@ import {
   STANDARD_UI_SKILL_NAME,
 } from '../setup/standard-skills.js';
 import { directiveForRun } from './directives.js';
-import { ennoContractSchema, ennoRequestHandoffSchema, workUnitSchema } from './schemas.js';
+import {
+  ennoContractSchema,
+  ennoRequestHandoffSchema,
+  odunoIdealSchema,
+  odunoMeditationSchema,
+  workUnitSchema,
+} from './schemas.js';
 import { ENNO_ROLES, ENNO_STATUSES, type EnnoRole, type RoleDirective } from './types.js';
 
 export const MAX_ROLE_INPUT_BYTES = 2 * 1024 * 1024;
@@ -28,6 +34,8 @@ const roleInputSchema = z.object({
   confirmationState: z.enum(['not_required', 'pending', 'approved', 'revision_requested', 'cancelled']).default('not_required'),
   attempts: z.number().int().min(0).max(20).default(0),
   mutationRevision: z.number().int().min(0).default(0),
+  ideal: odunoIdealSchema.nullable().default(null),
+  meditation: odunoMeditationSchema.nullable().default(null),
   contract: ennoContractSchema,
   handoff: ennoRequestHandoffSchema,
   workUnits: z.array(z.object({
@@ -109,6 +117,8 @@ export function generateRoleDirective(role: EnnoRole, input: unknown): RoleDirec
     confirmationState: parsed.data.confirmationState,
     attempts: parsed.data.attempts,
     mutationRevision: parsed.data.mutationRevision,
+    ideal: parsed.data.ideal,
+    meditation: parsed.data.meditation,
     contract: parsed.data.contract,
     handoff: parsed.data.handoff,
     workUnits: parsed.data.workUnits,

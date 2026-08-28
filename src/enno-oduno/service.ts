@@ -25,11 +25,17 @@ import { identifyEnnoClientKind } from './harness.js';
 import {
   ennoAnswerSchema,
   finishSchema,
+  idealSubmissionSchema,
+  meditationSubmissionSchema,
   planSubmissionSchema,
   workReportSchema,
   assertContractVerifierCwds,
   parseEnnoAnswer,
   parseFinishRequest,
+  parseIdealSubmission,
+  parseMeditationSubmission,
+  parseOdunoIdeal,
+  parseOdunoMeditation,
   parsePlanSubmission,
   parseWorkReport,
 } from './schemas.js';
@@ -64,6 +70,8 @@ import {
   type EnnoNextAction,
   type EnnoOdunoState,
   type EnnoRunSnapshot,
+  type OdunoIdeal,
+  type OdunoMeditation,
   type VerifierSpec,
   type VerifierRunResult,
 } from './types.js';
@@ -76,9 +84,11 @@ import {
 } from '../setup/standard-skills.js';
 
 type PlanSubmission = z.infer<typeof planSubmissionSchema>;
+type IdealSubmission = z.infer<typeof idealSubmissionSchema>;
 type EnnoAnswer = z.infer<typeof ennoAnswerSchema>;
 type WorkReport = z.infer<typeof workReportSchema>;
 type FinishRequest = z.infer<typeof finishSchema>;
+type MeditationSubmission = z.infer<typeof meditationSubmissionSchema>;
 
 export interface EnnoOperationResponse {
   ennoOduno: EnnoOdunoState;
@@ -106,10 +116,12 @@ interface PreparedTaskShape {
 function stateForSnapshot(snapshot: EnnoRunSnapshot): EnnoOdunoState {
   let nextAction: EnnoNextAction;
   if (snapshot.status === 'intake') nextAction = 'answer_intake';
+  else if (snapshot.status === 'oduno_ideal') nextAction = 'submit_ideal';
   else if (snapshot.status === 'zenki_planning') nextAction = 'submit_plan';
   else if (snapshot.status === 'needs_confirmation') nextAction = 'ask_user_confirmation';
   else if (snapshot.status === 'goki_executing') nextAction = 'execute_work_unit';
   else if (snapshot.status === 'enno_verifying') nextAction = 'run_final_verification';
+  else if (snapshot.status === 'oduno_meditation') nextAction = 'submit_meditation';
   else if (snapshot.status === 'blocked') nextAction = 'report_blocker';
   else nextAction = 'complete';
   const directive = directiveForRun(snapshot);
@@ -124,6 +136,8 @@ function stateForSnapshot(snapshot: EnnoRunSnapshot): EnnoOdunoState {
       identified: snapshot.clientKind !== null,
     },
     contractRevision: snapshot.revision,
+    ideal: snapshot.ideal,
+    meditation: snapshot.meditation,
     currentRole: directive?.role ?? null,
     directive,
     nextAction,
@@ -150,6 +164,8 @@ function intakeEnnoState(input: {
       identified: input.clientKind !== null,
     },
     contractRevision: null,
+    ideal: null,
+    meditation: null,
     currentRole: 'enno-oduno',
     directive,
     nextAction: 'answer_intake',
@@ -163,6 +179,8 @@ export function inapplicableEnnoState(): EnnoOdunoState {
     orchestrationId: null,
     clientBinding: null,
     contractRevision: null,
+    ideal: null,
+    meditation: null,
     currentRole: null,
     directive: null,
     nextAction: 'complete',
@@ -381,6 +399,58 @@ function planChangesCode(plan: PlanSubmission, taskType: EnnoRunSnapshot['taskTy
 function planHasUi(plan: PlanSubmission): boolean {
   return plan.skillRequirements.some((skill) => skill.purposes.includes('ui'))
     || plan.workPlan.units.some((unit) => unit.skillNames.includes('kiokuko-ui-design-soul'));
+}
+
+function assertIdealSkillCoverage(snapshot: EnnoRunSnapshot, ideal: IdealSubmission['ideal']): void {
+  const expected = snapshot.contract.skillSet.intakeDiscovery.selected.map((skill) => skill.name);
+  if (new Set(expected).size !== expected.length) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Akinator-discovered Skill identities are inconsistent');
+  }
+  const actual = ideal.skillContributions.map((contribution) => contribution.skillName);
+  if (actual.length !== expected.length || expected.some((name) => !actual.includes(name))) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Oduno ideal must account for every Akinator-discovered Skill exactly once');
+  }
+}
+
+function sanitizedIdeal(ideal: IdealSubmission['ideal'], repositoryRoot: string): OdunoIdeal {
+  return parseOdunoIdeal(sanitizeJson(ideal, { workspace: repositoryRoot }).value);
+}
+
+export function submitOdunoIdeal(
+  database: SqliteDatabase,
+  rawInput: unknown,
+): EnnoOperationResponse {
+  const input = parseIdealSubmission(rawInput);
+  const operation = operationIdentity('ideal_submit', input.idempotencyKey, input);
+  const replay = readOperationReceipt<EnnoOperationResponse>(database, input.runId, operation);
+  if (replay !== undefined) return replay;
+  const before = readEnnoSnapshot(database, identity(input));
+  assertExpected(before, input.expectedRevision, ['oduno_ideal']);
+  const ideal = sanitizedIdeal(input.ideal, before.repositoryRoot);
+  assertIdealSkillCoverage(before, ideal);
+  return withImmediateTransaction(database, () => {
+    const replayed = readOperationReceipt<EnnoOperationResponse>(database, input.runId, operation);
+    if (replayed !== undefined) return replayed;
+    const current = readEnnoSnapshot(database, identity(input));
+    assertExpected(current, input.expectedRevision, ['oduno_ideal']);
+    assertIdealSkillCoverage(current, ideal);
+    startOperationInTransaction(database, input.runId, operation);
+    updateContractInTransaction(database, current, {
+      contract: current.contract,
+      status: 'zenki_planning',
+      confirmationState: current.confirmationState,
+      ideal,
+    });
+    appendEnnoEventInTransaction(database, input.runId, 'oduno.ideal_derived', 'enno-oduno', 'derived', {
+      contractRevision: current.revision,
+      discoveredSkillCount: ideal.skillContributions.length,
+      principleCount: ideal.principles.length,
+      successSignalCount: ideal.successSignals.length,
+    });
+    const response = { ennoOduno: stateForSnapshot(readEnnoSnapshot(database, identity(input))) };
+    completeOperationInTransaction(database, input.runId, operation, response);
+    return response;
+  });
 }
 
 export async function submitEnnoPlan(
@@ -805,6 +875,7 @@ export async function finishEnno(
     const unsafe = results.some((result) => result.status === 'spawn_failed');
     const attempts = current.attempts + 1;
     const accepted = passed && input.review.decision === 'accept';
+    const completesLegacyRun = accepted && current.ideal === null;
     const mustBlock = unsafe || (!accepted && attempts >= current.contract.maxAttempts);
     const reviewFeedback = accepted || mustBlock
       ? null
@@ -819,7 +890,9 @@ export async function finishEnno(
         : 'Final verification reached the attempt limit';
     updateContractInTransaction(database, current, {
       contract: nextContract,
-      status: accepted ? 'completed' : mustBlock ? 'blocked' : 'zenki_planning',
+      status: accepted
+        ? completesLegacyRun ? 'completed' : 'oduno_meditation'
+        : mustBlock ? 'blocked' : 'zenki_planning',
       confirmationState: reviewFeedback === null ? current.confirmationState : 'revision_requested',
       attempts,
       blocker: mustBlock ? blockedReason : reviewFeedback,
@@ -836,11 +909,14 @@ export async function finishEnno(
         mutationRevision: current.mutationRevision,
         summary: reviewSummary,
       });
-      appendEnnoEventInTransaction(database, input.runId, 'enno.completed', 'enno-oduno', 'completed', {
-        contractRevision: current.revision,
-        mutationRevision: current.mutationRevision,
-      });
-      terminalizeLedgerRunInTransaction(database, input.runId, 'completed');
+      if (completesLegacyRun) {
+        appendEnnoEventInTransaction(database, input.runId, 'enno.completed', 'enno-oduno', 'completed', {
+          contractRevision: current.revision,
+          mutationRevision: current.mutationRevision,
+          compatibility: 'pre_oduno_ideal_run',
+        });
+        terminalizeLedgerRunInTransaction(database, input.runId, 'completed');
+      }
     } else if (mustBlock) {
       appendEnnoEventInTransaction(database, input.runId, 'enno.blocked', 'enno-oduno', 'blocked', {
         reason: unsafe ? 'spawn_failed' : 'attempt_limit',
@@ -855,6 +931,55 @@ export async function finishEnno(
       next = readEnnoSnapshot(database, identity(input));
     }
     const response = { ennoOduno: stateForSnapshot(next), verifierResults: results };
+    completeOperationInTransaction(database, input.runId, operation, response);
+    return response;
+  });
+}
+
+function sanitizedMeditation(
+  meditation: MeditationSubmission['meditation'],
+  repositoryRoot: string,
+): OdunoMeditation {
+  return parseOdunoMeditation(sanitizeJson(meditation, { workspace: repositoryRoot }).value);
+}
+
+export function submitOdunoMeditation(
+  database: SqliteDatabase,
+  rawInput: unknown,
+): EnnoOperationResponse {
+  const input = parseMeditationSubmission(rawInput);
+  const operation = operationIdentity('meditation_submit', input.idempotencyKey, input);
+  const replay = readOperationReceipt<EnnoOperationResponse>(database, input.runId, operation);
+  if (replay !== undefined) return replay;
+  const before = readEnnoSnapshot(database, identity(input));
+  assertExpected(before, input.expectedRevision, ['oduno_meditation']);
+  if (before.ideal === null) throw new KiokukoError('INTEGRITY_ERROR', 'Oduno meditation requires a persisted ideal');
+  const meditation = sanitizedMeditation(input.meditation, before.repositoryRoot);
+  return withImmediateTransaction(database, () => {
+    const replayed = readOperationReceipt<EnnoOperationResponse>(database, input.runId, operation);
+    if (replayed !== undefined) return replayed;
+    const current = readEnnoSnapshot(database, identity(input));
+    assertExpected(current, input.expectedRevision, ['oduno_meditation']);
+    if (current.ideal === null) throw new KiokukoError('INTEGRITY_ERROR', 'Oduno meditation requires a persisted ideal');
+    startOperationInTransaction(database, input.runId, operation);
+    updateContractInTransaction(database, current, {
+      contract: current.contract,
+      status: 'completed',
+      confirmationState: current.confirmationState,
+      meditation,
+    });
+    appendEnnoEventInTransaction(database, input.runId, 'oduno.meditation_completed', 'enno-oduno', 'completed', {
+      contractRevision: current.revision,
+      mutationRevision: current.mutationRevision,
+      inspectedPathCount: meditation.inspectedPaths.length,
+      deletionCandidateCount: meditation.deletionCandidates.length,
+    });
+    appendEnnoEventInTransaction(database, input.runId, 'enno.completed', 'enno-oduno', 'completed', {
+      contractRevision: current.revision,
+      mutationRevision: current.mutationRevision,
+    });
+    terminalizeLedgerRunInTransaction(database, input.runId, 'completed');
+    const response = { ennoOduno: stateForSnapshot(readEnnoSnapshot(database, identity(input))) };
     completeOperationInTransaction(database, input.runId, operation, response);
     return response;
   });

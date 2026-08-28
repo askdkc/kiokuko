@@ -14,6 +14,8 @@ import {
   ENNO_PROVENANCE_KEYS,
   type EnnoOdunoContract,
   type EnnoRequestHandoff,
+  type OdunoIdeal,
+  type OdunoMeditation,
   type VerifierSpec,
   type WorkPlan,
   type WorkReportResult,
@@ -25,6 +27,12 @@ const canonicalText = (maximum: number) => z.string().min(1).max(maximum).refine
 );
 const identifier = canonicalText(256).refine((value) => value !== '.' && value !== '..' && !/[\\/]/u.test(value));
 const boundedPath = canonicalText(4_096).refine((value) => !value.includes('\0'));
+const repositoryRelativePath = boundedPath.refine(
+  (value) => !path.posix.isAbsolute(value)
+    && !path.win32.isAbsolute(value)
+    && !value.split(/[\\/]/u).includes('..'),
+  'Path must be repository-relative without parent traversal',
+);
 
 export const verifierSpecSchema = z.object({
   id: identifier,
@@ -173,6 +181,58 @@ export const ennoRequestHandoffSchema = z.object({
   stopConditions: z.array(canonicalText(8_192)).max(16),
 }).strict();
 
+export const odunoIdealSchema = z.object({
+  objective: canonicalText(16_384),
+  principles: z.array(canonicalText(8_192)).min(1).max(32),
+  skillContributions: z.array(z.object({
+    skillName: canonicalText(500),
+    contribution: canonicalText(8_192),
+  }).strict()).max(2),
+  successSignals: z.array(canonicalText(8_192)).min(1).max(32),
+}).strict().superRefine((ideal, context) => {
+  const names = ideal.skillContributions.map((item) => item.skillName);
+  if (new Set(names).size !== names.length) {
+    context.addIssue({ code: 'custom', message: 'Oduno ideal Skill contributions must be unique', path: ['skillContributions'] });
+  }
+});
+
+export const odunoMeditationSchema = z.object({
+  summary: canonicalText(16_384),
+  inspectedPaths: z.array(repositoryRelativePath).min(1).max(256),
+  deletionCandidates: z.array(z.object({
+    kind: z.enum(['test', 'function']),
+    path: repositoryRelativePath,
+    name: canonicalText(1_000),
+    reason: canonicalText(8_192),
+    evidence: z.array(canonicalText(8_192)).min(1).max(16),
+  }).strict()).max(128),
+}).strict().superRefine((meditation, context) => {
+  if (new Set(meditation.inspectedPaths).size !== meditation.inspectedPaths.length) {
+    context.addIssue({ code: 'custom', message: 'Oduno meditation inspected paths must be unique', path: ['inspectedPaths'] });
+  }
+  const inspected = new Set(meditation.inspectedPaths);
+  const candidateKeys = new Set<string>();
+  for (const [index, candidate] of meditation.deletionCandidates.entries()) {
+    if (!inspected.has(candidate.path)) {
+      context.addIssue({ code: 'custom', message: 'Deletion candidate path must be inspected', path: ['deletionCandidates', index, 'path'] });
+    }
+    const key = `${candidate.kind}\0${candidate.path}\0${candidate.name}`;
+    if (candidateKeys.has(key)) {
+      context.addIssue({ code: 'custom', message: 'Oduno meditation deletion candidates must be unique', path: ['deletionCandidates', index] });
+    }
+    candidateKeys.add(key);
+  }
+});
+
+export const idealSubmissionSchema = z.object({
+  runId: identifier,
+  workspace: canonicalText(256),
+  orchestrationId: orchestrationIdSchema,
+  expectedRevision: z.number().int().min(1),
+  idempotencyKey: identifier,
+  ideal: odunoIdealSchema,
+}).strict();
+
 export const planSubmissionSchema = z.object({
   runId: identifier,
   workspace: canonicalText(256),
@@ -253,6 +313,15 @@ export const finishSchema = z.object({
   }).strict(),
 }).strict();
 
+export const meditationSubmissionSchema = z.object({
+  runId: identifier,
+  workspace: canonicalText(256),
+  orchestrationId: orchestrationIdSchema,
+  expectedRevision: z.number().int().min(1),
+  idempotencyKey: identifier,
+  meditation: odunoMeditationSchema,
+}).strict();
+
 function parseBoundary<T>(schema: z.ZodType<T>, input: unknown, message: string): T {
   const parsed = schema.safeParse(input);
   if (!parsed.success) throw new KiokukoError('VALIDATION_ERROR', message);
@@ -271,6 +340,14 @@ export function parseEnnoRequestHandoff(input: unknown): EnnoRequestHandoff {
   return parseBoundary(ennoRequestHandoffSchema, input, 'Stored Enno request handoff is invalid');
 }
 
+export function parseOdunoIdeal(input: unknown): OdunoIdeal {
+  return parseBoundary(odunoIdealSchema, input, 'Stored Oduno ideal is invalid');
+}
+
+export function parseOdunoMeditation(input: unknown): OdunoMeditation {
+  return parseBoundary(odunoMeditationSchema, input, 'Stored Oduno meditation is invalid');
+}
+
 export function parseVerifierSpec(input: unknown): VerifierSpec {
   return parseBoundary(verifierSpecSchema, input, 'Enno verifier is invalid');
 }
@@ -283,6 +360,10 @@ export function parsePlanSubmission(input: unknown): z.infer<typeof planSubmissi
   return parseBoundary(planSubmissionSchema, input, 'Enno plan submission is invalid');
 }
 
+export function parseIdealSubmission(input: unknown): z.infer<typeof idealSubmissionSchema> {
+  return parseBoundary(idealSubmissionSchema, input, 'Oduno ideal submission is invalid');
+}
+
 export function parseEnnoAnswer(input: unknown): z.infer<typeof ennoAnswerSchema> {
   return parseBoundary(ennoAnswerSchema, input, 'Enno answer is invalid');
 }
@@ -293,6 +374,10 @@ export function parseWorkReport(input: unknown): z.infer<typeof workReportSchema
 
 export function parseFinishRequest(input: unknown): z.infer<typeof finishSchema> {
   return parseBoundary(finishSchema, input, 'Enno finish request is invalid');
+}
+
+export function parseMeditationSubmission(input: unknown): z.infer<typeof meditationSubmissionSchema> {
+  return parseBoundary(meditationSubmissionSchema, input, 'Oduno meditation submission is invalid');
 }
 
 export function assertVerifierCwd(repositoryRoot: string, verifier: VerifierSpec): void {

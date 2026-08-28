@@ -101,8 +101,15 @@ forces model use.
 
 The Enno-Oduno standard skill is the role-level controller contract. Every
 Enno-Oduno directive and WorkUnit retains `kiokuko-soul` first. Enno-Oduno
-directives then require `kiokuko-enno-oduno` during intake, confirmation, and
-final review. The controller skill itself is not inserted into Zenki's WorkUnit
+directives then require `kiokuko-enno-oduno` during intake, Oduno ideal
+derivation, confirmation, final review, and Oduno meditation. A ready intake
+enters `oduno_ideal`: `enno_ideal_submit` derives the optimal target from the
+structured `task_prepare` handoff plus exactly one contribution per
+Akinator-discovered Skill before Zenki can plan. After accepted final
+verification, `oduno_meditation` inspects changed and approved paths for
+evidence-backed obsolete test or function candidates without deleting them;
+`enno_meditation_submit` persists that reflection and completes the run. The
+controller skill itself is not inserted into Zenki's WorkUnit
 Skill snapshot; Zenki continues to require the single-purpose-functions skill
 for every code-changing plan. Every code-changing WorkUnit persists one to
 three registered `expertRefs`; UI WorkUnits include at least one `code.*` and

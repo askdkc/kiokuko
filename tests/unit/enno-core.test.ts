@@ -78,6 +78,27 @@ test('role scripts reject revision conflicts and generate only the role owning t
   ]);
   assert.throws(() => generateRoleDirective('zenki', input), /does not own/iu);
   assert.throws(() => generateRoleDirective('goki', { ...input, contractRevision: 1 }), /revision mismatch/iu);
+  const ideal = generateRoleDirective('enno-oduno', {
+    ...input,
+    status: 'oduno_ideal',
+    contract: {
+      ...contract,
+      skillSet: {
+        ...contract.skillSet,
+        intakeDiscovery: {
+          ...contract.skillSet.intakeDiscovery,
+          attempted: true,
+          selected: [{
+            skillId: 'external-debug-reference', name: 'external-debug-reference', source: 'official-catalog',
+            officialStatus: 'catalog-verified', imported: false, updated: false,
+          }],
+        },
+      },
+    },
+  });
+  assert.match(ideal.objective, /optimal goal.*task_prepare handoff/iu);
+  assert.match(ideal.objective, /external-debug-reference/u);
+  assert.deepEqual(ideal.reportSchema.required, ['runId', 'expectedRevision', 'ideal']);
   const review = generateRoleDirective('enno-oduno', {
     ...input,
     status: 'enno_verifying',
@@ -91,6 +112,25 @@ test('role scripts reject revision conflicts and generate only the role owning t
   ]);
   assert.ok(review.harness.instructions.some((instruction) => /Read and apply kiokuko-soul first, then kiokuko-enno-oduno/u.test(instruction)));
   assert.deepEqual(review.reportSchema.required, ['runId', 'expectedRevision', 'review']);
+  const meditation = generateRoleDirective('enno-oduno', {
+    ...input,
+    status: 'oduno_meditation',
+    ideal: {
+      objective: 'Reach the verified optimal add implementation',
+      principles: ['Preserve the public API'],
+      skillContributions: [],
+      successSignals: ['Tests pass'],
+    },
+    workUnits: [{
+      ...input.workUnits[0],
+      status: 'completed',
+      result: { outcome: 'completed', summary: 'Repaired add', mutated: true, changedPaths: ['src/add.js'] },
+    }],
+  });
+  assert.match(meditation.objective, /obsolete, useless, or redundant tests and functions/iu);
+  assert.match(meditation.objective, /src\/add\.js/u);
+  assert.ok(meditation.stopConditions.some((condition) => /Do not mutate or delete/iu.test(condition)));
+  assert.deepEqual(meditation.reportSchema.required, ['runId', 'expectedRevision', 'meditation']);
   assert.throws(() => parseRoleJson(Buffer.from('{"x":1,"x":2}')), /strict JSON/iu);
 });
 

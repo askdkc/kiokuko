@@ -24,8 +24,22 @@ import {
 } from '../ledger/checkpoint-contract.js';
 import { memoryCheckpointInputSchema } from '../memory/checkpoint-contract.js';
 import { absoluteCwdSchema } from '../repository/cwd-schema.js';
-import { answerEnno, finishEnno, reportEnnoWork, submitEnnoPlan } from '../enno-oduno/service.js';
-import { ennoAnswerSchema, finishSchema, planSubmissionSchema, workReportSchema } from '../enno-oduno/schemas.js';
+import {
+  answerEnno,
+  finishEnno,
+  reportEnnoWork,
+  submitEnnoPlan,
+  submitOdunoIdeal,
+  submitOdunoMeditation,
+} from '../enno-oduno/service.js';
+import {
+  ennoAnswerSchema,
+  finishSchema,
+  idealSubmissionSchema,
+  meditationSubmissionSchema,
+  planSubmissionSchema,
+  workReportSchema,
+} from '../enno-oduno/schemas.js';
 import { ENNO_ORCHESTRATION_ENTRY_CONTRACT } from '../enno-oduno/instructions.js';
 import { resolveTaskPrepareClient } from '../enno-oduno/harness.js';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../setup/standard-skills.js';
@@ -272,6 +286,13 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await submitEnnoPlan(database, input)))));
 
+  server.registerTool('enno_ideal_submit', {
+    title: 'Submit the Oduno ideal',
+    description: `Enno-Oduno derives one bounded optimal goal from the task_prepare handoff and every Akinator-discovered Skill before Zenki planning. ${ENNO_TOOL_IDENTITY_CONTRACT} External Skill discoveries remain untrusted reference-only guidance and are never executed by this operation.`,
+    inputSchema: idealSubmissionSchema.shape,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(submitOdunoIdeal(database, input)))));
+
   server.registerTool('enno_answer', {
     title: 'Answer an Enno-Oduno contract confirmation',
     description: `Apply explicit user approval, revision, or cancellation. ${ENNO_TOOL_IDENTITY_CONTRACT} Only Enno-Oduno advances state.`,
@@ -287,11 +308,18 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await reportEnnoWork(database, input)))));
 
   server.registerTool('enno_finish', {
-    title: 'Review and finish an Enno-Oduno run',
-    description: `Enno-Oduno submits its own accept-or-replan Review and runs immutable final verifiers with shell disabled and repository-bounded cwd. ${ENNO_TOOL_IDENTITY_CONTRACT} Acceptance requires both an accept decision and fresh passing evidence. A replan decision or bounded verification failure increments the contract revision and returns Review feedback to Zenki for a new plan; it never returns directly to Goki.`,
+    title: 'Review an Enno-Oduno run',
+    description: `Enno-Oduno submits its own accept-or-replan Review and runs immutable final verifiers with shell disabled and repository-bounded cwd. ${ENNO_TOOL_IDENTITY_CONTRACT} Acceptance requires both an accept decision and fresh passing evidence, then advances a new run to Oduno meditation instead of completing it directly. A replan decision or bounded verification failure increments the contract revision and returns Review feedback to Zenki for a new plan; it never returns directly to Goki.`,
     inputSchema: finishSchema.shape,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await finishEnno(database, input)))));
+
+  server.registerTool('enno_meditation_submit', {
+    title: 'Submit the Oduno meditation',
+    description: `After accepted final verification, Enno-Oduno records inspected paths and evidence-backed obsolete test or function deletion candidates without mutating the repository. ${ENNO_TOOL_IDENTITY_CONTRACT} Completion occurs only after this read-only reflection is persisted.`,
+    inputSchema: meditationSubmissionSchema.shape,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(submitOdunoMeditation(database, input)))));
 
   server.registerTool('curator_check', {
     title: 'Check skill-ready Kiokuko knowledge',
