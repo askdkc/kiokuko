@@ -12,7 +12,7 @@ Users do not need to paste past context into every prompt or search for memories
 
 ## Get started quickly
 
-Node.js 24.16 or newer is required.
+Node.js 26.1.0 or newer is required.
 Get started easily with these two commands 💕
 
 ```bash
