@@ -22,11 +22,57 @@ kiokuko setup
 
 `setup`은 설치된 지원 클라이언트를 감지하고 SQLite 데이터베이스와 MCP 연결을 자동으로 설정합니다.
 대화형 setup은 감사된 community Skill도 참고 자료로 사용할지 묻고, 기본 응답은 아니요입니다.
+Codex, Claude Code, OpenCode를 새로 설정할 때는 Enno-Oduno 에이전트 루프도 활성화됩니다. 기존 관리 환경은 `--enno-oduno on`을 명시적으로 선택할 때까지 유지되며, `--enno-oduno off`는 Enno-Oduno가 소유한 hook 또는 plugin만 제거합니다.
+setup은 번들된 `kiokuko-enno-oduno` controller Skill을 `kiokuko-single-purpose-functions`, `kiokuko-ui-design-soul`과 함께 선택한 모든 지원 클라이언트에 설치합니다.
 모델용 메모리는 capability gate를 거치는 MCP 도구 `task_prepare`와
-`task_answer`를 통해서만 작업에 전달됩니다. Kiokuko는 이 호출 전에 메모리를
-암묵적으로 불러오는 클라이언트 훅이나 플러그인을 설치하지 않습니다.
+`task_answer`를 통해서만 작업에 전달됩니다. `task_prepare`는 Enno-Oduno의 진입점이기도 합니다. Enno-Oduno는 호출한 harness를 식별하고 Akinator intake를 소유하며, 실행 가능한 요청을 Zenki에 넘기기 전에 Oduno 이상 상태를 도출합니다. hook은 메모리를 암묵적으로 불러오거나 계획을 우회하지 않습니다. canonical repository에서 모호하지 않은 단 하나의 pending active run만 client session에 바인딩한 뒤 Oduno, Zenki, Goki 또는 최종 review의 계속 여부를 gate합니다. repository 전체의 최신 run을 선택하지 않습니다.
 
-설정 후 대상 AI 클라이언트를 실행하고 평소처럼 사용하면 됩니다. 이미 실행 중이라면 한 번 종료한 후 다시 시작하십시오.
+모든 `task_prepare` 호출은 클라이언트 모델이 해당 논리 요청을 위해 로컬 `kiokuko-soul` Skill 전체를 읽은 후 `soulRead: true`를 전달해야 합니다. 또한 모든 작업에서 정확히 일치하는 로컬 `kiokuko-soul` capability가 필요하며, 누락되었거나 availability를 알 수 없으면 intake가 완료되지 않았더라도 fail-close합니다. 이 boolean은 클라이언트의 명시적 attestation이며, 모델이 Skill을 이해하고 준수했다는 remote proof는 아닙니다.
+
+설정 후 대상 AI 클라이언트를 실행하고 평소처럼 사용하면 됩니다. 이미 실행 중이라면 한 번 종료한 후 다시 시작하십시오. setup이 Codex Stop hook을 생성하거나 업데이트했다면 Codex에서 `/hooks`를 열고 해당 hook을 명시적으로 신뢰하십시오.
+
+### Enno-Oduno 에이전트 루프
+
+`build`, `debug`, `review`, `devops` 작업에서는 `task_prepare`가 run-bound loop를 시작하고 `ennoOduno`를 반환합니다. 강제되는 역할 순서는 다음과 같습니다.
+
+```text
+사용자 요청
+  -> task_prepare: Enno-Oduno가 Codex, Claude Code 또는 OpenCode를 식별
+  -> currentRole이 Enno-Oduno이면 requiredSkills의 kiokuko-enno-oduno를 읽고 적용
+  -> Enno-Oduno가 필요한 Akinator 질문을 사용자에게 반환
+  -> Oduno 이상 상태가 task_prepare handoff와 Akinator가 발견한 모든 Skill에서 최적 목표를 도출
+  -> enno_ideal_submit이 이상 상태를 저장한 뒤에만 harness별 Zenki로 전달
+  -> Zenki가 먼저 requiredSkills의 kiokuko-single-purpose-functions를 읽고 적용
+  -> code 변경을 하나의 응집된 함수/유스케이스 계약, 책임, 변경 이유 및 focused test target으로 분리
+  -> Zenki가 WorkUnit마다 version이 지정된 expertRefs 1~3개를 선택하며 기본적으로 선택하지 않은 fragment는 읽지 않음
+  -> Zenki가 WorkPlan, WorkUnit, expert refs, Skill snapshot 및 verifier를 제출
+  -> Enno-Oduno가 필요한 사용자 확인을 받음
+  -> Goki가 승인된 WorkUnit만 orchestration
+  -> Enno-Oduno가 새로운 final-verifier 증거를 review
+       -> 성공: Enno-Oduno가 수락하고 읽기 전용 Oduno meditation으로 전환
+            -> 변경되었거나 승인된 path에서 근거가 있는 오래된 test 또는 함수를 탐색
+            -> enno_meditation_submit이 삭제하지 않고 후보를 저장한 뒤 run을 완료
+       -> 실패: Enno-Oduno가 revision을 올리고 feedback을 Zenki에 반환
+  -> Zenki가 수정된 plan을 제출하고 확인이 성공한 뒤에만 Goki를 재개할 수 있음
+```
+
+따라서 intake가 완료되지 않으면 Enno-Oduno directive와 `answer_intake`를 반환하며, `requiredSkills`에는 `kiokuko-enno-oduno`가 포함되고 Zenki는 아직 시작되지 않습니다. 준비된 intake는 먼저 `oduno_ideal`과 `submit_ideal`을 반환합니다. `enno_ideal_submit`은 Akinator가 선택한 discovery set의 모든 Skill에 대해 정확히 하나의 기여를 요구하며, 외부 Skill은 신뢰할 수 없는 reference-only 지침으로 유지됩니다. 그 후에만 run은 revision-bound Zenki directive를 반환합니다. 이 directive의 `requiredSkills`에는 draft Skill snapshot이 비어 있어도 compact index인 `kiokuko-single-purpose-functions`가 포함됩니다. Zenki는 WorkUnit을 선택하기 전에 이 index를 사용해 의미 없는 micro-function을 만들지 않고 code 변경을 응집된 함수 또는 유스케이스 계약과 focused test target으로 나눕니다. code를 변경하는 각 WorkUnit은 이유와 함께 등록된 `expertRefs`를 1~3개 선택해야 하며, UI WorkUnit은 `code.*`와 `ui.*` expert를 각각 하나 이상 요구합니다. `enno_plan_submit`은 누락, 중복, 알 수 없음 또는 제한을 초과한 조합을 거부하고 정확한 선택을 revision과 함께 저장합니다. Goki는 모든 Skill reference가 아니라 해당 fragment만 읽습니다. controller Skill은 role 수준이며 WorkUnit Skill snapshot에 삽입되지 않습니다. Zenki의 전체 plan이 승인되고 필요한 확인이 성공하기 전에는 Goki로 전환할 수 없습니다. 최종 review가 실패해도 이전 Goki WorkUnit을 직접 재개하지 않습니다. 거부된 plan과 verifier 증거를 이전 revision의 기록으로 보존하고 `zenki_planning`으로 이동해 새로운 revision-bound plan을 요구합니다. 승인된 review는 직접 완료되지 않고 `oduno_meditation`으로 이동합니다. `enno_meditation_submit`은 repository를 변경하지 않고 검사한 repository-relative path와 근거가 있는 오래된 test 또는 함수 후보를 저장한 뒤 run을 완료합니다. 응답의 `orchestrationId`는 모든 Enno MCP 작업에서 사용되며 host session identity와 분리됩니다. 추론한 scope, acceptance criteria, Skill, expert 선택 또는 verifier command가 있으면 구현 전에 일반 클라이언트 UI로 확인을 반환합니다.
+
+세 역할은 현재 클라이언트 모델을 사용합니다. Kiokuko는 별도의 모델을 호출하지 않으며 OpenAI, Anthropic 또는 OpenCode API credential을 요구하지 않습니다. Codex와 Claude Code는 횟수가 제한된 Stop hook을 사용하고 OpenCode는 횟수가 제한된 `session.idle` plugin을 사용합니다. OpenCode는 child-session idle event를 무시하고 같은 완료 turn의 반복 delivery를 deduplicate합니다. `task_prepare`에서 host session을 사용할 수 없었다면 최초의 일치 hook은 pending active run이 정확히 하나일 때만 원자적으로 바인딩합니다. 모호하면 추측하지 않고 제어를 반환하며 완료된 binding은 변경할 수 없습니다. Kiokuko는 Claude Code의 기본 8회 연속 Stop-block override보다 먼저 제어를 반환합니다. adapter 실패 시 고정 warning과 함께 클라이언트가 중지될 수 있습니다. 외부 Skill은 신뢰할 수 없는 reference-only 자료이며 자동으로 설치되거나 실행되지 않습니다.
+
+```bash
+kiokuko setup --clients codex,opencode,claude --enno-oduno on
+kiokuko enno run --role zenki --input-json -
+```
+
+실제 클라이언트 test는 선택 사항이며 release gate와 분리됩니다. 일치하는 환경 변수가 없으면 `not-run`으로 보고됩니다.
+
+```bash
+npm run test:e2e:codex
+npm run test:e2e:opencode
+npm run test:e2e:claude
+npm run test:e2e:agents
+```
 
 지원 클라이언트:
 
