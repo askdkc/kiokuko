@@ -70,9 +70,28 @@ also prohibit inferred permission. All flows use optimistic revision checks,
 strip project path signals from the new global scope, and keep the result
 `candidate` + `untrusted`.
 
-Setup installs no client hook or plugin. Model-facing task memory is returned
-only by `task_prepare` / `task_answer`; explicit CLI and Web memory inspection
-is a human/operator management surface, not an ungated model fallback.
+When Enno-Oduno is enabled, setup may install one bounded continuation adapter
+for Codex (Stop hook), Claude Code (Stop hook), or OpenCode (`session.idle`
+plugin). Hermes receives native stdio MCP and bundled Skills only; Kiokuko does
+not install a Hermes continuation adapter. The local trust boundary is the same
+OS user with access to the canonical repository and Kiokuko data. Kiokuko does
+not add PID, PPID, process-ancestry, executable-name, code-signing, or inherited
+token proof. `client_session_id` is routing metadata, not authorization or
+ownership: adapters prefer the exact session route, then atomically reroute the
+single unambiguous active run in the canonical repository across Codex, Claude
+Code, and OpenCode. Multiple active candidates are an ambiguity and remain
+unchanged; no repository-wide latest run is selected. Rebinding updates the
+client kind and session, clears the prior client version, and is audited without
+requiring confirmation. Exhausting one session's continuation budget stops only
+that session and leaves the run and ledger active for another local project
+client. Hermes has no automatic adapter but may continue an exact run identity
+through MCP. The public `clientBinding` field is a projection of this current
+route; `bound` is not an authorization claim. Adapters do not recall memory,
+launch advisors, or bypass planning or confirmation. Adapter failures are
+bounded and fail open.
+Model-facing task memory is returned only by `task_prepare` / `task_answer`;
+explicit CLI and Web memory inspection is a human/operator management surface,
+not an ungated model fallback.
 
 MoA advisors are not subprocesses launched by Kiokuko. A parent host is
 responsible for proving read-only isolation before it reports a slot; hosts

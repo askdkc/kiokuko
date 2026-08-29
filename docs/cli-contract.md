@@ -147,10 +147,23 @@ placement and updates without deleting a previously installed copy.
 Every `task_prepare` call requires an exact local `kiokuko-soul`; a client using
 `--no-standard-skills` must provide that Skill independently or every task stops
 with `required_capability_unavailable`.
-Setup installs no client hook or plugin. As a one-way upgrade cleanup, selected
-Claude/OpenCode setup removes only the exact retired Claude prompt handler and
-byte-exact retired OpenCode guard. A partial, modified, relocated, duplicate, or
-unmanaged legacy identity is `CONFLICT`; unrelated settings are preserved.
+When Enno-Oduno continuation is enabled, setup installs one bounded native
+adapter for each selected client: a Codex or Claude Code Stop hook, or an
+OpenCode `session.idle` plugin. Hermes receives no Enno continuation adapter.
+The adapters treat `client_session_id` as routing metadata rather than
+authorization ownership. They prefer an exact session route, then atomically
+reroute the single unambiguous active run in the canonical repository across
+Codex, Claude Code, and OpenCode. Multiple active candidates remain unchanged.
+Reaching a per-session continuation limit stops only that session's automatic
+continuation and leaves the run and ledger active. Hermes can still continue
+the same run through MCP by supplying its exact run identity.
+For new Codex, OpenCode, and Claude Code setup the loop is enabled by default;
+existing managed installations remain unchanged until `--enno-oduno on` is
+selected. `--enno-oduno off` removes only the exact Enno-owned adapter. As a
+one-way upgrade cleanup, selected Claude/OpenCode setup also removes only the
+exact retired Claude prompt handler and byte-exact retired OpenCode guard. A
+partial, modified, relocated, duplicate, or unmanaged legacy identity is
+`CONFLICT`; unrelated settings are preserved.
 It computes and validates all file edits before writing, uses per-file atomic
 replacement, rolls back already written client files if a later write fails,
 rejects symlinks, and is idempotent. Before an existing database is migrated,
@@ -182,6 +195,23 @@ only the gated task entry points and lifecycle tools:
 - `task_answer(sessionId, runId, questionId, value, cwd?, capabilities?, maxContextChars?)`
 - `curator_check(cwd?, workspace?, limit?, includeUnready?)`
 - `curator_globalize(workspace, entryId, expectedRevision, confirmed=true)`
+- `enno_advice_submit(...)`
+- `enno_ideal_submit(...)`
+- `enno_plan_submit(...)`
+- `enno_verify_prepare(...)`
+- `enno_finish(...)`
+- `enno_meditation_submit(...)`
+
+Enno-Oduno Final Review is two-phase. `enno_verify_prepare` runs the approved
+final verifiers outside database transactions with shell disabled and a
+repository-bounded cwd, stores fresh evidence bound to the current contract and
+mutation revisions, and only then permits the final-review advisory fanout.
+`enno_finish` decides accept/replan/block from that stored evidence and never
+spawns a subprocess; unready evidence is rejected as a conflict. A successful
+accept advances to read-only Oduno meditation, and
+`enno_meditation_submit` completes the run only after that reflection is
+persisted. Kiokuko never launches the three fixed Advisor slots; the parent
+host verifies isolation and submits bounded contributions.
 
 Run-bound `memory_checkpoint` accepts only an `active` run. Clients must inspect
 `nextAction` after every `task_prepare` and `task_answer` response and continue

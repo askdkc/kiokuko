@@ -27,6 +27,19 @@ Kiokuko is a model-agnostic local control plane with three deliberately separate
   then submits bounded canonical contributions through `enno_advice_submit`.
   The round has its own phase/revision/mutation identity and never adds a main
   `EnnoStatus` or lets an advisor mutate the contract.
+- Enno Final Review is two-phase. `enno_verify_prepare` runs the approved final
+  verifiers outside database transactions with shell disabled and a
+  repository-bounded cwd, stores fresh evidence for the current contract and
+  mutation revisions, and only then permits the final-review advisory fanout.
+  `enno_finish` decides accept/replan/block from that stored evidence and never
+  launches a subprocess. Codex and Claude Code may use bounded Stop hooks and
+  OpenCode may use a bounded `session.idle` plugin when Enno continuation is
+  enabled; Hermes has no Enno continuation adapter. Client session identity is
+  routing metadata, not authorization ownership. The adapter first resolves an
+  exact route, then may atomically reroute the single unambiguous active run in
+  the canonical repository across supported clients. Multiple candidates are
+  not selected or mutated, and one session's continuation exhaustion does not
+  terminalize the run or ledger.
 
 The gateway is not a transparent provider-traffic reverse proxy. Provider credentials and model APIs are outside the v1 boundary.
 

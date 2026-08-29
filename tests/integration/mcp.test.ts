@@ -63,7 +63,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /Goki can start only after Zenki submits a complete WorkPlan/u);
     assert.match(instructions, /A failed review never returns directly to Goki/u);
     assert.match(instructions, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
-    assert.match(instructions, /never select a repository-wide latest run/u);
+    assert.match(instructions, /never select a repository-wide latest run/iu);
     assert.match(instructions, /ask_user_confirmation.*userFacingConfirmation.*never output raw directive JSON/isu);
     assert.match(instructions, /userFacingRecovery.*whenToChoose.*whatHappens.*explicit choice/isu);
     assert.match(instructions, /Do not retry, cancel, or create a new task automatically/iu);
@@ -78,6 +78,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'enno_ideal_submit',
       'enno_meditation_submit',
       'enno_plan_submit',
+      'enno_verify_prepare',
       'enno_work_report',
       'memory_checkpoint',
       'task_answer',
@@ -158,7 +159,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.ok(taskPrepareSchema.required?.includes('requestId'));
     assert.ok(taskAnswerSchema.required?.includes('runId'));
     assert.match(taskPrepareSchema.properties?.client?.description ?? '', /normally identifies Codex, Claude Code, or OpenCode from the MCP initialize clientInfo/u);
-    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /host session ID may be omitted and bound later/u);
+    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /host session ID is not authorization ownership/u);
+    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /single unambiguous active run in the canonical repository/u);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /Use the exact current question/);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /value must be exactly one returned option/);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /options is null, provide grounded non-empty text/);
@@ -177,6 +179,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'enno_ideal_submit',
       'enno_plan_submit',
       'enno_answer',
+      'enno_verify_prepare',
       'enno_work_report',
       'enno_finish',
       'enno_meditation_submit',
@@ -808,6 +811,188 @@ test('enno_plan_submit returns the userFacingConfirmation projection over the MC
     for (const forbidden of ['repair-add', 'final-test', 'code.verification.v1', 'expertRefs', 'focusedVerifiers', 'finalVerifiers', 'provenance']) {
       assert.equal(rendered.includes(forbidden), false, `MCP projection leaked internal token: ${forbidden}`);
     }
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('MCP transports advisory submission and final verification preparation with replay and conflict boundaries', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-advisory-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-advisory-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'kiokuko-advisory-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const capabilities = [SOUL_CAPABILITY, {
+      kind: 'skill',
+      name: 'kiokuko-single-purpose-functions',
+      description: 'Focused code contracts and tests.',
+    }];
+    const prepared = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'mcp-advisory-request',
+        cwd: root,
+        task: 'Repair the add function and make tests pass',
+        profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'node --test passes' },
+        capabilities,
+      },
+    });
+    assert.equal(prepared.isError, undefined);
+    const preparedContent = prepared.structuredContent as {
+      run: { runId: string };
+      project: { workspace: string };
+      intake: { sessionId: string };
+      ennoOduno: {
+        status: string;
+        directive: { advisoryRound?: { phase: string; context: Record<string, unknown>; slots: unknown[] } };
+      };
+    };
+    assert.equal(preparedContent.ennoOduno.status, 'oduno_ideal');
+    const identity = {
+      runId: preparedContent.run.runId,
+      workspace: preparedContent.project.workspace,
+      orchestrationId: preparedContent.intake.sessionId,
+    };
+    const idealRound = preparedContent.ennoOduno.directive.advisoryRound;
+    assert.ok(idealRound);
+    assert.equal(idealRound.phase, 'ideal');
+    assert.equal(idealRound.slots.length, 3);
+    const serializedAdvisorContext = JSON.stringify(idealRound.context);
+    for (const forbidden of [identity.runId, identity.workspace, identity.orchestrationId, 'idempotencyKey', 'contractRevision', 'mutationRevision']) {
+      assert.equal(serializedAdvisorContext.includes(forbidden), false, `MCP advisor context leaked ${forbidden}`);
+    }
+    const contributions = [
+      { slotId: 'constraint_guardian', outcome: 'completed', summary: 'Preserve constraints', recommendations: [], risks: [], evidence: [] },
+      { slotId: 'skill_trust_analyst', outcome: 'completed', summary: 'Use only trusted local guidance', recommendations: [], risks: [], evidence: [] },
+      { slotId: 'success_signal_critic', outcome: 'completed', summary: 'Require passing tests', recommendations: [], risks: [], evidence: [] },
+    ];
+    const adviceArguments = {
+      ...identity,
+      expectedRevision: 1,
+      mutationRevision: 0,
+      idempotencyKey: 'mcp-advice-1',
+      phase: 'ideal',
+      allowlistedContext: idealRound.context,
+      contributions,
+    };
+    const advice = await client.callTool({ name: 'enno_advice_submit', arguments: adviceArguments });
+    assert.equal(advice.isError, undefined);
+    const adviceContent = advice.structuredContent as { ennoOduno: { status: string }; advisoryRound: { inputDigest: string } };
+    assert.equal(adviceContent.ennoOduno.status, 'oduno_ideal');
+    assert.match(adviceContent.advisoryRound.inputDigest, /^[0-9a-f]{64}$/u);
+    const adviceReplay = await client.callTool({ name: 'enno_advice_submit', arguments: adviceArguments });
+    assert.deepEqual(adviceReplay.structuredContent, advice.structuredContent);
+    const adviceConflict = await client.callTool({
+      name: 'enno_advice_submit',
+      arguments: {
+        ...adviceArguments,
+        contributions: [{ ...contributions[0], summary: 'Changed input' }, contributions[1], contributions[2]],
+      },
+    });
+    assert.equal(adviceConflict.isError, true);
+    assert.match(JSON.stringify(adviceConflict.content), /conflict/iu);
+
+    const ideal = await client.callTool({
+      name: 'enno_ideal_submit',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'mcp-advisory-ideal',
+        advisoryRoundDigest: adviceContent.advisoryRound.inputDigest,
+        advisoryDisposition: [
+          { slotId: 'constraint_guardian', disposition: 'adopted', rationale: 'Preserve constraints' },
+          { slotId: 'skill_trust_analyst', disposition: 'adopted', rationale: 'Use bounded guidance' },
+          { slotId: 'success_signal_critic', disposition: 'adopted', rationale: 'Require tests' },
+        ],
+        ideal: {
+          objective: 'Repair the add function with focused verification',
+          principles: ['Preserve the public API'],
+          skillContributions: [],
+          successSignals: ['node --test passes'],
+        },
+      },
+    });
+    assert.equal(ideal.isError, undefined);
+    const idealContent = ideal.structuredContent as { ennoOduno: { status: string; directive: { advisoryRound?: { context: Record<string, unknown> } } } };
+    assert.equal(idealContent.ennoOduno.status, 'zenki_planning');
+    const planningContext = idealContent.ennoOduno.directive.advisoryRound?.context;
+    assert.ok(planningContext);
+    const plan = await client.callTool({
+      name: 'enno_plan_submit',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'mcp-advisory-plan',
+        scope: ['src/add.js'],
+        exclusions: [],
+        acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
+        workPlan: {
+          objective: 'Repair add',
+          units: [{
+            id: 'repair-add', objective: 'Repair add', scope: ['src/add.js'], dependencies: [],
+            skillNames: [], expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the repair with focused verification' }],
+            acceptanceCriteria: ['node --test passes'], focusedVerifiers: [],
+          }],
+        },
+        skillRequirements: [],
+        finalVerifiers: [{ id: 'mcp-final', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000 }],
+        maxAttempts: 3,
+        provenance: {
+          scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+          workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+        },
+        capabilities,
+      },
+    });
+    assert.equal(plan.isError, undefined, JSON.stringify(plan.content));
+    const planContent = plan.structuredContent as { ennoOduno: { status: string } };
+    assert.equal(planContent.ennoOduno.status, 'goki_executing');
+    const worked = await client.callTool({
+      name: 'enno_work_report',
+      arguments: {
+        ...identity,
+        expectedRevision: 2,
+        idempotencyKey: 'mcp-advisory-work',
+        workUnitId: 'repair-add',
+        result: { outcome: 'completed', summary: 'Repair completed', mutated: false, changedPaths: [] },
+      },
+    });
+    assert.equal(worked.isError, undefined);
+    const workedContent = worked.structuredContent as { ennoOduno: { status: string; nextAction: string; directive: { advisoryRound?: unknown } } };
+    assert.equal(workedContent.ennoOduno.status, 'enno_verifying');
+    assert.equal(workedContent.ennoOduno.nextAction, 'run_final_verification');
+    assert.equal(workedContent.ennoOduno.directive.advisoryRound, undefined);
+
+    const verifyArguments = {
+      ...identity,
+      expectedRevision: 2,
+      idempotencyKey: 'mcp-verify-prepare-1',
+    };
+    const verified = await client.callTool({ name: 'enno_verify_prepare', arguments: verifyArguments });
+    assert.equal(verified.isError, undefined);
+    const verifiedContent = verified.structuredContent as {
+      ennoOduno: { status: string; nextAction: string; directive: { advisoryRound?: { phase: string; context: Record<string, unknown> } } };
+      verifierResults: Array<{ status: string }>;
+    };
+    assert.equal(verifiedContent.ennoOduno.status, 'enno_verifying');
+    assert.equal(verifiedContent.ennoOduno.nextAction, 'submit_final_review');
+    assert.equal(verifiedContent.verifierResults[0]?.status, 'passed');
+    assert.equal(verifiedContent.ennoOduno.directive.advisoryRound?.phase, 'final_review');
+    const verifyReplay = await client.callTool({ name: 'enno_verify_prepare', arguments: verifyArguments });
+    assert.deepEqual(verifyReplay.structuredContent, verified.structuredContent);
+    const verifyConflict = await client.callTool({
+      name: 'enno_verify_prepare',
+      arguments: { ...verifyArguments, expectedRevision: 99 },
+    });
+    assert.equal(verifyConflict.isError, true);
+    assert.match(JSON.stringify(verifyConflict.content), /conflict/iu);
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();

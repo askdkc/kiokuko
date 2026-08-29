@@ -1,12 +1,12 @@
 # Client compatibility policy
 
-Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-scoped Hermes Agent. No client hook/plugin is installed.
+Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-scoped Hermes Agent. Enno-Oduno continuation adapters are bounded and available for Codex, OpenCode, and Claude Code; Hermes has no Enno continuation adapter.
 
 | Client | Global MCP registration | Global instructions | Managed standard skills | Hooks/plugins |
 |---|---|---|---|---|
-| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | not installed |
-| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
-| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
+| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded Stop hook when Enno-Oduno is enabled |
+| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded `session.idle` plugin when Enno-Oduno is enabled |
+| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded Stop hook when Enno-Oduno is enabled |
 | Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | not installed | none |
 
@@ -135,6 +135,14 @@ outside the Codex Stop hook, Claude Code Stop hook, and OpenCode
 `session.idle` continuation candidates, so no client auto-continues through a
 user confirmation.
 
+Final Review is two-phase. `enno_verify_prepare` runs the approved final
+verifiers outside database transactions with shell disabled and a
+repository-bounded cwd, stores fresh evidence bound to the current contract and
+mutation revisions, and only then permits the final-review advisory fanout.
+`enno_finish` decides accept/replan/block from that stored evidence, never
+spawns a subprocess, and rejects unready evidence as a conflict. Passing tests
+alone do not accept a run; Enno-Oduno must accept the current contract.
+
 If the environment information needed to start a plan is absent or no longer
 matches the task-preparation binding, the MCP result instead contains a
 non-mutating `userFacingRecovery` projection. Clients translate and present
@@ -157,11 +165,26 @@ submission, both restart choices leave that terminal attempt unchanged and open
 a replacement only after the user chooses and, for review, answers. Cancelling
 an already-ended attempt creates nothing.
 
-Kiokuko does not install hooks or plugins in any supported client. During an
-upgrade, setup removes only the byte-exact retired OpenCode guard and the one
-exact retired Claude prompt handler. A modified, duplicate, relocated, or
-partial legacy identity is `CONFLICT` and requires manual review; unrelated
-client settings are preserved.
+For new Codex, OpenCode, and Claude Code setup, Enno-Oduno continuation is
+enabled by default; existing managed installations remain unchanged until
+`--enno-oduno on` is selected. Setup installs only the bounded native adapter
+for each of those clients: a Codex or Claude Code Stop hook, or an OpenCode
+`session.idle` plugin. Hermes receives no Enno continuation adapter. During an
+adapter continuation, `client_session_id` is routing metadata rather than
+authorization ownership. An exact session route wins; otherwise the current
+local Codex, Claude Code, or OpenCode session may atomically reroute the single
+unambiguous active run in the canonical repository, including across client
+kinds, while clearing the old client version. Multiple active candidates remain
+unchanged. A per-session continuation limit stops only that session and leaves
+the run and ledger active for another local project client. Hermes has no
+automatic hook but may continue the same run through MCP with its exact run
+identity. The public `clientBinding` field reports this current route; its
+`bound` state does not grant ownership.
+upgrade, `--enno-oduno off` removes only the exact Enno-owned adapter, while
+setup also removes only the byte-exact retired OpenCode guard and the one exact
+retired Claude prompt handler. A modified, duplicate, relocated, or partial
+legacy identity is `CONFLICT` and requires manual review; unrelated client
+settings are preserved.
 
 `task_prepare` can accept an ephemeral catalog of skill and MCP-tool names from
 the calling client. Kiokuko matches Akinator policy recommendations and task

@@ -8,6 +8,7 @@ import {
   STANDARD_UI_EXPERT_IDS,
   STANDARD_UI_SKILL_NAME,
 } from '../setup/standard-skills.js';
+import { findSecret } from '../memory/secrets.js';
 import {
   ADVISORY_FAILURE_CODES,
   ADVISORY_OUTCOMES,
@@ -18,6 +19,7 @@ import {
   ENNO_PROVENANCE_KEYS,
   type EnnoOdunoContract,
   type EnnoRequestHandoff,
+  type AdvisoryContribution,
   type OdunoIdeal,
   type OdunoMeditation,
   type VerifierSpec,
@@ -47,6 +49,19 @@ export const verifierSpecSchema = z.object({
   timeoutMs: z.number().int().min(100).max(300_000),
 }).strict();
 
+const verifierListSchema = (minimum = 0) => z.array(verifierSpecSchema)
+  .min(minimum)
+  .max(32)
+  .superRefine((verifiers, context) => {
+    const seen = new Set<string>();
+    for (const [index, verifier] of verifiers.entries()) {
+      if (seen.has(verifier.id)) {
+        context.addIssue({ code: 'custom', message: 'Verifier IDs must be unique', path: [index, 'id'] });
+      }
+      seen.add(verifier.id);
+    }
+  });
+
 const standardExpertIds = [...STANDARD_FUNCTION_EXPERT_IDS, ...STANDARD_UI_EXPERT_IDS] as const;
 
 export const expertRefSchema = z.object({
@@ -62,7 +77,7 @@ export const workUnitSchema = z.object({
   skillNames: z.array(canonicalText(300)).max(64),
   expertRefs: z.array(expertRefSchema).max(3).default([]),
   acceptanceCriteria: z.array(canonicalText(8_192)).min(1).max(128),
-  focusedVerifiers: z.array(verifierSpecSchema).max(32),
+  focusedVerifiers: verifierListSchema(),
 }).strict().superRefine((unit, context) => {
   const ids = unit.expertRefs.map((reference) => reference.id);
   if (new Set(ids).size !== ids.length) {
@@ -159,13 +174,54 @@ const orchestrationIdSchema = canonicalText(256)
   .describe('Exact ennoOduno.orchestrationId returned by task_prepare or task_answer; this is not a host client session ID');
 
 const advisorySlotIds = ADVISORY_SLOT_DEFINITIONS.map((slot) => slot.slotId) as [string, ...string[]];
-const advisoryContextSchema = z.object({
-  objective: canonicalText(16_384),
-  scope: z.array(repositoryRelativePath).max(256),
-  constraints: z.array(canonicalText(8_192)).max(32),
-  acceptanceCriteria: z.array(canonicalText(8_192)).max(128),
-  reference: canonicalText(16_384),
-}).strict();
+const advisoryContextSchema = z.discriminatedUnion('phase', [
+  z.object({
+    phase: z.literal('ideal'),
+    objective: canonicalText(16_384),
+    constraints: z.array(canonicalText(8_192)).max(32),
+    expectedOutcome: canonicalText(4_096),
+    successSignals: z.array(canonicalText(8_192)).max(32),
+    skillTrust: z.array(z.object({
+      name: canonicalText(500),
+      source: z.enum(['local', 'imported_fresh', 'external_reference', 'unavailable']),
+      required: z.boolean(),
+      trustStatus: z.enum(['available', 'reference_only', 'unavailable']),
+    }).strict()).max(64),
+  }).strict(),
+  z.object({
+    phase: z.literal('planning'),
+    idealObjective: canonicalText(16_384),
+    acceptanceCriteria: z.array(canonicalText(8_192)).max(128),
+    planningConstraints: z.array(canonicalText(8_192)).max(32),
+    skillAvailability: z.array(z.object({
+      name: canonicalText(500),
+      source: z.enum(['local', 'imported_fresh', 'external_reference', 'unavailable']),
+      required: z.boolean(),
+      trustStatus: z.enum(['available', 'reference_only', 'unavailable']),
+    }).strict()).max(64),
+  }).strict(),
+  z.object({
+    phase: z.literal('final_review'),
+    workPlanSummary: canonicalText(16_384),
+    workUnitOutcomes: z.array(z.object({
+      id: identifier,
+      status: z.enum(['completed', 'failed', 'blocked']),
+      mutated: z.boolean(),
+      changedPaths: z.array(repositoryRelativePath).max(256),
+    }).strict()).max(128),
+    changedPaths: z.array(repositoryRelativePath).max(256),
+    verifierEvidence: z.array(z.object({
+      id: identifier,
+      status: z.enum(['passed', 'failed', 'timeout', 'spawn_failed']),
+      exitCode: z.number().int().nullable(),
+      signal: z.string().max(200).nullable(),
+      stdoutDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+      stderrDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+    }).strict()).max(32),
+    freshnessMarker: canonicalText(256),
+    evidenceSetDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  }).strict(),
+]);
 
 const advisoryEvidenceSchema = z.object({
   path: repositoryRelativePath,
@@ -188,6 +244,16 @@ const advisoryContributionSchema = z.union([
   }).strict(),
 ]);
 
+function parseStoredAdvisoryContribution(input: unknown): AdvisoryContribution {
+  const parsed = advisoryContributionSchema.safeParse(input);
+  if (!parsed.success) throw new KiokukoError('INTEGRITY_ERROR', 'Stored advisory contribution is invalid');
+  return parsed.data as AdvisoryContribution;
+}
+
+export { parseStoredAdvisoryContribution };
+
+export const advisoryContributionSchemaPublic = advisoryContributionSchema;
+
 export const adviceSubmissionSchema = z.object({
   runId: identifier,
   workspace: canonicalText(256),
@@ -202,6 +268,29 @@ export const adviceSubmissionSchema = z.object({
 
 const advisoryRoundDigestSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 
+const advisoryDispositionSchema = z.object({
+  slotId: z.enum(advisorySlotIds),
+  disposition: z.enum(['adopted', 'not_adopted', 'unavailable']),
+  rationale: canonicalText(500).refine(
+    (value) => findSecret(value) === undefined,
+    'Advisory rationale must not contain secret material',
+  ),
+}).strict();
+
+const requireDispositionWithDigest = (
+  value: { advisoryRoundDigest?: unknown; advisoryDisposition?: unknown },
+  context: z.RefinementCtx,
+): void => {
+  if (value.advisoryRoundDigest !== undefined) {
+    if (value.advisoryDisposition === undefined
+      || !Array.isArray(value.advisoryDisposition)
+      || value.advisoryDisposition.length === 0) {
+      context.addIssue({ code: 'custom', message: 'advisoryDisposition is required when an advisory digest is supplied' });
+      return;
+    }
+  }
+};
+
 export const ennoContractSchema = z.object({
   revision: z.number().int().min(1),
   scope: z.array(boundedPath).max(256),
@@ -213,7 +302,7 @@ export const ennoContractSchema = z.object({
     intakeDiscovery: skillDiscoverySummarySchema,
     zenkiDiscovery: skillDiscoverySummarySchema,
   }).strict(),
-  finalVerifiers: z.array(verifierSpecSchema).max(32),
+  finalVerifiers: verifierListSchema(),
   maxAttempts: z.number().int().min(ENNO_MIN_ATTEMPTS).max(ENNO_MAX_ATTEMPTS),
   provenance: contractProvenanceSchema,
 }).strict();
@@ -279,8 +368,9 @@ export const idealSubmissionSchema = z.object({
   expectedRevision: z.number().int().min(1),
   idempotencyKey: identifier,
   advisoryRoundDigest: advisoryRoundDigestSchema.optional(),
+  advisoryDisposition: z.array(advisoryDispositionSchema).max(3).optional(),
   ideal: odunoIdealSchema,
-}).strict();
+}).strict().superRefine(requireDispositionWithDigest);
 
 export const planSubmissionSchema = z.object({
   runId: identifier,
@@ -289,18 +379,20 @@ export const planSubmissionSchema = z.object({
   expectedRevision: z.number().int().min(1),
   idempotencyKey: identifier,
   advisoryRoundDigest: advisoryRoundDigestSchema.optional(),
+  advisoryDisposition: z.array(advisoryDispositionSchema).max(3).optional(),
   scope: z.array(boundedPath).min(1).max(256),
   exclusions: z.array(boundedPath).max(256),
   acceptanceCriteria: z.array(acceptanceCriterionSchema).min(1).max(128),
   workPlan: workPlanSchema,
   skillRequirements: z.array(skillRequirementSchema).max(64),
-  finalVerifiers: z.array(verifierSpecSchema).min(1).max(32),
+  finalVerifiers: verifierListSchema(1),
   maxAttempts: z.number().int().min(ENNO_MIN_ATTEMPTS).max(ENNO_MAX_ATTEMPTS).default(8),
   provenance: contractProvenanceSchema,
   capabilities: z.array(z.unknown()).optional().describe(
     'Complete current client capability descriptors. The field remains transport-optional only so omission can return a safe user-facing recovery choice before any plan effect.',
   ),
 }).strict().superRefine((submission, context) => {
+  requireDispositionWithDigest(submission, context);
   const requirements = new Set(submission.skillRequirements.map((requirement) => requirement.name.normalize('NFKC').toLowerCase()));
   const standardSkills = new Set([
     STANDARD_SOUL_SKILL_NAME,
@@ -360,10 +452,19 @@ export const finishSchema = z.object({
   expectedRevision: z.number().int().min(1),
   idempotencyKey: identifier,
   advisoryRoundDigest: advisoryRoundDigestSchema.optional(),
+  advisoryDisposition: z.array(advisoryDispositionSchema).max(3).optional(),
   review: z.object({
     decision: z.enum(['accept', 'replan']),
     summary: canonicalText(16_384),
   }).strict(),
+}).strict().superRefine(requireDispositionWithDigest);
+
+export const verificationPrepareSchema = z.object({
+  runId: identifier,
+  workspace: canonicalText(256),
+  orchestrationId: orchestrationIdSchema,
+  expectedRevision: z.number().int().min(1),
+  idempotencyKey: identifier,
 }).strict();
 
 export const meditationSubmissionSchema = z.object({
@@ -431,6 +532,10 @@ export function parseWorkReport(input: unknown): z.infer<typeof workReportSchema
 
 export function parseFinishRequest(input: unknown): z.infer<typeof finishSchema> {
   return parseBoundary(finishSchema, input, 'Enno finish request is invalid');
+}
+
+export function parseVerificationPrepare(input: unknown): z.infer<typeof verificationPrepareSchema> {
+  return parseBoundary(verificationPrepareSchema, input, 'Enno verification preparation is invalid');
 }
 
 export function parseMeditationSubmission(input: unknown): z.infer<typeof meditationSubmissionSchema> {

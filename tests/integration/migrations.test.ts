@@ -575,6 +575,197 @@ test('migration 016 preserves operation receipts and adds revision-bound advisor
   }
 });
 
+test('migration 017 adds verify_prepare and enforces integer storage for advisory revisions', async () => {
+  const directory = await temporaryDirectory('enno-advisory-protocol-v2-upgrade');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await copyMigrationRange(migrationsDirectory, 1, 16);
+  const connection = openConnection(path.join(directory, 'data.sqlite3'));
+  const timestamp = '2026-08-29T00:00:00.000Z';
+  const runId = 'run-enno-advisory-v2';
+  const workspace = 'workspace:enno-advisory-v2';
+  const sessionId = 'session-enno-advisory-v2';
+  const profile = { taskType: 'debug', target: 'src/add.ts', expected: 'tests pass', constraints: null } as const;
+  try {
+    migrateDatabase(connection, migrationsDirectory);
+    new LedgerStore(connection, { now: () => timestamp }).createRun({
+      runId, workspace, protocolVersion: '1', client: { kind: 'test' }, captureProfile: 'minimal',
+      coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      task: { title: 'Preserve v2 receipt', query: 'Preserve v2 receipt', profileHints: profile },
+      startedAt: timestamp,
+    });
+    connection.prepare(`
+      INSERT INTO akinator_sessions (id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
+      VALUES (?, ?, 'Preserve v2 receipt', ?, 'ready', 0, ?, ?)
+    `).run(sessionId, workspace, canonicalJson(profile), timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO run_intakes (
+        run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+        initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+      ) VALUES (?, ?, 'v2', 1, ?, ?, '[]', ?, ?)
+    `).run(
+      runId,
+      sessionId,
+      canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+      canonicalContentHash(profile),
+      timestamp,
+      timestamp,
+    );
+    connection.prepare(`
+      INSERT INTO enno_contracts (
+        run_id, workspace, orchestration_session_id, repository_root, task_type, status,
+        revision, confirmation_state, contract_json, handoff_json, intake_discovery_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, '/tmp/repository', 'debug', 'zenki_planning', 1, 'not_required', '{}', '{}', '{}', ?, ?)
+    `).run(runId, workspace, sessionId, timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO enno_operation_receipts (
+        run_id, operation, idempotency_key, request_digest, state, response_json, created_at, finished_at
+      ) VALUES (?, 'advice_submit', 'legacy-advice', ?, 'completed', '{}', ?, ?)
+    `).run(runId, 'a'.repeat(64), timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO enno_advisory_rounds (
+        round_id, run_id, contract_revision, mutation_revision, phase, input_digest,
+        policy_version, source, state, degraded, aggregate_json, created_at, updated_at
+      ) VALUES (?, ?, 1, 0, 'planning', ?, 1, 'host_reported', 'advice_submitted', 0, '{}', ?, ?)
+    `).run('round-v2', runId, 'b'.repeat(64), timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO enno_advisory_contributions (
+        round_id, slot_id, slot_rank, outcome, contribution_json, created_at
+      ) VALUES (?, ?, 0, 'completed', '{}', ?)
+    `).run('round-v2', 'workunit_architect', timestamp);
+
+    await copyFile(
+      path.join(initialMigrations, '017_enno_advisory_protocol_v2.sql'),
+      path.join(migrationsDirectory, '017_enno_advisory_protocol_v2.sql'),
+    );
+    assert.deepEqual(migrateDatabase(connection, migrationsDirectory).applied, [17]);
+
+    const preservedReceipt = connection.prepare(`
+      SELECT operation, idempotency_key AS idempotencyKey, state, response_json AS responseJson
+      FROM enno_operation_receipts WHERE run_id = ? AND operation = 'advice_submit'
+    `).get<{ operation: string; idempotencyKey: string; state: string; responseJson: string }>(runId);
+    assert.deepEqual(preservedReceipt === undefined ? undefined : { ...preservedReceipt }, {
+      operation: 'advice_submit', idempotencyKey: 'legacy-advice', state: 'completed', responseJson: '{}',
+    });
+    const preservedRound = connection.prepare(`
+      SELECT round_id AS roundId, contract_revision AS contractRevision, mutation_revision AS mutationRevision,
+             input_digest AS inputDigest, degraded FROM enno_advisory_rounds WHERE round_id = 'round-v2'
+    `).get<{ roundId: string; contractRevision: number; mutationRevision: number; inputDigest: string; degraded: number }>();
+    assert.deepEqual(preservedRound === undefined ? undefined : { ...preservedRound }, {
+      roundId: 'round-v2', contractRevision: 1, mutationRevision: 0, inputDigest: 'b'.repeat(64), degraded: 0,
+    });
+    const preservedContributionCount = connection.prepare(
+      "SELECT COUNT(*) AS count FROM enno_advisory_contributions WHERE round_id = 'round-v2' AND slot_rank = 0",
+    ).get<{ count: number }>();
+    assert.equal(preservedContributionCount?.count, 1);
+    assert.deepEqual(connection.prepare('PRAGMA foreign_key_check').all(), []);
+
+    const insertReceipt = connection.prepare(`
+      INSERT INTO enno_operation_receipts (
+        run_id, operation, idempotency_key, request_digest, state, response_json, created_at, finished_at
+      ) VALUES (?, ?, ?, ?, 'started', NULL, ?, NULL)
+    `);
+    insertReceipt.run(runId, 'verify_prepare', 'verify', 'c'.repeat(64), timestamp);
+    assert.throws(() => insertReceipt.run(runId, 'delete', 'invalid', 'd'.repeat(64), timestamp), /check constraint/iu);
+
+    const insertRound = connection.prepare(`
+      INSERT INTO enno_advisory_rounds (
+        round_id, run_id, contract_revision, mutation_revision, phase, input_digest,
+        policy_version, source, state, degraded, aggregate_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'host_reported', 'aggregated', 0, '{}', ?, ?)
+    `);
+    assert.throws(() => insertRound.run('round-fractional', runId, 1.5, 0, 'planning', 'e'.repeat(64), 1, timestamp, timestamp), /check constraint/iu);
+    assert.throws(() => insertRound.run('round-fractional-mutation', runId, 1, 0.5, 'planning', 'f'.repeat(64), 1, timestamp, timestamp), /check constraint/iu);
+    assert.throws(() => insertRound.run('round-fractional-policy', runId, 1, 0, 'planning', 'a'.repeat(64), 1.5, timestamp, timestamp), /check constraint/iu);
+
+    const insertContribution = connection.prepare(`
+      INSERT INTO enno_advisory_contributions (
+        round_id, slot_id, slot_rank, outcome, contribution_json, created_at
+      ) VALUES (?, ?, ?, 'completed', '{}', ?)
+    `);
+    assert.throws(() => insertContribution.run('round-v2', 'duplicate-rank', 1.5, timestamp), /check constraint/iu);
+  } finally {
+    connection.close();
+  }
+});
+
+test('migration 018 makes the Enno client session mutable routing metadata', async () => {
+  const directory = await temporaryDirectory('enno-repository-routing-upgrade');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await copyMigrationRange(migrationsDirectory, 1, 17);
+  const connection = openConnection(path.join(directory, 'data.sqlite3'));
+  const timestamp = '2026-08-29T00:00:00.000Z';
+  const runId = 'run-enno-repository-routing';
+  const workspace = 'workspace:enno-repository-routing';
+  const orchestrationId = 'orchestration-enno-repository-routing';
+  const profile = { taskType: 'debug', target: 'src/add.ts', expected: 'tests pass', constraints: null } as const;
+  try {
+    migrateDatabase(connection, migrationsDirectory);
+    new LedgerStore(connection, { now: () => timestamp }).createRun({
+      runId, workspace, protocolVersion: '1', client: { kind: 'test' }, captureProfile: 'minimal',
+      coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      task: { title: 'Resume repository routing', query: 'Resume repository routing', profileHints: profile },
+      startedAt: timestamp,
+    });
+    connection.prepare(`
+      INSERT INTO akinator_sessions (id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
+      VALUES (?, ?, 'Resume repository routing', ?, 'ready', 0, ?, ?)
+    `).run(orchestrationId, workspace, canonicalJson(profile), timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO run_intakes (
+        run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+        initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+      ) VALUES (?, ?, 'v2', 1, ?, ?, '[]', ?, ?)
+    `).run(
+      runId,
+      orchestrationId,
+      canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+      canonicalContentHash(profile),
+      timestamp,
+      timestamp,
+    );
+    connection.prepare(`
+      INSERT INTO enno_contracts (
+        run_id, workspace, orchestration_session_id, client_kind, client_version, client_session_id,
+        repository_root, task_type, status, revision, confirmation_state,
+        contract_json, handoff_json, intake_discovery_json, created_at, updated_at
+      ) VALUES (?, ?, ?, 'codex', '1.0.0', 'codex-old', '/tmp/repository', 'debug',
+        'zenki_planning', 1, 'not_required', '{}', '{}', '{}', ?, ?)
+    `).run(runId, workspace, orchestrationId, timestamp, timestamp);
+
+    assert.throws(() => connection.prepare(`
+      UPDATE enno_contracts SET client_session_id = 'codex-new' WHERE run_id = ?
+    `).run(runId), /immutable/iu);
+
+    await copyFile(
+      path.join(initialMigrations, '018_enno_repository_routing.sql'),
+      path.join(migrationsDirectory, '018_enno_repository_routing.sql'),
+    );
+    assert.deepEqual(migrateDatabase(connection, migrationsDirectory).applied, [18]);
+    connection.prepare(`
+      UPDATE enno_contracts
+      SET client_kind = 'claude', client_version = NULL, client_session_id = 'claude-new'
+      WHERE run_id = ?
+    `).run(runId);
+    const routing = connection.prepare(`
+      SELECT client_kind AS clientKind, client_version AS clientVersion, client_session_id AS clientSessionId
+      FROM enno_contracts WHERE run_id = ?
+    `).get<{ clientKind: string; clientVersion: string | null; clientSessionId: string }>(runId);
+    assert.deepEqual(routing === undefined ? undefined : { ...routing }, {
+      clientKind: 'claude', clientVersion: null, clientSessionId: 'claude-new',
+    });
+    assert.equal(connection.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type = 'trigger' AND name = 'enno_client_binding_update_guard'
+    `).get<{ count: number }>()?.count, 0);
+    assert.deepEqual(connection.prepare('PRAGMA foreign_key_check').all(), []);
+  } finally {
+    connection.close();
+  }
+});
+
 test('migration 013 preserves every legacy discovery attempt as the intake phase', async () => {
   const directory = await temporaryDirectory('skill-discovery-phase-upgrade');
   const migrationsDirectory = path.join(directory, 'migrations');

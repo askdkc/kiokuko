@@ -27,6 +27,7 @@ export const ENNO_NEXT_ACTIONS = [
   'ask_user_confirmation',
   'execute_work_unit',
   'run_final_verification',
+  'submit_final_review',
   'submit_meditation',
   'report_blocker',
   'complete',
@@ -70,6 +71,14 @@ export const ADVISORY_SLOT_DEFINITIONS = [
 export type AdvisorySlotId = (typeof ADVISORY_SLOT_DEFINITIONS)[number]['slotId'];
 export type AdvisorySource = 'host_reported';
 
+export type AdvisoryDispositionKind = 'adopted' | 'not_adopted' | 'unavailable';
+
+export interface AdvisoryDisposition {
+  slotId: AdvisorySlotId;
+  disposition: AdvisoryDispositionKind;
+  rationale: string;
+}
+
 export interface AdvisoryEvidence {
   path: string;
   statement: string;
@@ -85,13 +94,60 @@ export interface AdvisoryContribution {
   reasonCode?: AdvisoryFailureCode;
 }
 
-export interface AdvisoryContext {
-  objective: string;
-  scope: string[];
-  constraints: string[];
-  acceptanceCriteria: string[];
-  reference: string;
+export interface AdvisorySkillTrust {
+  name: string;
+  source: 'local' | 'imported_fresh' | 'external_reference' | 'unavailable';
+  required: boolean;
+  trustStatus: 'available' | 'reference_only' | 'unavailable';
 }
+
+export interface AdvisoryFinalVerifierEvidence {
+  id: string;
+  status: 'passed' | 'failed' | 'timeout' | 'spawn_failed';
+  exitCode: number | null;
+  signal: string | null;
+  stdoutDigest: string;
+  stderrDigest: string;
+}
+
+export interface AdvisoryWorkUnitOutcome {
+  id: string;
+  status: 'completed' | 'failed' | 'blocked';
+  mutated: boolean;
+  changedPaths: string[];
+}
+
+export interface IdealAdvisoryContext {
+  phase: 'ideal';
+  objective: string;
+  constraints: string[];
+  expectedOutcome: string;
+  successSignals: string[];
+  skillTrust: AdvisorySkillTrust[];
+}
+
+export interface PlanningAdvisoryContext {
+  phase: 'planning';
+  idealObjective: string;
+  acceptanceCriteria: string[];
+  planningConstraints: string[];
+  skillAvailability: AdvisorySkillTrust[];
+}
+
+export interface FinalReviewAdvisoryContext {
+  phase: 'final_review';
+  workPlanSummary: string;
+  workUnitOutcomes: AdvisoryWorkUnitOutcome[];
+  changedPaths: string[];
+  verifierEvidence: AdvisoryFinalVerifierEvidence[];
+  freshnessMarker: string;
+  evidenceSetDigest: string;
+}
+
+export type AdvisoryContext =
+  | IdealAdvisoryContext
+  | PlanningAdvisoryContext
+  | FinalReviewAdvisoryContext;
 
 export interface AdvisorySlotDirective {
   slotId: AdvisorySlotId;
@@ -310,6 +366,7 @@ export interface EnnoOdunoState {
   applicable: boolean;
   status: EnnoStatus;
   orchestrationId: string | null;
+  /** Current continuation route only; this is not authorization or run ownership. */
   clientBinding: {
     status: 'pending' | 'bound';
     clientKind: EnnoClientKind | null;
@@ -378,5 +435,7 @@ export interface EnnoRunSnapshot {
   contract: EnnoOdunoContract;
   handoff: EnnoRequestHandoff;
   workUnits: StoredWorkUnit[];
+  finalEvidenceReady: boolean;
+  finalEvidence: VerifierRunResult[];
   blocker: string | null;
 }

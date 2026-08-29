@@ -23,11 +23,12 @@ import { canonicalContentHash, canonicalJson } from '../serialization/validate.j
 import { sanitizeJson } from '../security/sanitize.js';
 import { LedgerStore } from '../ledger/store.js';
 import { directiveForIntake, directiveForRun } from './directives.js';
-import { advisoryDirectiveForSnapshot, advisoryInputDigest, advisoryPhaseForStatus } from './advisory.js';
+import { advisoryDirectiveForSnapshot, advisoryInputDigest, advisoryPhaseForStatus, normalizeAdvisoryContributions } from './advisory.js';
 import {
   createAdvisoryRoundInTransaction,
   ensureAdvisoryRoundConsumedInTransaction,
   readAdvisoryRound,
+  readSubmittedAdvisoryRound,
 } from './advisory-store.js';
 import { assertWorkPlanExpertCoverage } from './experts.js';
 import { buildEnnoRequestHandoff } from './handoff.js';
@@ -48,6 +49,7 @@ import {
   parseOdunoIdeal,
   parseOdunoMeditation,
   parsePlanSubmission,
+  parseVerificationPrepare,
   parseWorkReport,
 } from './schemas.js';
 import {
@@ -83,6 +85,7 @@ import {
   type EnnoOdunoState,
   type EnnoRunSnapshot,
   type AdvisoryContext,
+  type AdvisoryDisposition,
   type AdvisoryPhase,
   type AdvisoryContribution,
   type StoredAdvisoryRound,
@@ -138,7 +141,7 @@ function stateForSnapshot(snapshot: EnnoRunSnapshot): EnnoOdunoState {
   else if (snapshot.status === 'zenki_planning') nextAction = 'submit_plan';
   else if (snapshot.status === 'needs_confirmation') nextAction = 'ask_user_confirmation';
   else if (snapshot.status === 'goki_executing') nextAction = 'execute_work_unit';
-  else if (snapshot.status === 'enno_verifying') nextAction = 'run_final_verification';
+  else if (snapshot.status === 'enno_verifying') nextAction = snapshot.finalEvidenceReady ? 'submit_final_review' : 'run_final_verification';
   else if (snapshot.status === 'oduno_meditation') nextAction = 'submit_meditation';
   else if (snapshot.status === 'blocked') nextAction = 'report_blocker';
   else nextAction = 'complete';
@@ -319,23 +322,70 @@ function requireAdvisoryRound(
   if (round === undefined) throw new KiokukoError('CONFLICT', 'Required advisory round was not submitted');
 }
 
+function assertDispositionCoversRound(round: StoredAdvisoryRound, dispositions: readonly AdvisoryDisposition[]): void {
+  const expected = new Set(round.contributions.map((contribution) => contribution.slotId));
+  const covered = new Set<AdvisoryDisposition['slotId']>();
+  for (const disposition of dispositions) {
+    if (!expected.has(disposition.slotId)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'advisoryDisposition references a slot outside the advisory round');
+    }
+    if (covered.has(disposition.slotId)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'advisoryDisposition must provide at most one entry per slot');
+    }
+    covered.add(disposition.slotId);
+  }
+  for (const slotId of expected) {
+    if (!covered.has(slotId)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'advisoryDisposition must cover every slot in the advisory round');
+    }
+  }
+}
+
 function consumeAdvisoryRoundIfPresent(
   database: SqliteDatabase,
   snapshot: EnnoRunSnapshot,
   phase: AdvisoryPhase,
   mutationRevision: number,
-  context: AdvisoryContext,
+  context: AdvisoryContext | undefined,
   inputDigest: string | undefined,
+  disposition: readonly AdvisoryDisposition[] | undefined,
 ): StoredAdvisoryRound | undefined {
-  if (inputDigest === undefined) return undefined;
+  if (inputDigest === undefined) {
+    const submitted = readSubmittedAdvisoryRound(database, {
+      runId: snapshot.runId,
+      contractRevision: snapshot.revision,
+      mutationRevision,
+      phase,
+    });
+    if (submitted !== undefined) {
+      throw new KiokukoError('CONFLICT', 'Advisory round was submitted; pass its advisory digest and disposition before advancing the phase');
+    }
+    return undefined;
+  }
+  if (context === undefined) {
+    throw new KiokukoError('CONFLICT', 'Advisory round is not valid for the current Enno phase');
+  }
   assertAdvisoryRoundInput(snapshot, phase, mutationRevision, context, inputDigest);
-  return ensureAdvisoryRoundConsumedInTransaction(database, {
+  const dispositions = disposition ?? [];
+  if (dispositions.length === 0) {
+    throw new KiokukoError('VALIDATION_ERROR', 'advisoryDisposition is required when consuming an advisory round');
+  }
+  const round = ensureAdvisoryRoundConsumedInTransaction(database, {
     runId: snapshot.runId,
     contractRevision: snapshot.revision,
     mutationRevision,
     phase,
     inputDigest,
   });
+  assertDispositionCoversRound(round, dispositions);
+  appendEnnoEventInTransaction(database, snapshot.runId, 'enno.advice_disposition', 'enno-oduno', 'recorded', {
+    phase,
+    contractRevision: snapshot.revision,
+    mutationRevision,
+    inputDigest,
+    dispositions: dispositions.map((entry) => ({ slotId: entry.slotId, disposition: entry.disposition, rationale: entry.rationale })),
+  });
+  return round;
 }
 
 export function submitEnnoAdvice(
@@ -372,14 +422,23 @@ export function submitEnnoAdvice(
       phase: input.phase,
       inputDigest,
     });
-    const round = existing ?? createAdvisoryRoundInTransaction(database, {
-      runId: input.runId,
-      contractRevision: current.revision,
-      mutationRevision: input.mutationRevision,
-      phase: input.phase,
-      inputDigest,
-      contributions: input.contributions as AdvisoryContribution[],
-    });
+    let round: StoredAdvisoryRound;
+    if (existing !== undefined) {
+      const incoming = normalizeAdvisoryContributions(input.phase, input.contributions as AdvisoryContribution[]);
+      if (canonicalJson(existing.contributions) !== canonicalJson(incoming)) {
+        throw new KiokukoError('CONFLICT', 'Advisory round was already submitted with different contributions');
+      }
+      round = existing;
+    } else {
+      round = createAdvisoryRoundInTransaction(database, {
+        runId: input.runId,
+        contractRevision: current.revision,
+        mutationRevision: input.mutationRevision,
+        phase: input.phase,
+        inputDigest,
+        contributions: input.contributions as AdvisoryContribution[],
+      });
+    }
     appendEnnoEventInTransaction(database, input.runId, 'enno.advice_submitted', 'enno-oduno', 'aggregated', {
       phase: input.phase,
       contractRevision: current.revision,
@@ -654,6 +713,7 @@ export function submitOdunoIdeal(
       current.mutationRevision,
       advisoryContextForSubmission(current, 'ideal'),
       input.advisoryRoundDigest,
+      input.advisoryDisposition as AdvisoryDisposition[] | undefined,
     );
     updateContractInTransaction(database, current, {
       contract: current.contract,
@@ -761,6 +821,7 @@ export async function submitEnnoPlan(
       current.mutationRevision,
       advisoryContextForSubmission(current, 'planning'),
       input.advisoryRoundDigest,
+      input.advisoryDisposition as AdvisoryDisposition[] | undefined,
     );
     const status = unavailable.length > 0
       ? 'blocked' as const
@@ -1070,6 +1131,73 @@ export async function reportEnnoWork(
   });
 }
 
+export async function prepareEnnoVerification(
+  database: SqliteDatabase,
+  rawInput: unknown,
+  dependencies: EnnoServiceDependencies = {},
+): Promise<EnnoOperationResponse> {
+  const input = parseVerificationPrepare(rawInput);
+  const operation = operationIdentity('verify_prepare', input.idempotencyKey, input);
+  const replay = readOperationReceipt<EnnoOperationResponse>(database, input.runId, operation);
+  if (replay !== undefined) return replay;
+  const before = readEnnoSnapshot(database, identity(input));
+  assertExpected(before, input.expectedRevision, ['enno_verifying']);
+  if (before.attempts >= before.contract.maxAttempts) {
+    return withImmediateTransaction(database, () => blockedForAttemptLimit(database, readEnnoSnapshot(database, identity(input)), operation));
+  }
+  let verifierRunIds: string[] = [];
+  let cachedResults: VerifierRunResult[] | undefined;
+  withImmediateTransaction(database, () => {
+    const current = readEnnoSnapshot(database, identity(input));
+    assertExpected(current, input.expectedRevision, ['enno_verifying']);
+    startOperationInTransaction(database, input.runId, operation);
+    cachedResults = readFreshFinalVerifierResults(database, {
+      runId: input.runId,
+      revision: current.revision,
+      mutationRevision: current.mutationRevision,
+      verifiers: current.contract.finalVerifiers,
+    });
+    if (cachedResults === undefined) {
+      verifierRunIds = startVerifierRunsInTransaction(database, {
+        runId: input.runId,
+        workUnitId: null,
+        revision: current.revision,
+        mutationRevision: current.mutationRevision,
+        verifiers: current.contract.finalVerifiers,
+      });
+    }
+    appendEnnoEventInTransaction(database, input.runId, 'enno.verification_started', 'enno-oduno', cachedResults === undefined ? 'started' : 'reused', {
+      contractRevision: current.revision,
+      mutationRevision: current.mutationRevision,
+      verifierIds: current.contract.finalVerifiers.map((verifier) => verifier.id),
+    });
+  });
+  let results: VerifierRunResult[];
+  if (cachedResults !== undefined) {
+    results = cachedResults;
+  } else {
+    try {
+      results = sanitizedVerifierResults(
+        await runVerifiers(before.contract.finalVerifiers, before.repositoryRoot, dependencies),
+        before.repositoryRoot,
+      );
+    } catch {
+      results = spawnFailedVerifierResults(before.contract.finalVerifiers);
+    }
+  }
+  return withImmediateTransaction(database, () => {
+    const current = readEnnoSnapshot(database, identity(input));
+    assertExpected(current, input.expectedRevision, ['enno_verifying']);
+    if (verifierRunIds.length > 0) finishVerifierRunsInTransaction(database, verifierRunIds, results);
+    const response: EnnoOperationResponse = {
+      ennoOduno: stateForSnapshot(readEnnoSnapshot(database, identity(input))),
+      verifierResults: results,
+    };
+    completeOperationInTransaction(database, input.runId, operation, response);
+    return response;
+  });
+}
+
 export async function finishEnno(
   database: SqliteDatabase,
   rawInput: unknown,
@@ -1088,9 +1216,8 @@ export async function finishEnno(
   if (before.attempts >= before.contract.maxAttempts) {
     return withImmediateTransaction(database, () => blockedForAttemptLimit(database, readEnnoSnapshot(database, identity(input)), operation));
   }
-  let verifierRunIds: string[] = [];
-  let cachedVerifierResults: VerifierRunResult[] | undefined;
   let advisoryRound: StoredAdvisoryRound | undefined;
+  let results: VerifierRunResult[];
   withImmediateTransaction(database, () => {
     const current = readEnnoSnapshot(database, identity(input));
     assertExpected(current, input.expectedRevision, ['enno_verifying']);
@@ -1099,53 +1226,35 @@ export async function finishEnno(
       current,
       'final_review',
       current.mutationRevision,
-      advisoryContextForSubmission(current, 'final_review'),
+      input.advisoryRoundDigest === undefined ? undefined : advisoryContextForSubmission(current, 'final_review'),
       input.advisoryRoundDigest,
+      input.advisoryDisposition as AdvisoryDisposition[] | undefined,
     );
-    startOperationInTransaction(database, input.runId, operation);
-    cachedVerifierResults = readFreshFinalVerifierResults(database, {
+    const fresh = readFreshFinalVerifierResults(database, {
       runId: input.runId,
       revision: current.revision,
       mutationRevision: current.mutationRevision,
       verifiers: current.contract.finalVerifiers,
     });
-    if (cachedVerifierResults === undefined) {
-      verifierRunIds = startVerifierRunsInTransaction(database, {
-        runId: input.runId,
-        workUnitId: null,
-        revision: current.revision,
-        mutationRevision: current.mutationRevision,
-        verifiers: current.contract.finalVerifiers,
-      });
+    if (fresh === undefined) {
+      throw new KiokukoError('CONFLICT', 'Final verification evidence is not prepared; call enno_verify_prepare first');
     }
+    results = fresh;
+    startOperationInTransaction(database, input.runId, operation);
     appendEnnoEventInTransaction(database, input.runId, 'enno.review_started', 'enno-oduno', 'started', {
       contractRevision: current.revision,
       mutationRevision: current.mutationRevision,
       requestedDecision: input.review.decision,
     });
-    appendEnnoEventInTransaction(database, input.runId, 'enno.verification_started', 'enno-oduno', cachedVerifierResults === undefined ? 'started' : 'reused', {
+    appendEnnoEventInTransaction(database, input.runId, 'enno.verification_started', 'enno-oduno', 'reused', {
       contractRevision: current.revision,
       mutationRevision: current.mutationRevision,
       verifierIds: current.contract.finalVerifiers.map((verifier) => verifier.id),
     });
   });
-  let results: VerifierRunResult[];
-  if (cachedVerifierResults !== undefined) {
-    results = cachedVerifierResults;
-  } else {
-    try {
-      results = sanitizedVerifierResults(
-        await runVerifiers(before.contract.finalVerifiers, before.repositoryRoot, dependencies),
-        before.repositoryRoot,
-      );
-    } catch {
-      results = spawnFailedVerifierResults(before.contract.finalVerifiers);
-    }
-  }
   return withImmediateTransaction(database, () => {
     const current = readEnnoSnapshot(database, identity(input));
     assertExpected(current, input.expectedRevision, ['enno_verifying']);
-    if (verifierRunIds.length > 0) finishVerifierRunsInTransaction(database, verifierRunIds, results);
     const passed = results.length > 0 && results.every((result) => result.status === 'passed');
     const unsafe = results.some((result) => result.status === 'spawn_failed');
     const attempts = current.attempts + 1;

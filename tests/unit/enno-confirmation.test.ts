@@ -116,6 +116,8 @@ function snapshot(overrides: {
       attemptCount: 0,
       result: null,
     })),
+    finalEvidenceReady: false,
+    finalEvidence: [],
     blocker: null,
   };
 }

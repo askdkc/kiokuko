@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import {
   identifyEnnoClientKind,
@@ -15,7 +17,7 @@ import {
   orderedUniqueSkillNames,
   unavailableRequiredSkills,
 } from '../../src/enno-oduno/skills.js';
-import { parsePlanSubmission } from '../../src/enno-oduno/schemas.js';
+import { parseEnnoContract, parsePlanSubmission } from '../../src/enno-oduno/schemas.js';
 import type { EnnoRequestHandoff } from '../../src/enno-oduno/types.js';
 
 function requestHandoff(taskType: EnnoRequestHandoff['taskType']): EnnoRequestHandoff {
@@ -65,6 +67,10 @@ test('role scripts reject revision conflicts and generate only the role owning t
     contract, handoff: requestHandoff('debug'),
     workUnits: [{ workUnit: contract.workPlan.units[0], status: 'in_progress', attemptCount: 0, result: null }],
   };
+  assert.throws(() => parseEnnoContract({
+    ...contract,
+    finalVerifiers: [contract.finalVerifiers[0], contract.finalVerifiers[0]],
+  }), /stored enno contract is invalid/iu);
   const directive = generateRoleDirective('goki', input);
   assert.equal(directive.role, 'goki');
   assert.equal(directive.workUnit?.id, 'fix-add');
@@ -104,7 +110,7 @@ test('role scripts reject revision conflicts and generate only the role owning t
     status: 'enno_verifying',
     workUnits: [{ ...input.workUnits[0], status: 'completed' }],
   });
-  assert.match(review.objective, /Review the completed Goki work/u);
+  assert.match(review.objective, /enno_verify_prepare.*Final Review advisory fanout/u);
   assert.deepEqual(review.requiredSkills, [
     'kiokuko-soul',
     'kiokuko-enno-oduno',
@@ -333,6 +339,11 @@ test('WorkUnit expertRefs reject unknown, duplicate, or oversized mixtures', () 
     { id: 'code.effects.v1', reason: 'Three' },
     { id: 'code.protocol.v1', reason: 'Four is too many' },
   ])), /plan submission is invalid/iu);
+  const validSubmission = submission([]);
+  assert.throws(() => parsePlanSubmission({
+    ...validSubmission,
+    finalVerifiers: [validSubmission.finalVerifiers[0], { ...validSubmission.finalVerifiers[0] }],
+  }), /plan submission is invalid/iu);
 });
 
 test('canonical WorkPlan text rejects embedded control and format characters', () => {
@@ -444,4 +455,34 @@ test('verifier uses shell false semantics, bounds output, and rejects repository
     args: ['--eval', 'setTimeout(() => {}, 10000)'], cwd: root, timeoutMs: 100,
   }, root);
   assert.equal(timeout.status, 'timeout');
+});
+
+test('verifier waits for close and escalates when termination emits an error', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-verifier-cleanup-'));
+  const child = new EventEmitter();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const signals: string[] = [];
+  const fakeChild = Object.assign(child, {
+    stdout,
+    stderr,
+    kill(signal: string) {
+      signals.push(signal);
+      if (signal === 'SIGTERM') {
+        queueMicrotask(() => child.emit('error', new Error('termination failed')));
+      } else {
+        queueMicrotask(() => {
+          stdout.end();
+          stderr.end();
+          child.emit('close', null, 'SIGKILL');
+        });
+      }
+      return true;
+    },
+  });
+  const result = await runVerifier({
+    id: 'cleanup', kind: 'test', executable: 'node', args: [], cwd: root, timeoutMs: 100,
+  }, root, { spawn: (() => fakeChild) as never });
+  assert.equal(result.status, 'timeout');
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
 });

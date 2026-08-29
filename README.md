@@ -12,7 +12,7 @@ Users do not need to paste past context into every prompt or search for memories
 
 ## Get started quickly
 
-Node.js 26.1.0 or newer is required.
+Node.js 24.16.0 or newer is required; Node.js 26.1.0 or newer is also supported.
 Get started easily with these two commands 💕
 
 ```bash
@@ -22,21 +22,52 @@ kiokuko setup
 
 `setup` detects supported clients that are installed and automatically configures the SQLite database and MCP connection.
 Interactive setup asks whether audited community Skills may also be used as reference material; the default answer is no.
-For new Codex, Claude Code, and OpenCode installations, setup also enables the Enno-Oduno agent loop. Existing managed installations are preserved until `--enno-oduno on` is explicitly selected; `--enno-oduno off` removes only Enno-Oduno-owned hooks or plugins.
-Setup installs the bundled `kiokuko-enno-oduno` controller Skill alongside `kiokuko-single-purpose-functions` and `kiokuko-ui-design-soul` in every selected supported client.
-Model-facing memory enters a task only through the capability-gated `task_prepare`
-and `task_answer` MCP tools. `task_prepare` is also the Enno-Oduno entry point: Enno-Oduno identifies the calling harness, owns Akinator intake, and derives the Oduno ideal before it hands an actionable request to Zenki. Hooks do not recall memory or bypass planning; they bind only the single unambiguous pending active run in the canonical repository, then gate Oduno, Zenki, Goki, or final-review continuation. They never select a repository-wide latest run.
-
-Every `task_prepare` call requires `soulRead: true` after the client model reads
-the complete local `kiokuko-soul` Skill for that logical request. It also
-requires the exact local `kiokuko-soul` capability for every task; missing or
-unknown availability fails closed even during incomplete intake. The boolean is
-an explicit client attestation, not remote proof that the model understood or
-followed the Skill.
 
 After setup, launch the target AI client and use it as usual. If it is already running, quit it once and restart it. When setup creates or updates the Codex Stop hook, open `/hooks` in Codex and explicitly trust that hook.
 
-### Enno-Oduno agent loop
+## How it gets smarter with use
+
+```text
+User request
+      ↓
+Search relevant past memories
+      ↓
+AI uses the memories to do the work
+      ↓
+Store reusable results and lessons
+      ↓
+Search again in the next request
+```
+
+Kiokuko repeats the following flow.
+
+1. Before work, search the current project and Global memory
+2. Pass only highly relevant memories to the AI
+3. The AI performs the work
+4. After the work, store reusable knowledge as memory
+5. Reuse that memory in the next task
+
+In other words, Kiokuko is a **RAG system that accumulates persistent memory**.
+
+MCP connects the AI client to Kiokuko, while RAG searches for the memories needed and passes them to the AI.
+
+### What the AI agent does after setup
+
+#### AI Akinator
+
+When a request is too vague for the AI to act on, Akinator asks internal questions and narrows it into the concrete details the AI needs. If relevant Skills are available, such as language or framework guidance, it makes them available for use.
+
+#### Enno-Oduno (役小角)
+
+Enno-Oduno enables a loop for processing requests sent to the AI agent.
+
+It defines the ideal outcome, plans the work, delegates implementation to smaller agents through orchestration, and finally checks whether the result matches that ideal.
+
+#### Memory storage
+
+Model-facing memory enters a task only through the capability-gated `task_prepare` and `task_answer` MCP tools. `task_prepare` is the Enno-Oduno entry point. After the task, its contents are recorded and considered for promotion into reusable AI knowledge. The system is tuned to promote knowledge that is useful in practice.
+
+### Enno-Oduno agent loop details
 
 For `build`, `debug`, `review`, and `devops` tasks, `task_prepare` starts the run-bound loop and returns `ennoOduno`. The enforced role order is:
 
@@ -52,14 +83,25 @@ User request
   -> Zenki selects 1-3 versioned expertRefs per WorkUnit and reads no unselected fragments by default
   -> Zenki submits the WorkPlan, WorkUnits, expert refs, Skill snapshot, and verifiers
   -> Enno-Oduno obtains any required user confirmation
-  -> Goki orchestrates only the approved WorkUnits
-  -> Enno-Oduno reviews fresh final-verifier evidence
-       -> pass: Enno-Oduno accepts and enters read-only Oduno meditation
+   -> Goki orchestrates only the approved WorkUnits
+   -> enno_verify_prepare runs the final verifiers and stores fresh evidence
+   -> after evidence preparation, the parent host may fan out the final-review Advisors
+   -> enno_finish decides accept/replan/block from the stored evidence
+        -> pass: Enno-Oduno accepts and enters read-only Oduno meditation
             -> inspect changed and approved paths for evidence-backed obsolete tests or functions
             -> enno_meditation_submit persists candidates without deleting them, then completes the run
        -> fail: Enno-Oduno increments the revision and returns feedback to Zenki
-  -> Goki can resume only after Zenki submits the revised plan and confirmation succeeds
+   -> Goki can resume only after Zenki submits the revised plan and confirmation succeeds
 ```
+
+Final Review is deliberately two-phase. `enno_verify_prepare` runs approved
+verifiers outside database transactions with shell disabled and a
+repository-bounded cwd, then binds the fresh evidence to the current contract
+and mutation revisions. `enno_finish` never launches a subprocess and accepts
+only stored fresh passing evidence. Passing tests alone do not accept a run.
+Codex and Claude Code use bounded Stop hooks and OpenCode uses a bounded
+`session.idle` plugin when Enno continuation is enabled. Hermes uses native
+stdio MCP and bundled Skills only; it has no Enno continuation adapter.
 
 Incomplete intake therefore returns an Enno-Oduno directive and `answer_intake`; its `requiredSkills` contains `kiokuko-enno-oduno`, and Zenki is not started yet. A ready intake first returns `oduno_ideal` and `submit_ideal`. `enno_ideal_submit` requires exactly one contribution for every Skill in Akinator's selected discovery set; external Skills remain untrusted reference-only guidance. Only then does the run return a revision-bound Zenki directive whose `requiredSkills` includes the compact `kiokuko-single-purpose-functions` index even while the draft Skill snapshot is empty. Before choosing WorkUnits, Zenki uses that index to divide code changes into cohesive function or use-case contracts with focused test targets, without meaningless micro-functions. Each code-changing WorkUnit must select one to three registered `expertRefs` with reasons; UI WorkUnits require both a `code.*` and a `ui.*` expert. `enno_plan_submit` rejects missing, duplicate, unknown, or oversized mixtures and then persists the exact selection with the revision. Goki reads those fragments rather than every Skill reference. The controller Skill is role-level and is not inserted into WorkUnit Skill snapshots. Goki cannot be entered until Zenki's complete plan has been accepted and required confirmation has succeeded. A failed final review never reactivates an old Goki WorkUnit. It preserves the rejected plan and verifier evidence under their old revision, advances to `zenki_planning`, and requires a new revision-bound plan. An accepted review advances to `oduno_meditation`, not directly to completion. `enno_meditation_submit` persists the inspected repository-relative paths and evidence-backed obsolete test or function candidates without mutating the repository, then completes the run. The response's `orchestrationId` is used by every Enno MCP operation and is separate from the host session identity. Inferred scope, acceptance criteria, Skills, expert selections, or verifier commands are returned for normal user confirmation before execution. A `needs_confirmation` response carries `ennoOduno.directive.userFacingConfirmation`, a deterministic display projection of the decided contract: scope, exclusions, completion criteria, work items with display-number dependencies, skills with their reference-only status, expertise with selection reasons, focused and final checks, and the attempt limit, each labeled with its provenance basis (user-specified, repository-verified, or proposed). The client model presents every item in the user's language without raw directive JSON or internal identifiers, then waits for an explicit approve, revise, or cancel; secret-shaped display values or a projection above 64 KiB reject the plan submit instead of being redacted or truncated.
 
@@ -89,7 +131,7 @@ The earlier attempt already ended under the legacy behavior:
 
 The client translates this guidance into the user's language. It never displays machine actions, reason codes, internal tool or field names, the capability catalog, identifiers, revisions, presentation versions, or raw JSON. No retry, cancellation, or replacement task occurs before the user's explicit choice.
 
-The three roles use the current client model; Kiokuko does not call a second model or require OpenAI, Anthropic, or OpenCode API credentials. Codex and Claude Code use bounded Stop hooks, while OpenCode uses a bounded `session.idle` plugin. OpenCode ignores child-session idle events and deduplicates repeated delivery of the same completed turn. If the host session was unavailable at `task_prepare`, the first matching hook atomically binds it only when exactly one pending active run matches; ambiguity returns control without guessing. A completed binding is immutable. Kiokuko returns control before Claude Code's native eighth consecutive Stop-block override. Adapter failure allows the client to stop with a fixed warning. External Skills remain untrusted reference-only and are never installed or executed automatically.
+The three roles use the current client model; Kiokuko does not call a second model or require OpenAI, Anthropic, or OpenCode API credentials. Codex and Claude Code use bounded Stop hooks, while OpenCode uses a bounded `session.idle` plugin. OpenCode ignores child-session idle events and deduplicates repeated delivery of the same completed turn. Local processes running as the same OS user with access to the canonical repository are trusted to resume its run without PID, process-ancestry, executable, signing, or inherited-token proof. The adapter prefers an exact session route; when no exact route exists, it may atomically reroute the single unambiguous active run across Codex, Claude Code, and OpenCode, clearing the previous client version. Ambiguity returns control without mutation. The public `clientBinding` response field reports the current route; `bound` does not mean owner. Reaching one session's continuation limit stops only that session and leaves the run and ledger active for another local project client. Kiokuko returns control before Claude Code's native eighth consecutive Stop-block override. Hermes has no automatic continuation hook, but can continue through MCP with the same run identity. Adapter failure allows the client to stop with a fixed warning. External Skills remain untrusted reference-only and are never installed or executed automatically.
 
 ```bash
 kiokuko setup --clients codex,opencode,claude --enno-oduno on
@@ -111,32 +153,6 @@ Supported clients:
 - OpenCode
 - Claude Code
 - Hermes Agent
-
-## How it gets smarter with use
-
-```text
-User request
-      ↓
-Search relevant past memories
-      ↓
-AI uses the memories to do the work
-      ↓
-Store reusable results and lessons
-      ↓
-Search again in the next request
-```
-
-Kiokuko repeats the following flow.
-
-1. Before work, search the current project and Global memory
-2. Pass only highly relevant memories to the AI
-3. The AI performs the work
-4. After the work, store reusable knowledge as memory
-5. Reuse that memory in the next task
-
-In other words, Kiokuko is a **RAG system that accumulates persistent memory**.
-
-MCP connects the AI client to Kiokuko, while RAG searches for the memories needed and passes them to the AI.
 
 ## Memory is separated by project
 

@@ -2,6 +2,7 @@ import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { canonicalJson } from '../serialization/validate.js';
 import { parseStrictJson } from '../setup/strict-json.js';
+import { parseStoredAdvisoryContribution } from './schemas.js';
 import {
   ADVISORY_PHASES,
   ADVISORY_POLICY_VERSION,
@@ -64,7 +65,7 @@ function parseStoredRound(database: SqliteDatabase, row: RoundRow): StoredAdviso
     } catch {
       throw new KiokukoError('INTEGRITY_ERROR', 'Stored advisory contribution is invalid');
     }
-    return parsed as AdvisoryContribution;
+    return parseStoredAdvisoryContribution(parsed);
   });
   const normalized = normalizeAdvisoryContributions(row.phase, contributions);
   const aggregate = advisoryRoundAggregate(normalized);
@@ -92,6 +93,23 @@ export function readAdvisoryRound(database: SqliteDatabase, input: {
   inputDigest: string;
 }): StoredAdvisoryRound | undefined {
   const row = roundRow(database, input);
+  return row === undefined ? undefined : parseStoredRound(database, row);
+}
+
+export function readSubmittedAdvisoryRound(database: SqliteDatabase, input: {
+  runId: string;
+  contractRevision: number;
+  mutationRevision: number;
+  phase: AdvisoryPhase;
+}): StoredAdvisoryRound | undefined {
+  const row = database.prepare(`
+    SELECT round_id, run_id, contract_revision, mutation_revision, phase,
+           input_digest, policy_version, source, state, degraded, aggregate_json
+    FROM enno_advisory_rounds
+    WHERE run_id = ? AND contract_revision = ? AND mutation_revision = ? AND phase = ?
+    ORDER BY created_at DESC, round_id DESC
+    LIMIT 1
+  `).get<RoundRow>(input.runId, input.contractRevision, input.mutationRevision, input.phase);
   return row === undefined ? undefined : parseStoredRound(database, row);
 }
 

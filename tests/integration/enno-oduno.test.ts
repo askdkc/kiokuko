@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,11 +10,14 @@ import { openConnection } from '../../src/db/connection.js';
 import { withImmediateTransaction } from '../../src/db/transaction.js';
 import { KiokukoError } from '../../src/errors.js';
 import { decideAdapterContinuation, renderStopHookDecision } from '../../src/enno-oduno/adapters.js';
+import { advisoryInputDigest } from '../../src/enno-oduno/advisory.js';
 import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 import {
   answerEnno,
   finishEnno,
+  prepareEnnoVerification,
   reportEnnoWork,
+  submitEnnoAdvice,
   submitEnnoPlan,
   submitOdunoIdeal,
   submitOdunoMeditation,
@@ -27,6 +30,7 @@ import {
   terminalizeLedgerRunInTransaction,
   updateContractInTransaction,
 } from '../../src/enno-oduno/store.js';
+import { ADVISORY_SLOT_DEFINITIONS, type AdvisoryContext, type AdvisoryPhase } from '../../src/enno-oduno/types.js';
 import { discoverSkills } from '../../src/skills/discovery-service.js';
 
 const capabilities = [
@@ -34,6 +38,29 @@ const capabilities = [
   { kind: 'skill', name: 'kiokuko-single-purpose-functions', description: 'Focused code contracts and tests.' },
   { kind: 'skill', name: 'kiokuko-ui-design-soul', description: 'UI interaction and accessibility guidance.' },
 ];
+
+function advisoryContributions(phase: AdvisoryPhase) {
+  return ADVISORY_SLOT_DEFINITIONS.filter((slot) => slot.phase === phase).map((slot) => ({
+    slotId: slot.slotId,
+    outcome: 'completed' as const,
+    summary: `Validated ${slot.slotId}`,
+    recommendations: [],
+    risks: [],
+    evidence: [],
+  }));
+}
+
+function advisoryDispositions(phase: AdvisoryPhase) {
+  return ADVISORY_SLOT_DEFINITIONS.filter((slot) => slot.phase === phase).map((slot) => ({
+    slotId: slot.slotId,
+    disposition: 'adopted' as const,
+    rationale: `Applied ${slot.slotId}`,
+  }));
+}
+
+function advisoryDigest(phase: AdvisoryPhase, contractRevision: number, mutationRevision: number, context: AdvisoryContext): string {
+  return advisoryInputDigest({ phase, contractRevision, mutationRevision, allowlistedContext: context });
+}
 
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-repo-'));
@@ -52,6 +79,10 @@ function submitPreparedIdeal(
   database: ReturnType<typeof openConnection>,
   prepared: Awaited<ReturnType<typeof prepareAgentTask>>,
   idempotencyKey: string,
+  advisory?: {
+    advisoryRoundDigest: string;
+    advisoryDisposition: ReturnType<typeof advisoryDispositions>;
+  },
 ) {
   return submitOdunoIdeal(database, {
     runId: prepared.run.runId,
@@ -68,6 +99,7 @@ function submitPreparedIdeal(
       })),
       successSignals: [prepared.intake.profile.expected ?? 'Every acceptance criterion is verified'],
     },
+    ...(advisory ?? {}),
   });
 }
 
@@ -105,10 +137,12 @@ async function plannedExecution(
     maxAttempts?: number;
     focusedVerifiers?: ReturnType<typeof verifier>[];
     client?: 'codex' | 'claude' | 'opencode';
+    clientVersion?: string;
     clientIdentity?: 'bound' | 'kind_only' | 'omitted';
   } = {},
 ) {
   const client = options.client ?? 'codex';
+  const clientVersion = options.clientVersion;
   const sessionId = `${client}-${requestId}`;
   const clientIdentity = options.clientIdentity ?? 'bound';
   const prepared = await prepareAgentTask(database, {
@@ -116,7 +150,11 @@ async function plannedExecution(
     profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
     capabilities,
     ...(clientIdentity === 'omitted' ? {} : {
-      client: { kind: client, ...(clientIdentity === 'bound' ? { sessionId } : {}) },
+      client: {
+        kind: client,
+        ...(clientVersion === undefined ? {} : { version: clientVersion }),
+        ...(clientIdentity === 'bound' ? { sessionId } : {}),
+      },
     }),
     skillDiscoveryMode: 'off',
   });
@@ -201,24 +239,28 @@ test('task_prepare derives the Oduno ideal before handing the request to harness
       WHERE run_id = ? AND event_type = 'enno.client_bound'
     `).get<{ count: number }>(planned.identity.runId)?.count, 1);
 
-    assert.equal(decideAdapterContinuation(database, 'opencode', {
+    const rerouted = decideAdapterContinuation(database, 'opencode', {
       sessionId: 'different-opencode-session',
       cwd: root,
-    }).continue, false);
-    assert.throws(() => database.prepare(`
-      UPDATE enno_contracts SET client_session_id = 'different-opencode-session' WHERE run_id = ?
-    `).run(planned.identity.runId), /immutable/u);
+    });
+    assert.equal(rerouted.continue, true);
+    assert.equal(rerouted.runId, planned.identity.runId);
+    assert.equal(database.prepare(`
+      SELECT client_session_id AS clientSessionId FROM enno_contracts WHERE run_id = ?
+    `).get<{ clientSessionId: string }>(planned.identity.runId)?.clientSessionId, 'different-opencode-session');
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) AS count FROM ledger_events
+      WHERE run_id = ? AND event_type = 'enno.client_rebound'
+    `).get<{ count: number }>(planned.identity.runId)?.count, 1);
   } finally {
     database.close();
   }
 });
 
-test('hook refuses ambiguous pending runs instead of selecting the latest repository run', async () => {
+test('hook prefers an exact session and otherwise refuses ambiguous active repository runs', async () => {
   const { root, database } = await fixture();
   try {
-    const first = await plannedExecution(database, root, 'pending-first', verifier(root, 'first'), {
-      clientIdentity: 'kind_only',
-    });
+    const first = await plannedExecution(database, root, 'pending-first', verifier(root, 'first'));
     const second = await plannedExecution(database, root, 'pending-second', verifier(root, 'second'), {
       clientIdentity: 'kind_only',
     });
@@ -229,48 +271,80 @@ test('hook refuses ambiguous pending runs instead of selecting the latest reposi
     assert.equal(decision.continue, false);
     assert.match(decision.warning ?? '', /without guessing/u);
     const bindings = database.prepare(`
-      SELECT run_id AS runId, client_session_id AS clientSessionId
-      FROM enno_contracts WHERE run_id IN (?, ?) ORDER BY run_id
-    `).all<{ runId: string; clientSessionId: string | null }>(first.identity.runId, second.identity.runId)
+      SELECT ec.run_id AS runId, ec.client_session_id AS clientSessionId,
+             ec.status, lr.status AS ledgerStatus
+      FROM enno_contracts AS ec
+      JOIN ledger_runs AS lr ON lr.run_id = ec.run_id
+      WHERE ec.run_id IN (?, ?) ORDER BY ec.run_id
+    `).all<{ runId: string; clientSessionId: string | null; status: string; ledgerStatus: string }>(first.identity.runId, second.identity.runId)
       .map((row) => ({ ...row }));
-    assert.deepEqual(bindings, [
-      { runId: [first.identity.runId, second.identity.runId].sort()[0], clientSessionId: null },
-      { runId: [first.identity.runId, second.identity.runId].sort()[1], clientSessionId: null },
-    ]);
+    assert.deepEqual(new Map(bindings.map((binding) => [binding.runId, {
+      clientSessionId: binding.clientSessionId,
+      status: binding.status,
+      ledgerStatus: binding.ledgerStatus,
+    }])), new Map([
+      [first.identity.runId, { clientSessionId: first.hostSessionId, status: 'goki_executing', ledgerStatus: 'active' }],
+      [second.identity.runId, { clientSessionId: null, status: 'goki_executing', ledgerStatus: 'active' }],
+    ]));
+    const exact = decideAdapterContinuation(database, 'codex', {
+      session_id: first.hostSessionId,
+      cwd: root,
+    });
+    assert.equal(exact.continue, true);
+    assert.equal(exact.runId, first.identity.runId);
   } finally {
     database.close();
   }
 });
 
-test('a client-kind hint narrows delayed hook binding without making the host session mandatory', async () => {
+test('a bound client is routing metadata and may be rerouted to another trusted local client', async () => {
   const { root, database } = await fixture();
   try {
     const planned = await plannedExecution(database, root, 'pending-codex-kind', verifier(root, 'pass'), {
       client: 'codex',
-      clientIdentity: 'kind_only',
+      clientVersion: 'codex-1.2.3',
+      clientIdentity: 'bound',
     });
     assert.deepEqual(planned.prepared.ennoOduno.clientBinding, {
-      status: 'pending',
+      status: 'bound',
       clientKind: 'codex',
-      clientVersion: null,
+      clientVersion: 'codex-1.2.3',
       identified: true,
     });
 
-    const wrongClient = decideAdapterContinuation(database, 'claude', {
-      session_id: 'claude-cannot-claim-codex',
+    const crossClient = decideAdapterContinuation(database, 'claude', {
+      session_id: 'claude-local-session',
       cwd: root,
     });
-    assert.equal(wrongClient.continue, false);
-    assert.equal(database.prepare(`
-      SELECT client_session_id AS clientSessionId FROM enno_contracts WHERE run_id = ?
-    `).get<{ clientSessionId: string | null }>(planned.identity.runId)?.clientSessionId, null);
+    assert.equal(crossClient.continue, true);
+    assert.equal(crossClient.runId, planned.identity.runId);
+    const routedBinding = database.prepare(`
+      SELECT client_kind AS clientKind, client_version AS clientVersion, client_session_id AS clientSessionId
+      FROM enno_contracts WHERE run_id = ?
+    `).get<{ clientKind: string; clientVersion: string | null; clientSessionId: string }>(planned.identity.runId);
+    assert.deepEqual(routedBinding === undefined ? undefined : { ...routedBinding }, {
+      clientKind: 'claude', clientVersion: null, clientSessionId: 'claude-local-session',
+    });
+    const rebound = database.prepare(`
+      SELECT payload_json AS payloadJson FROM ledger_events
+      WHERE run_id = ? AND event_type = 'enno.client_rebound'
+      ORDER BY sequence DESC LIMIT 1
+    `).get<{ payloadJson: string }>(planned.identity.runId);
+    assert.deepEqual(JSON.parse(rebound?.payloadJson ?? '{}'), {
+      fromClientKind: 'codex',
+      fromClientSessionId: planned.hostSessionId,
+      fromClientVersion: 'codex-1.2.3',
+      toClientKind: 'claude',
+      toClientSessionId: 'claude-local-session',
+      toClientVersion: null,
+    });
 
-    const owner = decideAdapterContinuation(database, 'codex', {
+    const returned = decideAdapterContinuation(database, 'codex', {
       session_id: planned.hostSessionId,
       cwd: root,
     });
-    assert.equal(owner.continue, true);
-    assert.equal(owner.directive?.role, 'goki');
+    assert.equal(returned.continue, true);
+    assert.equal(returned.directive?.role, 'goki');
   } finally {
     database.close();
   }
@@ -666,6 +740,12 @@ test('Zenki discovery uses a new plan digest and only the remaining run budget a
       workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Initial component repair', mutated: false, changedPaths: [] },
     });
+    const verified = await prepareEnnoVerification(database, {
+      ...identity,
+      expectedRevision: 2,
+      idempotencyKey: 'zenki-discovery-prepare-1',
+    });
+    assert.equal(verified.ennoOduno.nextAction, 'submit_final_review');
     const replanning = await finishEnno(database, {
       ...identity,
       expectedRevision: 2,
@@ -967,12 +1047,44 @@ test('fake agent completes the Enno-Zenki-Goki loop in ledger order with fresh v
       workspace: prepared.project.workspace,
       orchestrationId: prepared.intake.sessionId,
     };
-    const idealized = submitPreparedIdeal(database, prepared, 'happy-ideal');
+    const idealContext = prepared.ennoOduno.directive?.advisoryRound?.context;
+    assert.ok(idealContext);
+    const idealAdvice = submitEnnoAdvice(database, {
+      ...identity,
+      expectedRevision: 1,
+      mutationRevision: 0,
+      idempotencyKey: 'happy-ideal-advice',
+      phase: 'ideal',
+      allowlistedContext: idealContext,
+      contributions: advisoryContributions('ideal'),
+    });
+    assert.equal(idealAdvice.ennoOduno.status, 'oduno_ideal');
+    assert.equal(idealAdvice.ennoOduno.contractRevision, 1);
+    assert.ok(idealAdvice.advisoryRound);
+    const idealized = submitPreparedIdeal(database, prepared, 'happy-ideal', {
+      advisoryRoundDigest: idealAdvice.advisoryRound.inputDigest,
+      advisoryDisposition: advisoryDispositions('ideal'),
+    });
     assert.equal(idealized.ennoOduno.status, 'zenki_planning');
     assert.equal(idealized.ennoOduno.directive?.role, 'zenki');
     assert.match(idealized.ennoOduno.ideal?.objective ?? '', /optimal verified outcome/iu);
+    const planningContext = idealized.ennoOduno.directive?.advisoryRound?.context;
+    assert.ok(planningContext);
+    const planningAdvice = submitEnnoAdvice(database, {
+      ...identity,
+      expectedRevision: 1,
+      mutationRevision: 0,
+      idempotencyKey: 'happy-planning-advice',
+      phase: 'planning',
+      allowlistedContext: planningContext,
+      contributions: advisoryContributions('planning'),
+    });
+    assert.equal(planningAdvice.ennoOduno.status, 'zenki_planning');
+    assert.ok(planningAdvice.advisoryRound);
     const plan = await submitEnnoPlan(database, {
       ...identity, expectedRevision: 1, idempotencyKey: 'plan-1',
+      advisoryRoundDigest: planningAdvice.advisoryRound.inputDigest,
+      advisoryDisposition: advisoryDispositions('planning'),
       scope: ['src/add.js', 'test/add.test.js'], exclusions: ['package-lock.json'],
       acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
       workPlan: { objective: 'Repair add and test it', units: [{
@@ -1013,6 +1125,8 @@ test('fake agent completes the Enno-Zenki-Goki loop in ledger order with fresh v
       result: { outcome: 'completed', summary: 'Fixed add and added coverage', mutated: true, changedPaths: ['src/add.js'] },
     });
     assert.equal(worked.ennoOduno.status, 'enno_verifying');
+    assert.equal(worked.ennoOduno.nextAction, 'run_final_verification');
+    assert.equal(worked.ennoOduno.directive?.advisoryRound, undefined);
     assert.deepEqual(worked.ennoOduno.directive?.requiredSkills, [
       'kiokuko-soul',
       'kiokuko-enno-oduno',
@@ -1020,10 +1134,40 @@ test('fake agent completes the Enno-Zenki-Goki loop in ledger order with fresh v
     ]);
     assert.equal(worked.verifierResults?.[0]?.status, 'passed');
 
+    const verified = await prepareEnnoVerification(database, {
+      ...identity, expectedRevision: 2, idempotencyKey: 'verify-prepare-1',
+    });
+    assert.equal(verified.ennoOduno.status, 'enno_verifying');
+    assert.equal(verified.ennoOduno.nextAction, 'submit_final_review');
+    assert.equal(verified.verifierResults?.[0]?.status, 'passed');
+    const finalReviewContext = verified.ennoOduno.directive?.advisoryRound?.context;
+    assert.ok(finalReviewContext);
+    const finalAdvice = submitEnnoAdvice(database, {
+      ...identity,
+      expectedRevision: 2,
+      mutationRevision: 1,
+      idempotencyKey: 'happy-final-advice',
+      phase: 'final_review',
+      allowlistedContext: finalReviewContext,
+      contributions: advisoryContributions('final_review'),
+    });
+    assert.equal(finalAdvice.ennoOduno.status, 'enno_verifying');
+    assert.ok(finalAdvice.advisoryRound);
+    assert.equal(finalAdvice.advisoryRound.inputDigest, advisoryDigest('final_review', 2, 1, finalReviewContext));
+
+    let finishSpawnCalls = 0;
     const finished = await finishEnno(database, {
       ...identity, expectedRevision: 2, idempotencyKey: 'finish-1',
+      advisoryRoundDigest: finalAdvice.advisoryRound.inputDigest,
+      advisoryDisposition: advisoryDispositions('final_review'),
       review: { decision: 'accept', summary: 'All acceptance criteria are satisfied' },
+    }, {
+      spawn: (() => {
+        finishSpawnCalls += 1;
+        throw new Error('final verifier must not be started during finish');
+      }) as never,
     });
+    assert.equal(finishSpawnCalls, 0);
     assert.equal(finished.ennoOduno.status, 'oduno_meditation');
     assert.equal(finished.ennoOduno.nextAction, 'submit_meditation');
     assert.equal(finished.ennoOduno.directive?.role, 'enno-oduno');
@@ -1031,12 +1175,23 @@ test('fake agent completes the Enno-Zenki-Goki loop in ledger order with fresh v
     assert.equal(finished.verifierResults?.[0]?.status, 'passed');
     assert.deepEqual(await finishEnno(database, {
       ...identity, expectedRevision: 2, idempotencyKey: 'finish-1',
+      advisoryRoundDigest: finalAdvice.advisoryRound.inputDigest,
+      advisoryDisposition: advisoryDispositions('final_review'),
       review: { decision: 'accept', summary: 'All acceptance criteria are satisfied' },
     }), finished);
     await assert.rejects(finishEnno(database, {
       ...identity, expectedRevision: 2, idempotencyKey: 'finish-1',
       review: { decision: 'replan', summary: 'Changed Review input must not replay' },
     }), /idempotency key was reused with different input/iu);
+
+    const meditationContinuation = decideAdapterContinuation(database, 'claude', {
+      session_id: 'claude-after-finish', cwd: root,
+    });
+    assert.equal(meditationContinuation.continue, true);
+    assert.equal(meditationContinuation.runId, identity.runId);
+    assert.equal(meditationContinuation.status, 'oduno_meditation');
+    assert.equal(meditationContinuation.directive?.role, 'enno-oduno');
+    assert.match(meditationContinuation.directive?.objective ?? '', /obsolete, useless, or redundant tests and functions/iu);
 
     assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
       .get<{ status: string }>(identity.runId)?.status, 'active');
@@ -1064,15 +1219,23 @@ test('fake agent completes the Enno-Zenki-Goki loop in ledger order with fresh v
     `).all<{ eventType: string }>(identity.runId).map((row) => row.eventType);
     assert.deepEqual(events, [
       'enno.started',
+      'enno.advice_submitted',
+      'enno.advice_disposition',
       'oduno.ideal_derived',
+      'enno.advice_submitted',
+      'enno.advice_disposition',
       'zenki.plan_created',
       'enno.plan_confirmed',
       'goki.work_started',
       'goki.work_completed',
+      'enno.verification_started',
+      'enno.advice_submitted',
+      'enno.advice_disposition',
       'enno.review_started',
       'enno.verification_started',
       'enno.verification_passed',
       'enno.review_accepted',
+      'enno.client_rebound',
       'oduno.meditation_completed',
       'enno.completed',
     ]);
@@ -1288,6 +1451,9 @@ test('a pre-migration active run without an Oduno ideal keeps its legacy complet
       ...identity, expectedRevision: 2, idempotencyKey: 'legacy-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Repaired legacy run', mutated: true, changedPaths: ['src/add.js'] },
     });
+    await prepareEnnoVerification(database, {
+      ...identity, expectedRevision: 2, idempotencyKey: 'legacy-prepare',
+    });
     const finished = await finishEnno(database, {
       ...identity, expectedRevision: 2, idempotencyKey: 'legacy-finish',
       review: { decision: 'accept', summary: 'Legacy run meets its contract' },
@@ -1409,7 +1575,7 @@ test('an Enno plan blocks when the exact local kiokuko-soul capability is absent
   }
 });
 
-test('run, workspace, and orchestration bindings reject cross-run progress without latest-run fallback', async () => {
+test('run identity rejects cross-run progress while trusted repository routing crosses sessions and clients', async () => {
   const { root, database } = await fixture();
   try {
     const prepared = await prepareAgentTask(database, {
@@ -1431,8 +1597,15 @@ test('run, workspace, and orchestration bindings reject cross-run progress witho
         workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
       }, capabilities,
     }), /does not own/u);
-    assert.equal(decideAdapterContinuation(database, 'claude', { session_id: 'another-session', cwd: root }).continue, false);
-    assert.equal(decideAdapterContinuation(database, 'codex', { session_id: 'claude-owner', cwd: root }).continue, false);
+    assert.throws(() => decideAdapterContinuation(database, 'claude', {
+      session_id: 'outside-repository', cwd: path.dirname(root),
+    }), /No repository root found/u);
+    const sameClient = decideAdapterContinuation(database, 'claude', { session_id: 'another-session', cwd: root });
+    assert.equal(sameClient.continue, true);
+    assert.equal(sameClient.runId, prepared.run.runId);
+    const crossClient = decideAdapterContinuation(database, 'codex', { session_id: 'codex-local', cwd: root });
+    assert.equal(crossClient.continue, true);
+    assert.equal(crossClient.runId, prepared.run.runId);
   } finally {
     database.close();
   }
@@ -1452,6 +1625,10 @@ test('failed Enno review returns to Zenki for a revision-bound replan before Gok
       ...identity, expectedRevision: 2, idempotencyKey: 'fresh-work-1', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Initial repair', mutated: true, changedPaths: ['src/add.js'] },
     });
+    const preparedFresh = await prepareEnnoVerification(database, {
+      ...identity, expectedRevision: 2, idempotencyKey: 'fresh-prepare-1',
+    });
+    assert.equal(preparedFresh.verifierResults?.[0]?.status, 'failed');
     const failed = await finishEnno(database, {
       ...identity, expectedRevision: 2, idempotencyKey: 'fresh-finish-1',
       review: { decision: 'accept', summary: 'The implementation appears complete' },
@@ -1500,6 +1677,10 @@ test('failed Enno review returns to Zenki for a revision-bound replan before Gok
       ...identity, expectedRevision: 4, idempotencyKey: 'fresh-work-2', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Repaired final failure', mutated: true, changedPaths: ['src/add.js'] },
     });
+    const preparedRevision4 = await prepareEnnoVerification(database, {
+      ...identity, expectedRevision: 4, idempotencyKey: 'fresh-prepare-2',
+    });
+    assert.equal(preparedRevision4.verifierResults?.[0]?.status, 'passed');
     const passed = await finishEnno(database, {
       ...identity, expectedRevision: 4, idempotencyKey: 'fresh-finish-2',
       review: { decision: 'accept', summary: 'The revised plan satisfies every criterion' },
@@ -1554,6 +1735,9 @@ test('Enno can reject passing verifier evidence and require Zenki to replan', as
       ...identity, expectedRevision: 2, idempotencyKey: 'review-reject-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Implemented the approved unit', mutated: true, changedPaths: ['src/add.js'] },
     });
+    await prepareEnnoVerification(database, {
+      ...identity, expectedRevision: 2, idempotencyKey: 'review-reject-prepare',
+    });
     const rejected = await finishEnno(database, {
       ...identity, expectedRevision: 2, idempotencyKey: 'review-reject-finish',
       review: { decision: 'replan', summary: 'The public API acceptance criterion is not covered by the plan' },
@@ -1580,7 +1764,107 @@ test('Enno can reject passing verifier evidence and require Zenki to replan', as
   }
 });
 
-test('spawn failure and continuation exhaustion fail closed into a durable blocked run', async () => {
+test('replanning invalidates old final evidence and advisory digests', async () => {
+  const { root, database } = await fixture();
+  try {
+    const planned = await plannedExecution(database, root, 'stale-final-review', verifier(root, 'stale-final'));
+    await reportEnnoWork(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'stale-initial-work', workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Initial work is complete', mutated: false, changedPaths: [] },
+    });
+    await assert.rejects(finishEnno(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'unprepared-finish',
+      review: { decision: 'accept', summary: 'Attempt to accept without prepared evidence' },
+    }), /final verification evidence is not prepared/iu);
+    assert.equal(readEnnoSnapshot(database, planned.identity).status, 'enno_verifying');
+    const prepared = await prepareEnnoVerification(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'stale-initial-prepare',
+    });
+    const oldContext = prepared.ennoOduno.directive?.advisoryRound?.context;
+    assert.ok(oldContext);
+    const oldAdvice = submitEnnoAdvice(database, {
+      ...planned.identity,
+      expectedRevision: 2,
+      mutationRevision: 0,
+      idempotencyKey: 'stale-final-advice',
+      phase: 'final_review',
+      allowlistedContext: oldContext,
+      contributions: advisoryContributions('final_review'),
+    });
+    assert.ok(oldAdvice.advisoryRound);
+    const oldDigest = oldAdvice.advisoryRound.inputDigest;
+    const replanned = await finishEnno(database, {
+      ...planned.identity,
+      expectedRevision: 2,
+      idempotencyKey: 'stale-review-replan',
+      advisoryRoundDigest: oldDigest,
+      advisoryDisposition: advisoryDispositions('final_review'),
+      review: { decision: 'replan', summary: 'Require a fresh contract review' },
+    });
+    assert.equal(replanned.ennoOduno.status, 'zenki_planning');
+    assert.equal(replanned.ennoOduno.contractRevision, 3);
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) AS count FROM enno_verifier_runs
+      WHERE run_id = ? AND work_unit_id IS NULL AND contract_revision = 2 AND mutation_revision = 0
+    `).get<{ count: number }>(planned.identity.runId)?.count, 1);
+
+    const nextPlan = await submitEnnoPlan(database, {
+      ...planned.identity,
+      expectedRevision: 3,
+      idempotencyKey: 'stale-replan-plan',
+      scope: ['src/add.js'],
+      exclusions: [],
+      acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
+      workPlan: { objective: 'Replan after stale review', units: [{
+        id: 'repair', objective: 'Repair add with fresh review', scope: ['src/add.js'], dependencies: [], skillNames: [],
+        expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the revised contract with fresh evidence' }],
+        acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
+      }] },
+      skillRequirements: [],
+      finalVerifiers: [verifier(planned.repositoryRoot, 'stale-final')],
+      maxAttempts: 5,
+      provenance: {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+      capabilities,
+    });
+    assert.equal(nextPlan.ennoOduno.status, 'goki_executing');
+    assert.equal(nextPlan.ennoOduno.contractRevision, 4);
+    await reportEnnoWork(database, {
+      ...planned.identity, expectedRevision: 4, idempotencyKey: 'stale-replanned-work', workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Replanned work is complete', mutated: false, changedPaths: [] },
+    });
+    await assert.rejects(finishEnno(database, {
+      ...planned.identity, expectedRevision: 4, idempotencyKey: 'stale-evidence-finish',
+      review: { decision: 'accept', summary: 'Attempt to reuse old evidence' },
+    }), /final verification evidence is not prepared/iu);
+    assert.equal(readEnnoSnapshot(database, planned.identity).status, 'enno_verifying');
+
+    const fresh = await prepareEnnoVerification(database, {
+      ...planned.identity, expectedRevision: 4, idempotencyKey: 'stale-replanned-prepare',
+    });
+    assert.equal(fresh.verifierResults?.[0]?.status, 'passed');
+    await assert.rejects(finishEnno(database, {
+      ...planned.identity,
+      expectedRevision: 4,
+      idempotencyKey: 'stale-advisory-finish',
+      advisoryRoundDigest: oldDigest,
+      advisoryDisposition: advisoryDispositions('final_review'),
+      review: { decision: 'accept', summary: 'Attempt to reuse old advisory digest' },
+    }), /advisory round digest does not match the current contract/iu);
+    assert.equal(readEnnoSnapshot(database, planned.identity).status, 'enno_verifying');
+    const finished = await finishEnno(database, {
+      ...planned.identity, expectedRevision: 4, idempotencyKey: 'stale-fresh-finish',
+      review: { decision: 'accept', summary: 'Accept newly prepared evidence' },
+    });
+    assert.equal(finished.ennoOduno.status, 'oduno_meditation');
+  } finally {
+    database.close();
+  }
+});
+
+test('spawn failure blocks the run while continuation exhaustion only stops the current session', async () => {
   const first = await fixture();
   try {
     const unsafe = { ...verifier(first.root, 'missing'), executable: 'kiokuko-executable-that-does-not-exist' };
@@ -1589,6 +1873,10 @@ test('spawn failure and continuation exhaustion fail closed into a durable block
       ...identity, expectedRevision: 2, idempotencyKey: 'spawn-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Ready to verify', mutated: true, changedPaths: ['src/add.js'] },
     });
+    const preparedUnsafe = await prepareEnnoVerification(first.database, {
+      ...identity, expectedRevision: 2, idempotencyKey: 'spawn-prepare',
+    });
+    assert.equal(preparedUnsafe.verifierResults?.[0]?.status, 'spawn_failed');
     const blocked = await finishEnno(first.database, {
       ...identity, expectedRevision: 2, idempotencyKey: 'spawn-finish',
       review: { decision: 'accept', summary: 'The work is ready for final verification' },
@@ -1606,11 +1894,44 @@ test('spawn failure and continuation exhaustion fail closed into a durable block
     assert.equal(decideAdapterContinuation(second.database, 'codex', { session_id: planned.hostSessionId, cwd: second.root }).continue, true);
     const exhausted = decideAdapterContinuation(second.database, 'codex', { session_id: planned.hostSessionId, cwd: second.root });
     assert.equal(exhausted.continue, false);
-    assert.equal(exhausted.status, 'blocked');
-    assert.equal(second.database.prepare('SELECT status FROM enno_contracts WHERE run_id = ?').get<{ status: string }>(planned.identity.runId)?.status, 'blocked');
-    assert.equal(second.database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(planned.identity.runId)?.status, 'failed');
+    assert.equal(exhausted.status, 'goki_executing');
+    assert.match(exhausted.warning ?? '', /run remains active/iu);
+    assert.equal(second.database.prepare('SELECT status FROM enno_contracts WHERE run_id = ?').get<{ status: string }>(planned.identity.runId)?.status, 'goki_executing');
+    assert.equal(second.database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(planned.identity.runId)?.status, 'active');
+    const resumed = decideAdapterContinuation(second.database, 'codex', { session_id: 'replacement-codex-session', cwd: second.root });
+    assert.equal(resumed.continue, true);
+    assert.equal(resumed.runId, planned.identity.runId);
   } finally {
     second.database.close();
+  }
+});
+
+test('timeout final evidence cannot be accepted', async () => {
+  const { root, database } = await fixture();
+  try {
+    const timeoutVerifier = {
+      ...verifier(root, 'timeout-final'),
+      args: ['--eval', 'setTimeout(() => {}, 1000)'],
+      timeoutMs: 100,
+    };
+    const planned = await plannedExecution(database, root, 'timeout-final-review', timeoutVerifier);
+    await reportEnnoWork(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'timeout-work', workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Ready for timeout verification', mutated: false, changedPaths: [] },
+    });
+    const verified = await prepareEnnoVerification(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'timeout-prepare',
+    });
+    assert.equal(verified.verifierResults?.[0]?.status, 'timeout');
+    const rejected = await finishEnno(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'timeout-finish',
+      review: { decision: 'accept', summary: 'Timeout evidence must not be accepted' },
+    });
+    assert.equal(rejected.ennoOduno.status, 'zenki_planning');
+    assert.equal(rejected.ennoOduno.contractRevision, 3);
+    assert.equal(rejected.verifierResults?.[0]?.status, 'timeout');
+  } finally {
+    database.close();
   }
 });
 
@@ -1632,13 +1953,18 @@ test('Claude returns control before its native eighth consecutive Stop block ove
       cwd: root,
     });
     assert.equal(returned.continue, false);
-    assert.equal(returned.status, 'blocked');
+    assert.equal(returned.status, 'goki_executing');
     assert.equal(database.prepare(`
       SELECT total_count AS totalCount FROM enno_client_continuations
       WHERE run_id = ? AND client_kind = 'claude'
     `).get<{ totalCount: number }>(planned.identity.runId)?.totalCount, 7);
     assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
-      .get<{ status: string }>(planned.identity.runId)?.status, 'failed');
+      .get<{ status: string }>(planned.identity.runId)?.status, 'active');
+    const resumed = decideAdapterContinuation(database, 'opencode', {
+      session_id: 'opencode-after-claude-limit', cwd: root,
+    });
+    assert.equal(resumed.continue, true);
+    assert.equal(resumed.runId, planned.identity.runId);
   } finally {
     database.close();
   }
@@ -1660,6 +1986,49 @@ test('focused verifier process can write the same database because no transactio
     });
     assert.equal(reported.verifierResults?.[0]?.status, 'passed');
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM enno_lock_probe').get<{ count: number }>()?.count, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('concurrent work reports allow only one revision-bound state transition', async () => {
+  const { root, database } = await fixture();
+  try {
+    const planned = await plannedExecution(database, root, 'concurrent-cas', verifier(root, 'final'));
+    const staleSnapshot = readEnnoSnapshot(database, planned.identity);
+    const report = (idempotencyKey: string) => reportEnnoWork(database, {
+      ...planned.identity,
+      expectedRevision: 2,
+      idempotencyKey,
+      workUnitId: 'repair',
+      result: {
+        outcome: 'completed',
+        summary: 'Concurrent completion candidate',
+        mutated: false,
+        changedPaths: [],
+      },
+    });
+    const results = await Promise.allSettled([
+      report('concurrent-cas-a'),
+      report('concurrent-cas-b'),
+    ]);
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    assert.match(String(rejected?.reason), /another Enno operation is already in progress|state changed concurrently|expected goki_executing|not active/iu);
+    const snapshot = readEnnoSnapshot(database, planned.identity);
+    assert.equal(snapshot.status, 'enno_verifying');
+    assert.equal(snapshot.attempts, 1);
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) AS count FROM ledger_events
+      WHERE run_id = ? AND event_type = 'goki.work_completed'
+    `).get<{ count: number }>(planned.identity.runId)?.count, 1);
+    assert.throws(() => withImmediateTransaction(database, () => updateContractInTransaction(database, staleSnapshot, {
+      contract: staleSnapshot.contract,
+      status: 'blocked',
+      confirmationState: staleSnapshot.confirmationState,
+      blocker: 'stale concurrent writer',
+    })), /Enno state changed concurrently/u);
   } finally {
     database.close();
   }
@@ -1710,6 +2079,44 @@ test('final verifier evidence is reused for the same revision and mutation witho
       SELECT COUNT(*) AS count FROM enno_verifier_runs
       WHERE run_id = ? AND work_unit_id IS NULL AND contract_revision = ? AND mutation_revision = ?
     `).get<{ count: number }>(planned.identity.runId, current.revision, current.mutationRevision)?.count, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('final verification preparation reuses fresh evidence across keys and finish never spawns', async () => {
+  const { root, database } = await fixture();
+  try {
+    const planned = await plannedExecution(database, root, 'final-evidence-cross-key', verifier(root, 'final-cross-key'));
+    await reportEnnoWork(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'cross-key-work', workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Prepared final verification', mutated: false, changedPaths: [] },
+    });
+    let spawnCalls = 0;
+    const countingSpawn = ((...args: unknown[]) => {
+      spawnCalls += 1;
+      return (nodeSpawn as unknown as (...items: unknown[]) => ReturnType<typeof nodeSpawn>)(...args);
+    }) as unknown as typeof nodeSpawn;
+    const first = await prepareEnnoVerification(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'cross-key-prepare-1',
+    }, { spawn: countingSpawn });
+    assert.equal(first.verifierResults?.[0]?.status, 'passed');
+    assert.equal(spawnCalls, 1);
+    const second = await prepareEnnoVerification(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'cross-key-prepare-2',
+    }, { spawn: countingSpawn });
+    assert.deepEqual(second.verifierResults, first.verifierResults);
+    assert.equal(spawnCalls, 1);
+    const finished = await finishEnno(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'cross-key-finish',
+      review: { decision: 'accept', summary: 'Fresh evidence is sufficient' },
+    }, { spawn: countingSpawn });
+    assert.equal(finished.ennoOduno.status, 'oduno_meditation');
+    assert.equal(spawnCalls, 1);
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) AS count FROM enno_verifier_runs
+      WHERE run_id = ? AND work_unit_id IS NULL AND contract_revision = 2 AND mutation_revision = 0
+    `).get<{ count: number }>(planned.identity.runId)?.count, 1);
   } finally {
     database.close();
   }
