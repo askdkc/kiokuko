@@ -135,6 +135,28 @@ outside the Codex Stop hook, Claude Code Stop hook, and OpenCode
 `session.idle` continuation candidates, so no client auto-continues through a
 user confirmation.
 
+If the environment information needed to start a plan is absent or no longer
+matches the task-preparation binding, the MCP result instead contains a
+non-mutating `userFacingRecovery` projection. Clients translate and present
+only its what-happened, work-state, resolution, and choices. Every choice is
+shown as its translated label and recommendation, followed by its translated
+`whenToChoose` intent and exact `whatHappens` result. The machine `action`,
+internal tool and field names, catalog, hashes, run identity, revisions,
+presentation version, reason codes, and raw JSON remain hidden. The client must
+not retry, cancel, or create a replacement automatically.
+
+For missing information, continuing attaches the complete catalog retained by
+the host and reuses the same attempt; reviewing asks the user for changes and
+starts no implementation before the answer; cancelling ends the current attempt
+without a replacement. For changed environment information, restarting first
+cancels the active planning attempt and then opens a new task with the current
+environment and agreed plan. Review-before-restart asks for changes first, then
+cancels and replaces the active attempt only after the answer. If a legacy
+attempt already ended because the catalog was provably lost during plan
+submission, both restart choices leave that terminal attempt unchanged and open
+a replacement only after the user chooses and, for review, answers. Cancelling
+an already-ended attempt creates nothing.
+
 Kiokuko does not install hooks or plugins in any supported client. During an
 upgrade, setup removes only the byte-exact retired OpenCode guard and the one
 exact retired Claude prompt handler. A modified, duplicate, relocated, or

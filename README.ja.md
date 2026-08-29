@@ -63,6 +63,34 @@ availability不明ならintake未完了でもfail-closeします。このboolean
 
 したがってintakeが未完了なら、返すのは役小角directiveと`answer_intake`であり、その`requiredSkills`には`kiokuko-enno-oduno`が含まれ、前鬼はまだ開始しません。準備完了したintakeは、まず`oduno_ideal`と`submit_ideal`を返します。`enno_ideal_submit`では、Akinatorが選択したdiscovery setの全Skillについて貢献を正確に一件ずつ指定する必要があり、外部Skillは引き続きuntrusted reference-onlyの指針として扱います。その後にだけ、runはrevision固定の前鬼directiveを返します。このdirectiveは、空のdraft Skill snapshotでもcompact indexである`kiokuko-single-purpose-functions`を`requiredSkills`へ含めます。前鬼はこのindexをWorkUnit選定前に使い、無意味な微小関数を作らず、code変更を凝集した関数またはユースケース契約とfocused test targetへ分割します。各code変更WorkUnitは理由付きの登録済み`expertRefs`を1〜3個選ぶ必要があり、UI WorkUnitは`code.*`と`ui.*`を少なくとも一つずつ要求します。`enno_plan_submit`は欠落、重複、未知、上限超過のmixtureを拒否し、その選択をrevisionとともに保存します。後鬼はSkillの全referenceではなく、そのfragmentだけを読みます。controller Skillはrole単位であり、WorkUnitのSkill snapshotには混ぜません。完全なプランの受理と必要な確認が成功するまで、後鬼には遷移できません。最終Review失敗時も古い後鬼WorkUnitを直接再開しません。却下したplanと検証証拠を旧revisionの履歴として保持し、`zenki_planning`へ戻して新しいplanを必須にします。Reviewを受け入れると、直接完了せず`oduno_meditation`へ移行します。`enno_meditation_submit`はrepositoryを変更せず、検査したrepository-relative pathと根拠付きの古いtestまたは関数の候補を保存してからrunを完了します。応答の`orchestrationId`を全Enno MCP操作で使い、ホスト側session identityとは分離します。推論したscope、達成条件、Skill、expert選択、検証コマンドがある場合、実装前に通常のクライアントUIへ確認を返します。`needs_confirmation`応答には、確定済み契約の決定的な表示projectionである`ennoOduno.directive.userFacingConfirmation`が含まれます。scope、除外、達成条件、表示番号付き依存を持つ作業項目、reference-only状態を含むSkill、選定理由付きの専門観点、focused/final checks、試行上限が、それぞれprovenance basis（ユーザー指定・リポジトリ検証済み・提案）付きで一度ずつ現れます。クライアントモデルはraw directive JSONや内部識別子を出さずに全項目をユーザーの言語で提示し、明示的なapprove・revise・cancelを待ちます。secretを示す表示値や64 KiBを超えるprojectionは、redactionや切り詰めではなくplan submitの拒否になります。
 
+### 計画開始時に環境情報が不足・変化した場合
+
+ここでいう「環境情報」は、現在のAIクライアントで利用できるSkillとMCPツールの一覧です。ホストが自動収集する内部情報であり、ユーザーが一覧の保存場所を探したり、設定データを手作業で作成したりする必要はありません。
+
+この一覧が計画へ引き継がれていない、またはタスク準備時から変わっている場合、Kiokukoは安全確認を完了できないため作業を開始しません。関連するSkillの探索、3件の助言結果の計画への反映、重複実行を防ぐ受付記録の作成、計画版の更新より前に停止するため、この計画開始による新しい作業や追加のコード変更はありません。そのうえで、状況に応じて次の選択肢を表示し、ユーザーの明示回答を待ちます。
+
+各選択肢は、ラベルと推奨表示、どのような意図に適するか、選択後に何が起きるか、の順で表示されます。
+
+環境情報が引き継がれていないだけで、現在の実行をそのまま継続できる場合：
+
+- **同じ計画で続ける（推奨）**：計画内容は正しく、現在の環境情報を付け直すだけでよい場合に選びます。ホストが環境情報を自動で付け直し、現在の実行をそのまま続けます。
+- **計画を見直す**：作業範囲、作業項目、確認方法を変更してから続けたい場合に選びます。クライアントが変更内容を質問し、回答があるまで実装を開始しません。
+- **中止する**：この作業を続けない場合に選びます。現在の実行を取り消し、代わりの実行は作りません。
+
+利用できるSkillやMCPツールがタスク準備後に変わった場合：
+
+- **現在の環境で同じ計画をやり直す（推奨）**：計画内容は正しく、利用できる機能だけが変わった場合に選びます。現在の実行を先に取り消し、現在の環境と同じ確定済み計画で新しい実行を開始します。
+- **計画を見直してからやり直す**：機能の増減に合わせて作業範囲、作業項目、確認方法も変更したい場合に選びます。クライアントが変更内容を質問し、回答後に現在の実行を取り消して、現在の環境と修正済み計画で新しい実行を開始します。
+- **中止する**：この作業を続けない場合に選びます。現在の実行を取り消し、代わりの実行は作りません。
+
+旧動作によって今回の実行がすでに終了している場合：
+
+- **同じ計画で新しくやり直す（推奨）**：終了済み実行の計画内容は正しく、そのまま再利用したい場合に選びます。終了済み実行は変更せず、現在の環境と同じ確定済み計画で新しい実行を開始します。
+- **計画を見直してからやり直す**：代わりの実行を作る前に、作業範囲、作業項目、確認方法を変更したい場合に選びます。クライアントが変更内容を質問し、終了済み実行は変更せず、回答後に現在の環境と修正済み計画で新しい実行を開始します。
+- **中止する**：この作業を再開しない場合に選びます。終了済み実行は終了したままとし、新しい実行は作りません。
+
+クライアントは説明をユーザーの言語で表示し、機械用の選択値、内部の理由コード、処理名、機能一覧、識別子、計画版、表示形式の版番号、生のJSONは表示しません。どの状況でも、ユーザーが選択する前に再提出、取消、新しい実行の作成を自動で行いません。
+
 3役は現在のクライアントモデルを順番に使います。Kiokukoが別モデルを呼ぶことはなく、OpenAI、Anthropic、OpenCodeのAPI keyもKiokuko側には不要です。Codex/Claude Codeは上限付きStop hook、OpenCodeは上限付き`session.idle` pluginを使います。OpenCodeでは子sessionのidleを無視し、同じ完了turnの重複配送を抑止します。`task_prepare`時にホストsessionが不明なら、最初の一致hookがpending active runが一件だけの場合に限って原子的に結合します。曖昧なら推測せず制御を返し、確定済みの結合は変更できません。Claude Codeではネイティブの8回連続block強制解除より前にKiokukoが制御をユーザーへ返します。adapter停止時は固定警告付きでfail-openします。外部Skillは引き続きuntrusted reference-onlyで、自動インストール・自動実行しません。
 
 ```bash

@@ -7,6 +7,8 @@ import test from 'node:test';
 import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
+import { withImmediateTransaction } from '../../src/db/transaction.js';
+import { KiokukoError } from '../../src/errors.js';
 import { decideAdapterContinuation, renderStopHookDecision } from '../../src/enno-oduno/adapters.js';
 import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 import {
@@ -20,7 +22,10 @@ import {
 import {
   finishVerifierRunsInTransaction,
   readEnnoSnapshot,
+  replaceWorkUnitsInTransaction,
   startVerifierRunsInTransaction,
+  terminalizeLedgerRunInTransaction,
+  updateContractInTransaction,
 } from '../../src/enno-oduno/store.js';
 import { discoverSkills } from '../../src/skills/discovery-service.js';
 
@@ -319,6 +324,210 @@ test('Goki cannot start before Oduno derives the ideal and Zenki submits a plan'
       SELECT COUNT(*) AS count FROM ledger_events
       WHERE run_id = ? AND event_type LIKE 'goki.%'
     `).get<{ count: number }>(prepared.run.runId)?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('a missing plan environment catalog returns a recoverable choice without consuming the run', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'plan-environment-missing', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-plan-environment-missing' }, skillDiscoveryMode: 'off',
+    });
+    const identity = {
+      runId: prepared.run.runId,
+      workspace: prepared.project.workspace,
+      orchestrationId: prepared.intake.sessionId,
+    };
+    submitPreparedIdeal(database, prepared, 'plan-environment-missing-ideal');
+    const completeInput = confirmationProjectionPlanInput(
+      identity,
+      prepared.project.repositoryRoot,
+      'plan-environment-missing-retry',
+      'Repair add without losing the planning run',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+    );
+    const { capabilities: omittedCapabilities, ...missingInput } = completeInput;
+    assert.ok(omittedCapabilities.length > 0);
+    await assert.rejects(
+      submitEnnoPlan(database, { ...missingInput, idempotencyKey: 'plan-environment-missing-first' }),
+      (error: unknown) => {
+        assert.ok(error instanceof KiokukoError);
+        assert.equal(error.code, 'CONFLICT');
+        assert.deepEqual(error.details, { planStartRecoveryReason: 'environment_information_missing' });
+        return true;
+      },
+    );
+
+    const snapshot = readEnnoSnapshot(database, identity);
+    assert.equal(snapshot.status, 'zenki_planning');
+    assert.equal(snapshot.revision, 1);
+    assert.equal(snapshot.workUnits.length, 0);
+    assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
+      .get<{ status: string }>(identity.runId)?.status, 'active');
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE run_id = ? AND operation = 'plan_submit'")
+      .get<{ count: number }>(identity.runId)?.count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM agent_task_skill_discovery_attempts WHERE run_id = ? AND phase = 'zenki'")
+      .get<{ count: number }>(identity.runId)?.count, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM enno_advisory_rounds WHERE run_id = ?')
+      .get<{ count: number }>(identity.runId)?.count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ? AND event_type = 'zenki.plan_created'")
+      .get<{ count: number }>(identity.runId)?.count, 0);
+
+    const continued = await submitEnnoPlan(database, completeInput);
+    assert.equal(continued.ennoOduno.status, 'goki_executing');
+    assert.equal(continued.ennoOduno.contractRevision, 2);
+  } finally {
+    database.close();
+  }
+});
+
+test('a changed environment waits for a choice and explicit planning cancellation permits a clean restart', async () => {
+  const { root, database } = await fixture();
+  try {
+    const sessionId = 'codex-plan-environment-changed';
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'plan-environment-changed', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId }, skillDiscoveryMode: 'off',
+    });
+    const identity = {
+      runId: prepared.run.runId,
+      workspace: prepared.project.workspace,
+      orchestrationId: prepared.intake.sessionId,
+    };
+    submitPreparedIdeal(database, prepared, 'plan-environment-changed-ideal');
+    const changedInput = confirmationProjectionPlanInput(
+      identity,
+      prepared.project.repositoryRoot,
+      'plan-environment-changed-submit',
+      'Repair add under a changed environment',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+    );
+    changedInput.capabilities = [...capabilities, {
+      kind: 'mcp_tool',
+      name: 'new-current-tool',
+      description: 'A newly available tool changes the bound environment.',
+    }];
+    await assert.rejects(submitEnnoPlan(database, changedInput), (error: unknown) => {
+      assert.ok(error instanceof KiokukoError);
+      assert.equal(error.code, 'CONFLICT');
+      assert.deepEqual(error.details, { planStartRecoveryReason: 'environment_changed' });
+      return true;
+    });
+    assert.equal(readEnnoSnapshot(database, identity).status, 'zenki_planning');
+    assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
+      .get<{ status: string }>(identity.runId)?.status, 'active');
+
+    assert.throws(() => answerEnno(database, {
+      ...identity, expectedRevision: 1, idempotencyKey: 'planning-approve-forbidden', action: 'approve',
+    }), /not in the required state/iu);
+    assert.throws(() => answerEnno(database, {
+      ...identity, expectedRevision: 1, idempotencyKey: 'planning-revise-forbidden', action: 'revise',
+      requestedChanges: 'This must still wait for normal plan confirmation',
+    }), /not in the required state/iu);
+    const cancelled = answerEnno(database, {
+      ...identity, expectedRevision: 1, idempotencyKey: 'planning-explicit-cancel', action: 'cancel',
+    });
+    assert.equal(cancelled.ennoOduno.status, 'cancelled');
+    assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
+      .get<{ status: string }>(identity.runId)?.status, 'cancelled');
+
+    const restarted = await prepareAgentTask(database, {
+      requestId: 'plan-environment-restarted', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId }, skillDiscoveryMode: 'off',
+    });
+    submitPreparedIdeal(database, restarted, 'plan-environment-restarted-ideal');
+    const continuation = decideAdapterContinuation(database, 'codex', { session_id: sessionId, cwd: root });
+    assert.equal(continuation.continue, true);
+    assert.equal(continuation.runId, restarted.run.runId);
+    assert.equal(continuation.directive?.role, 'zenki');
+  } finally {
+    database.close();
+  }
+});
+
+test('a legacy plan ended by a lost environment catalog returns restart choices without opening another run', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'legacy-plan-environment-ended', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-legacy-plan-ended' }, skillDiscoveryMode: 'off',
+    });
+    const identity = {
+      runId: prepared.run.runId,
+      workspace: prepared.project.workspace,
+      orchestrationId: prepared.intake.sessionId,
+    };
+    submitPreparedIdeal(database, prepared, 'legacy-plan-environment-ended-ideal');
+    const input = confirmationProjectionPlanInput(
+      identity,
+      prepared.project.repositoryRoot,
+      'legacy-plan-environment-ended-retry',
+      'Reuse the plan after the old submission lost its environment catalog',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+    );
+    const planning = readEnnoSnapshot(database, identity);
+    const legacyContract = {
+      ...planning.contract,
+      revision: 2,
+      scope: [...input.scope],
+      exclusions: [...input.exclusions],
+      acceptanceCriteria: input.acceptanceCriteria.map((criterion) => ({ ...criterion })),
+      workPlan: input.workPlan,
+      skillSet: {
+        ...planning.contract.skillSet,
+        entries: [{
+          name: 'kiokuko-soul',
+          purposes: ['planning' as const, 'implementation' as const, 'testing' as const, 'review' as const],
+          required: true,
+          availability: 'unavailable' as const,
+          referenceId: null,
+        }],
+      },
+      finalVerifiers: input.finalVerifiers,
+      maxAttempts: input.maxAttempts,
+      provenance: input.provenance,
+    };
+    withImmediateTransaction(database, () => {
+      updateContractInTransaction(database, planning, {
+        contract: legacyContract,
+        status: 'blocked',
+        confirmationState: 'not_required',
+        blocker: 'Required Skills unavailable: kiokuko-soul',
+      });
+      replaceWorkUnitsInTransaction(database, identity.runId, 2, input.workPlan);
+      terminalizeLedgerRunInTransaction(database, identity.runId, 'failed');
+    });
+    const runCountBefore = database.prepare('SELECT COUNT(*) AS count FROM ledger_runs')
+      .get<{ count: number }>()?.count;
+
+    await assert.rejects(submitEnnoPlan(database, { ...input, expectedRevision: 2 }), (error: unknown) => {
+      assert.ok(error instanceof KiokukoError);
+      assert.equal(error.code, 'CONFLICT');
+      assert.deepEqual(error.details, { planStartRecoveryReason: 'previous_attempt_ended' });
+      return true;
+    });
+
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM ledger_runs')
+      .get<{ count: number }>()?.count, runCountBefore);
+    assert.equal(readEnnoSnapshot(database, identity).status, 'blocked');
+    assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
+      .get<{ status: string }>(identity.runId)?.status, 'failed');
   } finally {
     database.close();
   }

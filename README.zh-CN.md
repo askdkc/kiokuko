@@ -58,6 +58,32 @@ setup 会将内置的 `kiokuko-enno-oduno` controller Skill 与 `kiokuko-single-
 
 因此，未完成的 intake 会返回 Enno-Oduno directive 和 `answer_intake`；其 `requiredSkills` 包含 `kiokuko-enno-oduno`，此时不会启动 Zenki。准备完成的 intake 会先返回 `oduno_ideal` 和 `submit_ideal`。`enno_ideal_submit` 要求对 Akinator 选定 discovery set 中的每个 Skill 恰好提供一项贡献；外部 Skill 仍然是不可信的 reference-only 指导。只有完成这一步后，run 才会返回绑定 revision 的 Zenki directive；即使 draft Skill snapshot 为空，其 `requiredSkills` 也会包含 compact index `kiokuko-single-purpose-functions`。Zenki 在选择 WorkUnit 前使用该 index，把 code 变更拆分为内聚的函数或用例契约以及 focused test target，而不会创建无意义的 micro-function。每个会修改 code 的 WorkUnit 必须选择 1 至 3 个已注册的 `expertRefs` 并说明理由；UI WorkUnit 至少需要一个 `code.*` expert 和一个 `ui.*` expert。`enno_plan_submit` 会拒绝缺失、重复、未知或超出上限的组合，然后将准确选择与 revision 一起保存。Goki 只读取这些 fragment，而不是每个 Skill reference。controller Skill 属于 role 级别，不会插入 WorkUnit Skill snapshot。在 Zenki 的完整 plan 被接受且所需确认成功之前，不能进入 Goki。最终 review 失败时也绝不会直接恢复旧的 Goki WorkUnit；它会把被拒绝的 plan 和 verifier 证据保存在旧 revision 的历史记录中，进入 `zenki_planning` 并要求新的 revision-bound plan。接受 review 后不会直接完成，而是进入 `oduno_meditation`。`enno_meditation_submit` 不会修改 repository；它会保存已检查的 repository-relative path，以及有证据支持的过时 test 或函数候选项，然后完成 run。响应中的 `orchestrationId` 用于所有 Enno MCP 操作，并与 host session identity 分离。如果推导出了 scope、acceptance criteria、Skill、expert 选择或 verifier command，则会在实现前通过常规客户端 UI 请求确认。`needs_confirmation` 响应包含确定性的显示投影 `ennoOduno.directive.userFacingConfirmation`：scope、排除项、完成条件、带显示编号依赖的作业项、带 reference-only 状态的 Skill、带选择理由的专业视角、focused/final checks 以及尝试上限，每一项都带有 provenance basis（用户指定、仓库验证或提案）标记且只出现一次。客户端模型以用户的语言呈现全部条目，不输出原始 directive JSON 或内部标识符，然后等待明确的 approve、revise 或 cancel；疑似机密的显示值或超过 64 KiB 的投影会直接拒绝 plan 提交，而不是做遮蔽或截断。
 
+### 计划启动所需的环境信息缺失或发生变化时
+
+这里的环境信息是当前 AI 客户端可用的 Skill 和 MCP tool 列表。host 会自动收集它，用户无需查找 catalog 或编写 JSON。如果该信息没有传入计划，或在任务准备后发生变化，Kiokuko 会在 Skill discovery、消费 advisory、创建 receipt 或更新合同 revision 之前停止。因此，此次计划启动不会开始新工作，也不会产生额外 code 修改。
+
+每个选项都按以下顺序显示：标签与推荐标记、它适合哪种用户意图、选择后会准确发生什么。
+
+仅缺少环境信息，当前尝试仍可继续时：
+
+- **继续使用同一计划（推荐）** — 计划仍然正确，只需补上当前环境信息时选择。host 会自动补上信息，并继续同一次尝试。
+- **检查计划** — 希望在继续前修改范围、作业项或验证方式时选择。客户端会询问修改内容，在用户回答前不会开始实现。
+- **取消** — 不希望继续这项工作时选择。当前尝试会被取消，且不会创建替代尝试。
+
+任务准备后可用功能发生变化时：
+
+- **在当前环境中重新开始同一计划（推荐）** — 计划仍然正确，只是可用功能发生变化时选择。系统先取消当前尝试，再使用当前环境和同一份已确认计划创建新尝试。
+- **检查计划后重新开始** — 功能变化也应改变范围、作业项或验证方式时选择。客户端会询问修改内容；用户回答后，系统取消当前尝试，并以当前环境和修订后的计划创建新尝试。
+- **取消** — 不希望继续这项工作时选择。当前尝试会被取消，且不会创建替代尝试。
+
+旧行为已经结束了本次尝试时：
+
+- **使用同一计划重新开始（推荐）** — 已结束尝试的计划仍然正确并应继续复用时选择。已结束的尝试保持不变，系统使用当前环境和同一份已确认计划创建新尝试。
+- **检查计划后重新开始** — 希望在创建替代尝试前修改范围、作业项或验证方式时选择。客户端会询问修改内容；已结束的尝试保持不变，只有在用户回答后才会以当前环境和修订后的计划创建新尝试。
+- **取消** — 不希望重新开始这项工作时选择。已结束的尝试保持结束状态，且不会创建新尝试。
+
+客户端会使用用户的语言显示这些说明，不显示机器用 action、内部 reason code、tool/field 名称、capability catalog、标识符、revision、显示格式 version 或 raw JSON。在用户明确选择前，不会自动重试、取消当前尝试或创建替代尝试。
+
 三个角色使用当前的客户端模型；Kiokuko 不会调用第二个模型，也不需要 OpenAI、Anthropic 或 OpenCode API credential。Codex 和 Claude Code 使用次数受限的 Stop hook，OpenCode 使用次数受限的 `session.idle` plugin。OpenCode 会忽略 child-session idle event，并对同一已完成 turn 的重复 delivery 去重。如果 `task_prepare` 时 host session 不可用，第一个匹配的 hook 只会在恰好有一个 pending active run 匹配时以原子方式绑定；如有歧义则不作猜测并交还控制权。已完成的 binding 不可更改。Kiokuko 会在 Claude Code 原生的第八次连续 Stop-block 强制覆盖之前交还控制权。adapter 失败时，客户端可以在显示固定 warning 后停止。外部 Skill 始终是不可信的 reference-only 资料，绝不会自动安装或执行。
 
 ```bash

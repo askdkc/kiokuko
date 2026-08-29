@@ -94,6 +94,17 @@ The `needs_confirmation` response carries `ennoOduno.directive.userFacingConfirm
 
 Accept only an explicit approve, revise, or cancel decision passed through `enno_answer` with the current contract revision. Never infer approve from model judgment. A revision request returns to Zenki; cancellation is terminal.
 
+## Plan-start recovery
+
+If plan submission returns `userFacingRecovery`, present only its explanation of what happened, the work-state statement, the resolution, and every choice in the user's language. For each choice, show its label and recommendation first, then translate and show `whenToChoose` as the user intent it fits and `whatHappens` as the exact result. Do not expose the machine `action`, internal tool or field names, capability catalog, digest, run identity, revision, presentation version, raw JSON, or reason code. Wait for the user's explicit choice; never retry, cancel, or create a replacement automatically.
+
+- Continue the same plan by attaching the complete capability catalog retained by the host from task preparation. Never ask the user to locate a catalog or construct JSON.
+- A plan-review choice asks what the user wants changed and starts no implementation.
+- For an active planning attempt, a restart choice first passes the user's explicit cancellation through `enno_answer`, then starts a new `task_prepare` with the current environment. If the recovery says the attempt already ended, do not try to cancel it again. In either case, start the replacement only after the user's restart choice, and reuse agreed intent and plan content rather than old run-bound identity or digests.
+- A cancel choice creates no replacement and leaves an already-ended attempt unchanged.
+
+During `zenki_planning`, `enno_answer` accepts only explicit cancellation for this user-owned recovery path. Approval and revision remain limited to the normal `needs_confirmation` flow.
+
 ## Final review
 
 Review the approved contract rather than the quality of the final prose response.

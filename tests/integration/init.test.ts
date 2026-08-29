@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { KiokukoError } from '../../src/errors.js';
+import { CURRENT_SCHEMA_VERSION } from '../fixtures/current-migrations.js';
 
 test('initializes an isolated database and applies migrations', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-init-'));
@@ -12,7 +13,7 @@ test('initializes an isolated database and applies migrations', async () => {
   const result = await initializeDatabase({ databasePath });
   assert.equal(result.databasePath, databasePath);
   await access(databasePath);
-  assert.equal(result.currentVersion, 16);
+  assert.equal(result.currentVersion, CURRENT_SCHEMA_VERSION);
   assert.equal(result.backupPath, null);
   assert.equal(result.capabilities.driver, 'node:sqlite');
   assert.equal(result.capabilities.foreignKeys, true);

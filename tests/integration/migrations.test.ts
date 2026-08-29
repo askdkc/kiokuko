@@ -21,6 +21,10 @@ import { CheckpointService, FeedbackService } from '../../src/gateway/checkpoint
 import { promoteLedgerProposal } from '../../src/ledger/promotion.js';
 import { inspectLedger } from '../../src/ledger/maintenance.js';
 import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
+import {
+  CURRENT_MIGRATION_VERSIONS,
+  CURRENT_SCHEMA_VERSION,
+} from '../fixtures/current-migrations.js';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, '../..');
@@ -227,8 +231,11 @@ test('applies the initial migration and is idempotent', async () => {
   const connection = openConnection(databasePath);
   try {
     const first = migrateDatabase(connection, initialMigrations);
-    assert.deepEqual(first.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 16);
+    assert.deepEqual(first.applied, CURRENT_MIGRATION_VERSIONS);
+    assert.equal(
+      connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count,
+      CURRENT_SCHEMA_VERSION,
+    );
     for (const table of [
       'repositories',
       'repository_locations',
@@ -264,6 +271,8 @@ test('applies the initial migration and is idempotent', async () => {
       'enno_verifier_runs',
       'enno_operation_receipts',
       'enno_client_continuations',
+      'enno_advisory_rounds',
+      'enno_advisory_contributions',
       'entry_revision_hash_format',
     ]) {
       assert.equal(
@@ -464,6 +473,103 @@ test('migration 015 preserves legacy malformed-provider failures as terminal bud
       reservedSelections: 2,
       consumedSelections: 2,
     });
+  } finally {
+    connection.close();
+  }
+});
+
+test('migration 016 preserves operation receipts and adds revision-bound advisory rounds', async () => {
+  const directory = await temporaryDirectory('enno-advisory-upgrade');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await copyMigrationRange(migrationsDirectory, 1, 15);
+  const connection = openConnection(path.join(directory, 'data.sqlite3'));
+  const timestamp = '2026-08-28T00:00:00.000Z';
+  const runId = 'run-enno-advisory-upgrade';
+  const workspace = 'workspace:enno-advisory-upgrade';
+  const sessionId = 'session-enno-advisory-upgrade';
+  const profile = { taskType: 'debug', target: 'src/add.ts', expected: 'tests pass', constraints: null } as const;
+  try {
+    migrateDatabase(connection, migrationsDirectory);
+    new LedgerStore(connection, { now: () => timestamp }).createRun({
+      runId, workspace, protocolVersion: '1', client: { kind: 'test' }, captureProfile: 'minimal',
+      coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      task: { title: 'Preserve Enno receipt', query: 'Preserve Enno receipt', profileHints: profile },
+      startedAt: timestamp,
+    });
+    connection.prepare(`
+      INSERT INTO akinator_sessions (id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
+      VALUES (?, ?, 'Preserve Enno receipt', ?, 'ready', 0, ?, ?)
+    `).run(sessionId, workspace, canonicalJson(profile), timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO run_intakes (
+        run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+        initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+      ) VALUES (?, ?, 'v2', 1, ?, ?, '[]', ?, ?)
+    `).run(
+      runId,
+      sessionId,
+      canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+      canonicalContentHash(profile),
+      timestamp,
+      timestamp,
+    );
+    connection.prepare(`
+      INSERT INTO enno_contracts (
+        run_id, workspace, orchestration_session_id, repository_root, task_type, status,
+        revision, confirmation_state, contract_json, handoff_json, intake_discovery_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, '/tmp/repository', 'debug', 'zenki_planning', 1, 'not_required', '{}', '{}', '{}', ?, ?)
+    `).run(runId, workspace, sessionId, timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO enno_operation_receipts (
+        run_id, operation, idempotency_key, request_digest, state, response_json, created_at, finished_at
+      ) VALUES (?, 'plan_submit', 'legacy-plan', ?, 'completed', '{}', ?, ?)
+    `).run(runId, 'a'.repeat(64), timestamp, timestamp);
+
+    await copyFile(
+      path.join(initialMigrations, '016_enno_advisory_rounds.sql'),
+      path.join(migrationsDirectory, '016_enno_advisory_rounds.sql'),
+    );
+    assert.deepEqual(migrateDatabase(connection, migrationsDirectory).applied, [16]);
+
+    const preservedReceipt = connection.prepare(`
+      SELECT operation, idempotency_key AS idempotencyKey, state, response_json AS responseJson
+      FROM enno_operation_receipts WHERE run_id = ?
+    `).get<{ operation: string; idempotencyKey: string; state: string; responseJson: string }>(runId);
+    assert.deepEqual(preservedReceipt === undefined ? undefined : { ...preservedReceipt }, {
+      operation: 'plan_submit', idempotencyKey: 'legacy-plan', state: 'completed', responseJson: '{}',
+    });
+    assert.equal(
+      connection.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'enno_operation_receipts_v15'").get(),
+      undefined,
+    );
+    assert.doesNotThrow(() => connection.prepare(`
+      INSERT INTO enno_operation_receipts (
+        run_id, operation, idempotency_key, request_digest, state, response_json, created_at, finished_at
+      ) VALUES (?, 'advice_submit', 'advice', ?, 'started', NULL, ?, NULL)
+    `).run(runId, 'b'.repeat(64), timestamp));
+
+    const insertRound = connection.prepare(`
+      INSERT INTO enno_advisory_rounds (
+        round_id, run_id, contract_revision, mutation_revision, phase, input_digest,
+        policy_version, source, state, degraded, aggregate_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, 'host_reported', 'advice_submitted', 0, '{}', ?, ?)
+    `);
+    insertRound.run('round-upgrade', runId, 1, 0, 'planning', 'c'.repeat(64), timestamp, timestamp);
+    assert.throws(
+      () => insertRound.run('round-duplicate', runId, 1, 0, 'planning', 'c'.repeat(64), timestamp, timestamp),
+      /unique constraint/iu,
+    );
+    assert.throws(
+      () => insertRound.run('round-null-mutation', runId, 1, null, 'planning', 'd'.repeat(64), timestamp, timestamp),
+      /not null constraint/iu,
+    );
+    const mutationRevision = connection.prepare("PRAGMA table_info('enno_advisory_rounds')")
+      .all<{ name: string; notnull: number }>()
+      .find(({ name }) => name === 'mutation_revision');
+    assert.equal(mutationRevision?.notnull, 1);
+    assert.deepEqual(connection.prepare('PRAGMA foreign_key_check').all(), []);
   } finally {
     connection.close();
   }
@@ -1630,7 +1736,10 @@ test('concurrent processes initialize one migration exactly once', async () => {
 
   const connection = openConnection(databasePath);
   try {
-    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count, 16);
+    assert.equal(
+      connection.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get<{ count: number }>()?.count,
+      CURRENT_SCHEMA_VERSION,
+    );
   } finally {
     connection.close();
   }
