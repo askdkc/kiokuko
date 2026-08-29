@@ -21,6 +21,7 @@ kiokuko setup
 ```
 
 `setup` detects supported clients that are installed and automatically configures the SQLite database and MCP connection.
+It also installs the bundled `memory-reasoning` Skill and the other Kiokuko standard Skills. Existing installations receive it on the next `kiokuko setup`; an unmanaged same-name file is never overwritten.
 Interactive setup asks whether audited community Skills may also be used as reference material; the default answer is no.
 
 After setup, launch the target AI client and use it as usual. If it is already running, quit it once and restart it. When setup creates or updates the Codex Stop hook, open `/hooks` in Codex and explicitly trust that hook.

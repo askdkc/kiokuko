@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 20 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 21 -->/);
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
@@ -91,11 +91,12 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /memory-reasoning/);
   assert.match(rendered, /created by `kiokuko-curator` and matching the current deterministic Curator projection is `system_verified`/);
   assert.match(rendered, /does not by itself require `memory-reasoning`/);
-  assert.match(rendered, /Inspect `nextAction` after every `task_prepare` and `task_answer` response/);
-  assert.match(rendered, /`memory-reasoning` is missing or unknown.*`nextAction=proceed`/u);
+  assert.match(rendered, /Inspect `nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer` response/);
+  assert.match(rendered, /`memory-reasoning` is missing or unknown.*`memoryPolicy\.contextWithheld=true`.*`nextAction=proceed`/u);
   assert.match(rendered, /`required_capability_unavailable` is a hard stop for missing or unknown `kiokuko-soul`/);
   assert.match(rendered, /continue from repository evidence/);
-  assert.match(rendered, /read it before consuming applicable memory/);
+  assert.match(rendered, /Before build\/debug `task_prepare`, read it and advertise its exact descriptor/);
+  assert.match(rendered, /apply local `memory-reasoning` before using it/);
   assert.match(rendered, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
   assert.match(rendered, /`executionContext\.repositoryRoot` \(equal to `project\.repositoryRoot`\) as the canonical filesystem base/u);
   assert.match(rendered, /For OpenCode filesystem tools, prefer canonical absolute paths under that root/u);

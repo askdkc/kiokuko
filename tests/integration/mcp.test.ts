@@ -44,7 +44,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(instructions, /Every descriptor must include its kind and canonical name/u);
     assert.match(instructions, /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
-    assert.match(instructions, /read it before modifying code/);
+    assert.match(instructions, /read and apply the available local memory-reasoning Skill before using that memory/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(instructions, /executionContext\.repositoryRoot as the filesystem base/u);
     assert.match(instructions, /OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
@@ -104,12 +104,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /create a new bounded opaque value for each logical request/);
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
     assert.match(taskPrepareTool?.description ?? '', /Reusing an ID with changed bound input is a conflict/);
-    assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction before proceeding/);
+    assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction and memoryPolicy before proceeding/);
     assert.match(taskPrepareTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(taskPrepareTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(taskPrepareTool?.description ?? '', /read and apply local memory-reasoning before using it and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(taskPrepareTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
     assert.match(taskPrepareTool?.description ?? '', /never use ~, \$HOME, or HOME-relative path fragments/u);
     assert.match(taskPrepareTool?.description ?? '', /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
@@ -121,11 +121,11 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskAnswerTool?.description ?? '', /required run ID returned by task_prepare/);
     assert.match(taskAnswerTool?.description ?? '', /Repeat the same capability catalog and context budget/);
     assert.match(taskAnswerTool?.description ?? '', /changed context budget conflicts before intake mutation/);
-    assert.match(taskAnswerTool?.description ?? '', /inspect the returned nextAction before proceeding/);
+    assert.match(taskAnswerTool?.description ?? '', /inspect the returned nextAction and memoryPolicy before proceeding/);
     assert.match(taskAnswerTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskAnswerTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskAnswerTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(taskAnswerTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(taskAnswerTool?.description ?? '', /read and apply local memory-reasoning before using it and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(ennoFinishTool?.description ?? '', /returns Review feedback to Zenki for a new plan/u);
     assert.match(ennoFinishTool?.description ?? '', /advances a new run to Oduno meditation instead of completing it directly/iu);
     const ennoPlanTool = tools.tools.find((tool) => tool.name === 'enno_plan_submit');
@@ -286,7 +286,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       intake: { status: string; sessionId: string; reasoning: { stage: string; selectedAction: string; silo: { completeness: number } } };
       context: { items: Array<{ metadata: { untrusted: boolean } }> };
       capabilities: { availability: string; recommendations: Array<{ kind: string; name: string; availability: string }> };
-      memoryPolicy: { memoryReasoningRequired: boolean };
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
       executionContext: { canonicalCwd: string; repositoryRoot: string; cwdIsRepositoryRoot: boolean; pathPolicy: string };
       ennoOduno: {
         applicable: boolean;
@@ -323,7 +323,11 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(preparedContent.ennoOduno.directive?.harness.continuation, 'unidentified');
     assert.equal(preparedContent.ennoOduno.nextAction, 'submit_ideal');
     assert.equal(preparedContent.capabilities.availability, 'known-nonempty');
-    assert.deepEqual(preparedContent.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(preparedContent.memoryPolicy, {
+      memoryReasoningRequired: true,
+      contextWithheld: false,
+      withheldReason: null,
+    });
     const canonicalRoot = await realpath(root);
     assert.deepEqual(preparedContent.executionContext, {
       canonicalCwd: canonicalRoot,
@@ -562,12 +566,18 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
           recommendations: Array<{ name: string; source: string; availability: string; required?: boolean }>;
         };
         skillDiscovery: { attempted: boolean; selected: unknown[] };
-        memoryPolicy: { memoryReasoningRequired: boolean };
+        memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
         nextAction: string;
       } & Record<string, unknown>;
       assert.equal(stoppedContent.intake.status, 'ready');
       assert.equal(stoppedContent.nextAction, 'required_capability_unavailable');
-      assert.deepEqual(stoppedContent.memoryPolicy, { memoryReasoningRequired: true });
+      assert.deepEqual(stoppedContent.memoryPolicy, {
+        memoryReasoningRequired: true,
+        contextWithheld: true,
+        withheldReason: catalogAvailability === 'missing'
+          ? 'memory_reasoning_missing'
+          : 'memory_reasoning_unknown',
+      });
       assert.equal(stoppedContent.context, null);
       assert.equal('memory' in stoppedContent, false);
       assert.equal('references' in stoppedContent, false);
@@ -1534,6 +1544,34 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       name: 'memory_checkpoint',
       arguments: { memories: [{ kind: 'lesson', title: 'Oversized catalog beacon', body: 'Keep capability handling bounded and ephemeral.' }] },
     });
+    const knownMissing = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'mcp-known-missing-memory-catalog-request',
+        task: 'Implement the oversized catalog beacon and add tests',
+        profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
+        capabilities: [SOUL_CAPABILITY],
+      },
+    });
+    const knownMissingContent = knownMissing.structuredContent as {
+      context: null;
+      nextAction: string;
+      capabilities: { availability: string; recommendations: Array<{ name: string; availability: string }> };
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
+    };
+    assert.equal(knownMissingContent.context, null);
+    assert.equal(knownMissingContent.nextAction, 'proceed');
+    assert.deepEqual(knownMissingContent.memoryPolicy, {
+      memoryReasoningRequired: true,
+      contextWithheld: true,
+      withheldReason: 'memory_reasoning_missing',
+    });
+    assert.equal(knownMissingContent.capabilities.availability, 'known-nonempty');
+    assert.ok(knownMissingContent.capabilities.recommendations.some(
+      (item) => item.name === 'memory-reasoning' && item.availability === 'missing',
+    ));
+
     const sentinel = 'capability-secret-sentinel-private-path';
     const oversizedCapabilities = [
       SOUL_CAPABILITY,
@@ -1563,8 +1601,14 @@ test('task_prepare degrades safely for oversized and malformed capability items'
         warnings: Array<{ message: string }>;
       };
       warnings: Array<{ message: string }>;
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
     } & Record<string, unknown>;
     assert.equal(content.context, null);
+    assert.deepEqual(content.memoryPolicy, {
+      memoryReasoningRequired: true,
+      contextWithheld: true,
+      withheldReason: 'memory_reasoning_unknown',
+    });
     assert.equal('memory' in content, false);
     assert.equal('references' in content, false);
     assert.equal(content.capabilities.availability, 'unknown');
@@ -1594,8 +1638,14 @@ test('task_prepare degrades safely for oversized and malformed capability items'
         diagnostics: { received: number; accepted: number; truncated: number; dropped: number };
       };
       nextAction: string;
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
     };
     assert.equal(availableContent.nextAction, 'proceed');
+    assert.deepEqual(availableContent.memoryPolicy, {
+      memoryReasoningRequired: true,
+      contextWithheld: false,
+      withheldReason: null,
+    });
     assert.equal(availableContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(availableContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
     assert.equal(availableContent.context.policyVersion, 'context-ranking-v4');
@@ -1846,11 +1896,13 @@ test('task_prepare proceeds without memory-reasoning for managed curator global 
     assert.equal(result.isError, undefined);
     const content = result.structuredContent as {
       nextAction: string;
-      memoryPolicy: { memoryReasoningRequired: boolean };
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
       context: { items: Array<{ entryId: string }> };
     };
     assert.equal(content.nextAction, 'proceed');
     assert.equal(content.memoryPolicy.memoryReasoningRequired, false);
+    assert.equal(content.memoryPolicy.contextWithheld, false);
+    assert.equal(content.memoryPolicy.withheldReason, null);
     assert.equal(content.context.items.some((item) => item.entryId === curated.id), true);
   } finally {
     await client.close();

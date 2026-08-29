@@ -21,6 +21,7 @@ kiokuko setup
 ```
 
 `setup` 会检测已安装的受支持客户端，并自动配置 SQLite 数据库和 MCP 连接。
+它还会安装内置的 `memory-reasoning` Skill 和其他 Kiokuko 标准 Skill。现有环境会在下次运行 `kiokuko setup` 时收到该 Skill；同名的非 managed 文件绝不会被覆盖。
 交互式setup会询问是否也将已审计的community技能用作参考资料，默认选择“否”。
 
 设置完成后，启动目标 AI 客户端即可像平时一样使用。如果客户端已经启动，请先退出，再重新启动。如果 setup 创建或更新了 Codex Stop hook，请在 Codex 中打开 `/hooks` 并明确将该 hook 设为可信。

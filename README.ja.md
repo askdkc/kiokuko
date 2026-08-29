@@ -21,6 +21,7 @@ kiokuko setup
 ```
 
 `setup`は、インストール済みの対応クライアントを検出し、SQLiteデータベースとMCP接続を自動設定します。
+同時に、同梱の`memory-reasoning` Skillと他のKiokuko標準Skillも配置します。既存環境には次回の`kiokuko setup`で追加され、同名の非managedファイルは上書きしません。
 対話式setupでは、監査済みcommunity Skillも参考資料として利用するか確認します。既定は「いいえ」です。
 
 設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。setupがCodexのStop hookを作成または更新した場合は、Codexで`/hooks`を開き、そのhookを明示的に信頼してください。

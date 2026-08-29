@@ -174,7 +174,13 @@ function syntheticIntakeResponse(input: {
     untrusted: true,
     recommendations: [],
     capabilities,
-    memoryPolicy: { memoryReasoningRequired: memoryContextWithheld },
+    memoryPolicy: memoryContextWithheld
+      ? {
+        memoryReasoningRequired: true,
+        contextWithheld: true,
+        withheldReason: 'memory_reasoning_unknown',
+      }
+      : { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null },
     warnings: [],
     nextAction: needsAnswer
       ? 'answer_from_evidence_or_ask_user'
@@ -224,7 +230,7 @@ function syntheticResponses(): Record<string, Record<string, unknown>> {
       context: syntheticContext(),
       untrusted: true,
       capabilities: syntheticCapabilities(),
-      memoryPolicy: { memoryReasoningRequired: false },
+      memoryPolicy: { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null },
       warnings: [],
       nextAction: 'proceed',
     },
@@ -674,6 +680,28 @@ test('agent CLI accepts a soft memory-reasoning gate with withheld context', asy
   const result = parsed(captured.stdout);
   assert.equal(result.data.nextAction, 'proceed');
   assert.equal(result.data.context, null);
+});
+
+test('agent CLI rejects memory policy fields that contradict the capability recommendation', async () => {
+  const base = syntheticIntakeResponse({ memoryContextWithheld: true });
+  const invalidPolicies = [
+    { memoryReasoningRequired: true, contextWithheld: false, withheldReason: null },
+    { memoryReasoningRequired: true, contextWithheld: true, withheldReason: 'memory_reasoning_missing' },
+    { memoryReasoningRequired: false, contextWithheld: true, withheldReason: 'memory_reasoning_unknown' },
+  ];
+  for (const [index, memoryPolicy] of invalidPolicies.entries()) {
+    const response = { ...base, memoryPolicy };
+    const captured = await captureOutput(() => runCli([
+      'node', 'kiokuko', 'agent', 'open', '--workspace', 'w', '--client', 'generic', '--task', 'Implement the fix', '--json',
+    ], {
+      agent: {
+        createClient: async () => clientReturning(response),
+        idempotencyKeyFactory: () => `invalid-memory-policy-${index}`,
+      },
+    }));
+    assert.equal(captured.result, 8);
+    assert.equal(parsed(captured.stdout).error.code, 'INTEGRITY_ERROR');
+  }
 });
 
 test('agent client and idempotency dependency programming failures propagate unchanged', async () => {

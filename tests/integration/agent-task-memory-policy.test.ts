@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { answerAgentTask, prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { initializeDatabase } from '../../src/commands/init.js';
+import { setupGlobalClients } from '../../src/commands/setup.js';
 import { recordContextFeedback } from '../../src/context/feedback.js';
 import type { SqliteDatabase } from '../../src/db/adapter.js';
 import { openConnection } from '../../src/db/connection.js';
@@ -16,6 +17,13 @@ import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { GLOBAL_WORKSPACE, resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 
 const SOUL_CAPABILITY = { kind: 'skill', name: 'kiokuko-soul' } as const;
+const NO_MEMORY_POLICY = { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null } as const;
+const AVAILABLE_MEMORY_POLICY = { memoryReasoningRequired: true, contextWithheld: false, withheldReason: null } as const;
+const MISSING_MEMORY_POLICY = {
+  memoryReasoningRequired: true,
+  contextWithheld: true,
+  withheldReason: 'memory_reasoning_missing',
+} as const;
 
 async function repository(prefix: string): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), `kiokuko-memory-policy-${prefix}-`));
@@ -149,7 +157,7 @@ test('withholds actionable memory but continues the repair task when memory-reas
     const missingRecommendation = missing.capabilities.recommendations.find((item) => item.name === 'memory-reasoning');
     assert.equal(missingRecommendation?.name, 'memory-reasoning');
     assert.equal(missingRecommendation?.availability, 'missing');
-    assert.deepEqual(missing.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(missing.memoryPolicy, MISSING_MEMORY_POLICY);
     assert.equal(missing.nextAction, 'proceed');
     assert.equal(missing.context, null);
     assert.equal('memory' in missing, false);
@@ -168,9 +176,98 @@ test('withholds actionable memory but continues the repair task when memory-reas
     });
     const availableRecommendation = available.capabilities.recommendations.find((item) => item.name === 'memory-reasoning');
     assert.equal(availableRecommendation?.availability, 'available');
-    assert.deepEqual(available.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(available.memoryPolicy, AVAILABLE_MEMORY_POLICY);
     assert.equal(available.nextAction, 'proceed');
     assert.notEqual(available.context, null);
+  } finally {
+    database.close();
+  }
+});
+
+test('fresh default setup supplies the exact memory capability that unlocks build and debug delivery', async () => {
+  const root = await repository('default-setup');
+  const environmentRoot = await mkdtemp(path.join(tmpdir(), 'kiokuko-memory-policy-setup-'));
+  const home = path.join(environmentRoot, 'home');
+  const config = path.join(environmentRoot, 'config');
+  const data = path.join(environmentRoot, 'data');
+  const databasePath = path.join(data, 'kiokuko', 'kiokuko.sqlite3');
+  await mkdir(home, { recursive: true });
+
+  const setup = await setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: { HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: data },
+    databasePath,
+  });
+  const installedSkillPath = path.join(home, '.agents', 'skills', 'memory-reasoning', 'SKILL.md');
+  const installedSkill = await readFile(installedSkillPath, 'utf8');
+  const frontmatterName = /^name:\s*([^\s]+)\s*$/mu.exec(installedSkill)?.[1];
+  assert.equal(frontmatterName, 'memory-reasoning');
+  assert.equal(setup.files.some((file) => file.path === installedSkillPath && file.action === 'created'), true);
+
+  const installedCapability = { kind: 'skill', name: frontmatterName } as const;
+  const database = openConnection(databasePath);
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+
+    for (const [taskType, target] of [
+      ['build', 'src/setup-build-beacon.ts'],
+      ['debug', 'src/setup-debug-beacon.ts'],
+    ] as const) {
+      const entry = recordEntry(database, {
+        workspace: project.workspace,
+        kind: 'lesson',
+        title: `${taskType} setup delivery beacon`,
+        body: `Use the ${taskType} setup delivery beacon to verify exact memory capability delivery.`,
+        tags: ['memory-policy', taskType],
+      });
+      const task = `Repair the ${taskType} setup delivery beacon`;
+      const profileHints = {
+        taskType,
+        target,
+        expected: 'the exact saved beacon memory is delivered once',
+        constraints: null,
+      } as const;
+
+      const missing = await prepareAgentTask(database, {
+        requestId: `default-setup-${taskType}-missing`,
+        cwd: root,
+        task,
+        profileHints,
+        capabilities: [SOUL_CAPABILITY],
+        client: { kind: 'test', sessionId: `default-setup-${taskType}-missing` },
+        skillDiscoveryMode: 'off',
+      });
+      assert.equal(missing.context, null);
+      assert.deepEqual(missing.memoryPolicy, MISSING_MEMORY_POLICY);
+      assert.equal(missing.nextAction, 'proceed');
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+        .get<{ count: number }>(missing.run.runId)?.count, 0);
+
+      const availableInput = {
+        requestId: `default-setup-${taskType}-available`,
+        cwd: root,
+        task,
+        profileHints,
+        capabilities: [SOUL_CAPABILITY, installedCapability],
+        client: { kind: 'test', sessionId: `default-setup-${taskType}-available` },
+        skillDiscoveryMode: 'off' as const,
+      };
+      const available = await prepareAgentTask(database, availableInput);
+      assert.deepEqual(available.memoryPolicy, AVAILABLE_MEMORY_POLICY);
+      assert.equal(available.nextAction, 'proceed');
+      assert.equal(available.context?.items.some((item) => item.entryId === entry.id), true);
+      assert.ok(available.context?.deliveryId);
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+        .get<{ count: number }>(available.run.runId)?.count, 1);
+
+      const replay = await prepareAgentTask(database, availableInput);
+      assert.equal(replay.run.runId, available.run.runId);
+      assert.equal(replay.context?.deliveryId, available.context.deliveryId);
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
+        .get<{ count: number }>(available.run.runId)?.count, 1);
+    }
   } finally {
     database.close();
   }
@@ -220,7 +317,7 @@ test('does not require memory-reasoning when only a managed curator global memor
     });
 
     assert.equal(prepared.nextAction, 'proceed');
-    assert.deepEqual(prepared.memoryPolicy, { memoryReasoningRequired: false });
+    assert.deepEqual(prepared.memoryPolicy, NO_MEMORY_POLICY);
     assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.required === true), false);
     assert.equal(prepared.context?.items.some((item) => item.entryId === curated.id), true);
   } finally {
@@ -263,7 +360,7 @@ test('treats a forged curator createdBy marker as ordinary withheld memory witho
     });
 
     assert.equal(prepared.nextAction, 'proceed');
-    assert.deepEqual(prepared.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(prepared.memoryPolicy, MISSING_MEMORY_POLICY);
     assert.equal(prepared.context, null);
   } finally {
     database.close();
@@ -846,7 +943,7 @@ test('does not require memory-reasoning for a ready repair task without actionab
     assert.equal(prepared.context?.items.length, 0);
     assert.equal(prepared.context?.deliveryId, null);
     assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.required === true), false);
-    assert.deepEqual(prepared.memoryPolicy, { memoryReasoningRequired: false });
+    assert.deepEqual(prepared.memoryPolicy, NO_MEMORY_POLICY);
     assert.equal(prepared.nextAction, 'proceed');
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
       .get<{ count: number }>(prepared.run.runId)?.count, 0);
@@ -1149,7 +1246,7 @@ test('missing memory-reasoning still discovers reference-only external skills wh
     assert.notEqual(prepared.context, null);
     assert.ok((prepared.context?.items.length ?? 0) > 0);
     assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'), false);
-    assert.deepEqual(prepared.memoryPolicy, { memoryReasoningRequired: false });
+    assert.deepEqual(prepared.memoryPolicy, NO_MEMORY_POLICY);
     assert.ok(prepared.context?.items.every((item) => item.origin === 'ecosystem'));
   } finally {
     database.close();

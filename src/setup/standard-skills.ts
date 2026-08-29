@@ -53,6 +53,9 @@ export const STANDARD_FUNCTION_SKILL_FILES = [
 export const STANDARD_ENNO_SKILL_NAME = 'kiokuko-enno-oduno';
 export const STANDARD_ENNO_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-enno-oduno -->';
 export const STANDARD_ENNO_SKILL_FILES = ['SKILL.md'] as const;
+export const STANDARD_MEMORY_SKILL_NAME = 'memory-reasoning';
+export const STANDARD_MEMORY_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: memory-reasoning -->';
+export const STANDARD_MEMORY_SKILL_FILES = ['SKILL.md'] as const;
 export const STANDARD_SOUL_SKILL_NAME = 'kiokuko-soul';
 export const STANDARD_SOUL_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->';
 export const STANDARD_SOUL_SKILL_FILES = ['SKILL.md'] as const;
@@ -77,6 +80,10 @@ export const STANDARD_SKILL_MANIFESTS = [{
   name: STANDARD_ENNO_SKILL_NAME,
   managedMarker: STANDARD_ENNO_SKILL_MANAGED_MARKER,
   files: STANDARD_ENNO_SKILL_FILES,
+}, {
+  name: STANDARD_MEMORY_SKILL_NAME,
+  managedMarker: STANDARD_MEMORY_SKILL_MANAGED_MARKER,
+  files: STANDARD_MEMORY_SKILL_FILES,
 }, {
   name: STANDARD_SOUL_SKILL_NAME,
   managedMarker: STANDARD_SOUL_SKILL_MANAGED_MARKER,
@@ -129,10 +136,16 @@ export async function loadBundledStandardSkillFiles(): Promise<BundledStandardSk
 export function renderStandardSkillFile(
   existing: string | undefined,
   bundled: BundledStandardSkillFile,
+  destinationPath?: string,
 ): { content: string; action: 'created' | 'updated' | 'unchanged' } {
   if (existing === undefined) return { content: bundled.content, action: 'created' };
   if (markerCount(existing, bundled.managedMarker) !== 1) {
-    throw new KiokukoError('CONFLICT', `Refusing to overwrite an unmanaged standard skill file: ${bundled.skillName}/${bundled.relativePath}`);
+    const target = destinationPath ?? `${bundled.skillName}/${bundled.relativePath}`;
+    throw new KiokukoError(
+      'CONFLICT',
+      `Refusing to overwrite an unmanaged standard skill file: ${target}. Inspect and back up or rename that file, then rerun kiokuko setup.`,
+      { path: target },
+    );
   }
   return {
     content: bundled.content,

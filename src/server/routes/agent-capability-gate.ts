@@ -12,8 +12,8 @@ import { isCuratorManagedGlobalMemory } from '../../memory/curator-trust.js';
 import type { TaskProfile } from '../../akinator/types.js';
 import {
   deriveMemoryUseSignal,
+  deriveMemoryPolicy,
   hasBlockingRequiredCapability,
-  memoryReasoningRequired,
   resolveCapabilities,
   shouldWithholdMemoryContext,
   type CapabilityResolution,
@@ -190,7 +190,7 @@ export function applyAgentCapabilityGate(input: AgentCapabilityGateInput): Agent
     context: action === 'required_capability_unavailable' || withholdMemory ? null : input.broker.context,
     recommendations: action === 'required_capability_unavailable' || withholdMemory ? [] : input.broker.recommendations,
     capabilities,
-    memoryPolicy: { memoryReasoningRequired: memoryReasoningRequired(input.taskProfile, memoryUse) },
+    memoryPolicy: deriveMemoryPolicy(input.taskProfile, memoryUse, input.catalog),
     warnings: capabilities.warnings,
     nextAction: action,
   };

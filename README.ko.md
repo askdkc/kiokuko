@@ -21,6 +21,7 @@ kiokuko setup
 ```
 
 `setup`은 설치된 지원 클라이언트를 감지하고 SQLite 데이터베이스와 MCP 연결을 자동으로 설정합니다.
+또한 번들된 `memory-reasoning` Skill과 다른 Kiokuko 표준 Skill을 설치합니다. 기존 환경에는 다음 `kiokuko setup` 실행 시 추가되며, 같은 이름의 비-managed 파일은 덮어쓰지 않습니다.
 대화형 setup은 감사된 community Skill도 참고 자료로 사용할지 묻고, 기본 응답은 아니요입니다.
 
 설정 후 대상 AI 클라이언트를 실행하고 평소처럼 사용하면 됩니다. 이미 실행 중이라면 한 번 종료한 후 다시 시작하십시오. setup이 Codex Stop hook을 생성하거나 업데이트했다면 Codex에서 `/hooks`를 열고 해당 hook을 명시적으로 신뢰하십시오.

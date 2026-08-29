@@ -4,10 +4,10 @@ Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-sco
 
 | Client | Global MCP registration | Global instructions | Managed standard skills | Hooks/plugins |
 |---|---|---|---|---|
-| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded Stop hook when Enno-Oduno is enabled |
-| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded `session.idle` plugin when Enno-Oduno is enabled |
-| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded Stop hook when Enno-Oduno is enabled |
-| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/{kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
+| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/{memory-reasoning,kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded Stop hook when Enno-Oduno is enabled |
+| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/{memory-reasoning,kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded `session.idle` plugin when Enno-Oduno is enabled |
+| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/{memory-reasoning,kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | bounded Stop hook when Enno-Oduno is enabled |
+| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/{memory-reasoning,kiokuko-soul,kiokuko-enno-oduno,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | not installed | none |
 
 OpenCode global configuration follows XDG paths on every platform:
@@ -19,7 +19,7 @@ Codex's current official documentation supports stdio MCP servers and global
 configuration. OpenCode's current official documentation supports local MCP
 commands and global rules. Claude Code supports user-scoped stdio MCP servers,
 global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
-instruction surfaces and installs the bundled `kiokuko-soul`, `kiokuko-enno-oduno`,
+instruction surfaces and installs the bundled `memory-reasoning`, `kiokuko-soul`, `kiokuko-enno-oduno`,
 `kiokuko-single-purpose-functions`, and `kiokuko-ui-design-soul` skills in the selected supported clients by
 default. The skills are copied from a fixed package manifest and never downloaded
 during setup. `--no-standard-skills`
@@ -79,6 +79,16 @@ false attestation is invalid; missing or unknown capability availability returns
 namespaced, fetched, or reference-only skill does not satisfy the required
 master SOUL. The boolean attestation is enforceable protocol evidence, not
 remote proof that a model understood or followed the Skill.
+
+The `memory-reasoning` standard skill is installed by default, but filesystem
+placement is not proof that the current model loaded or followed it. For ready
+build/debug tasks, clients advertise the exact local capability only when it is
+actually available. If it is missing or availability is unknown, Kiokuko sets
+`memoryPolicy.contextWithheld=true`, reports `memory_reasoning_missing` or
+`memory_reasoning_unknown` in `memoryPolicy.withheldReason`, returns no actionable
+ordinary memory, and leaves `nextAction=proceed`. An unmanaged same-name file
+causes setup to fail closed; move or remove that file manually before rerunning
+setup if Kiokuko should own the destination.
 
 The UI standard skill is intended for explicit UI, UX, frontend, screen, SwiftUI,
 accessibility, and equivalent Japanese-language tasks. `task_prepare` treats it
@@ -227,16 +237,22 @@ The legacy ungated `guide context` path was removed. Task-aware context must use
 Every `task_answer` request must include the exact `run.runId`, capability
 catalog, and context budget supplied to `task_prepare`; clients must not fall
 back to session-only run lookup or replace those bindings between answers. Inspect
-`nextAction` after every `task_prepare` and `task_answer` response. Every task
+`nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer` response. Every task
 requires the exact local `kiokuko-soul`; missing or unknown availability returns
 `required_capability_unavailable`, even while intake needs an answer. For a ready
 build/debug task with actionable ordinary memory, missing or unknown
-`memory-reasoning` alone withholds that memory and leaves `nextAction=proceed` so
+`memory-reasoning` alone sets `memoryPolicy.contextWithheld=true`, reports
+`memory_reasoning_missing` or `memory_reasoning_unknown` in
+`memoryPolicy.withheldReason`, withholds that memory, and leaves `nextAction=proceed` so
 the client can continue from repository evidence. When it is available, the
 client must read the local `memory-reasoning` Skill before modifying code and
 convert recalled claims that affect the task into verified premises, falsifiable
 invariants, concrete counterexamples, and regression tests. Catalog availability
 alone does not satisfy this execution contract.
+`context: null` with `memoryPolicy.contextWithheld=true` is the explicit
+withholding state and persists no delivery. A non-null empty context with a null
+delivery ID means there was no actionable candidate; clients must not collapse
+these states.
 If the client cannot obtain the Kiokuko policy for a non-trivial build/debug
 request, it must also stop and report that boundary. Repository-only
 continuation for such a request is allowed only after the policy establishes

@@ -61,8 +61,12 @@ input conflicts, and `client.sessionId` is not accepted as a substitute.
 The normalized context budget is also bound at preparation and must be repeated
 unchanged by `task_answer`.
 
-For actionable build/debug memory, generated instructions treat catalog
+Default setup installs the exact local `memory-reasoning` Skill, but installation
+is not proof that a model loaded or followed it. For actionable build/debug
+memory, generated instructions treat catalog
 availability as only the gate, not proof of compliance. The client must read the
 available local `memory-reasoning` Skill before modifying code and convert
 recalled claims that affect the task into verified premises, falsifiable
-invariants, concrete counterexamples, and regression tests.
+invariants, concrete counterexamples, and regression tests. Missing or unknown
+availability is explicit in `memoryPolicy.contextWithheld` and
+`memoryPolicy.withheldReason`; `nextAction` remains `proceed`.

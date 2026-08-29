@@ -14,10 +14,10 @@ import {
 import { getAkinatorContextService } from './service.js';
 import {
   deriveMemoryUseSignal,
+  deriveMemoryPolicy,
   hasActionableMemorySelection,
   hasBlockingRequiredCapability,
   memoryReasoningCapabilityAvailability,
-  memoryReasoningRequired,
   normalizeCapabilityCatalog,
   resolveCapabilities,
   type CapabilityResolution,
@@ -481,7 +481,7 @@ function buildPreparedTaskBase(
     run,
     skillDiscovery,
     context: scopedContext,
-    memoryPolicy: { memoryReasoningRequired: memoryReasoningRequired(context.session.profile, memoryUse) },
+    memoryPolicy: deriveMemoryPolicy(context.session.profile, memoryUse, capabilities),
     warnings: capabilityResolution.warnings,
     nextAction: hasBlockingRequiredCapability(capabilityResolution)
       ? 'required_capability_unavailable'

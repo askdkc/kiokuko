@@ -21,7 +21,11 @@ const profileHints = {
   expected: 'passes',
   constraints: null,
 };
-const requiredMemoryPolicy = { memoryReasoningRequired: true } as const;
+const requiredMemoryPolicy = {
+  memoryReasoningRequired: true,
+  contextWithheld: true,
+  withheldReason: 'memory_reasoning_missing',
+} as const;
 
 test('prior cross-run helpful feedback withholds the same weak memory without stopping MCP or generic Agent tasks', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-capability-feedback-parity-'));
