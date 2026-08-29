@@ -57,6 +57,7 @@ export interface UseOptions {
 export interface UseCommandDependencies {
   atomicWriteTextIfUnchanged?: typeof atomicWriteTextIfUnchanged;
   unlinkRegularFileIfUnchanged?: typeof unlinkRegularFileIfUnchanged;
+  readBindingFileForConvergence?: typeof readRegularFile;
   readAgentFileForConvergence?: typeof readRegularFile;
   registerRepositoryAndLocation?: typeof registerRepositoryAndLocation;
   openConnection?: typeof openConnection;
@@ -268,6 +269,11 @@ type ConcurrentTargetObservation =
 interface ObservedTarget {
   snapshot: RegularFileSnapshot;
   linkCount: bigint;
+}
+
+interface SettledBindingSnapshot {
+  snapshot: RegularFileSnapshot | undefined;
+  observedConcurrentChange: boolean;
 }
 
 function sameRegularFileSnapshot(
@@ -525,17 +531,32 @@ async function readSettledBindingSnapshot(
   bindingFile: string,
   repositoryRoot: string,
   bindingParentIdentity: FileIdentity,
-): Promise<RegularFileSnapshot | undefined> {
+  readFile: typeof readRegularFile = readRegularFile,
+): Promise<SettledBindingSnapshot> {
   let candidate: RegularFileSnapshot | undefined;
   let pendingOriginal: RegularFileSnapshot | undefined;
   let sawPending = false;
+  let observedConcurrentChange = false;
   let lastState: 'linked' | 'pending' | undefined;
   for (let attempt = 0; attempt < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS; attempt += 1) {
-    let observed = await readObservedTarget(
-      bindingFile,
-      repositoryRoot,
-      bindingParentIdentity,
-    );
+    let observed: ObservedTarget | undefined;
+    try {
+      observed = await readObservedTarget(
+        bindingFile,
+        repositoryRoot,
+        bindingParentIdentity,
+        readFile,
+      );
+    } catch (error) {
+      if (!isTargetConflict(error, bindingFile)) throw error;
+      observedConcurrentChange = true;
+      lastState = 'pending';
+      if (attempt + 1 < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS) {
+        await delay(CONCURRENT_IDENTICAL_OBSERVATION_DELAY_MS);
+        continue;
+      }
+      break;
+    }
     let pending = await readPendingAtomicMutation(
       bindingFile,
       bindingParentIdentity,
@@ -547,7 +568,23 @@ async function readSettledBindingSnapshot(
       });
     }
     if (observed === undefined && pending === undefined) {
-      observed = await readObservedTarget(bindingFile, repositoryRoot, bindingParentIdentity);
+      try {
+        observed = await readObservedTarget(
+          bindingFile,
+          repositoryRoot,
+          bindingParentIdentity,
+          readFile,
+        );
+      } catch (error) {
+        if (!isTargetConflict(error, bindingFile)) throw error;
+        observedConcurrentChange = true;
+        lastState = 'pending';
+        if (attempt + 1 < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS) {
+          await delay(CONCURRENT_IDENTICAL_OBSERVATION_DELAY_MS);
+          continue;
+        }
+        break;
+      }
       if (observed === undefined) {
         pending = await readPendingAtomicMutation(
           bindingFile,
@@ -562,7 +599,7 @@ async function readSettledBindingSnapshot(
               { target: bindingFile },
             );
           }
-          return undefined;
+          return { snapshot: undefined, observedConcurrentChange };
         }
       }
     }
@@ -586,7 +623,9 @@ async function readSettledBindingSnapshot(
         });
       }
       candidate = observed.snapshot;
-      if (pending === undefined && observed.linkCount === 1n) return observed.snapshot;
+      if (pending === undefined && observed.linkCount === 1n) {
+        return { snapshot: observed.snapshot, observedConcurrentChange };
+      }
       lastState = pending === undefined ? 'linked' : 'pending';
     } else {
       lastState = 'pending';
@@ -612,11 +651,13 @@ async function readConcurrentBinding(
   repositoryRoot: string,
   requestedAgentFile: string,
   bindingParentIdentity: FileIdentity,
+  readFile: typeof readRegularFile,
 ): Promise<ProjectConfig> {
-  const snapshot = await readSettledBindingSnapshot(
+  const { snapshot } = await readSettledBindingSnapshot(
     bindingFile,
     repositoryRoot,
     bindingParentIdentity,
+    readFile,
   );
   const binding = parseBindingSnapshot(snapshot);
   if (snapshot === undefined || binding === undefined) {
@@ -647,6 +688,7 @@ async function readSettledAgentPlan(
   intendedFromOriginal?: (
     original: RegularFileSnapshot,
   ) => { content: string; mode: number } | undefined,
+  readFile: typeof readRegularFile = readRegularFile,
 ): Promise<RegularFileSnapshot | undefined> {
   const continuePendingMutation = async (
     pending: PendingAtomicMutation,
@@ -691,7 +733,24 @@ async function readSettledAgentPlan(
   };
   let linkedCandidate: RegularFileSnapshot | undefined;
   for (let attempt = 0; attempt < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS; attempt += 1) {
-    let observed = await readObservedTarget(filePath, containmentRoot, parentIdentity);
+    let observed: ObservedTarget | undefined;
+    try {
+      observed = await readObservedTarget(
+        filePath,
+        containmentRoot,
+        parentIdentity,
+        readFile,
+      );
+    } catch (error) {
+      if (!isTargetConflict(error, filePath)) throw error;
+      if (attempt + 1 < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS) {
+        await delay(CONCURRENT_IDENTICAL_OBSERVATION_DELAY_MS);
+        continue;
+      }
+      throw new KiokukoError('CONFLICT', 'Concurrent agent mutation did not settle', {
+        target: filePath,
+      });
+    }
     if (observed === undefined && linkedCandidate !== undefined) {
       throw new KiokukoError('CONFLICT', 'Agent target disappeared while settling', {
         target: filePath,
@@ -700,7 +759,23 @@ async function readSettledAgentPlan(
     if (observed === undefined) {
       let pending = await readPendingAtomicMutation(filePath, parentIdentity, containmentRoot);
       if (pending === undefined) {
-        observed = await readObservedTarget(filePath, containmentRoot, parentIdentity);
+        try {
+          observed = await readObservedTarget(
+            filePath,
+            containmentRoot,
+            parentIdentity,
+            readFile,
+          );
+        } catch (error) {
+          if (!isTargetConflict(error, filePath)) throw error;
+          if (attempt + 1 < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS) {
+            await delay(CONCURRENT_IDENTICAL_OBSERVATION_DELAY_MS);
+            continue;
+          }
+          throw new KiokukoError('CONFLICT', 'Concurrent agent mutation did not settle', {
+            target: filePath,
+          });
+        }
         if (observed === undefined) {
           pending = await readPendingAtomicMutation(filePath, parentIdentity, containmentRoot);
           if (pending === undefined) return undefined;
@@ -879,6 +954,7 @@ async function useRepositoryAttempt(
   const dependencies = {
     atomicWriteTextIfUnchanged: dependencyOverrides.atomicWriteTextIfUnchanged ?? atomicWriteTextIfUnchanged,
     unlinkRegularFileIfUnchanged: dependencyOverrides.unlinkRegularFileIfUnchanged ?? unlinkRegularFileIfUnchanged,
+    readBindingFileForConvergence: dependencyOverrides.readBindingFileForConvergence ?? readRegularFile,
     readAgentFileForConvergence: dependencyOverrides.readAgentFileForConvergence ?? readRegularFile,
     registerRepositoryAndLocation: dependencyOverrides.registerRepositoryAndLocation ?? registerRepositoryAndLocation,
     openConnection: dependencyOverrides.openConnection ?? openConnection,
@@ -898,11 +974,13 @@ async function useRepositoryAttempt(
     && !sameFileIdentity(bindingParentIdentity, retryParents.bindingParentIdentity)) {
     throw new KiokukoError('CONFLICT', 'Repository root changed during concurrent binding convergence');
   }
-  const bindingSnapshot = await readSettledBindingSnapshot(
+  const bindingObservation = await readSettledBindingSnapshot(
     bindingFile,
     repositoryRoot,
     bindingParentIdentity,
+    dependencies.readBindingFileForConvergence,
   );
+  const bindingSnapshot = bindingObservation.snapshot;
   const existingBinding = parseBindingSnapshot(bindingSnapshot);
   if (existingBinding !== undefined && existingBinding.templateVersion > AGENT_TEMPLATE_VERSION) {
     throw new KiokukoError(
@@ -987,6 +1065,7 @@ async function useRepositoryAttempt(
               content: renderAgentFile(original.content, agentTemplateValues).content,
               mode: original.mode,
             }),
+        dependencies.readAgentFileForConvergence,
       )
     : await readRetriedAgentPlan(
         agentFile,
@@ -1150,6 +1229,7 @@ async function useRepositoryAttempt(
               repositoryRoot,
               requestedAgentFile,
               bindingParentIdentity,
+              dependencies.readBindingFileForConvergence,
             ),
           );
         }
@@ -1208,7 +1288,9 @@ async function useRepositoryAttempt(
     let resolvedAgent = existingAgent;
     if (rendered && rendered.action !== 'unchanged') {
       try {
-        const resolution = existingBinding === undefined || allowConcurrentAgentConvergence
+        const resolution = existingBinding === undefined
+          || allowConcurrentAgentConvergence
+          || bindingObservation.observedConcurrentChange
           ? await writeOrConvergeIdentical(
               dependencies,
               agentFile,
@@ -1338,11 +1420,12 @@ async function useRepositoryAttempt(
       }
     }
 
-    const finalBinding = await readSettledBindingSnapshot(
+    const finalBinding = (await readSettledBindingSnapshot(
       bindingFile,
       repositoryRoot,
       bindingParentIdentity,
-    );
+      dependencies.readBindingFileForConvergence,
+    )).snapshot;
     if (resolvedBinding === undefined
       || finalBinding === undefined
       || !sameRegularFileSnapshot(finalBinding, resolvedBinding)) {

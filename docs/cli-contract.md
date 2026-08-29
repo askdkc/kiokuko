@@ -140,7 +140,7 @@ rejected as `CONFLICT`; it is not silently migrated. The managed marker, comment
 top-level values, and other MCP servers are preserved. An unmanaged entry,
 noncanonical environment, extra field, or non-`mcp` args remains `CONFLICT`;
 malformed YAML or a non-mapping `mcp_servers` remains `VALIDATION_ERROR`.
-By default it also places the bundled `kiokuko-soul`, `kiokuko-enno-oduno`,
+By default it also places the bundled `memory-reasoning`, `kiokuko-soul`, `kiokuko-enno-oduno`,
 `kiokuko-single-purpose-functions`, and `kiokuko-ui-design-soul` skills in each selected client's native
 user-skill directory. `--no-standard-skills` skips new
 placement and updates without deleting a previously installed copy.
@@ -151,9 +151,12 @@ When Enno-Oduno continuation is enabled, setup installs one bounded native
 adapter for each selected client: a Codex or Claude Code Stop hook, or an
 OpenCode `session.idle` plugin. Hermes receives no Enno continuation adapter.
 The adapters treat `client_session_id` as routing metadata rather than
-authorization ownership. They prefer an exact session route, then atomically
+authorization ownership. They prefer the current short-lived resume token,
+then atomically
 reroute the single unambiguous active run in the canonical repository across
-Codex, Claude Code, and OpenCode. Multiple active candidates remain unchanged.
+Codex, Claude Code, and OpenCode when no valid token route exists. Rerouting
+increments the route epoch and invalidates old tokens; an active WorkUnit
+execution lease blocks it. Multiple active candidates remain unchanged.
 Reaching a per-session continuation limit stops only that session's automatic
 continuation and leaves the run and ledger active. Hermes can still continue
 the same run through MCP by supplying its exact run identity.
@@ -171,12 +174,19 @@ rejects symlinks, and is idempotent. Before an existing database is migrated,
 `databaseBackupPath` in JSON. It rejects databases created by a newer Kiokuko
 schema before opening them for writes. `--dry-run` performs no writes.
 
-Standard-skill input is the package's fixed four-skill, seven-file manifest; setup
+Standard-skill input is the package's fixed five-skill manifest; setup
 performs no network fetch or dynamic skill discovery. Each managed destination file contains a Kiokuko
 marker. A same-name unmarked file causes `CONFLICT` before all writes. Managed
 older files are replaced, byte-identical files are `unchanged`, unrelated sibling
 files are not touched, and `files[].purpose` is `standard-skill`. JSON setup
 results include the effective `standardSkills` boolean.
+
+The bundled `kiokuko-single-purpose-functions` index registers
+`code.modeling.v1` for WorkUnits that own domain vocabulary, public data shapes,
+or transformations among storage, API, serialization, and UI representations.
+It remains optional for representation-preserving mechanical changes. Existing
+managed installations receive its `problem-shaping-and-language.md` reference
+on the next `kiokuko setup`; unmanaged same-name files still fail closed.
 
 For Hermes, use `kiokuko setup` when Hermes detection is intended, or
 `kiokuko setup --clients hermes` for an explicit selection, then restart Hermes
@@ -204,14 +214,38 @@ only the gated task entry points and lifecycle tools:
 
 Enno-Oduno Final Review is two-phase. `enno_verify_prepare` runs the approved
 final verifiers outside database transactions with shell disabled and a
-repository-bounded cwd, stores fresh evidence bound to the current contract and
-mutation revisions, and only then permits the final-review advisory fanout.
-`enno_finish` decides accept/replan/block from that stored evidence and never
-spawns a subprocess; unready evidence is rejected as a conflict. A successful
+repository-relative cwd, stores evidence bound to contract/mutation revision,
+verifier-specification digest, and full repository-state digest, and only then
+permits the final-review advisory fanout. `enno_finish` recomputes repository
+state inside its mutation transaction, decides accept/replan/block from the
+complete stored context, and never spawns a subprocess; changed or
+legacy-unbound evidence is rejected as a conflict. A successful
 accept advances to read-only Oduno meditation, and
 `enno_meditation_submit` completes the run only after that reflection is
 persisted. Kiokuko never launches the three fixed Advisor slots; the parent
 host verifies isolation and submits bounded contributions.
+
+Structured Enno tool validation returns `code=ENNO_INPUT_INVALID`,
+`version=1`, the operation name, `mutationApplied=false`, and at most 16
+value-free issues. Each issue contains only a bounded path, fixed reason code,
+and expected shape or limit. This applies to ideal, advice, plan, work-report,
+verification preparation, finish, and meditation submissions; raw validator
+errors and rejected values are never exposed.
+
+New WorkUnits require one or more local routes: `code`, `ui`, `test`, `docs`,
+or `operations`. Code requires a `code.*` expert; UI requires `code.*` and
+`ui.*`; other routes do not inherit those requirements. New verifier
+directories are repository-relative and escaping or absolute paths are
+rejected. `userFacingRecovery` persists only a continuation pause until the
+user chooses: no discovery attempt, advisory consumption, receipt, contract
+revision, plan persistence, implementation, or repository mutation is created.
+A same-run retry carries the selected recovery action.
+
+Continuation responses may carry an opaque 15-minute resume token and, for an
+active WorkUnit, an execution lease. Tokens bind run, canonical repository,
+client kind/session, and route epoch. Rerouting increments the epoch and
+invalidates old tokens. An unexpired execution lease blocks rerouting and only
+its holder may submit that WorkUnit; after expiry one new holder may recover.
 
 Run-bound `memory_checkpoint` accepts only an `active` run. Clients must inspect
 `nextAction` after every `task_prepare` and `task_answer` response and continue
@@ -285,18 +319,24 @@ budget changed. `task_answer` must repeat that same budget. Kiokuko hashes
 the ID for idempotency and does not store its raw value. `client.sessionId` is
 optional client metadata and is never a substitute for `requestId`.
 
-Clients must inspect `nextAction` after every `task_prepare` and `task_answer`
+Clients must inspect `nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer`
 response before proceeding. Every task requires the exact local
 `kiokuko-soul`; missing or unknown catalog availability returns
 `required_capability_unavailable` before intake answering. When either call
 produces a ready `build` or `debug` task with actionable ordinary memory context,
 the response also recommends the local `memory-reasoning` capability. Missing or
-unknown `memory-reasoning` alone withholds that memory and leaves
-`nextAction=proceed` so the client can continue from repository evidence. If
+unknown `memory-reasoning` alone sets `memoryPolicy.contextWithheld=true`, sets
+`memoryPolicy.withheldReason` to `memory_reasoning_missing` or
+`memory_reasoning_unknown`, withholds that memory, and leaves `nextAction=proceed`
+so the client can continue from repository evidence. If
 available, the local `memory-reasoning` Skill must be read before modifying code;
 recalled claims that affect the task must be converted into verified premises,
 falsifiable invariants, concrete counterexamples, and regression tests.
 Availability alone is not compliance.
+`context: null` together with `memoryPolicy.contextWithheld=true` means an
+actionable candidate existed but the memory capability gate rejected delivery;
+no context-delivery row is persisted. A non-null context with `items: []` and
+`deliveryId: null` instead means no actionable candidate was selected.
 If the Kiokuko policy cannot be obtained for a non-trivial build/debug request,
 stop and report it. Repository-only
 continuation for such a request is allowed only after the policy establishes
@@ -409,7 +449,7 @@ kiokuko agent feedback <run-id> --input-json FILE|- --json
 
 These commands discover the service from the runtime descriptor and call authenticated HTTP only. They do not fall back to direct SQLite. If unavailable, they return an explicit service/database error and do not invent an acknowledgement or context result. Token material is never rendered in help, argv, stdout, stderr, or envelopes.
 
-`open` preserves a `needs_answer` response. The caller must show only the returned current question and submit the actual answer. The exact same complete capability catalog must be supplied to `open` and every `answer`; a different catalog is a conflict before intake mutation. Every request requires the exact local `kiokuko-soul`; missing or unknown availability returns `nextAction: required_capability_unavailable` even while intake needs an answer. Context appears only after `ready` or bounded `exhausted`. For actionable ordinary build/debug memory, missing or unknown `memory-reasoning` alone withholds that memory while leaving `nextAction: proceed`. Non-JSON CLI output includes any unavailable required capability name and availability, such as `kiokuko-soul (missing)`, so the stop cannot be mistaken for a generic status. `open` and `answer` accept an explicit bounded `--idempotency-key` for exact unknown-outcome retries; a changed request must use a new key. Events/checkpoints/close/feedback consume bounded JSON from a file or stdin rather than long shell arguments.
+`open` preserves a `needs_answer` response. The caller must show only the returned current question and submit the actual answer. The exact same complete capability catalog must be supplied to `open` and every `answer`; a different catalog is a conflict before intake mutation. Every request requires the exact local `kiokuko-soul`; missing or unknown availability returns `nextAction: required_capability_unavailable` even while intake needs an answer. Context appears only after `ready` or bounded `exhausted`. For actionable ordinary build/debug memory, missing or unknown `memory-reasoning` sets `memoryPolicy.contextWithheld: true`, reports `memory_reasoning_missing` or `memory_reasoning_unknown` in `memoryPolicy.withheldReason`, withholds that memory, and leaves `nextAction: proceed`. The strict CLI response validator rejects a policy that contradicts the capability recommendation. Non-JSON CLI output includes any unavailable required capability name and availability, such as `kiokuko-soul (missing)`, so the stop cannot be mistaken for a generic status. `open` and `answer` accept an explicit bounded `--idempotency-key` for exact unknown-outcome retries; a changed request must use a new key. Events/checkpoints/close/feedback consume bounded JSON from a file or stdin rather than long shell arguments.
 
 ## HTTP mapping
 

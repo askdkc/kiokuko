@@ -2,6 +2,8 @@ import path from 'node:path';
 import { canonicalContentHash, canonicalJson } from '../serialization/validate.js';
 import { findSecret, findSecretInValue } from '../memory/secrets.js';
 import { KiokukoError } from '../errors.js';
+import { ennoValidationError } from './validation-errors.js';
+import { verifierCommandContainsSecret } from './sanitize.js';
 import {
   ADVISORY_FAILURE_CODES,
   ADVISORY_MAX_ROUND_BYTES,
@@ -90,15 +92,63 @@ function projectChangedPaths(repositoryRoot: string, paths: readonly string[]): 
   return paths.map((value) => projectRepositoryRelativePath(repositoryRoot, value));
 }
 
-function finalReviewEvidence(evidence: readonly EnnoRunSnapshot['finalEvidence'][number][]): AdvisoryFinalVerifierEvidence[] {
-  return evidence.map((result) => ({
-    id: result.verifier.id,
-    status: result.status,
-    exitCode: result.exitCode,
-    signal: result.signal,
-    stdoutDigest: result.stdoutDigest,
-    stderrDigest: result.stderrDigest,
-  }));
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let projected = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (bytes + characterBytes > maxBytes) break;
+    projected += character;
+    bytes += characterBytes;
+  }
+  return projected;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function projectRepositoryText(repositoryRoot: string, value: string): string {
+  if (findSecret(value) !== undefined) return '#redacted';
+  const canonicalRoot = path.resolve(repositoryRoot);
+  const variants = new Set([
+    canonicalRoot,
+    canonicalRoot.split(path.sep).join('/'),
+    canonicalRoot.split(path.sep).join('\\'),
+  ]);
+  let projected = value;
+  for (const variant of variants) {
+    if (variant.length === 0) continue;
+    projected = projected.replace(new RegExp(`${escapeRegExp(variant)}(?=$|[\\\\/\\s:;,)}\\]])`, 'gu'), '.');
+  }
+  return projected;
+}
+
+function finalReviewEvidence(
+  repositoryRoot: string,
+  evidence: readonly EnnoRunSnapshot['finalEvidence'][number][],
+): AdvisoryFinalVerifierEvidence[] {
+  return evidence.map((result) => {
+    const unsafeCommand = verifierCommandContainsSecret(result.verifier);
+    return {
+      id: result.verifier.id,
+      kind: result.verifier.kind,
+      executable: unsafeCommand ? '#redacted' : projectRepositoryText(repositoryRoot, result.verifier.executable),
+      args: unsafeCommand ? ['#redacted'] : result.verifier.args.map((argument) => projectRepositoryText(repositoryRoot, argument)),
+      directory: projectRepositoryRelativePath(repositoryRoot, result.verifier.cwd),
+      timeoutMs: result.verifier.timeoutMs,
+      status: result.status,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      stdoutDigest: result.stdoutDigest,
+      stderrDigest: result.stderrDigest,
+      stdoutPreview: truncateUtf8(projectRepositoryText(repositoryRoot, result.stdoutPreview), 2_048),
+      stderrPreview: truncateUtf8(projectRepositoryText(repositoryRoot, result.stderrPreview), 2_048),
+      repositoryStatePolicyVersion: result.repositoryStatePolicyVersion ?? null,
+      repositoryStateDigest: result.repositoryStateDigest ?? null,
+    };
+  });
 }
 
 function finalReviewOutcomes(snapshot: EnnoRunSnapshot): AdvisoryWorkUnitOutcome[] {
@@ -106,56 +156,84 @@ function finalReviewOutcomes(snapshot: EnnoRunSnapshot): AdvisoryWorkUnitOutcome
     .filter((unit) => unit.status === 'completed' && unit.result !== null)
     .map((unit) => ({
       id: unit.workUnit.id,
+      objective: projectRepositoryText(snapshot.repositoryRoot, unit.workUnit.objective),
+      acceptanceCriteria: unit.workUnit.acceptanceCriteria.map((criterion) => projectRepositoryText(snapshot.repositoryRoot, criterion)),
+      routes: [...(unit.workUnit.routes ?? [])],
       status: unit.result!.outcome,
+      summary: projectRepositoryText(snapshot.repositoryRoot, unit.result!.summary),
       mutated: unit.result!.mutated,
       changedPaths: projectChangedPaths(snapshot.repositoryRoot, unit.result!.changedPaths),
     }));
 }
 
+const ADVISORY_MAX_CONTEXT_BYTES = 64 * 1024;
+
+function boundedAdvisoryContext<T extends AdvisoryContext>(context: T): T {
+  if (Buffer.byteLength(canonicalJson(context), 'utf8') > ADVISORY_MAX_CONTEXT_BYTES) {
+    throw new KiokukoError('CONFLICT', 'Enno advisory context exceeds the safety limit');
+  }
+  return context;
+}
+
 export function advisoryContextForSnapshot(snapshot: EnnoRunSnapshot, phase: AdvisoryPhase): AdvisoryContext {
   if (phase === 'ideal') {
-    return {
+    return boundedAdvisoryContext({
       phase: 'ideal',
       objective: snapshot.handoff.objective,
       constraints: [...snapshot.handoff.constraints],
       expectedOutcome: snapshot.handoff.expected ?? '',
       successSignals: [...snapshot.handoff.verification],
       skillTrust: skillTrustFromEntries(snapshot.contract.skillSet.entries),
-    };
+    });
   }
   if (phase === 'planning') {
-    return {
+    return boundedAdvisoryContext({
       phase: 'planning',
       idealObjective: snapshot.ideal?.objective ?? snapshot.handoff.objective,
       acceptanceCriteria: snapshot.contract.acceptanceCriteria.map((criterion) => criterion.description),
       planningConstraints: [...snapshot.handoff.constraints],
       skillAvailability: skillTrustFromEntries(snapshot.contract.skillSet.entries),
-    };
+    });
   }
   const changedPaths = projectChangedPaths(
     snapshot.repositoryRoot,
     [...new Set(snapshot.workUnits.flatMap((unit) => unit.result?.changedPaths ?? []))],
   );
-  const verifierEvidence = finalReviewEvidence(snapshot.finalEvidence);
-  return {
+  const verifierEvidence = finalReviewEvidence(snapshot.repositoryRoot, snapshot.finalEvidence);
+  const repositoryStateDigest = verifierEvidence[0]?.repositoryStateDigest;
+  const evidenceFreshnessPolicyVersion = verifierEvidence[0]?.repositoryStatePolicyVersion;
+  if (repositoryStateDigest === null || repositoryStateDigest === undefined
+    || evidenceFreshnessPolicyVersion === null || evidenceFreshnessPolicyVersion === undefined) {
+    throw new KiokukoError('CONFLICT', 'Final review requires repository-state-bound verifier evidence');
+  }
+  return boundedAdvisoryContext({
     phase: 'final_review',
-    workPlanSummary: snapshot.contract.workPlan.objective,
+    workPlanSummary: projectRepositoryText(snapshot.repositoryRoot, snapshot.contract.workPlan.objective),
+    acceptanceCriteria: snapshot.contract.acceptanceCriteria.map((criterion) => ({
+      ...criterion,
+      description: projectRepositoryText(snapshot.repositoryRoot, criterion.description),
+    })),
     workUnitOutcomes: finalReviewOutcomes(snapshot),
     changedPaths,
     verifierEvidence,
     evidenceSetDigest: canonicalContentHash(verifierEvidence),
+    repositoryStateDigest,
+    evidenceFreshnessPolicyVersion,
     freshnessMarker: canonicalContentHash({
       revision: snapshot.revision,
       mutationRevision: snapshot.mutationRevision,
       evidenceProjection: verifierEvidence,
+      repositoryStateDigest,
     }),
-  };
+  });
 }
 
 export function advisoryDirectiveForSnapshot(snapshot: EnnoRunSnapshot): AdvisoryFanoutDirective | undefined {
   const phase = advisoryPhaseForStatus(snapshot.status);
   if (phase === null) return undefined;
   if (phase === 'final_review' && !snapshot.finalEvidenceReady) return undefined;
+  if (snapshot.advisoryPhaseState !== undefined
+    && snapshot.advisoryPhaseState.state !== 'fanout_requested') return undefined;
   return {
     protocolVersion: 1,
     phase,
@@ -192,15 +270,34 @@ export function normalizeAdvisoryContributions(
   const slots = phaseSlots(phase);
   const expected = new Set(slots.map((slot) => slot.slotId));
   if (rawContributions.length !== slots.length) {
-    throw new KiokukoError('VALIDATION_ERROR', 'An advisory round requires exactly three slot contributions');
+    throw ennoValidationError('advice_submit', [{
+      path: ['contributions'],
+      reasonCode: 'advisory_slot_missing',
+      expected: { requiredSlotIds: [...expected] },
+    }]);
   }
   const bySlot = new Map<AdvisorySlotId, AdvisoryContribution>();
-  for (const contribution of rawContributions) {
-    if (!expected.has(contribution.slotId) || bySlot.has(contribution.slotId)) {
-      throw new KiokukoError('VALIDATION_ERROR', 'Advisory slots must be exactly the fixed slots for the phase');
+  for (const [index, contribution] of rawContributions.entries()) {
+    if (!expected.has(contribution.slotId)) {
+      throw ennoValidationError('advice_submit', [{
+        path: ['contributions', index, 'slotId'],
+        reasonCode: 'advisory_slot_missing',
+        expected: { requiredSlotIds: [...expected] },
+      }]);
+    }
+    if (bySlot.has(contribution.slotId)) {
+      throw ennoValidationError('advice_submit', [{
+        path: ['contributions', index, 'slotId'],
+        reasonCode: 'advisory_slot_duplicate',
+        expected: { requiredSlotIds: [...expected] },
+      }]);
     }
     if (!ADVISORY_OUTCOMES.includes(contribution.outcome)) {
-      throw new KiokukoError('VALIDATION_ERROR', 'Advisory outcome is invalid');
+      throw ennoValidationError('advice_submit', [{
+        path: ['contributions', index, 'outcome'],
+        reasonCode: 'invalid_enum',
+        expected: { allowedValues: [...ADVISORY_OUTCOMES] },
+      }]);
     }
     if (contribution.outcome === 'completed' && contributionContainsSecret(contribution)) {
       bySlot.set(contribution.slotId, unsafeContribution(contribution.slotId));
@@ -208,19 +305,32 @@ export function normalizeAdvisoryContributions(
     }
     if (contribution.outcome !== 'completed'
       && (!contribution.reasonCode || !ADVISORY_FAILURE_CODES.includes(contribution.reasonCode))) {
-      throw new KiokukoError('VALIDATION_ERROR', 'Advisory failures require a fixed reason code');
+      throw ennoValidationError('advice_submit', [{
+        path: ['contributions', index, 'reasonCode'],
+        reasonCode: 'missing_required_field',
+      }]);
     }
     bySlot.set(contribution.slotId, { ...contribution });
   }
   if (bySlot.size !== slots.length) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Advisory slots are missing or duplicated');
+    throw ennoValidationError('advice_submit', [{
+      path: ['contributions'],
+      reasonCode: 'advisory_slot_missing',
+      expected: { requiredSlotIds: [...expected] },
+    }]);
   }
   const normalized = slots.map((slot) => bySlot.get(slot.slotId)!);
   if (normalized.some((contribution) => canonicalByteLength(contribution) > ADVISORY_MAX_SLOT_BYTES)) {
-    throw new KiokukoError('VALIDATION_ERROR', 'An advisory contribution exceeds the 16 KiB slot limit');
+    throw ennoValidationError('advice_submit', [{
+      path: ['contributions'],
+      reasonCode: 'too_many_items',
+    }]);
   }
   if (canonicalByteLength(normalized) > ADVISORY_MAX_ROUND_BYTES) {
-    throw new KiokukoError('VALIDATION_ERROR', 'The advisory round exceeds the 48 KiB aggregate limit');
+    throw ennoValidationError('advice_submit', [{
+      path: ['contributions'],
+      reasonCode: 'too_many_items',
+    }]);
   }
   return normalized;
 }

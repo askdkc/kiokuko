@@ -776,10 +776,16 @@ interface ValidatedCapabilityGate {
   readonly memoryContextWithheld: boolean;
 }
 
+interface ValidatedMemoryPolicy {
+  readonly memoryReasoningRequired: boolean;
+  readonly contextWithheld: boolean;
+  readonly withheldReason: 'memory_reasoning_missing' | 'memory_reasoning_unknown' | null;
+}
+
 function validateCapabilityGate(
   object: Record<string, JsonValue>,
   intakeNeedsAnswer: boolean,
-  requiresMemoryReasoning: boolean,
+  memoryPolicy: ValidatedMemoryPolicy,
 ): ValidatedCapabilityGate {
   const capabilities = validateCapabilities(object.capabilities);
   const warnings = validateCapabilityWarnings(object.warnings);
@@ -799,13 +805,24 @@ function validateCapabilityGate(
     (recommendation as Record<string, JsonValue>).name === MEMORY_REASONING_SKILL_NAME
   )) as Array<Record<string, JsonValue>>;
   let memoryAvailability: JsonValue | undefined;
-  if (requiresMemoryReasoning) {
+  if (memoryPolicy.memoryReasoningRequired) {
     if (memoryRecommendations.length !== 1) throw responseIntegrityError();
     const memory = memoryRecommendations[0] as Record<string, JsonValue>;
     if (memory.kind !== 'skill' || memory.name !== MEMORY_REASONING_SKILL_NAME
       || memory.source !== 'akinator_policy' || memory.required !== true) throw responseIntegrityError();
     memoryAvailability = memory.availability;
   } else if (memoryRecommendations.length !== 0) {
+    throw responseIntegrityError();
+  }
+  const expectedMemoryContextWithheld = memoryPolicy.memoryReasoningRequired
+    && memoryAvailability !== 'available';
+  const expectedWithheldReason = memoryAvailability === 'missing'
+    ? 'memory_reasoning_missing'
+    : memoryAvailability === 'unknown'
+      ? 'memory_reasoning_unknown'
+      : null;
+  if (memoryPolicy.contextWithheld !== expectedMemoryContextWithheld
+    || memoryPolicy.withheldReason !== (expectedMemoryContextWithheld ? expectedWithheldReason : null)) {
     throw responseIntegrityError();
   }
   const hasBlockingRequiredCapability = required.some((recommendation) => (
@@ -822,14 +839,28 @@ function validateCapabilityGate(
     && (object.context !== null || (object.recommendations as JsonValue[]).length !== 0)) throw responseIntegrityError();
   return {
     nextAction,
-    memoryContextWithheld: requiresMemoryReasoning && memoryAvailability !== 'available',
+    memoryContextWithheld: memoryPolicy.contextWithheld,
   };
 }
 
-function validateMemoryPolicy(value: unknown): boolean {
-  const policy = responseObject(value, ['memoryReasoningRequired']);
+function validateMemoryPolicy(value: unknown): ValidatedMemoryPolicy {
+  const policy = responseObject(value, ['memoryReasoningRequired', 'contextWithheld', 'withheldReason']);
   if (typeof policy.memoryReasoningRequired !== 'boolean') throw responseIntegrityError();
-  return policy.memoryReasoningRequired;
+  if (typeof policy.contextWithheld !== 'boolean') throw responseIntegrityError();
+  const withheldReason = policy.withheldReason === null
+    ? null
+    : responseEnum(policy.withheldReason, [
+      'memory_reasoning_missing', 'memory_reasoning_unknown',
+    ]) as ValidatedMemoryPolicy['withheldReason'];
+  if (!policy.memoryReasoningRequired && (policy.contextWithheld || withheldReason !== null)) {
+    throw responseIntegrityError();
+  }
+  if (policy.contextWithheld !== (withheldReason !== null)) throw responseIntegrityError();
+  return {
+    memoryReasoningRequired: policy.memoryReasoningRequired,
+    contextWithheld: policy.contextWithheld,
+    withheldReason,
+  };
 }
 
 function validateIntakeResponse(value: JsonValue, binding: AgentResponseBinding): Record<string, JsonValue> {
@@ -874,8 +905,8 @@ function validateIntakeResponse(value: JsonValue, binding: AgentResponseBinding)
   if (context !== null && (context.runId !== runId || context.taskProfileHash !== object.profileHash)) {
     throw responseIntegrityError();
   }
-  const requiresMemoryReasoning = validateMemoryPolicy(object.memoryPolicy);
-  const capabilityGate = validateCapabilityGate(object, needsAnswer, requiresMemoryReasoning);
+  const memoryPolicy = validateMemoryPolicy(object.memoryPolicy);
+  const capabilityGate = validateCapabilityGate(object, needsAnswer, memoryPolicy);
   if (!needsAnswer) {
     if (capabilityGate.nextAction === 'proceed' && context === null && !capabilityGate.memoryContextWithheld) {
       throw responseIntegrityError();
@@ -912,8 +943,8 @@ function validateCheckpointResponse(value: JsonValue, binding: AgentResponseBind
   if (context !== null && (context.runId !== runId || context.taskProfileHash !== object.profileHash)) {
     throw responseIntegrityError();
   }
-  const requiresMemoryReasoning = validateMemoryPolicy(object.memoryPolicy);
-  const capabilityGate = validateCapabilityGate(object, false, requiresMemoryReasoning);
+  const memoryPolicy = validateMemoryPolicy(object.memoryPolicy);
+  const capabilityGate = validateCapabilityGate(object, false, memoryPolicy);
   if (capabilityGate.nextAction === 'proceed') {
     if (context === null && !capabilityGate.memoryContextWithheld) throw responseIntegrityError();
   }

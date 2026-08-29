@@ -20,6 +20,7 @@ import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import {
   STANDARD_ENNO_SKILL_FILES,
   STANDARD_FUNCTION_SKILL_FILES,
+  STANDARD_MEMORY_SKILL_FILES,
   STANDARD_SOUL_SKILL_FILES,
   STANDARD_UI_SKILL_FILES,
 } from '../../src/setup/standard-skills.js';
@@ -37,6 +38,9 @@ const STANDARD_SKILL_FIXTURES = [{
 }, {
   name: 'kiokuko-enno-oduno',
   files: STANDARD_ENNO_SKILL_FILES,
+}, {
+  name: 'memory-reasoning',
+  files: STANDARD_MEMORY_SKILL_FILES,
 }, {
   name: 'kiokuko-soul',
   files: STANDARD_SOUL_SKILL_FILES,
@@ -407,6 +411,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
       /Function-contract coding and review checklist/,
     );
     assert.match(
+      await readFile(path.join(skillsDirectory, 'kiokuko-single-purpose-functions', 'references', 'problem-shaping-and-language.md'), 'utf8'),
+      /problem shaping and representation design/iu,
+    );
+    assert.match(
       await readFile(path.join(skillsDirectory, 'kiokuko-enno-oduno', 'SKILL.md'), 'utf8'),
       /Enno-Oduno alone owns this state machine/,
     );
@@ -453,13 +461,14 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /never ask the user to locate or construct that catalog/iu);
     assert.match(instructions, /active planning attempt.*restart choice explicitly cancels it before starting a new `task_prepare`/iu);
     assert.match(instructions, /attempt already ended.*do not try to cancel it again/iu);
-    assert.match(instructions, /Inspect `nextAction` after every `task_prepare` and `task_answer` response/);
-    assert.match(instructions, /`memory-reasoning` is missing or unknown.*`nextAction=proceed`/u);
+    assert.match(instructions, /Inspect `nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer` response/);
+    assert.match(instructions, /`memory-reasoning` is missing or unknown.*`memoryPolicy\.contextWithheld=true`.*`nextAction=proceed`/u);
     assert.match(instructions, /`required_capability_unavailable` is a hard stop for missing or unknown `kiokuko-soul`/);
     assert.match(instructions, /created by `kiokuko-curator` and matching the current deterministic Curator projection is `system_verified`/);
     assert.match(instructions, /does not by itself require `memory-reasoning`/);
     assert.match(instructions, /continue from repository evidence/);
-    assert.match(instructions, /read it before consuming applicable memory/);
+    assert.match(instructions, /Before build\/debug `task_prepare`, read it and advertise its exact descriptor/);
+    assert.match(instructions, /apply local `memory-reasoning` before using it/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(instructions, /`executionContext\.repositoryRoot` \(equal to `project\.repositoryRoot`\) as the canonical filesystem base/u);
     assert.match(instructions, /For OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
@@ -860,7 +869,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
-    `human project rule\n${staleAgent.replace('kiokuko-template-version: 19', 'kiokuko-template-version: 14')}`,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 21', 'kiokuko-template-version: 14')}`,
   );
   await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 12 }, null, 2)}\n`);
 
@@ -949,11 +958,11 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.match(refreshedAgent, /kiokuko-template-version: 19/u);
+  assert.match(refreshedAgent, /kiokuko-template-version: 21/u);
   assert.equal(refreshedAgent.includes('kiokuko-template-version: 14'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
-  assert.equal(refreshedBinding.templateVersion, 19);
+  assert.equal(refreshedBinding.templateVersion, 21);
 
   const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
@@ -966,7 +975,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryId: 'repo_setup_refresh_location_only',
     workspace: 'project:setup-refresh-location-only',
     agentFile: 'AGENTS.md',
-    templateVersion: 19,
+    templateVersion: 21,
   });
   assert.equal(
     await readFile(locationOnlyGitignorePath, 'utf8'),
@@ -1050,14 +1059,17 @@ test('setup can skip new standard-skill installation without deleting an existin
   const skillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md');
   const functionSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md');
   const ennoSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-enno-oduno', 'SKILL.md');
+  const memorySkillPath = path.join(temporary.home, '.agents', 'skills', 'memory-reasoning', 'SKILL.md');
   const soulSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-soul', 'SKILL.md');
   await mkdir(path.dirname(skillPath), { recursive: true });
   await mkdir(path.dirname(functionSkillPath), { recursive: true });
   await mkdir(path.dirname(ennoSkillPath), { recursive: true });
+  await mkdir(path.dirname(memorySkillPath), { recursive: true });
   await mkdir(path.dirname(soulSkillPath), { recursive: true });
   await writeFile(skillPath, 'human-owned skill\n');
   await writeFile(functionSkillPath, 'human-owned function skill\n');
   await writeFile(ennoSkillPath, 'human-owned Enno skill\n');
+  await writeFile(memorySkillPath, 'human-owned memory skill\n');
   await writeFile(soulSkillPath, 'human-owned SOUL skill\n');
 
   const result = await setupGlobalClients({
@@ -1073,6 +1085,7 @@ test('setup can skip new standard-skill installation without deleting an existin
   assert.equal(await readFile(skillPath, 'utf8'), 'human-owned skill\n');
   assert.equal(await readFile(functionSkillPath, 'utf8'), 'human-owned function skill\n');
   assert.equal(await readFile(ennoSkillPath, 'utf8'), 'human-owned Enno skill\n');
+  assert.equal(await readFile(memorySkillPath, 'utf8'), 'human-owned memory skill\n');
   assert.equal(await readFile(soulSkillPath, 'utf8'), 'human-owned SOUL skill\n');
 });
 
@@ -1081,10 +1094,16 @@ test('setup upgrades an older managed standard skill and then reports it unchang
   const skillDirectory = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul');
   const skillPath = path.join(skillDirectory, 'SKILL.md');
   const checklistPath = path.join(skillDirectory, 'references', 'ui-checklist.md');
+  const functionSkillDirectory = path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions');
+  const functionSkillPath = path.join(functionSkillDirectory, 'SKILL.md');
+  const modelingPath = path.join(functionSkillDirectory, 'references', 'problem-shaping-and-language.md');
   const marker = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-ui-design-soul -->';
+  const functionMarker = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-single-purpose-functions -->';
   await mkdir(path.dirname(checklistPath), { recursive: true });
+  await mkdir(functionSkillDirectory, { recursive: true });
   await writeFile(skillPath, `---\nname: kiokuko-ui-design-soul\ndescription: old\n---\n\n${marker}\nold\n`);
   await writeFile(checklistPath, `${marker}\nold checklist\n`);
+  await writeFile(functionSkillPath, `---\nname: kiokuko-single-purpose-functions\ndescription: old\n---\n\n${functionMarker}\nold\n`);
 
   const first = await setupGlobalClients({
     clients: ['codex'],
@@ -1093,14 +1112,15 @@ test('setup upgrades an older managed standard skill and then reports it unchang
     databasePath: temporary.databasePath,
   });
   const standardSkillActions = first.files.filter((file) => file.purpose === 'standard-skill').map((file) => file.action);
-  assert.equal(standardSkillActions.filter((action) => action === 'updated').length, 2);
-  assert.equal(standardSkillActions.filter((action) => action === 'created').length, standardSkillPaths('ignored').length - 2);
+  assert.equal(standardSkillActions.filter((action) => action === 'updated').length, 3);
+  assert.equal(standardSkillActions.filter((action) => action === 'created').length, standardSkillPaths('ignored').length - 3);
   assert.match(await readFile(skillPath, 'utf8'), /description: Prevent common UI and UX failures/);
   assert.match(await readFile(checklistPath, 'utf8'), /Eight-principle map/);
   assert.match(
-    await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'), 'utf8'),
-    /one cohesive externally observable responsibility/,
+    await readFile(functionSkillPath, 'utf8'),
+    /problem-shaping contracts/,
   );
+  assert.match(await readFile(modelingPath, 'utf8'), /code\.modeling\.v1/u);
   assert.match(
     await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-enno-oduno', 'SKILL.md'), 'utf8'),
     /Enno-Oduno alone owns this state machine/,
@@ -1108,6 +1128,10 @@ test('setup upgrades an older managed standard skill and then reports it unchang
   assert.match(
     await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-soul', 'SKILL.md'), 'utf8'),
     /mandatory first-read SOUL router/,
+  );
+  assert.match(
+    await readFile(path.join(temporary.home, '.agents', 'skills', 'memory-reasoning', 'SKILL.md'), 'utf8'),
+    /source of testable hypotheses/,
   );
 
   const second = await setupGlobalClients({
@@ -1132,7 +1156,11 @@ test('setup fails closed on every unmanaged same-name standard skill before any 
       platform: 'linux',
       env: temporary.env,
       databasePath: temporary.databasePath,
-    }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+    }), (error: unknown) => error instanceof Error
+      && 'code' in error
+      && error.code === 'CONFLICT'
+      && error.message.includes(skillPath)
+      && /back up or rename.*rerun kiokuko setup/u.test(error.message));
 
     assert.equal(await readFile(skillPath, 'utf8'), original);
     await assert.rejects(access(path.join(temporary.home, '.codex', 'config.toml')));

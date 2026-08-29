@@ -54,6 +54,7 @@ export interface DoctorResult {
     legacyDeliveries: DoctorCheck;
     runtime: DoctorCheck;
     hybridSearch: DoctorCheck;
+    ennoOperations: DoctorCheck;
   };
 }
 
@@ -353,6 +354,40 @@ async function collectDoctorResult(
     detail: `scanned=${options.legacyDeliveries.scanned}, valid=${options.legacyDeliveries.valid}, invalid=${options.legacyDeliveries.invalid}, findings=${options.legacyDeliveries.findings.length}, scanTruncated=${options.legacyDeliveries.scanTruncated}, findingsTruncated=${options.legacyDeliveries.findingsTruncated}`,
   };
   const runtime = await runtimeCheck(options.databasePath, options.runtimeDescriptorPath);
+  const ennoLeaseSchemaPresent = ['enno_operation_receipts', 'enno_verifier_runs'].every((table) => (
+    Boolean(database.prepare(`
+      SELECT 1 AS present FROM sqlite_schema
+      WHERE type = 'table' AND name = ?
+    `).get(table)) && hasColumn(database, table, 'lease_expires_at')
+  ));
+  const ennoOperations = options.databaseVersion < 19
+    ? { ok: true, count: 0, detail: 'Enno operation lease inspection is unavailable before migration 019' }
+    : !ennoLeaseSchemaPresent
+      ? { ok: false, count: 1, detail: 'Migration 019 Enno operation lease schema is incomplete' }
+    : (() => {
+      const now = new Date().toISOString();
+      const expiredReceipts = count(database, `
+        SELECT COUNT(*) AS count FROM enno_operation_receipts
+        WHERE state = 'started'
+          AND (julianday(lease_expires_at) IS NULL OR lease_expires_at <= ?)
+      `, now);
+      const recoveredReceipts = count(database, `
+        SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE state = 'abandoned'
+      `);
+      const expiredVerifiers = count(database, `
+        SELECT COUNT(*) AS count FROM enno_verifier_runs
+        WHERE status = 'started'
+          AND (julianday(lease_expires_at) IS NULL OR lease_expires_at <= ?)
+      `, now);
+      const recoveredVerifiers = count(database, `
+        SELECT COUNT(*) AS count FROM enno_verifier_runs WHERE status = 'abandoned'
+      `);
+      return {
+        ok: expiredReceipts + expiredVerifiers === 0,
+        count: expiredReceipts + expiredVerifiers,
+        detail: `staleReceipts=${expiredReceipts}, staleVerifiers=${expiredVerifiers}, recoveredReceipts=${recoveredReceipts}, recoveredVerifiers=${recoveredVerifiers}`,
+      };
+    })();
   const checks = {
     integrity: { ok: integrity === 'ok', detail: integrity },
     foreignKeys: { ok: foreignKeyRows.length === 0, count: foreignKeyRows.length },
@@ -373,6 +408,7 @@ async function collectDoctorResult(
     legacyDeliveries,
     runtime,
     hybridSearch: hybridCheck,
+    ennoOperations,
   };
   const ok = Object.values(checks).every((check) => check.ok);
   return {

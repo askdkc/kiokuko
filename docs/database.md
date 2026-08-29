@@ -26,6 +26,15 @@ routing metadata so the adapter can atomically move one unambiguous active run
 between local project clients. Run, workspace, orchestration, revision,
 idempotency, and terminal-state constraints are unchanged.
 
+Migration 019 adds Enno execution-integrity state. It adds `route_epoch`,
+hashed short-lived resume tokens, WorkUnit execution leases, owner nonces and
+lease expiry to operation receipts, and recoverable verifier-run ownership.
+Final verifier rows gain verifier-specification and pre/post repository-state
+digests plus a repository-change flag. Existing receipts and verifier history
+are preserved; legacy evidence remains readable for audit but is deliberately
+unbound and cannot satisfy a new Final Review. Expired `started` ownership is
+changed to `abandoned` transactionally before a new owner claims the operation.
+
 `akinator_reasoning_paths` links one proposed entry revision to one run and its intake session. The unique `(run_id, entry_id, entry_revision)` key blocks same-run duplication. `qualified` is set only by the checkpoint service for completed actionable paths with fresh verification or a passing test. Concept aggregation uses a server-derived normalized hash; no user-supplied concept key or retrieval counter can increase it.
 
 Migration 009 adds the external-Skill tables and completes the revision-hash

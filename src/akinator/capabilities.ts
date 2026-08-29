@@ -1,6 +1,7 @@
 import type { TaskProfile } from './types.js';
 import {
   STANDARD_FUNCTION_SKILL_NAME,
+  STANDARD_MEMORY_SKILL_NAME,
   STANDARD_SOUL_SKILL_NAME,
   STANDARD_UI_SKILL_NAME,
 } from '../setup/standard-skills.js';
@@ -61,7 +62,7 @@ export interface CapabilityResolution {
   recommendations: CapabilityRecommendation[];
 }
 
-export const MEMORY_REASONING_SKILL_NAME = 'memory-reasoning' as const;
+export const MEMORY_REASONING_SKILL_NAME = STANDARD_MEMORY_SKILL_NAME;
 
 /** Missing memory-reasoning withholds actionable memory but never blocks the task itself. */
 export function hasBlockingRequiredCapability(resolution: Pick<CapabilityResolution, 'recommendations'>): boolean {
@@ -78,9 +79,12 @@ export function shouldWithholdMemoryContext(resolution: Pick<CapabilityResolutio
 
 export type MemoryUseSignal = 'none' | 'actionable';
 export type MemoryReasoningCapabilityAvailability = 'available' | 'missing' | 'unknown';
+export type MemoryWithheldReason = 'memory_reasoning_missing' | 'memory_reasoning_unknown';
 
 export interface MemoryPolicy {
   memoryReasoningRequired: boolean;
+  contextWithheld: boolean;
+  withheldReason: MemoryWithheldReason | null;
 }
 
 const ACTIONABLE_MEMORY_SELECTION_REASONS = new Set([
@@ -113,6 +117,28 @@ export function memoryReasoningRequired(
   memoryUse: MemoryUseSignal,
 ): boolean {
   return memoryUse === 'actionable' && (profile.taskType === 'build' || profile.taskType === 'debug');
+}
+
+export function deriveMemoryPolicy(
+  profile: Pick<TaskProfile, 'taskType'>,
+  memoryUse: MemoryUseSignal,
+  capabilities: unknown,
+): MemoryPolicy {
+  const required = memoryReasoningRequired(profile, memoryUse);
+  if (!required) {
+    return { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null };
+  }
+  const availability = memoryReasoningCapabilityAvailability(capabilities);
+  if (availability === 'available') {
+    return { memoryReasoningRequired: true, contextWithheld: false, withheldReason: null };
+  }
+  return {
+    memoryReasoningRequired: true,
+    contextWithheld: true,
+    withheldReason: availability === 'missing'
+      ? 'memory_reasoning_missing'
+      : 'memory_reasoning_unknown',
+  };
 }
 
 export function boundedCodePointLength(value: string, limit: number): number {
@@ -287,7 +313,7 @@ const SKILL_REASONS: Record<string, string> = {
   'code-review': 'The review task benefits from a structured code-review workflow.',
   [MEMORY_REASONING_SKILL_NAME]: 'Relevant stored memory was delivered for a build or debug task; verify its premises, invariants, counterexamples, and tests before changing code.',
   [STANDARD_SOUL_SKILL_NAME]: 'Every non-trivial Kiokuko-governed task starts with the canonical SOUL router before applying any role-specific, code, or interactive UI Skill.',
-  [STANDARD_FUNCTION_SKILL_NAME]: 'The task explicitly involves writing, changing, debugging, or reviewing code and benefits from cohesive function contracts, explicit boundaries, and focused tests.',
+  [STANDARD_FUNCTION_SKILL_NAME]: 'The task explicitly involves writing, changing, debugging, or reviewing code and benefits from problem-shaped concepts, cohesive function contracts, explicit representation boundaries, and focused tests.',
   [STANDARD_UI_SKILL_NAME]: 'The task explicitly involves UI implementation, design, or review and benefits from Kiokuko\'s interaction-state and accessibility contract.',
 };
 

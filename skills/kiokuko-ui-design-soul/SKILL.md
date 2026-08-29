@@ -40,7 +40,11 @@ When requirements compete, prioritize safety and data preservation, accessibilit
 
 Select one dominant expert for each UI component or cohesive user flow. Add at most two more only when the same WorkUnit genuinely crosses those risks. Record a concrete reason for each selection.
 
-In Enno-Oduno UI WorkUnits, select at least one `ui.*` expert and at least one `code.*` expert because UI behavior is also code behavior. Goki reads the indexes and only the approved fragment files by default.
+In Enno-Oduno plans, declare the `ui` route locally on each interactive
+WorkUnit. That route requires at least one `ui.*` expert and one `code.*` expert
+because UI behavior is also code behavior; it must not infect sibling test,
+docs, or operations units with UI/code requirements. Goki reads the indexes and
+only the approved fragment files by default.
 
 Do not read every UI reference “for completeness.” If implementation exposes a new risk, return the WorkUnit for an explicit selection or update the non-Enno working plan before reading the additional fragment.
 

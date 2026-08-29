@@ -32,6 +32,7 @@ const EXPERT_AREAS = {
   'code.effects.v1': 'Database, filesystem, network, and process effects',
   'code.protocol.v1': 'Retries, conflicts, revisions, and compatibility',
   'code.verification.v1': 'Regression prevention and verification design',
+  'code.modeling.v1': 'Problem shaping and representation design',
   'ui.interaction.v1': 'Interaction states and feedback',
   'ui.async.v1': 'Asynchronous work and recovery',
   'ui.forms.v1': 'Forms and input validation',
@@ -45,6 +46,7 @@ function basisFor(provenance: EnnoRunSnapshot['contract']['provenance'], key: En
 }
 
 function displayDirectory(cwd: string, repositoryRoot: string): string {
+  if (!path.isAbsolute(cwd)) return cwd === '' ? '.' : cwd;
   const relative = path.relative(repositoryRoot, cwd);
   if (relative === '') return '.';
   if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {

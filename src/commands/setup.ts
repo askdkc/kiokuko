@@ -883,12 +883,18 @@ export async function setupGlobalClients(
     for (const client of clients) {
       const skillsDirectory = await standardSkillDirectory(client, pathEnvironment, hermesProfile);
       for (const bundled of bundledFiles) {
+        const destinationPath = setupPathJoin(
+          pathEnvironment,
+          skillsDirectory,
+          bundled.skillName,
+          bundled.relativePath,
+        );
         files.push(await planFile(
           planning,
-          setupPathJoin(pathEnvironment, skillsDirectory, bundled.skillName, bundled.relativePath),
+          destinationPath,
           client,
           'standard-skill',
-          (existing) => renderStandardSkillFile(existing, bundled),
+          (existing) => renderStandardSkillFile(existing, bundled, destinationPath),
         ));
       }
     }

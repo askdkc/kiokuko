@@ -39,11 +39,20 @@ install a bounded Codex or Claude Code Stop hook, or an OpenCode
 only gate the existing run-bound continuation; they do not recall memory,
 launch advisors, bypass planning or confirmation, or select a latest run. A
 client session is routing metadata, not authorization ownership. Continuation
-prefers the exact session route; otherwise the adapter may atomically reroute
+prefers the exact short-lived opaque resume token bound to the route epoch;
+otherwise the adapter may atomically reroute
 the single unambiguous active run in the canonical repository across Codex,
-Claude Code, and OpenCode. Multiple candidates remain unchanged. Exhausting one
+Claude Code, and OpenCode. Rerouting increments the epoch and invalidates old
+tokens. An active WorkUnit execution lease blocks rerouting and only its holder
+may report. Multiple candidates remain unchanged. Exhausting one
 session's continuation budget leaves the run and ledger active for another
 local project client.
+
+Template version 20 also documents bounded `ENNO_INPUT_INVALID` diagnostics,
+the explicit advisory lifecycle and dynamic report schema, WorkUnit-local
+`code`/`ui`/`test`/`docs`/`operations` routes, repository-relative verifier
+directories, continuation-pausing plan recovery, pre-persistence sanitization,
+crash-recoverable receipts, and repository-state-bound Final Review evidence.
 
 The instructions require one new bounded opaque `requestId` per logical user
 request and permit reusing it only for an exact transport retry. Identical task
@@ -52,8 +61,12 @@ input conflicts, and `client.sessionId` is not accepted as a substitute.
 The normalized context budget is also bound at preparation and must be repeated
 unchanged by `task_answer`.
 
-For actionable build/debug memory, generated instructions treat catalog
+Default setup installs the exact local `memory-reasoning` Skill, but installation
+is not proof that a model loaded or followed it. For actionable build/debug
+memory, generated instructions treat catalog
 availability as only the gate, not proof of compliance. The client must read the
 available local `memory-reasoning` Skill before modifying code and convert
 recalled claims that affect the task into verified premises, falsifiable
-invariants, concrete counterexamples, and regression tests.
+invariants, concrete counterexamples, and regression tests. Missing or unknown
+availability is explicit in `memoryPolicy.contextWithheld` and
+`memoryPolicy.withheldReason`; `nextAction` remains `proceed`.

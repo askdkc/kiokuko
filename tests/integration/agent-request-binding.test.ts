@@ -106,6 +106,7 @@ test('all six generic Agent mutation responses bind the exact canonical HTTP req
     const readyRunId = readyData.runId as string;
     assert.equal(readyData.requestBindingHash, expectedHash('agent.open', null, readyOpenKey, readyBody));
     assert.equal(typeof readyData.memoryPolicy?.memoryReasoningRequired, 'boolean');
+    assert.equal(typeof readyData.memoryPolicy?.contextWithheld, 'boolean');
     observed.add(readyData.requestBindingHash as string);
 
     const eventsBody = {
@@ -148,6 +149,7 @@ test('all six generic Agent mutation responses bind the exact canonical HTTP req
       expectedHash('agent.checkpoint', readyRunId, checkpointKey, checkpointBody),
     );
     assert.equal(typeof checkpointData.memoryPolicy?.memoryReasoningRequired, 'boolean');
+    assert.equal(typeof checkpointData.memoryPolicy?.contextWithheld, 'boolean');
     observed.add(checkpointData.requestBindingHash as string);
 
     const feedbackBody = {
@@ -190,6 +192,7 @@ test('all six generic Agent mutation responses bind the exact canonical HTTP req
     const intakeRunId = intakeData.runId as string;
     assert.equal(intakeData.requestBindingHash, expectedHash('agent.open', null, intakeOpenKey, intakeBody));
     assert.equal(typeof intakeData.memoryPolicy?.memoryReasoningRequired, 'boolean');
+    assert.equal(typeof intakeData.memoryPolicy?.contextWithheld, 'boolean');
 
     const answerBody = { apiVersion: '1', questionId: 'taskType', value: 'build' };
     const answerKey = 'request-binding-answer';
@@ -202,6 +205,7 @@ test('all six generic Agent mutation responses bind the exact canonical HTTP req
     const answerData = dataOf(answer);
     assert.equal(answerData.requestBindingHash, expectedHash('agent.answer', intakeRunId, answerKey, answerBody));
     assert.equal(typeof answerData.memoryPolicy?.memoryReasoningRequired, 'boolean');
+    assert.equal(typeof answerData.memoryPolicy?.contextWithheld, 'boolean');
     observed.add(answerData.requestBindingHash as string);
 
     assert.equal(observed.size, 6);

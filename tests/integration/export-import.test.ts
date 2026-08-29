@@ -1575,6 +1575,25 @@ test('doctor reports integrity, migration, FTS, and permissions checks', async (
     assert.equal(result.checks.migrations.ok, true);
     assert.equal(result.checks.fts.ok, true);
     assert.equal(result.checks.permissions.ok, true);
+    assert.deepEqual(result.checks.ennoOperations, {
+      ok: true,
+      count: 0,
+      detail: 'staleReceipts=0, staleVerifiers=0, recoveredReceipts=0, recoveredVerifiers=0',
+    });
+  } finally {
+    data.db.close();
+  }
+});
+
+test('doctor fails closed when the current Enno lease schema is incomplete', async () => {
+  const data = await database('doctor-enno-schema');
+  try {
+    data.db.exec('DROP TABLE enno_verifier_runs');
+    const result = await runDoctorWithDatabase(data.databasePath, path.join(data.directory, 'runtime', 'server.json'));
+    assert.equal(result.checks.ennoOperations.ok, false);
+    assert.equal(result.checks.ennoOperations.count, 1);
+    assert.match(result.checks.ennoOperations.detail ?? '', /schema is incomplete/iu);
+    assert.equal(result.ok, false);
   } finally {
     data.db.close();
   }

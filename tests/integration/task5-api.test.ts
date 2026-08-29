@@ -13,6 +13,13 @@ const token = 'a'.repeat(64);
 const workspace = 'task5-api';
 const SOUL_CAPABILITIES = [{ kind: 'skill', name: 'kiokuko-soul' }] as const;
 const capabilities = [...SOUL_CAPABILITIES, { kind: 'skill', name: 'memory-reasoning' }] as const;
+const NO_MEMORY_POLICY = { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null } as const;
+const AVAILABLE_MEMORY_POLICY = { memoryReasoningRequired: true, contextWithheld: false, withheldReason: null } as const;
+const MISSING_MEMORY_POLICY = {
+  memoryReasoningRequired: true,
+  contextWithheld: true,
+  withheldReason: 'memory_reasoning_missing',
+} as const;
 
 function openRequest(capabilityCatalog: unknown = capabilities) {
   return {
@@ -169,7 +176,7 @@ test('Task 5 checkpoint and feedback enforce the run-bound capability catalog wh
     assert.equal(dataOf(checkpoint.value).intakeStatus, 'ready');
     assert.equal(typeof dataOf(checkpoint.value).acceptedThrough, 'number');
     assert.equal(dataOf(checkpoint.value).nextAction, 'proceed');
-    assert.deepEqual(dataOf(checkpoint.value).memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(dataOf(checkpoint.value).memoryPolicy, AVAILABLE_MEMORY_POLICY);
     assert.notEqual(dataOf(checkpoint.value).context, null);
   } finally {
     await runtime.close();
@@ -253,7 +260,7 @@ test('checkpoint withholds actionable memory and continues without persisting a 
     const openedData = dataOf(opened.value);
     runId = openedData.runId as string;
     assert.equal(openedData.nextAction, 'proceed');
-    assert.deepEqual(openedData.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(openedData.memoryPolicy, MISSING_MEMORY_POLICY);
     assert.equal(openedData.context, null);
     assert.deepEqual(openedData.recommendations, []);
     const before = openConnection(databasePath);
@@ -286,7 +293,7 @@ test('checkpoint withholds actionable memory and continues without persisting a 
     assert.equal(checkpoint.response.status, 200);
     const checkpointData = dataOf(checkpoint.value);
     assert.equal(checkpointData.nextAction, 'proceed', JSON.stringify(checkpointData));
-    assert.deepEqual(checkpointData.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(checkpointData.memoryPolicy, MISSING_MEMORY_POLICY);
     assert.equal(checkpointData.context, null);
     assert.deepEqual(checkpointData.recommendations, []);
     assert.ok(checkpointData.capabilities.recommendations.some((item: { name: string; required?: boolean; availability: string }) => item.name === 'memory-reasoning'
@@ -669,7 +676,7 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
     const checkpointData = dataOf(checkpoint.value);
     assert.equal(checkpointData.taskProfile.taskType, 'build');
     assert.equal(checkpointData.nextAction, 'proceed', JSON.stringify(checkpointData));
-    assert.deepEqual(checkpointData.memoryPolicy, { memoryReasoningRequired: false });
+    assert.deepEqual(checkpointData.memoryPolicy, NO_MEMORY_POLICY);
     const delivered = checkpointData.context?.items.find((item: any) => item.entryId === entryId);
     assert.ok(delivered);
     assert.equal(delivered.selectionReasons.includes('literal_fallback_match'), true);
@@ -696,7 +703,7 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
     assert.equal(replay.response.status, 200);
     const replayData = dataOf(replay.value);
     assert.equal(replayData.nextAction, 'proceed');
-    assert.deepEqual(replayData.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(replayData.memoryPolicy, MISSING_MEMORY_POLICY);
     assert.equal(replayData.context, null);
     assert.ok(replayData.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
       && item.required === true

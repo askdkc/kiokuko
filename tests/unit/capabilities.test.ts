@@ -6,6 +6,7 @@ import {
   MAX_RAW_CAPABILITY_DESCRIPTION_CHARS,
   MEMORY_REASONING_SKILL_NAME,
   compactCapabilityDescription,
+  deriveMemoryPolicy,
   deriveMemoryUseSignal,
   hasBlockingRequiredCapability,
   memoryReasoningCapabilityAvailability,
@@ -459,6 +460,31 @@ test('requires memory-reasoning for actionable build memory and fails closed whe
   assert.ok(available.recommendations.some((item) => item.name === MEMORY_REASONING_SKILL_NAME
     && item.availability === 'available'
     && item.required === true));
+});
+
+test('derives an explicit memory withholding policy for available, missing, unknown, and irrelevant contexts', () => {
+  assert.deepEqual(deriveMemoryPolicy(buildProfile, 'actionable', [
+    { kind: 'skill', name: MEMORY_REASONING_SKILL_NAME },
+  ]), {
+    memoryReasoningRequired: true,
+    contextWithheld: false,
+    withheldReason: null,
+  });
+  assert.deepEqual(deriveMemoryPolicy(buildProfile, 'actionable', []), {
+    memoryReasoningRequired: true,
+    contextWithheld: true,
+    withheldReason: 'memory_reasoning_missing',
+  });
+  assert.deepEqual(deriveMemoryPolicy(buildProfile, 'actionable', undefined), {
+    memoryReasoningRequired: true,
+    contextWithheld: true,
+    withheldReason: 'memory_reasoning_unknown',
+  });
+  assert.deepEqual(deriveMemoryPolicy(buildProfile, 'none', []), {
+    memoryReasoningRequired: false,
+    contextWithheld: false,
+    withheldReason: null,
+  });
 });
 
 test('requires memory-reasoning for actionable debug memory', () => {

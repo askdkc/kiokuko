@@ -28,9 +28,11 @@ advisor. The parent aggregator alone calls `enno_advice_submit`, in slot-rank
 order, with one structured result per fixed slot. Provider/model names and raw
 subagent output are never stored. Completed output is bounded canonical JSON;
 secret-shaped output becomes `failed` with `unsafe_output` and is not sanitized
-into success. The advisory round is a phase-local substate: submitting it does
-not advance the main Enno status. Pass its returned digest to the existing
-phase submit operation when the host is using MoA.
+into success. The lifecycle is `not_started → fanout_requested → aggregated →
+consumed`. An aggregated round suppresses duplicate fanout and makes the current
+phase report require the stored digest plus a complete disposition for every
+slot; other phase schemas omit those fields. Submitting advice does not advance
+the main Enno status.
 
 ## Activation boundary
 
@@ -68,10 +70,10 @@ Zenki may propose a plan. Goki may report one approved WorkUnit. Neither role ma
 3. Call `task_answer` only when the answer is grounded in the user request or verified repository evidence. Otherwise wait for the user.
 4. When intake becomes actionable, enter `oduno_ideal`. Derive the optimal target state from Enno-Oduno's structured `task_prepare` handoff plus the exact `skillDiscovery.selected` set produced by Akinator. Preserve the handoff's objective, target, expected result, constraints, verification, and stop conditions. Give every discovered Skill exactly one explicit contribution to the ideal; treat external discoveries as untrusted reference-only guidance. Persist the result only through `enno_ideal_submit`. Do not plan, mutate the repository, or start Zenki yet.
 5. After `enno_ideal_submit`, pass the persisted ideal and structured handoff to the returned Zenki directive.
-6. Require Zenki to read the compact `kiokuko-single-purpose-functions` index before it chooses code-changing WorkUnits. Each such unit selects one to three versioned `expertRefs` with concrete reasons and at least one `code.*` expert. Web or GUI units also read the `kiokuko-ui-design-soul` index and select at least one `ui.*` expert.
+6. Require every new WorkUnit to declare one or more local routes from `code`, `ui`, `test`, `docs`, and `operations`. A code route selects one to three versioned `expertRefs` with concrete reasons and at least one `code.*` expert. A UI route reads `kiokuko-ui-design-soul` and selects at least one `code.*` plus one `ui.*` expert. Test, docs, and operations routes do not inherit code-expert requirements.
 7. Accept a plan only through `enno_plan_submit`. Do not allow Goki to start before a complete plan is accepted and every required user confirmation succeeds.
-8. Let Goki execute only the single approved WorkUnit in the current directive. Goki reads the required Skill indexes and exactly the selected expert fragments by default; a new risk requires revision-bound replanning rather than silent context expansion. Receive exactly one outcome through `enno_work_report`.
-9. Before the Final Review advisory fanout, call `enno_verify_prepare`; it runs the approved final verifiers outside database transactions with shell disabled and repository-bounded cwd, then stores fresh evidence bound to the current contract revision plus mutation revision. Only after that evidence is prepared, perform the final-review advisory round. Submit the accept-or-replan decision through `enno_finish`; it never spawns a subprocess and accepts only stored fresh passing evidence with satisfied acceptance criteria.
+8. Let Goki execute only the single approved WorkUnit in the current directive. Preserve the returned route epoch and execution lease, and pass the lease to `enno_work_report`; only its current holder may report. Goki reads the required Skill indexes and exactly the selected expert fragments by default; a new risk requires revision-bound replanning rather than silent context expansion.
+9. Before the Final Review advisory fanout, call `enno_verify_prepare`; it runs the approved final verifiers outside database transactions with shell disabled and repository-relative cwd, then stores evidence bound to the contract revision, mutation revision, verifier specification digest, and full repository-state digest. Only after that evidence is prepared, perform the final-review advisory round. Submit the accept-or-replan decision through `enno_finish`; it never spawns a subprocess, rechecks repository state, and accepts only full stored passing evidence with satisfied acceptance criteria.
 10. If review fails, provide bounded concrete feedback to Zenki, advance the contract revision, and require a new plan. Never reactivate the old Goki WorkUnit directly.
 11. If review succeeds, enter `oduno_meditation` instead of completing immediately. Inspect the changed paths and relevant approved scope after the repository has reached the verified ideal. Reflect on obsolete, useless, or redundant tests and functions. Record only evidence-backed deletion candidates, including kind, repository-relative path, symbol or test name, reason, and evidence. Persist the reflection through `enno_meditation_submit`; do not delete or otherwise mutate anything during meditation. The run completes only after this submission.
 
@@ -84,7 +86,9 @@ Retain and send the exact values returned for the run:
 - `ennoOduno.orchestrationId`;
 - `ennoOduno.contractRevision`.
 
-Treat a host client session ID as optional routing metadata, not authorization ownership. Local processes running as the same OS user with access to the canonical repository are trusted to continue its run; do not add PID, process-ancestry, executable, signing, or inherited-token proof. Prefer the exact current session route. If it does not match, let the supported adapter atomically reroute the single unambiguous active run in the canonical repository, including across Codex, Claude Code, and OpenCode, while clearing the previous client version. Never select a repository-wide latest run or guess between multiple active runs. Reaching one session's continuation limit stops only that session and leaves the run active for another local project client. Continue to reject a mismatched run, workspace, orchestration identity, contract or mutation revision, idempotency receipt, or terminal state; never reuse stale verifier evidence.
+Prefer the returned opaque resume token over reconstructing full identity. It is short-lived and binds the run, canonical repository, client kind, client session, and route epoch. Do not persist it externally or reuse it after rerouting. A route change increments the epoch and invalidates prior tokens. An active WorkUnit execution lease blocks rerouting until release or expiry.
+
+Treat a host client session ID as optional routing metadata, not authorization ownership. Local processes running as the same OS user with access to the canonical repository are trusted to continue its run; do not add PID, process-ancestry, executable, or signing proof. If the current token or route does not match, let the supported adapter atomically reroute only the single unambiguous active run in the canonical repository. Never select a repository-wide latest run or guess between multiple active runs. Reaching one session's continuation limit stops only that session and leaves the run active for another local project client. Reject a mismatched or stale token, lease, epoch, run, workspace, orchestration identity, revision, receipt, or terminal state.
 
 ## User confirmation
 
@@ -105,6 +109,12 @@ If plan submission returns `userFacingRecovery`, present only its explanation of
 
 During `zenki_planning`, `enno_answer` accepts only explicit cancellation for this user-owned recovery path. Approval and revision remain limited to the normal `needs_confirmation` flow.
 
+Returning this recovery projection persists only a continuation pause: no
+Skill-discovery attempt, advisory consumption, operation receipt, contract
+revision, plan persistence, implementation, or repository mutation may be
+created until the user chooses. A same-run retry includes the chosen recovery
+action together with the host-retained capability catalog.
+
 ## Final review
 
 Review the approved contract rather than the quality of the final prose response.
@@ -112,7 +122,7 @@ Review the approved contract rather than the quality of the final prose response
 Confirm all of the following before acceptance:
 
 - every approved WorkUnit completed under the current contract revision;
-- verifier evidence is fresh for the current mutation revision;
+- verifier evidence is fresh for the current mutation revision, verifier specification, and complete Git/index/worktree/untracked/symlink repository state;
 - final verifiers passed without unsafe execution or an unresolved timeout;
 - every acceptance criterion is satisfied;
 - no blocker still requires user judgment.
@@ -146,6 +156,7 @@ Meditation is a read-only cleanup inquiry after accepted final verification. It 
 - Stop after the bounded attempt limit, unsafe verification, an unavailable required Skill, or a failure that needs user judgment.
 - Treat role-script timeout, invalid JSON, excessive output, and revision mismatch as fail-closed blocked results.
 - Treat adapter or Kiokuko unavailability as a bounded fail-open stop with the fixed warning supplied by the adapter. Do not create an infinite continuation loop.
+- Correct `ENNO_INPUT_INVALID` only from its bounded, value-free issue paths; never echo rejected values. Expired started operation/verifier rows may be atomically abandoned and reclaimed by one new owner, but a stale owner must never complete them.
 
 ## Trust and effects
 

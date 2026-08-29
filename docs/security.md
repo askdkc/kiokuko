@@ -77,9 +77,13 @@ not install a Hermes continuation adapter. The local trust boundary is the same
 OS user with access to the canonical repository and Kiokuko data. Kiokuko does
 not add PID, PPID, process-ancestry, executable-name, code-signing, or inherited
 token proof. `client_session_id` is routing metadata, not authorization or
-ownership: adapters prefer the exact session route, then atomically reroute the
+ownership: adapters prefer the exact opaque resume token, which binds the
+canonical repository, client kind/session, and route epoch, then atomically reroute the
 single unambiguous active run in the canonical repository across Codex, Claude
-Code, and OpenCode. Multiple active candidates are an ambiguity and remain
+Code, and OpenCode. Tokens are stored hashed and expire after 15 minutes. A
+reroute increments the epoch and invalidates old tokens. An active WorkUnit
+execution lease blocks rerouting and only its holder may report; expiry permits
+one atomic recovery owner. Multiple active candidates are an ambiguity and remain
 unchanged; no repository-wide latest run is selected. Rebinding updates the
 client kind and session, clears the prior client version, and is audited without
 requiring confirmation. Exhausting one session's continuation budget stops only
@@ -102,6 +106,15 @@ JSON with 16 KiB per-slot and 48 KiB per-round UTF-8 limits. Secret-shaped
 completed output is converted to the fixed `unsafe_output` failure without
 persisting or forwarding the raw value; failed/timeout/unavailable slots carry
 only fixed reason codes.
+
+Structured Enno inputs fail with the value-free `ENNO_INPUT_INVALID` projection
+before mutation. At most 16 bounded issues disclose field paths and expected
+shapes, never rejected values or raw validator text. New verifier cwd values
+must be repository-relative; lexical escapes, absolute paths, alternate-stream
+colons, and resolved symlink escapes fail closed before spawning. Secret-shaped
+verifier executables or arguments are rejected. Narrative, advisor, WorkUnit,
+evidence, and meditation content is sanitized and reparsed before canonical
+hashing or persistence, so redaction never changes an already-stored digest.
 
 ## Pre-persistence sanitization
 

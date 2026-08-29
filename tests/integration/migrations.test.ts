@@ -766,6 +766,109 @@ test('migration 018 makes the Enno client session mutable routing metadata', asy
   }
 });
 
+test('migration 019 preserves legacy Enno rows and marks old evidence as unbound', async () => {
+  const directory = await temporaryDirectory('enno-execution-integrity-upgrade');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await copyMigrationRange(migrationsDirectory, 1, 18);
+  const connection = openConnection(path.join(directory, 'data.sqlite3'));
+  const timestamp = '2026-08-29T00:00:00.000Z';
+  const runId = 'run-enno-execution-integrity';
+  const workspace = 'workspace:enno-execution-integrity';
+  const orchestrationId = 'orchestration-enno-execution-integrity';
+  const profile = { taskType: 'debug', target: 'src/add.ts', expected: 'tests pass', constraints: null } as const;
+  try {
+    migrateDatabase(connection, migrationsDirectory);
+    new LedgerStore(connection, { now: () => timestamp }).createRun({
+      runId, workspace, protocolVersion: '1', client: { kind: 'test' }, captureProfile: 'minimal',
+      coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      task: { title: 'Upgrade Enno execution integrity', query: 'Upgrade Enno execution integrity', profileHints: profile },
+      startedAt: timestamp,
+    });
+    connection.prepare(`
+      INSERT INTO akinator_sessions (id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
+      VALUES (?, ?, 'Upgrade Enno execution integrity', ?, 'ready', 0, ?, ?)
+    `).run(orchestrationId, workspace, canonicalJson(profile), timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO run_intakes (
+        run_id, session_id, policy_version, profile_schema_version, profile_sources_json,
+        initial_profile_hash, recommended_tags_json, linked_at, finalized_at
+      ) VALUES (?, ?, 'v2', 1, ?, ?, '[]', ?, ?)
+    `).run(
+      runId,
+      orchestrationId,
+      canonicalJson({ taskType: 'client_supplied', target: 'client_supplied', expected: 'client_supplied', constraints: 'client_supplied' }),
+      canonicalContentHash(profile),
+      timestamp,
+      timestamp,
+    );
+    connection.prepare(`
+      INSERT INTO enno_contracts (
+        run_id, workspace, orchestration_session_id, client_kind, client_version, client_session_id,
+        repository_root, task_type, status, revision, confirmation_state,
+        contract_json, handoff_json, intake_discovery_json, created_at, updated_at
+      ) VALUES (?, ?, ?, 'codex', '1.0.0', 'codex-owner', '/tmp/repository', 'debug',
+        'goki_executing', 1, 'not_required', '{}', '{}', '{}', ?, ?)
+    `).run(runId, workspace, orchestrationId, timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO enno_work_units (
+        run_id, work_unit_id, contract_revision, order_index, work_unit_json,
+        status, attempt_count, result_json, created_at, updated_at
+      ) VALUES (?, 'repair', 1, 0, '{}', 'in_progress', 0, NULL, ?, ?)
+    `).run(runId, timestamp, timestamp);
+    connection.prepare(`
+      INSERT INTO enno_operation_receipts (
+        run_id, operation, idempotency_key, request_digest, state, response_json, created_at, finished_at
+      ) VALUES (?, 'work_report', 'legacy-complete', ?, 'completed', '{}', ?, ?),
+               (?, 'verify_prepare', 'legacy-started', ?, 'started', NULL, ?, NULL)
+    `).run(runId, 'a'.repeat(64), timestamp, timestamp, runId, 'b'.repeat(64), timestamp);
+    connection.prepare(`
+      INSERT INTO enno_verifier_runs (
+        verifier_run_id, run_id, work_unit_id, contract_revision, mutation_revision,
+        verifier_id, verifier_json, status, exit_code, signal, duration_ms,
+        stdout_preview, stderr_preview, stdout_digest, stderr_digest, started_at, finished_at
+      ) VALUES
+        ('legacy-passed', ?, NULL, 1, 0, 'final', '{}', 'passed', 0, NULL, 1, '', '', ?, ?, ?, ?),
+        ('legacy-started', ?, NULL, 1, 0, 'final', '{}', 'started', NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL)
+    `).run(runId, 'c'.repeat(64), 'd'.repeat(64), timestamp, timestamp, runId, timestamp);
+
+    await copyFile(
+      path.join(initialMigrations, '019_enno_execution_integrity.sql'),
+      path.join(migrationsDirectory, '019_enno_execution_integrity.sql'),
+    );
+    assert.deepEqual(migrateDatabase(connection, migrationsDirectory).applied, [19]);
+    assert.equal(connection.prepare('SELECT route_epoch AS routeEpoch FROM enno_contracts WHERE run_id = ?')
+      .get<{ routeEpoch: number }>(runId)?.routeEpoch, 0);
+    const receipts = connection.prepare(`
+      SELECT idempotency_key AS idempotencyKey, state, owner_nonce AS ownerNonce,
+             lease_expires_at AS leaseExpiresAt, failure_code AS failureCode
+      FROM enno_operation_receipts WHERE run_id = ? ORDER BY idempotency_key
+    `).all<{ idempotencyKey: string; state: string; ownerNonce: string | null; leaseExpiresAt: string | null; failureCode: string | null }>(runId)
+      .map((row) => ({ ...row }));
+    assert.deepEqual(receipts, [
+      { idempotencyKey: 'legacy-complete', state: 'completed', ownerNonce: null, leaseExpiresAt: null, failureCode: null },
+      { idempotencyKey: 'legacy-started', state: 'started', ownerNonce: 'legacy-owner-legacy-started', leaseExpiresAt: timestamp, failureCode: null },
+    ]);
+    const verifiers = connection.prepare(`
+      SELECT verifier_run_id AS verifierRunId, status, owner_nonce AS ownerNonce,
+             repository_state_policy_version AS policyVersion,
+             pre_repository_digest AS preDigest, post_repository_digest AS postDigest
+      FROM enno_verifier_runs ORDER BY verifier_run_id
+    `).all<{ verifierRunId: string; status: string; ownerNonce: string | null; policyVersion: number | null; preDigest: string | null; postDigest: string | null }>()
+      .map((row) => ({ ...row }));
+    assert.deepEqual(verifiers, [
+      { verifierRunId: 'legacy-passed', status: 'passed', ownerNonce: null, policyVersion: null, preDigest: null, postDigest: null },
+      { verifierRunId: 'legacy-started', status: 'started', ownerNonce: 'legacy-owner-legacy-started', policyVersion: null, preDigest: null, postDigest: null },
+    ]);
+    assert.throws(() => connection.prepare(`
+      UPDATE enno_operation_receipts SET state = 'unknown' WHERE run_id = ?
+    `).run(runId), /check constraint/iu);
+    assert.deepEqual(connection.prepare('PRAGMA foreign_key_check').all(), []);
+  } finally {
+    connection.close();
+  }
+});
+
 test('migration 013 preserves every legacy discovery attempt as the intake phase', async () => {
   const directory = await temporaryDirectory('skill-discovery-phase-upgrade');
   const migrationsDirectory = path.join(directory, 'migrations');

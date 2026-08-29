@@ -21,6 +21,7 @@ kiokuko setup
 ```
 
 `setup`は、インストール済みの対応クライアントを検出し、SQLiteデータベースとMCP接続を自動設定します。
+同時に、同梱の`memory-reasoning` Skillと他のKiokuko標準Skillも配置します。既存環境には次回の`kiokuko setup`で追加され、同名の非managedファイルは上書きしません。
 対話式setupでは、監査済みcommunity Skillも参考資料として利用するか確認します。既定は「いいえ」です。
 
 設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。setupがCodexのStop hookを作成または更新した場合は、Codexで`/hooks`を開き、そのhookを明示的に信頼してください。
@@ -97,13 +98,32 @@ AIエージェントへの依頼を処理するLoop処理：役小角 が有効�
 
 Final Reviewは意図的に二段階です。`enno_verify_prepare`はdatabase
 transactionの外側でshellを無効にし、repository内に限定したcwdで承認済み
-verifierを実行し、現在のcontract revisionとmutation revisionに結び付いた
-freshな証拠を保存します。`enno_finish`はsubprocessを起動せず、保存済みの
-freshでpassingな証拠だけを受け入れます。testがpassingしただけではrunを
+verifierを実行します。証拠はcontract/mutation revision、verifier仕様、
+Git・index・worktree・untracked file・symlinkを含むrepository全状態に結び付きます。
+`enno_finish`はその状態を再検査し、subprocessを起動せず、完全な保存済みpassing
+証拠だけを受け入れます。testがpassingしただけではrunを
 受け入れません。
 Enno continuationを有効にした場合、CodexとClaude Codeは上限付きStop hook、
 OpenCodeは上限付き`session.idle` pluginを使います。Hermesはnative stdio MCPと
 bundled Skillだけを使い、Enno continuation adapterは導入しません。
+
+Enno入力の不備は、値を含まない上限付き`ENNO_INPUT_INVALID`として返します。
+advisory roundは`not_started`、`fanout_requested`、`aggregated`、`consumed`と遷移し、
+集約結果の消費待ちでだけadvisory fieldが必須です。新しいWorkUnitは`code`、`ui`、
+`test`、`docs`、`operations`のlocal routeを宣言します。codeは`code.*` expert、UIは
+`code.*`と`ui.*`の両方を必要としますが、その要件をtest/docs/operations unitへ
+波及させません。plan recoveryはユーザー選択まで自動continuationを止めるmarkerだけを保存し、
+plan保存や実装開始は行いません。continuationは
+route epochに固定した短命resume tokenと単一所有者のexecution leaseを使い、期限切れの
+operation/verifierはatomicにabandonして再取得できます。narrativeと証拠はhash化・保存前に
+sanitizeし、secretを含むverifier commandは拒否します。
+
+同梱のcoding Skillは、問題構造化を必要な強さで適用します。WorkUnitがdomain語彙、
+公開response・DTO・ViewModel、またはstorage・API・serialization・UI間の変換を
+定義する場合は`code.modeling.v1` expertを選びます。表現を変えない機械的修正では、
+code変更という理由だけで選びません。このexpertは利用側から形を決め、名前付きの
+変換を設計しますが、Lisp構文・macro・DSLの使用は要求しません。既存installには、
+次回の`kiokuko setup`でmanaged referenceが配布されます。
 
 したがってintakeが未完了なら、返すのは役小角directiveと`answer_intake`であり、その`requiredSkills`には`kiokuko-enno-oduno`が含まれ、前鬼はまだ開始しません。準備完了したintakeは、まず`oduno_ideal`と`submit_ideal`を返します。`enno_ideal_submit`では、Akinatorが選択したdiscovery setの全Skillについて貢献を正確に一件ずつ指定する必要があり、外部Skillは引き続きuntrusted reference-onlyの指針として扱います。その後にだけ、runはrevision固定の前鬼directiveを返します。このdirectiveは、空のdraft Skill snapshotでもcompact indexである`kiokuko-single-purpose-functions`を`requiredSkills`へ含めます。前鬼はこのindexをWorkUnit選定前に使い、無意味な微小関数を作らず、code変更を凝集した関数またはユースケース契約とfocused test targetへ分割します。各code変更WorkUnitは理由付きの登録済み`expertRefs`を1〜3個選ぶ必要があり、UI WorkUnitは`code.*`と`ui.*`を少なくとも一つずつ要求します。`enno_plan_submit`は欠落、重複、未知、上限超過のmixtureを拒否し、その選択をrevisionとともに保存します。後鬼はSkillの全referenceではなく、そのfragmentだけを読みます。controller Skillはrole単位であり、WorkUnitのSkill snapshotには混ぜません。完全なプランの受理と必要な確認が成功するまで、後鬼には遷移できません。最終Review失敗時も古い後鬼WorkUnitを直接再開しません。却下したplanと検証証拠を旧revisionの履歴として保持し、`zenki_planning`へ戻して新しいplanを必須にします。Reviewを受け入れると、直接完了せず`oduno_meditation`へ移行します。`enno_meditation_submit`はrepositoryを変更せず、検査したrepository-relative pathと根拠付きの古いtestまたは関数の候補を保存してからrunを完了します。応答の`orchestrationId`を全Enno MCP操作で使い、ホスト側session identityとは分離します。推論したscope、達成条件、Skill、expert選択、検証コマンドがある場合、実装前に通常のクライアントUIへ確認を返します。`needs_confirmation`応答には、確定済み契約の決定的な表示projectionである`ennoOduno.directive.userFacingConfirmation`が含まれます。scope、除外、達成条件、表示番号付き依存を持つ作業項目、reference-only状態を含むSkill、選定理由付きの専門観点、focused/final checks、試行上限が、それぞれprovenance basis（ユーザー指定・リポジトリ検証済み・提案）付きで一度ずつ現れます。クライアントモデルはraw directive JSONや内部識別子を出さずに全項目をユーザーの言語で提示し、明示的なapprove・revise・cancelを待ちます。secretを示す表示値や64 KiBを超えるprojectionは、redactionや切り詰めではなくplan submitの拒否になります。
 
@@ -111,7 +131,7 @@ bundled Skillだけを使い、Enno continuation adapterは導入しません。
 
 ここでいう「環境情報」は、現在のAIクライアントで利用できるSkillとMCPツールの一覧です。ホストが自動収集する内部情報であり、ユーザーが一覧の保存場所を探したり、設定データを手作業で作成したりする必要はありません。
 
-この一覧が何らかの理由で計画へ引き継がれていない、またはタスク準備時から変わっている場合、Kiokukoは安全確認を完了できないため作業を開始しません。関連するSkillの探索、3件の助言結果の計画への反映、重複実行を防ぐ受付記録の作成、計画版の更新より前に停止するため、この計画開始による新しい作業や追加のコード変更はありません。そのうえで、状況に応じて次の選択肢を表示し、ユーザーの明示回答を待ちます。
+この一覧が何らかの理由で計画へ引き継がれていない、またはタスク準備時から変わっている場合、Kiokukoは自動continuationを止めるmarkerだけを保存し、安全確認を完了できないため作業を開始しません。関連するSkillの探索、3件の助言結果の計画への反映、重複実行を防ぐ受付記録の作成、plan保存、計画版の更新より前に停止するため、この計画開始による新しい作業や追加のコード変更はありません。同じrunを再送する場合は、ユーザーが選んだrecovery actionも添付します。そのうえで、状況に応じて次の選択肢を表示し、ユーザーの明示回答を待ちます。
 
 各選択肢は、ラベルと推奨表示、どのような意図に適するか、選択後に何が起きるか、の順で表示されます。
 
@@ -135,7 +155,7 @@ bundled Skillだけを使い、Enno continuation adapterは導入しません。
 
 クライアントは説明をユーザーの言語で表示し、機械用の選択値、内部の理由コード、処理名、機能一覧、識別子、計画版、表示形式の版番号、生のJSONは表示しません。どの状況でも、ユーザーが選択する前に再提出、取消、新しい実行の作成を自動で行いません。
 
-3役は現在のクライアントモデルを順番に使います。Kiokukoが別モデルを呼ぶことはなく、OpenAI、Anthropic、OpenCodeのAPI keyもKiokuko側には不要です。Codex/Claude Codeは上限付きStop hook、OpenCodeは上限付き`session.idle` pluginを使います。OpenCodeでは子sessionのidleを無視し、同じ完了turnの重複配送を抑止します。同じOSユーザーでcanonical repositoryへアクセスできるlocal processは、そのrunを再開できるものとして信頼します。PID、process ancestry、実行ファイル、code signing、継承tokenによる証明は追加しません。adapterはsessionの完全一致routeを優先し、一致がなければCodex、Claude Code、OpenCodeをまたいでcanonical repository内の一意なactive runを原子的に再ルーティングし、以前のclient versionを消去します。複数候補なら全runを変更せず制御を返します。公開応答の`clientBinding`は現在のrouteを表し、`bound`は所有者を意味しません。sessionごとのcontinuation上限到達はそのsessionの自動継続だけを止め、runとledgerは別のlocal project clientが再開できるactive状態を維持します。Claude Codeではネイティブの8回連続block強制解除より前にKiokukoが制御をユーザーへ返します。Hermesに自動continuation hookはありませんが、同じrun identityを使うMCP操作は継続できます。adapter停止時は固定警告付きでfail-openします。外部Skillは引き続きuntrusted reference-onlyで、自動インストール・自動実行しません。
+3役は現在のクライアントモデルを順番に使います。Kiokukoが別モデルを呼ぶことはなく、OpenAI、Anthropic、OpenCodeのAPI keyもKiokuko側には不要です。Codex/Claude Codeは上限付きStop hook、OpenCodeは上限付き`session.idle` pluginを使います。OpenCodeでは子sessionのidleを無視し、同じ完了turnの重複配送を抑止します。同じOSユーザーでcanonical repositoryへアクセスできるlocal processは、そのrunを再開できるものとして信頼します。PID、process ancestry、実行ファイル、code signingによる証明は追加しません。adapterは現在の短命resume tokenを優先し、有効なtoken routeがなければCodex、Claude Code、OpenCodeをまたいでcanonical repository内の一意なactive runを原子的に再ルーティングします。再ルーティングはroute epochを増やして古いtokenを無効化し、activeなWorkUnit execution leaseがある間は行いません。複数候補なら全runを変更せず制御を返します。公開応答の`clientBinding`は現在のrouteを表し、`bound`は所有者を意味しません。sessionごとのcontinuation上限到達はそのsessionの自動継続だけを止め、runとledgerは別のlocal project clientが再開できるactive状態を維持します。Claude Codeではネイティブの8回連続block強制解除より前にKiokukoが制御をユーザーへ返します。Hermesに自動continuation hookはありませんが、同じrun identityを使うMCP操作は継続できます。adapter停止時は固定警告付きでfail-openします。外部Skillは引き続きuntrusted reference-onlyで、自動インストール・自動実行しません。
 
 ```bash
 kiokuko setup --clients codex,opencode,claude --enno-oduno on

@@ -44,7 +44,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(instructions, /Every descriptor must include its kind and canonical name/u);
     assert.match(instructions, /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
-    assert.match(instructions, /read it before modifying code/);
+    assert.match(instructions, /read and apply the available local memory-reasoning Skill before using that memory/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(instructions, /executionContext\.repositoryRoot as the filesystem base/u);
     assert.match(instructions, /OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
@@ -104,12 +104,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /create a new bounded opaque value for each logical request/);
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
     assert.match(taskPrepareTool?.description ?? '', /Reusing an ID with changed bound input is a conflict/);
-    assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction before proceeding/);
+    assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction and memoryPolicy before proceeding/);
     assert.match(taskPrepareTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(taskPrepareTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(taskPrepareTool?.description ?? '', /read and apply local memory-reasoning before using it and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(taskPrepareTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
     assert.match(taskPrepareTool?.description ?? '', /never use ~, \$HOME, or HOME-relative path fragments/u);
     assert.match(taskPrepareTool?.description ?? '', /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
@@ -121,18 +121,19 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskAnswerTool?.description ?? '', /required run ID returned by task_prepare/);
     assert.match(taskAnswerTool?.description ?? '', /Repeat the same capability catalog and context budget/);
     assert.match(taskAnswerTool?.description ?? '', /changed context budget conflicts before intake mutation/);
-    assert.match(taskAnswerTool?.description ?? '', /inspect the returned nextAction before proceeding/);
+    assert.match(taskAnswerTool?.description ?? '', /inspect the returned nextAction and memoryPolicy before proceeding/);
     assert.match(taskAnswerTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskAnswerTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskAnswerTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(taskAnswerTool?.description ?? '', /read that Skill before consuming applicable memory and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(taskAnswerTool?.description ?? '', /read and apply local memory-reasoning before using it and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(ennoFinishTool?.description ?? '', /returns Review feedback to Zenki for a new plan/u);
     assert.match(ennoFinishTool?.description ?? '', /advances a new run to Oduno meditation instead of completing it directly/iu);
     const ennoPlanTool = tools.tools.find((tool) => tool.name === 'enno_plan_submit');
     const ennoAnswerTool = tools.tools.find((tool) => tool.name === 'enno_answer');
     assert.match(ennoPlanTool?.description ?? '', /needs_confirmation response carries the decided ennoOduno\.directive\.userFacingConfirmation projection/u);
     assert.match(ennoPlanTool?.description ?? '', /without raw directive JSON or internal identifiers/u);
-    assert.match(ennoPlanTool?.description ?? '', /non-mutating user-facing recovery projection.*wait for the user's explicit choice/iu);
+    assert.match(ennoPlanTool?.description ?? '', /automatic-continuation pause.*wait for the user's explicit choice/iu);
+    assert.match(ennoPlanTool?.description ?? '', /same-run retry must pass the selected recoveryAction/iu);
     assert.match(ennoAnswerTool?.description ?? '', /only the action the user explicitly chose after seeing the user-facing confirmation or plan-start recovery choices/iu);
     assert.match(ennoAnswerTool?.description ?? '', /During planning, only explicit cancellation is accepted/iu);
     assert.match(ennoIdealTool?.description ?? '', /optimal goal.*task_prepare handoff.*every Akinator-discovered Skill.*before Zenki planning/iu);
@@ -186,10 +187,11 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     ]) {
       const tool = tools.tools.find((candidate) => candidate.name === toolName);
       const schema = tool?.inputSchema as ToolInputSchema;
-      assert.match(tool?.description ?? '', /orchestrationId.*not a host client session ID/u);
-      assert.ok(schema.required?.includes('orchestrationId'));
+      assert.match(tool?.description ?? '', /resumeToken.*workspace.*orchestrationId/iu);
+      assert.equal(schema.required?.includes('orchestrationId'), false);
       assert.equal(schema.required?.includes('clientSessionId'), false);
       assert.match(schema.properties?.orchestrationId?.description ?? '', /Exact ennoOduno\.orchestrationId returned by task_prepare or task_answer/u);
+      assert.ok(schema.properties?.resumeToken);
     }
     assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /call no more tools/);
     const checkpointTool = tools.tools.find((tool) => tool.name === 'memory_checkpoint');
@@ -285,7 +287,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       intake: { status: string; sessionId: string; reasoning: { stage: string; selectedAction: string; silo: { completeness: number } } };
       context: { items: Array<{ metadata: { untrusted: boolean } }> };
       capabilities: { availability: string; recommendations: Array<{ kind: string; name: string; availability: string }> };
-      memoryPolicy: { memoryReasoningRequired: boolean };
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
       executionContext: { canonicalCwd: string; repositoryRoot: string; cwdIsRepositoryRoot: boolean; pathPolicy: string };
       ennoOduno: {
         applicable: boolean;
@@ -322,7 +324,11 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(preparedContent.ennoOduno.directive?.harness.continuation, 'unidentified');
     assert.equal(preparedContent.ennoOduno.nextAction, 'submit_ideal');
     assert.equal(preparedContent.capabilities.availability, 'known-nonempty');
-    assert.deepEqual(preparedContent.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(preparedContent.memoryPolicy, {
+      memoryReasoningRequired: true,
+      contextWithheld: false,
+      withheldReason: null,
+    });
     const canonicalRoot = await realpath(root);
     assert.deepEqual(preparedContent.executionContext, {
       canonicalCwd: canonicalRoot,
@@ -561,12 +567,18 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
           recommendations: Array<{ name: string; source: string; availability: string; required?: boolean }>;
         };
         skillDiscovery: { attempted: boolean; selected: unknown[] };
-        memoryPolicy: { memoryReasoningRequired: boolean };
+        memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
         nextAction: string;
       } & Record<string, unknown>;
       assert.equal(stoppedContent.intake.status, 'ready');
       assert.equal(stoppedContent.nextAction, 'required_capability_unavailable');
-      assert.deepEqual(stoppedContent.memoryPolicy, { memoryReasoningRequired: true });
+      assert.deepEqual(stoppedContent.memoryPolicy, {
+        memoryReasoningRequired: true,
+        contextWithheld: true,
+        withheldReason: catalogAvailability === 'missing'
+          ? 'memory_reasoning_missing'
+          : 'memory_reasoning_unknown',
+      });
       assert.equal(stoppedContent.context, null);
       assert.equal('memory' in stoppedContent, false);
       assert.equal('references' in stoppedContent, false);
@@ -758,14 +770,14 @@ test('enno_plan_submit returns the userFacingConfirmation projection over the MC
             objective: 'Repair the add implementation',
             scope: ['src/add.js'],
             dependencies: [],
-            skillNames: ['kiokuko-single-purpose-functions'],
+            routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
             expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the add regression with focused tests' }],
             acceptanceCriteria: ['node --test passes'],
             focusedVerifiers: [],
           }],
         },
         skillRequirements: [],
-        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000 }],
+        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
         maxAttempts: 5,
         provenance: {
           scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -937,12 +949,12 @@ test('MCP transports advisory submission and final verification preparation with
           objective: 'Repair add',
           units: [{
             id: 'repair-add', objective: 'Repair add', scope: ['src/add.js'], dependencies: [],
-            skillNames: [], expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the repair with focused verification' }],
+            routes: ['code'], skillNames: [], expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the repair with focused verification' }],
             acceptanceCriteria: ['node --test passes'], focusedVerifiers: [],
           }],
         },
         skillRequirements: [],
-        finalVerifiers: [{ id: 'mcp-final', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000 }],
+        finalVerifiers: [{ id: 'mcp-final', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
         maxAttempts: 3,
         provenance: {
           scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -1062,7 +1074,7 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
           objective: 'Repair the add implementation',
           scope: ['src/add.js'],
           dependencies: [],
-          skillNames: ['kiokuko-single-purpose-functions'],
+          routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
           expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the regression with focused evidence' }],
           acceptanceCriteria: ['tests pass'],
           focusedVerifiers: [],
@@ -1071,7 +1083,7 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
       skillRequirements: [],
       finalVerifiers: [{
         id: 'final-test', kind: 'test', executable: process.execPath,
-        args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000,
+        args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000,
       }],
       maxAttempts: 5,
       provenance: {
@@ -1079,6 +1091,41 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
         workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
       },
     };
+
+    const invalidPlan = await client.callTool({
+      name: 'enno_plan_submit',
+      arguments: {
+        ...plan,
+        idempotencyKey: 'mcp-plan-structured-invalid',
+        capabilities,
+        workPlan: {
+          ...plan.workPlan,
+          units: [{
+            ...plan.workPlan.units[0],
+            expertRefs: [
+              { id: 'code.boundary.v1', reason: 'Boundary' },
+              { id: 'code.domain.v1', reason: 'Domain' },
+              { id: 'code.effects.v1', reason: 'Effects' },
+              { id: 'code.protocol.v1', reason: 'Protocol' },
+            ],
+          }],
+        },
+      },
+    });
+    assert.equal(invalidPlan.isError, true);
+    assert.deepEqual(invalidPlan.content, [{ type: 'text', text: 'Request is invalid' }]);
+    assert.deepEqual(invalidPlan.structuredContent, {
+      code: 'ENNO_INPUT_INVALID',
+      operation: 'plan_submit',
+      presentationVersion: 1,
+      issues: [{
+        path: ['workPlan', 'units', 0, 'expertRefs'],
+        reasonCode: 'too_many_items',
+        expected: { maxItems: 3 },
+      }],
+      retry: 'correct_input',
+      mutationApplied: false,
+    });
 
     const recovery = await client.callTool({
       name: 'enno_plan_submit',
@@ -1088,6 +1135,15 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
     const recoveryContent = recovery.structuredContent as {
       code: string;
       reason: string;
+      effect: {
+        mutationApplied: boolean;
+        continuationPaused: boolean;
+        planPersisted: boolean;
+        advisoryConsumed: boolean;
+        operationReceiptCreated: boolean;
+        implementationStarted: boolean;
+      };
+      retry: { sameRunAllowed: boolean; requiresUserChoice: boolean };
       userFacingRecovery: {
         presentationVersion: number;
         whatHappened: string;
@@ -1104,6 +1160,15 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
     };
     assert.equal(recoveryContent.code, 'PLAN_START_RECOVERY_REQUIRED');
     assert.equal(recoveryContent.reason, 'environment_information_missing');
+    assert.deepEqual(recoveryContent.effect, {
+      mutationApplied: false,
+      continuationPaused: true,
+      planPersisted: false,
+      advisoryConsumed: false,
+      operationReceiptCreated: false,
+      implementationStarted: false,
+    });
+    assert.deepEqual(recoveryContent.retry, { sameRunAllowed: true, requiresUserChoice: true });
     assert.equal(recoveryContent.userFacingRecovery.presentationVersion, 1);
     assert.match(recoveryContent.userFacingRecovery.whatHappened, /features available in this environment.*not carried into the plan/iu);
     assert.match(recoveryContent.userFacingRecovery.workState, /did not begin new work or make additional code changes/iu);
@@ -1160,7 +1225,12 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
 
     const continued = await client.callTool({
       name: 'enno_plan_submit',
-      arguments: { ...plan, idempotencyKey: 'mcp-plan-recovery-continued', capabilities },
+      arguments: {
+        ...plan,
+        idempotencyKey: 'mcp-plan-recovery-continued',
+        capabilities,
+        recoveryAction: 'continue_same_plan',
+      },
     });
     assert.equal(continued.isError, undefined);
     assert.equal((continued.structuredContent as { ennoOduno: { status: string } }).ennoOduno.status, 'goki_executing');
@@ -1264,7 +1334,7 @@ test('malformed compatibility discovery degrades across task_prepare and enno_pl
             objective: 'Repair the Svelte component',
             scope: ['src/component.ts'],
             dependencies: [],
-            skillNames: ['kiokuko-single-purpose-functions'],
+            routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
             expertRefs: [
               { id: 'code.boundary.v1', reason: 'Keep malformed provider data outside the planning boundary' },
               { id: 'code.protocol.v1', reason: 'Preserve replay and idempotency contracts' },
@@ -1275,7 +1345,7 @@ test('malformed compatibility discovery degrades across task_prepare and enno_pl
           }],
         },
         skillRequirements: [],
-        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000 }],
+        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
         maxAttempts: 1,
         provenance: {
           scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -1482,6 +1552,34 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       name: 'memory_checkpoint',
       arguments: { memories: [{ kind: 'lesson', title: 'Oversized catalog beacon', body: 'Keep capability handling bounded and ephemeral.' }] },
     });
+    const knownMissing = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'mcp-known-missing-memory-catalog-request',
+        task: 'Implement the oversized catalog beacon and add tests',
+        profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
+        capabilities: [SOUL_CAPABILITY],
+      },
+    });
+    const knownMissingContent = knownMissing.structuredContent as {
+      context: null;
+      nextAction: string;
+      capabilities: { availability: string; recommendations: Array<{ name: string; availability: string }> };
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
+    };
+    assert.equal(knownMissingContent.context, null);
+    assert.equal(knownMissingContent.nextAction, 'proceed');
+    assert.deepEqual(knownMissingContent.memoryPolicy, {
+      memoryReasoningRequired: true,
+      contextWithheld: true,
+      withheldReason: 'memory_reasoning_missing',
+    });
+    assert.equal(knownMissingContent.capabilities.availability, 'known-nonempty');
+    assert.ok(knownMissingContent.capabilities.recommendations.some(
+      (item) => item.name === 'memory-reasoning' && item.availability === 'missing',
+    ));
+
     const sentinel = 'capability-secret-sentinel-private-path';
     const oversizedCapabilities = [
       SOUL_CAPABILITY,
@@ -1511,8 +1609,14 @@ test('task_prepare degrades safely for oversized and malformed capability items'
         warnings: Array<{ message: string }>;
       };
       warnings: Array<{ message: string }>;
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
     } & Record<string, unknown>;
     assert.equal(content.context, null);
+    assert.deepEqual(content.memoryPolicy, {
+      memoryReasoningRequired: true,
+      contextWithheld: true,
+      withheldReason: 'memory_reasoning_unknown',
+    });
     assert.equal('memory' in content, false);
     assert.equal('references' in content, false);
     assert.equal(content.capabilities.availability, 'unknown');
@@ -1542,8 +1646,14 @@ test('task_prepare degrades safely for oversized and malformed capability items'
         diagnostics: { received: number; accepted: number; truncated: number; dropped: number };
       };
       nextAction: string;
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
     };
     assert.equal(availableContent.nextAction, 'proceed');
+    assert.deepEqual(availableContent.memoryPolicy, {
+      memoryReasoningRequired: true,
+      contextWithheld: false,
+      withheldReason: null,
+    });
     assert.equal(availableContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(availableContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
     assert.equal(availableContent.context.policyVersion, 'context-ranking-v4');
@@ -1794,11 +1904,13 @@ test('task_prepare proceeds without memory-reasoning for managed curator global 
     assert.equal(result.isError, undefined);
     const content = result.structuredContent as {
       nextAction: string;
-      memoryPolicy: { memoryReasoningRequired: boolean };
+      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
       context: { items: Array<{ entryId: string }> };
     };
     assert.equal(content.nextAction, 'proceed');
     assert.equal(content.memoryPolicy.memoryReasoningRequired, false);
+    assert.equal(content.memoryPolicy.contextWithheld, false);
+    assert.equal(content.memoryPolicy.withheldReason, null);
     assert.equal(content.context.items.some((item) => item.entryId === curated.id), true);
   } finally {
     await client.close();

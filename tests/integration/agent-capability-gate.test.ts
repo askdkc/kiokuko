@@ -18,6 +18,20 @@ import { validateSkillSnapshot } from '../../src/skills/source/snapshot-validato
 const token = 'c'.repeat(64);
 const SOUL_CAPABILITY = { kind: 'skill', name: 'kiokuko-soul' } as const;
 
+function memoryPolicy(availability: 'available' | 'missing' | 'unknown' | null) {
+  return availability === null
+    ? { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null }
+    : availability === 'available'
+      ? { memoryReasoningRequired: true, contextWithheld: false, withheldReason: null }
+      : {
+        memoryReasoningRequired: true,
+        contextWithheld: true,
+        withheldReason: availability === 'missing'
+          ? 'memory_reasoning_missing'
+          : 'memory_reasoning_unknown',
+      };
+}
+
 function soulCapabilities(...additional: unknown[]): unknown[] {
   return [SOUL_CAPABILITY, ...additional];
 }
@@ -171,7 +185,7 @@ test('generic Agent API withholds actionable repair memory but continues when me
 
     const stopped = await makePriorContextActionable(value.runtime.url, 'missing-open', body, first.data, value);
     assert.equal(stopped.nextAction, 'proceed');
-    assert.deepEqual(stopped.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(stopped.memoryPolicy, memoryPolicy('missing'));
     assert.equal(stopped.context, null);
     assert.deepEqual(stopped.recommendations, []);
     assert.ok(stopped.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
@@ -195,7 +209,7 @@ test('generic Agent API proceeds with actionable repair memory only for the exac
     assert.equal(first.response.status, 200);
     const proceeded = await makePriorContextActionable(value.runtime.url, 'available-open', body, first.data, value);
     assert.equal(proceeded.nextAction, 'proceed');
-    assert.deepEqual(proceeded.memoryPolicy, { memoryReasoningRequired: true });
+    assert.deepEqual(proceeded.memoryPolicy, memoryPolicy('available'));
     assert.notEqual(proceeded.context, null);
     assert.ok(proceeded.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
       && item.required === true
@@ -509,7 +523,7 @@ test('generic Agent build does not treat managed external skill references as or
     });
     assert.equal(opened.response.status, 200);
     assert.equal(opened.data.nextAction, 'proceed', JSON.stringify(opened.data));
-    assert.deepEqual(opened.data.memoryPolicy, { memoryReasoningRequired: false });
+    assert.deepEqual(opened.data.memoryPolicy, memoryPolicy(null));
     assert.notEqual(opened.data.context, null);
     assert.ok(opened.data.context.items.length > 0);
     assert.ok(opened.data.context.items.every((item: any) => item.origin === 'ecosystem'));
@@ -540,7 +554,7 @@ test('generic Agent open and answer apply identical missing, unknown, and availa
       });
       assert.equal(ready.response.status, 200);
       assert.equal(ready.data.nextAction, scenario.nextAction);
-      assert.deepEqual(ready.data.memoryPolicy, { memoryReasoningRequired: true });
+      assert.deepEqual(ready.data.memoryPolicy, memoryPolicy(scenario.availability));
 
       const opened = await request(value.runtime.url, '/api/v1/agent/runs', {
         key: `parity-${scenario.label}-intake`,
@@ -548,7 +562,7 @@ test('generic Agent open and answer apply identical missing, unknown, and availa
       });
       assert.equal(opened.response.status, 200);
       assert.equal(opened.data.nextAction, 'answer_from_evidence_or_ask_user');
-      assert.deepEqual(opened.data.memoryPolicy, { memoryReasoningRequired: false });
+      assert.deepEqual(opened.data.memoryPolicy, memoryPolicy(null));
       assert.equal(opened.data.currentQuestion.id, 'target');
       const answerBody = {
         apiVersion: '1',
@@ -562,7 +576,7 @@ test('generic Agent open and answer apply identical missing, unknown, and availa
       });
       assert.equal(answered.response.status, 200);
       assert.equal(answered.data.nextAction, scenario.nextAction);
-      assert.deepEqual(answered.data.memoryPolicy, { memoryReasoningRequired: true });
+      assert.deepEqual(answered.data.memoryPolicy, memoryPolicy(scenario.availability));
 
       for (const response of [ready.data, answered.data]) {
         assert.ok(response.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'

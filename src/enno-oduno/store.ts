@@ -1,10 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { LedgerStore } from '../ledger/store.js';
 import type { JsonValue, LedgerEventInput } from '../ledger/types.js';
-import { canonicalJson } from '../serialization/validate.js';
+import { canonicalContentHash, canonicalJson } from '../serialization/validate.js';
 import { parseStrictJson } from '../setup/strict-json.js';
 import {
   parseEnnoContract,
@@ -16,12 +17,15 @@ import {
   parseWorkPlan,
 } from './schemas.js';
 import {
+  ADVISORY_OUTCOMES,
   ENNO_DEFAULT_MAX_ATTEMPTS,
   ENNO_APPLICABLE_TASK_TYPES,
   ENNO_CLIENT_KINDS,
   ENNO_STATUSES,
   type EnnoClientKind,
+  type AdvisoryPhaseState,
   type EnnoOdunoContract,
+  type EnnoExecutionLease,
   type EnnoRequestHandoff,
   type EnnoRunSnapshot,
   type EnnoStatus,
@@ -35,7 +39,14 @@ import {
   type WorkReportResult,
   type WorkUnitStatus,
 } from './types.js';
+import {
+  advisoryContextForSnapshot,
+  advisoryInputDigest,
+  advisoryPhaseForStatus,
+  advisorySlotDefinitions,
+} from './advisory.js';
 import type { SkillDiscoveryMode, SkillDiscoverySummary } from '../skills/types.js';
+import { captureRepositoryState } from './repository-state.js';
 
 interface ContractRow extends SqliteRow {
   run_id: string;
@@ -52,6 +63,7 @@ interface ContractRow extends SqliteRow {
   confirmation_state: EnnoRunSnapshot['confirmationState'];
   attempts: number;
   mutation_revision: number;
+  route_epoch: number;
   contract_json: string;
   handoff_json: string;
   ideal_json: string | null;
@@ -68,8 +80,9 @@ interface WorkUnitRow extends SqliteRow {
 
 interface ReceiptRow extends SqliteRow {
   request_digest: string;
-  state: 'started' | 'completed';
+  state: 'started' | 'completed' | 'failed' | 'abandoned';
   response_json: string | null;
+  lease_expires_at: string | null;
 }
 
 interface VerifierResultRow extends SqliteRow {
@@ -83,6 +96,78 @@ interface VerifierResultRow extends SqliteRow {
   stderr_preview: string;
   stdout_digest: string;
   stderr_digest: string;
+  repository_state_policy_version: number | null;
+  pre_repository_digest: string | null;
+  post_repository_digest: string | null;
+  verifier_spec_digest: string | null;
+  changed_during_verification: number | null;
+  finished_at: string | null;
+}
+
+interface AdvisoryStateRow extends SqliteRow {
+  inputDigest: string;
+  state: 'advice_submitted' | 'aggregated' | 'consumed';
+}
+
+function advisoryPhaseState(
+  database: SqliteDatabase,
+  input: {
+    runId: string;
+    status: EnnoStatus;
+    revision: number;
+    mutationRevision: number;
+    finalEvidenceReady: boolean;
+    currentInputDigest: string | undefined;
+  },
+): AdvisoryPhaseState {
+  const phase = advisoryPhaseForStatus(input.status);
+  if (phase === null || (phase === 'final_review' && !input.finalEvidenceReady)) return { state: 'not_started' };
+  const row = database.prepare(`
+    SELECT input_digest AS inputDigest, state
+    FROM enno_advisory_rounds
+    WHERE run_id = ? AND contract_revision = ? AND mutation_revision = ? AND phase = ?
+    ORDER BY created_at DESC, round_id DESC
+    LIMIT 1
+  `).get<AdvisoryStateRow>(input.runId, input.revision, input.mutationRevision, phase);
+  if (row === undefined || row.inputDigest !== input.currentInputDigest) {
+    return { state: 'fanout_requested', slots: advisorySlotDefinitions(phase) };
+  }
+  if (row.state === 'consumed') return { state: 'consumed', inputDigest: row.inputDigest };
+  if (row.state !== 'aggregated') return integrity('Stored advisory lifecycle state is invalid');
+  const contributions = database.prepare(`
+    SELECT c.slot_id AS slotId, c.outcome
+    FROM enno_advisory_contributions AS c
+    JOIN enno_advisory_rounds AS r ON r.round_id = c.round_id
+    WHERE r.run_id = ? AND r.contract_revision = ? AND r.mutation_revision = ?
+      AND r.phase = ? AND r.input_digest = ?
+    ORDER BY c.slot_rank
+  `).all<{ slotId: string; outcome: string }>(
+    input.runId,
+    input.revision,
+    input.mutationRevision,
+    phase,
+    row.inputDigest,
+  );
+  const slots = advisorySlotDefinitions(phase);
+  if (contributions.length !== slots.length) return integrity('Stored advisory lifecycle contributions are invalid');
+  return {
+    state: 'aggregated',
+    inputDigest: row.inputDigest,
+    requiredDispositionSlots: slots.map((slot, index) => {
+      const contribution = contributions[index];
+      if (contribution?.slotId !== slot.slotId || !ADVISORY_OUTCOMES.includes(contribution.outcome as never)) {
+        return integrity('Stored advisory lifecycle contributions are invalid');
+      }
+      const outcome = contribution.outcome as (typeof ADVISORY_OUTCOMES)[number];
+      return {
+        slotId: slot.slotId,
+        outcome,
+        allowedDispositions: outcome === 'completed'
+          ? ['adopted', 'not_adopted']
+          : ['unavailable'],
+      };
+    }),
+  };
 }
 
 export interface EnnoIdentity {
@@ -91,10 +176,70 @@ export interface EnnoIdentity {
   orchestrationId: string;
 }
 
+export function resolveEnnoIdentity(database: SqliteDatabase, input: {
+  runId: string;
+  workspace?: string | undefined;
+  orchestrationId?: string | undefined;
+  resumeToken?: string | undefined;
+}): EnnoIdentity {
+  if (input.workspace !== undefined && input.orchestrationId !== undefined && input.resumeToken === undefined) {
+    return { runId: input.runId, workspace: input.workspace, orchestrationId: input.orchestrationId };
+  }
+  if (input.resumeToken === undefined || input.workspace !== undefined || input.orchestrationId !== undefined) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Enno identity requires either explicit identity or one resume token');
+  }
+  const tokenHash = createHash('sha256').update(input.resumeToken, 'utf8').digest('hex');
+  const row = database.prepare(`
+    SELECT ec.run_id AS runId, ec.workspace, ec.orchestration_session_id AS orchestrationId,
+           ec.route_epoch AS routeEpoch, rt.route_epoch AS tokenRouteEpoch,
+           rt.repository_root AS tokenRepositoryRoot, ec.repository_root AS repositoryRoot,
+           rt.client_kind AS tokenClientKind, ec.client_kind AS clientKind,
+           rt.client_session_id AS tokenClientSessionId, ec.client_session_id AS clientSessionId,
+           rt.expires_at AS expiresAt
+    FROM enno_resume_tokens AS rt
+    JOIN enno_contracts AS ec ON ec.run_id = rt.run_id
+    WHERE rt.token_hash = ? AND rt.run_id = ?
+  `).get<{
+    runId: string;
+    workspace: string;
+    orchestrationId: string;
+    routeEpoch: number;
+    tokenRouteEpoch: number;
+    tokenRepositoryRoot: string;
+    repositoryRoot: string;
+    tokenClientKind: EnnoClientKind;
+    clientKind: EnnoClientKind | null;
+    tokenClientSessionId: string;
+    clientSessionId: string | null;
+    expiresAt: string;
+  }>(tokenHash, input.runId);
+  if (row === undefined) throw new KiokukoError('CONFLICT', 'Enno resume token is invalid or expired');
+  const expiresAt = Date.parse(row.expiresAt);
+  if (row.routeEpoch !== row.tokenRouteEpoch || row.repositoryRoot !== row.tokenRepositoryRoot
+    || row.clientKind !== row.tokenClientKind || row.clientSessionId !== row.tokenClientSessionId
+    || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    throw new KiokukoError('CONFLICT', 'Enno resume token is stale');
+  }
+  return { runId: row.runId, workspace: row.workspace, orchestrationId: row.orchestrationId };
+}
+
 export interface OperationIdentity {
   operation: 'ideal_submit' | 'advice_submit' | 'plan_submit' | 'answer' | 'work_report' | 'finish' | 'meditation_submit' | 'verify_prepare';
   idempotencyKey: string;
   requestDigest: string;
+  legacyRequestDigests?: readonly string[] | undefined;
+}
+
+const OPERATION_LEASE_MS = 6 * 60_000;
+const VERIFIER_LEASE_GRACE_MS = 60_000;
+const VERIFIER_TERMINATION_GRACE_MS = 1_000;
+
+export function operationLeaseMsForVerifiers(verifiers: readonly VerifierSpec[]): number {
+  const sequentialRuntime = verifiers.reduce(
+    (total, verifier) => total + verifier.timeoutMs + VERIFIER_TERMINATION_GRACE_MS,
+    VERIFIER_LEASE_GRACE_MS,
+  );
+  return Math.max(OPERATION_LEASE_MS, sequentialRuntime);
 }
 
 function integrity(message: string): never {
@@ -125,7 +270,8 @@ function validateContractRow(row: ContractRow): void {
     || !ENNO_APPLICABLE_TASK_TYPES.includes(row.task_type)
     || !Number.isSafeInteger(row.revision) || row.revision < 1
     || !Number.isSafeInteger(row.attempts) || row.attempts < 0 || row.attempts > 20
-    || !Number.isSafeInteger(row.mutation_revision) || row.mutation_revision < 0) {
+    || !Number.isSafeInteger(row.mutation_revision) || row.mutation_revision < 0
+    || !Number.isSafeInteger(row.route_epoch) || row.route_epoch < 0) {
     integrity('Stored Enno run state is invalid');
   }
 }
@@ -143,7 +289,20 @@ function persistedState(status: EnnoStatus): { status: string; phase: string | n
   return { status, phase: null };
 }
 
-function workUnits(database: SqliteDatabase, runId: string, revision: number): StoredWorkUnit[] {
+function storedWorkResult(value: unknown, repositoryRoot: string): WorkReportResult {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return parseWorkReportResult(value);
+  const result = value as Record<string, unknown>;
+  if (!Array.isArray(result.changedPaths)) return parseWorkReportResult(value);
+  const changedPaths = result.changedPaths.map((candidate) => {
+    if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) return candidate;
+    const relative = path.relative(repositoryRoot, candidate);
+    if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return candidate;
+    return (relative || '.').split(path.sep).join('/');
+  });
+  return parseWorkReportResult({ ...result, changedPaths });
+}
+
+function workUnits(database: SqliteDatabase, runId: string, revision: number, repositoryRoot: string): StoredWorkUnit[] {
   const rows = database.prepare(`
     SELECT work_unit_json, status, attempt_count, result_json
     FROM enno_work_units
@@ -161,7 +320,7 @@ function workUnits(database: SqliteDatabase, runId: string, revision: number): S
     attemptCount: row.attempt_count,
     result: row.result_json === null
       ? null
-      : parseWorkReportResult(parseCanonicalJson(row.result_json, 'Stored Enno work result is invalid')),
+      : storedWorkResult(parseCanonicalJson(row.result_json, 'Stored Enno work result is invalid'), repositoryRoot),
   }));
 }
 
@@ -206,12 +365,16 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
     integrity('Stored Oduno meditation phase is inconsistent');
   }
   if (meditation !== null && status !== 'completed') integrity('Stored Oduno meditation result is inconsistent');
-  const finalEvidenceReady = contract.finalVerifiers.length === 0
-    || hasFreshFinalVerifierResults(database, {
+  const currentRepositoryDigest = status === 'enno_verifying' && contract.finalVerifiers.length > 0
+    ? captureRepositoryState(row.repository_root).digest
+    : undefined;
+  const finalEvidenceReady = contract.finalVerifiers.length > 0
+    && hasFreshFinalVerifierResults(database, {
       runId: row.run_id,
       revision: row.revision,
       mutationRevision: row.mutation_revision,
       verifiers: contract.finalVerifiers,
+      ...(currentRepositoryDigest === undefined ? {} : { repositoryDigest: currentRepositoryDigest }),
     });
   const finalEvidence = finalEvidenceReady
     ? readFreshFinalVerifierResults(database, {
@@ -219,9 +382,10 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
         revision: row.revision,
         mutationRevision: row.mutation_revision,
         verifiers: contract.finalVerifiers,
+        ...(currentRepositoryDigest === undefined ? {} : { repositoryDigest: currentRepositoryDigest }),
       }) ?? []
     : [];
-  return {
+  const snapshot: EnnoRunSnapshot = {
     runId: row.run_id,
     workspace: row.workspace,
     orchestrationId: row.orchestration_session_id,
@@ -235,15 +399,35 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
     confirmationState: row.confirmation_state,
     attempts: row.attempts,
     mutationRevision: row.mutation_revision,
+    routeEpoch: row.route_epoch,
     ideal,
     meditation,
     contract,
     handoff,
-    workUnits: workUnits(database, identity.runId, row.revision),
+    workUnits: workUnits(database, identity.runId, row.revision, row.repository_root),
     finalEvidenceReady,
     finalEvidence,
     blocker: row.blocker,
+    advisoryPhaseState: { state: 'not_started' },
   };
+  const advisoryPhase = advisoryPhaseForStatus(status);
+  const currentInputDigest = advisoryPhase === null || (advisoryPhase === 'final_review' && !finalEvidenceReady)
+    ? undefined
+    : advisoryInputDigest({
+        phase: advisoryPhase,
+        contractRevision: row.revision,
+        mutationRevision: row.mutation_revision,
+        allowlistedContext: advisoryContextForSnapshot(snapshot, advisoryPhase),
+      });
+  snapshot.advisoryPhaseState = advisoryPhaseState(database, {
+    runId: row.run_id,
+    status,
+    revision: row.revision,
+    mutationRevision: row.mutation_revision,
+    finalEvidenceReady,
+    currentInputDigest,
+  });
+  return snapshot;
 }
 
 function emptyDiscovery(mode: SkillDiscoveryMode): SkillDiscoverySummary {
@@ -446,20 +630,180 @@ export function setWorkUnitStatusInTransaction(database: SqliteDatabase, input: 
   if (updated?.workUnitId !== input.workUnitId) throw new KiokukoError('CONFLICT', 'Enno WorkUnit changed concurrently');
 }
 
+const EXECUTION_LEASE_MS = 15 * 60_000;
+
+export function claimExecutionLeaseInTransaction(
+  database: SqliteDatabase,
+  snapshot: EnnoRunSnapshot,
+  workUnitId: string,
+  owner: { clientKind: EnnoClientKind; sessionId: string },
+): EnnoExecutionLease {
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const existing = database.prepare(`
+    SELECT contract_revision AS contractRevision, mutation_revision AS mutationRevision,
+           work_unit_id AS workUnitId, route_epoch AS routeEpoch,
+           owner_client_kind AS ownerClientKind, owner_session_id AS ownerSessionId,
+           lease_expires_at AS expiresAt
+    FROM enno_execution_leases WHERE run_id = ?
+  `).get<{
+    contractRevision: number;
+    mutationRevision: number;
+    workUnitId: string;
+    routeEpoch: number;
+    ownerClientKind: EnnoClientKind;
+    ownerSessionId: string;
+    expiresAt: string;
+  }>(snapshot.runId);
+  if (existing !== undefined && existing.expiresAt > now
+    && (existing.contractRevision !== snapshot.revision
+      || existing.mutationRevision !== snapshot.mutationRevision
+      || existing.workUnitId !== workUnitId
+      || existing.routeEpoch !== (snapshot.routeEpoch ?? 0)
+      || existing.ownerClientKind !== owner.clientKind
+      || existing.ownerSessionId !== owner.sessionId)) {
+    throw new KiokukoError('CONFLICT', 'Enno WorkUnit is leased to another current actor');
+  }
+  const leaseToken = randomUUID();
+  const tokenHash = createHash('sha256').update(leaseToken, 'utf8').digest('hex');
+  const expiresAt = new Date(nowDate.getTime() + EXECUTION_LEASE_MS).toISOString();
+  database.prepare(`
+    INSERT INTO enno_execution_leases (
+      run_id, contract_revision, mutation_revision, work_unit_id, route_epoch,
+      owner_client_kind, owner_session_id, lease_token_hash, lease_expires_at,
+      heartbeat_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(run_id) DO UPDATE SET
+      contract_revision = excluded.contract_revision,
+      mutation_revision = excluded.mutation_revision,
+      work_unit_id = excluded.work_unit_id,
+      route_epoch = excluded.route_epoch,
+      owner_client_kind = excluded.owner_client_kind,
+      owner_session_id = excluded.owner_session_id,
+      lease_token_hash = excluded.lease_token_hash,
+      lease_expires_at = excluded.lease_expires_at,
+      heartbeat_at = excluded.heartbeat_at,
+      updated_at = excluded.updated_at
+  `).run(
+    snapshot.runId,
+    snapshot.revision,
+    snapshot.mutationRevision,
+    workUnitId,
+    snapshot.routeEpoch ?? 0,
+    owner.clientKind,
+    owner.sessionId,
+    tokenHash,
+    expiresAt,
+    now,
+    now,
+    now,
+  );
+  return {
+    leaseToken,
+    routeEpoch: snapshot.routeEpoch ?? 0,
+    contractRevision: snapshot.revision,
+    mutationRevision: snapshot.mutationRevision,
+    workUnitId,
+    expiresAt,
+  };
+}
+
+export function assertExecutionLeaseInTransaction(database: SqliteDatabase, snapshot: EnnoRunSnapshot, input: {
+  workUnitId: string;
+  leaseToken?: string | undefined;
+  routeEpoch?: number | undefined;
+}): void {
+  const row = database.prepare(`
+    SELECT contract_revision AS contractRevision, mutation_revision AS mutationRevision,
+           work_unit_id AS workUnitId, route_epoch AS routeEpoch,
+           owner_client_kind AS ownerClientKind, owner_session_id AS ownerSessionId,
+           lease_token_hash AS tokenHash, lease_expires_at AS expiresAt
+    FROM enno_execution_leases WHERE run_id = ?
+  `).get<{
+    contractRevision: number;
+    mutationRevision: number;
+    workUnitId: string;
+    routeEpoch: number;
+    ownerClientKind: EnnoClientKind;
+    ownerSessionId: string;
+    tokenHash: string;
+    expiresAt: string;
+  }>(snapshot.runId);
+  if (row === undefined) {
+    if (input.leaseToken !== undefined || input.routeEpoch !== undefined) {
+      throw new KiokukoError('CONFLICT', 'Enno execution lease is not active');
+    }
+    return;
+  }
+  const tokenHash = input.leaseToken === undefined
+    ? null
+    : createHash('sha256').update(input.leaseToken, 'utf8').digest('hex');
+  if (row.expiresAt <= new Date().toISOString()
+    || row.contractRevision !== snapshot.revision
+    || row.mutationRevision !== snapshot.mutationRevision
+    || row.workUnitId !== input.workUnitId
+    || row.routeEpoch !== input.routeEpoch
+    || row.routeEpoch !== (snapshot.routeEpoch ?? 0)
+    || row.ownerClientKind !== snapshot.clientKind
+    || row.ownerSessionId !== snapshot.clientSessionId
+    || tokenHash !== row.tokenHash) {
+    throw new KiokukoError('CONFLICT', 'Enno execution lease is stale or belongs to another actor');
+  }
+}
+
+export function releaseExecutionLeaseInTransaction(database: SqliteDatabase, runId: string): void {
+  database.prepare('DELETE FROM enno_execution_leases WHERE run_id = ?').run(runId);
+}
+
+export function renewExecutionLeaseInTransaction(
+  database: SqliteDatabase,
+  snapshot: EnnoRunSnapshot,
+  input: { workUnitId: string; leaseToken?: string | undefined; routeEpoch?: number | undefined },
+  minimumLeaseMs: number,
+): void {
+  assertExecutionLeaseInTransaction(database, snapshot, input);
+  const existing = database.prepare('SELECT 1 AS present FROM enno_execution_leases WHERE run_id = ?')
+    .get<{ present: number }>(snapshot.runId);
+  if (existing === undefined) return;
+  const now = new Date();
+  const leaseExpiresAt = new Date(now.getTime() + Math.max(EXECUTION_LEASE_MS, minimumLeaseMs)).toISOString();
+  const updated = database.prepare(`
+    UPDATE enno_execution_leases
+    SET lease_expires_at = ?, heartbeat_at = ?, updated_at = ?
+    WHERE run_id = ?
+    RETURNING run_id AS runId
+  `).get<{ runId: string }>(leaseExpiresAt, now.toISOString(), now.toISOString(), snapshot.runId);
+  if (updated?.runId !== snapshot.runId) throw new KiokukoError('CONFLICT', 'Enno execution lease changed concurrently');
+}
+
 export function startVerifierRunsInTransaction(database: SqliteDatabase, input: {
   runId: string;
   workUnitId: string | null;
   revision: number;
   mutationRevision: number;
   verifiers: readonly VerifierSpec[];
+  repositoryEvidence?: {
+    policyVersion: number;
+    preDigest: string;
+    verifierSpecDigest: string;
+  } | undefined;
 }): string[] {
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  database.prepare(`
+    UPDATE enno_verifier_runs
+    SET status = 'abandoned', failure_code = 'lease_expired', finished_at = ?
+    WHERE run_id = ? AND status = 'started' AND lease_expires_at <= ?
+  `).run(now, input.runId, now);
   const statement = database.prepare(`
     INSERT INTO enno_verifier_runs (
       verifier_run_id, run_id, work_unit_id, contract_revision, mutation_revision,
-      verifier_id, verifier_json, status, started_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?)
+      verifier_id, verifier_json, status, owner_nonce, lease_expires_at, heartbeat_at,
+      repository_state_policy_version, pre_repository_digest, verifier_spec_digest, started_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?, ?, ?, ?)
   `);
-  const now = new Date().toISOString();
+  const leaseMs = operationLeaseMsForVerifiers(input.verifiers);
+  const leaseExpiresAt = new Date(nowDate.getTime() + leaseMs).toISOString();
   return input.verifiers.map((verifier) => {
     const verifierRunId = randomUUID();
     statement.run(
@@ -470,6 +814,12 @@ export function startVerifierRunsInTransaction(database: SqliteDatabase, input: 
       input.mutationRevision,
       verifier.id,
       canonicalJson(verifier),
+      randomUUID(),
+      leaseExpiresAt,
+      now,
+      input.repositoryEvidence?.policyVersion ?? null,
+      input.repositoryEvidence?.preDigest ?? null,
+      input.repositoryEvidence?.verifierSpecDigest ?? null,
       now,
     );
     return verifierRunId;
@@ -480,6 +830,7 @@ export function finishVerifierRunsInTransaction(
   database: SqliteDatabase,
   verifierRunIds: readonly string[],
   results: readonly VerifierRunResult[],
+  repositoryEvidence?: { postDigest: string; changedDuringVerification: boolean } | undefined,
 ): void {
   if (verifierRunIds.length !== results.length) integrity('Enno verifier result count is inconsistent');
   const finishedAt = new Date().toISOString();
@@ -489,7 +840,8 @@ export function finishVerifierRunsInTransaction(
     const updated = database.prepare(`
       UPDATE enno_verifier_runs
       SET status = ?, exit_code = ?, signal = ?, duration_ms = ?,
-          stdout_preview = ?, stderr_preview = ?, stdout_digest = ?, stderr_digest = ?, finished_at = ?
+          stdout_preview = ?, stderr_preview = ?, stdout_digest = ?, stderr_digest = ?,
+          post_repository_digest = ?, changed_during_verification = ?, finished_at = ?
       WHERE verifier_run_id = ? AND status = 'started'
       RETURNING verifier_run_id AS verifierRunId
     `).get<{ verifierRunId: string }>(
@@ -501,6 +853,8 @@ export function finishVerifierRunsInTransaction(
       result.stderrPreview,
       result.stdoutDigest,
       result.stderrDigest,
+      repositoryEvidence?.postDigest ?? null,
+      repositoryEvidence === undefined ? null : repositoryEvidence.changedDuringVerification ? 1 : 0,
       finishedAt,
       verifierRunId,
     );
@@ -513,29 +867,39 @@ export function readFreshFinalVerifierResults(database: SqliteDatabase, input: {
   revision: number;
   mutationRevision: number;
   verifiers: readonly VerifierSpec[];
+  repositoryDigest?: string | undefined;
 }): VerifierRunResult[] | undefined {
+  if (input.verifiers.length === 0) return undefined;
   const rows = database.prepare(`
     SELECT verifier_id, verifier_json, status, exit_code, signal, duration_ms,
-           stdout_preview, stderr_preview, stdout_digest, stderr_digest
+           stdout_preview, stderr_preview, stdout_digest, stderr_digest,
+           repository_state_policy_version, pre_repository_digest, post_repository_digest,
+           verifier_spec_digest, changed_during_verification, finished_at
     FROM enno_verifier_runs
     WHERE run_id = ? AND work_unit_id IS NULL
       AND contract_revision = ? AND mutation_revision = ?
-    ORDER BY verifier_id
+    ORDER BY verifier_id, finished_at DESC, verifier_run_id DESC
   `).all<VerifierResultRow>(input.runId, input.revision, input.mutationRevision);
-  if (rows.length !== input.verifiers.length || rows.some((row) => row.status === 'started')) return undefined;
-  const byId = new Map(rows.map((row) => [row.verifier_id, row]));
+  const completedRows = rows.filter((row) => row.status !== 'started' && row.status !== 'abandoned');
+  const byId = new Map<string, VerifierResultRow>();
+  for (const row of completedRows) if (!byId.has(row.verifier_id)) byId.set(row.verifier_id, row);
   if (byId.size !== input.verifiers.length || input.verifiers.some((verifier) => !byId.has(verifier.id))) return undefined;
   for (const verifier of input.verifiers) {
     const row = byId.get(verifier.id)!;
     const storedVerifier = parseVerifierSpec(parseCanonicalJson(row.verifier_json, 'Stored Enno verifier is invalid'));
     if (canonicalJson(storedVerifier) !== canonicalJson(verifier)) return undefined;
+    if (row.changed_during_verification === 1) return undefined;
+    if (input.repositoryDigest !== undefined
+      && (row.pre_repository_digest !== input.repositoryDigest
+        || row.post_repository_digest !== input.repositoryDigest
+        || row.verifier_spec_digest !== canonicalContentHash(input.verifiers))) return undefined;
   }
   return input.verifiers.map((verifier) => {
     const row = byId.get(verifier.id)!;
     const storedVerifier = parseVerifierSpec(parseCanonicalJson(row.verifier_json, 'Stored Enno verifier is invalid'));
     return {
       verifier: { ...storedVerifier, args: [...storedVerifier.args] },
-      status: row.status as Exclude<VerifierRunStatus, 'started'>,
+      status: row.status as Exclude<VerifierRunStatus, 'started' | 'abandoned'>,
       exitCode: row.exit_code,
       signal: row.signal,
       durationMs: row.duration_ms,
@@ -543,6 +907,9 @@ export function readFreshFinalVerifierResults(database: SqliteDatabase, input: {
       stderrPreview: row.stderr_preview,
       stdoutDigest: row.stdout_digest,
       stderrDigest: row.stderr_digest,
+      ...(row.repository_state_policy_version === null ? {} : { repositoryStatePolicyVersion: row.repository_state_policy_version }),
+      ...(row.post_repository_digest === null ? {} : { repositoryStateDigest: row.post_repository_digest }),
+      ...(row.changed_during_verification === null ? {} : { changedDuringVerification: row.changed_during_verification === 1 }),
     };
   });
 }
@@ -552,6 +919,7 @@ export function hasFreshFinalVerifierResults(database: SqliteDatabase, input: {
   revision: number;
   mutationRevision: number;
   verifiers: readonly VerifierSpec[];
+  repositoryDigest?: string | undefined;
 }): boolean {
   try {
     return readFreshFinalVerifierResults(database, input) !== undefined;
@@ -562,55 +930,133 @@ export function hasFreshFinalVerifierResults(database: SqliteDatabase, input: {
 
 export function readOperationReceipt<T>(database: SqliteDatabase, runId: string, operation: OperationIdentity): T | undefined {
   const row = database.prepare(`
-    SELECT request_digest, state, response_json
+    SELECT request_digest, state, response_json, lease_expires_at
     FROM enno_operation_receipts
     WHERE run_id = ? AND operation = ? AND idempotency_key = ?
   `).get<ReceiptRow>(runId, operation.operation, operation.idempotencyKey);
   if (row === undefined) return undefined;
-  if (row.request_digest !== operation.requestDigest) {
+  if (row.request_digest !== operation.requestDigest
+    && !operation.legacyRequestDigests?.includes(row.request_digest)) {
     throw new KiokukoError('CONFLICT', 'Enno idempotency key was reused with different input');
   }
-  if (row.state === 'started') throw new KiokukoError('CONFLICT', 'Enno operation is already in progress');
+  if (row.request_digest !== operation.requestDigest) {
+    const normalized = database.prepare(`
+      UPDATE enno_operation_receipts SET request_digest = ?
+      WHERE run_id = ? AND operation = ? AND idempotency_key = ? AND request_digest = ?
+      RETURNING run_id AS runId
+    `).get<{ runId: string }>(
+      operation.requestDigest,
+      runId,
+      operation.operation,
+      operation.idempotencyKey,
+      row.request_digest,
+    );
+    if (normalized?.runId !== runId) throw new KiokukoError('CONFLICT', 'Enno operation receipt changed concurrently');
+    row.request_digest = operation.requestDigest;
+  }
+  if (row.state === 'started') {
+    if (row.lease_expires_at === null || !Number.isFinite(Date.parse(row.lease_expires_at))) {
+      return integrity('Stored Enno operation receipt lease is invalid');
+    }
+    const now = new Date().toISOString();
+    if (row.lease_expires_at > now) throw new KiokukoError('CONFLICT', 'Enno operation is already in progress');
+    const abandoned = database.prepare(`
+      UPDATE enno_operation_receipts
+      SET state = 'abandoned', failure_code = 'lease_expired', finished_at = ?
+      WHERE run_id = ? AND operation = ? AND idempotency_key = ?
+        AND request_digest = ? AND state = 'started' AND lease_expires_at <= ?
+      RETURNING run_id AS runId
+    `).get<{ runId: string }>(
+      now,
+      runId,
+      operation.operation,
+      operation.idempotencyKey,
+      operation.requestDigest,
+      now,
+    );
+    if (abandoned?.runId !== runId) throw new KiokukoError('CONFLICT', 'Enno operation state changed concurrently');
+    return undefined;
+  }
+  if (row.state === 'failed' || row.state === 'abandoned') return undefined;
   if (row.response_json === null) integrity('Stored Enno operation receipt is invalid');
   return parseCanonicalJson(row.response_json, 'Stored Enno operation receipt is invalid') as T;
 }
 
-export function startOperationInTransaction(database: SqliteDatabase, runId: string, operation: OperationIdentity): void {
+export function startOperationInTransaction(
+  database: SqliteDatabase,
+  runId: string,
+  operation: OperationIdentity,
+  leaseMs = OPERATION_LEASE_MS,
+): string {
   const replay = readOperationReceipt<unknown>(database, runId, operation);
   if (replay !== undefined) throw new KiokukoError('CONFLICT', 'Completed Enno operation must be replayed before mutation');
+  if (!Number.isSafeInteger(leaseMs) || leaseMs < OPERATION_LEASE_MS) integrity('Enno operation lease duration is invalid');
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  database.prepare(`
+    UPDATE enno_operation_receipts
+    SET state = 'abandoned', failure_code = 'lease_expired', finished_at = ?
+    WHERE run_id = ? AND state = 'started' AND lease_expires_at <= ?
+  `).run(now, runId, now);
   const active = database.prepare(`
     SELECT operation FROM enno_operation_receipts
-    WHERE run_id = ? AND state = 'started'
+    WHERE run_id = ? AND state = 'started' AND lease_expires_at > ?
     LIMIT 1
-  `).get<{ operation: string }>(runId);
+  `).get<{ operation: string }>(runId, now);
   if (active !== undefined) throw new KiokukoError('CONFLICT', 'Another Enno operation is already in progress');
-  database.prepare(`
+  const ownerNonce = randomUUID();
+  const leaseExpiresAt = new Date(nowDate.getTime() + leaseMs).toISOString();
+  const started = database.prepare(`
     INSERT INTO enno_operation_receipts (
-      run_id, operation, idempotency_key, request_digest, state, response_json, created_at, finished_at
-    ) VALUES (?, ?, ?, ?, 'started', NULL, ?, NULL)
-  `).run(runId, operation.operation, operation.idempotencyKey, operation.requestDigest, new Date().toISOString());
+      run_id, operation, idempotency_key, request_digest, state, response_json,
+      owner_nonce, lease_expires_at, heartbeat_at, failure_code, created_at, finished_at
+    ) VALUES (?, ?, ?, ?, 'started', NULL, ?, ?, ?, NULL, ?, NULL)
+    ON CONFLICT(run_id, operation, idempotency_key) DO UPDATE SET
+      state = 'started', response_json = NULL, owner_nonce = excluded.owner_nonce,
+      lease_expires_at = excluded.lease_expires_at, heartbeat_at = excluded.heartbeat_at,
+      failure_code = NULL, created_at = excluded.created_at, finished_at = NULL
+    WHERE enno_operation_receipts.request_digest = excluded.request_digest
+      AND enno_operation_receipts.state IN ('failed', 'abandoned')
+    RETURNING run_id AS runId
+  `).get<{ runId: string }>(
+    runId,
+    operation.operation,
+    operation.idempotencyKey,
+    operation.requestDigest,
+    ownerNonce,
+    leaseExpiresAt,
+    now,
+    now,
+  );
+  if (started?.runId !== runId) throw new KiokukoError('CONFLICT', 'Enno operation could not be claimed');
+  return ownerNonce;
 }
 
 export function completeOperationInTransaction(
   database: SqliteDatabase,
   runId: string,
   operation: OperationIdentity,
+  ownerNonce: string,
   response: unknown,
 ): void {
   const serialized = canonicalJson(response);
+  const finishedAt = new Date().toISOString();
   const updated = database.prepare(`
     UPDATE enno_operation_receipts
     SET state = 'completed', response_json = ?, finished_at = ?
     WHERE run_id = ? AND operation = ? AND idempotency_key = ?
-      AND request_digest = ? AND state = 'started'
+      AND request_digest = ? AND state = 'started' AND owner_nonce = ?
+      AND lease_expires_at > ?
     RETURNING run_id AS runId
   `).get<{ runId: string }>(
     serialized,
-    new Date().toISOString(),
+    finishedAt,
     runId,
     operation.operation,
     operation.idempotencyKey,
     operation.requestDigest,
+    ownerNonce,
+    finishedAt,
   );
   if (updated?.runId !== runId) throw new KiokukoError('CONFLICT', 'Enno operation receipt changed concurrently');
 }

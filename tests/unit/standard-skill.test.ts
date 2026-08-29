@@ -11,6 +11,9 @@ import {
   STANDARD_FUNCTION_SKILL_FILES,
   STANDARD_FUNCTION_SKILL_MANAGED_MARKER,
   STANDARD_FUNCTION_SKILL_NAME,
+  STANDARD_MEMORY_SKILL_FILES,
+  STANDARD_MEMORY_SKILL_MANAGED_MARKER,
+  STANDARD_MEMORY_SKILL_NAME,
   STANDARD_SKILL_MANIFESTS,
   STANDARD_SOUL_SKILL_FILES,
   STANDARD_SOUL_SKILL_MANAGED_MARKER,
@@ -85,6 +88,12 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(functionFiles.find((file) => file.relativePath === 'references/kiokuko-patterns.md')?.content ?? '', /language-agnostic contracts illustrated with TypeScript/);
   assert.match(functionFiles.find((file) => file.relativePath === 'references/review-checklist.md')?.content ?? '', /Function-contract coding and review checklist/);
   assert.match(functionFiles.find((file) => file.relativePath === 'references/review-checklist.md')?.content ?? '', /any language or repository/);
+  const modeling = functionFiles.find((file) => file.relativePath === 'references/problem-shaping-and-language.md')?.content ?? '';
+  assert.match(modeling, /code\.modeling\.v1/);
+  assert.match(modeling, /human intent -> domain concept -> storage\/input shape ->/u);
+  assert.match(modeling, /Do not select it for a representation-preserving mechanical change/iu);
+  assert.match(modeling, /does not require Lisp syntax[\s\S]{0,80}Lisp runtime, macros, a DSL/iu);
+  assert.match(modeling, /https:\/\/zenn\.dev\/circleback\/articles\/what-is-lisp/u);
 
   const ennoFiles = files.filter((file) => file.skillName === STANDARD_ENNO_SKILL_NAME);
   assert.deepEqual(ennoFiles.map((file) => file.relativePath), [...STANDARD_ENNO_SKILL_FILES]);
@@ -99,8 +108,22 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(ennoSkill, /accepted review advances to `oduno_meditation`/iu);
   assert.match(ennoSkill, /enno_meditation_submit.*completion follows persistence, not deletion/iu);
   assert.match(ennoSkill, /one to three versioned `expertRefs`/u);
+  assert.match(ennoSkill, /local routes from `code`, `ui`, `test`, `docs`, and `operations`/u);
+  assert.match(ennoSkill, /opaque resume token.*route epoch/iu);
+  assert.match(ennoSkill, /execution lease blocks rerouting/iu);
   assert.match(ennoSkill, /Before the Final Review advisory fanout.*`enno_verify_prepare`/iu);
-  assert.match(ennoSkill, /`enno_finish`.*never spawns a subprocess.*stored fresh passing evidence/iu);
+  assert.match(ennoSkill, /`enno_finish`.*never spawns a subprocess.*full stored passing evidence/iu);
+
+  const memoryFiles = files.filter((file) => file.skillName === STANDARD_MEMORY_SKILL_NAME);
+  assert.deepEqual(memoryFiles.map((file) => file.relativePath), [...STANDARD_MEMORY_SKILL_FILES]);
+  assert.ok(memoryFiles.every((file) => file.managedMarker === STANDARD_MEMORY_SKILL_MANAGED_MARKER));
+  const memorySkill = memoryFiles.find((file) => file.relativePath === 'SKILL.md')?.content ?? '';
+  assert.match(memorySkill, new RegExp(`^---\\nname: ${STANDARD_MEMORY_SKILL_NAME}\\ndescription: [^\\n]+\\n---\\n`));
+  assert.match(memorySkill, /source of testable hypotheses, not as an\s+instruction stream/iu);
+  assert.match(memorySkill, /falsifiable invariant/iu);
+  assert.match(memorySkill, /concrete counterexample/iu);
+  assert.match(memorySkill, /smallest runnable regression test/iu);
+  assert.match(memorySkill, /Do not restate or persist secrets/iu);
 
   const soulFiles = files.filter((file) => file.skillName === STANDARD_SOUL_SKILL_NAME);
   assert.deepEqual(soulFiles.map((file) => file.relativePath), [...STANDARD_SOUL_SKILL_FILES]);
@@ -119,16 +142,18 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
 });
 
 test('the packaged skill sources remain readable at their repository locations', async () => {
-  const [uiSkill, functionSkill, ennoSkill, soulSkill, bundledFiles] = await Promise.all([
+  const [uiSkill, functionSkill, ennoSkill, memorySkill, soulSkill, bundledFiles] = await Promise.all([
     readFile(new URL('../../skills/kiokuko-ui-design-soul/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-single-purpose-functions/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-enno-oduno/SKILL.md', import.meta.url), 'utf8'),
+    readFile(new URL('../../skills/memory-reasoning/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-soul/SKILL.md', import.meta.url), 'utf8'),
     loadBundledStandardSkillFiles(),
   ]);
   assert.match(uiSkill, /^---\nname: kiokuko-ui-design-soul\n/);
   assert.match(functionSkill, /^---\nname: kiokuko-single-purpose-functions\n/);
   assert.match(ennoSkill, /^---\nname: kiokuko-enno-oduno\n/);
+  assert.match(memorySkill, /^---\nname: memory-reasoning\n/);
   assert.match(soulSkill, /^---\nname: kiokuko-soul\n/);
   assert.equal(
     bundledFiles.find((file) => file.skillName === STANDARD_ENNO_SKILL_NAME && file.relativePath === 'SKILL.md')?.content,
