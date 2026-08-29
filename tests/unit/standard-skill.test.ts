@@ -94,9 +94,13 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(ennoSkill, /Enno-Oduno alone owns this state machine/);
   assert.match(ennoSkill, /Do not start Zenki or Goki/);
   assert.match(ennoSkill, /Never select a repository-wide latest run/);
+  assert.match(ennoSkill, /optional routing metadata, not authorization ownership/u);
+  assert.match(ennoSkill, /leaves the run active for another local project client/u);
   assert.match(ennoSkill, /accepted review advances to `oduno_meditation`/iu);
   assert.match(ennoSkill, /enno_meditation_submit.*completion follows persistence, not deletion/iu);
   assert.match(ennoSkill, /one to three versioned `expertRefs`/u);
+  assert.match(ennoSkill, /Before the Final Review advisory fanout.*`enno_verify_prepare`/iu);
+  assert.match(ennoSkill, /`enno_finish`.*never spawns a subprocess.*stored fresh passing evidence/iu);
 
   const soulFiles = files.filter((file) => file.skillName === STANDARD_SOUL_SKILL_NAME);
   assert.deepEqual(soulFiles.map((file) => file.relativePath), [...STANDARD_SOUL_SKILL_FILES]);
@@ -115,14 +119,19 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
 });
 
 test('the packaged skill sources remain readable at their repository locations', async () => {
-  const [uiSkill, functionSkill, ennoSkill, soulSkill] = await Promise.all([
+  const [uiSkill, functionSkill, ennoSkill, soulSkill, bundledFiles] = await Promise.all([
     readFile(new URL('../../skills/kiokuko-ui-design-soul/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-single-purpose-functions/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-enno-oduno/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-soul/SKILL.md', import.meta.url), 'utf8'),
+    loadBundledStandardSkillFiles(),
   ]);
   assert.match(uiSkill, /^---\nname: kiokuko-ui-design-soul\n/);
   assert.match(functionSkill, /^---\nname: kiokuko-single-purpose-functions\n/);
   assert.match(ennoSkill, /^---\nname: kiokuko-enno-oduno\n/);
   assert.match(soulSkill, /^---\nname: kiokuko-soul\n/);
+  assert.equal(
+    bundledFiles.find((file) => file.skillName === STANDARD_ENNO_SKILL_NAME && file.relativePath === 'SKILL.md')?.content,
+    ennoSkill,
+  );
 });

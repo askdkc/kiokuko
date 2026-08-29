@@ -12,7 +12,7 @@ Kiokuko는 AI 코딩 에이전트를 위한 외부 메모리입니다.
 
 ## 바로 시작하기
 
-Node.js 26.1.0 이상이 필요합니다.
+Node.js 24.16.0 이상이 필요하며, Node.js 26.1.0 이상도 지원합니다.
 다음 두 명령어로 쉽게 시작할 수 있습니다 💕
 
 ```bash
@@ -22,16 +22,52 @@ kiokuko setup
 
 `setup`은 설치된 지원 클라이언트를 감지하고 SQLite 데이터베이스와 MCP 연결을 자동으로 설정합니다.
 대화형 setup은 감사된 community Skill도 참고 자료로 사용할지 묻고, 기본 응답은 아니요입니다.
-Codex, Claude Code, OpenCode를 새로 설정할 때는 Enno-Oduno 에이전트 루프도 활성화됩니다. 기존 관리 환경은 `--enno-oduno on`을 명시적으로 선택할 때까지 유지되며, `--enno-oduno off`는 Enno-Oduno가 소유한 hook 또는 plugin만 제거합니다.
-setup은 번들된 `kiokuko-enno-oduno` controller Skill을 `kiokuko-single-purpose-functions`, `kiokuko-ui-design-soul`과 함께 선택한 모든 지원 클라이언트에 설치합니다.
-모델용 메모리는 capability gate를 거치는 MCP 도구 `task_prepare`와
-`task_answer`를 통해서만 작업에 전달됩니다. `task_prepare`는 Enno-Oduno의 진입점이기도 합니다. Enno-Oduno는 호출한 harness를 식별하고 Akinator intake를 소유하며, 실행 가능한 요청을 Zenki에 넘기기 전에 Oduno 이상 상태를 도출합니다. hook은 메모리를 암묵적으로 불러오거나 계획을 우회하지 않습니다. canonical repository에서 모호하지 않은 단 하나의 pending active run만 client session에 바인딩한 뒤 Oduno, Zenki, Goki 또는 최종 review의 계속 여부를 gate합니다. repository 전체의 최신 run을 선택하지 않습니다.
-
-모든 `task_prepare` 호출은 클라이언트 모델이 해당 논리 요청을 위해 로컬 `kiokuko-soul` Skill 전체를 읽은 후 `soulRead: true`를 전달해야 합니다. 또한 모든 작업에서 정확히 일치하는 로컬 `kiokuko-soul` capability가 필요하며, 누락되었거나 availability를 알 수 없으면 intake가 완료되지 않았더라도 fail-close합니다. 이 boolean은 클라이언트의 명시적 attestation이며, 모델이 Skill을 이해하고 준수했다는 remote proof는 아닙니다.
 
 설정 후 대상 AI 클라이언트를 실행하고 평소처럼 사용하면 됩니다. 이미 실행 중이라면 한 번 종료한 후 다시 시작하십시오. setup이 Codex Stop hook을 생성하거나 업데이트했다면 Codex에서 `/hooks`를 열고 해당 hook을 명시적으로 신뢰하십시오.
 
-### Enno-Oduno 에이전트 루프
+## 사용할수록 똑똑해지는 구조
+
+```text
+사용자 요청
+      ↓
+관련 과거 메모리 검색
+      ↓
+AI가 메모리를 참고해 작업
+      ↓
+재사용 가능한 결과나 교훈 저장
+      ↓
+다음 요청에서 다시 검색
+```
+
+Kiokuko는 다음 흐름을 반복합니다.
+
+1. 작업 전에 현재 프로젝트와 Global 메모리를 검색합니다
+2. 관련성이 높은 메모리만 AI에 전달합니다
+3. AI가 작업을 수행합니다
+4. 작업 후 재사용할 수 있는 지식을 메모리로 저장합니다
+5. 다음 작업에서 그 메모리를 재사용합니다
+
+즉, Kiokuko는 **영구 메모리를 축적하는 RAG 시스템**입니다.
+
+MCP는 AI 클라이언트와 Kiokuko를 연결하고, RAG는 필요한 메모리를 검색해 AI에 전달합니다.
+
+### 설정 후 AI 에이전트의 동작
+
+#### AI Akinator
+
+AI 에이전트에게 전달된 요청이 너무 모호해 AI가 구체적인 작업을 파악하기 어려우면, Akinator가 내부 질문을 통해 AI에 필요한 수준까지 요청을 구체화합니다. 관련 언어나 프레임워크 등의 Skill이 있으면 사용할 수 있도록 준비합니다.
+
+#### Enno-Oduno (役小角)
+
+AI 에이전트의 요청을 처리하는 Enno-Oduno 루프가 활성화됩니다.
+
+요청의 이상적인 결과를 정하고, 작업을 계획하고, 작은 에이전트들에게 구현을 orchestration한 뒤, 마지막으로 결과가 이상적인 상태에 맞는지 자동으로 확인합니다.
+
+#### 메모리 저장
+
+모델용 메모리는 capability gate를 거치는 MCP 도구 `task_prepare`와 `task_answer`를 통해서만 작업에 전달됩니다. `task_prepare`는 Enno-Oduno의 진입점입니다. 작업이 끝나면 내용을 기록하고 AI가 재사용할 지식으로 승격할 수 있는지 검토합니다. 실제로 유용한 지식이 승격되도록 자동 조정됩니다.
+
+### Enno-Oduno 에이전트 루프 상세
 
 `build`, `debug`, `review`, `devops` 작업에서는 `task_prepare`가 run-bound loop를 시작하고 `ennoOduno`를 반환합니다. 강제되는 역할 순서는 다음과 같습니다.
 
@@ -47,14 +83,25 @@ setup은 번들된 `kiokuko-enno-oduno` controller Skill을 `kiokuko-single-purp
   -> Zenki가 WorkUnit마다 version이 지정된 expertRefs 1~3개를 선택하며 기본적으로 선택하지 않은 fragment는 읽지 않음
   -> Zenki가 WorkPlan, WorkUnit, expert refs, Skill snapshot 및 verifier를 제출
   -> Enno-Oduno가 필요한 사용자 확인을 받음
-  -> Goki가 승인된 WorkUnit만 orchestration
-  -> Enno-Oduno가 새로운 final-verifier 증거를 review
-       -> 성공: Enno-Oduno가 수락하고 읽기 전용 Oduno meditation으로 전환
+   -> Goki가 승인된 WorkUnit만 orchestration
+   -> enno_verify_prepare가 final verifier를 실행하고 새로운 증거를 저장
+   -> 증거 준비 후에만 parent host가 final-review Advisor를 fan-out
+   -> enno_finish가 저장된 증거에서 accept/replan/block을 결정
+        -> 성공: Enno-Oduno가 수락하고 읽기 전용 Oduno meditation으로 전환
             -> 변경되었거나 승인된 path에서 근거가 있는 오래된 test 또는 함수를 탐색
             -> enno_meditation_submit이 삭제하지 않고 후보를 저장한 뒤 run을 완료
        -> 실패: Enno-Oduno가 revision을 올리고 feedback을 Zenki에 반환
-  -> Zenki가 수정된 plan을 제출하고 확인이 성공한 뒤에만 Goki를 재개할 수 있음
+   -> Zenki가 수정된 plan을 제출하고 확인이 성공한 뒤에만 Goki를 재개할 수 있음
 ```
+
+Final Review는 의도적으로 두 단계입니다. `enno_verify_prepare`는 database
+transaction 밖에서 shell을 비활성화하고 repository로 제한된 cwd에서 승인된
+verifier를 실행한 뒤 현재 contract revision과 mutation revision에 연결된 새로운
+증거를 저장합니다. `enno_finish`는 subprocess를 실행하지 않고 저장된 최신 통과
+증거만으로 수락합니다. 테스트 통과만으로는 run을 수락하지 않습니다.
+Enno continuation을 활성화하면 Codex와 Claude Code는 제한된 Stop hook을 사용하고,
+OpenCode는 제한된 `session.idle` plugin을 사용합니다. Hermes는 native stdio MCP와
+번들 Skill만 사용하며 Enno continuation adapter를 설치하지 않습니다.
 
 따라서 intake가 완료되지 않으면 Enno-Oduno directive와 `answer_intake`를 반환하며, `requiredSkills`에는 `kiokuko-enno-oduno`가 포함되고 Zenki는 아직 시작되지 않습니다. 준비된 intake는 먼저 `oduno_ideal`과 `submit_ideal`을 반환합니다. `enno_ideal_submit`은 Akinator가 선택한 discovery set의 모든 Skill에 대해 정확히 하나의 기여를 요구하며, 외부 Skill은 신뢰할 수 없는 reference-only 지침으로 유지됩니다. 그 후에만 run은 revision-bound Zenki directive를 반환합니다. 이 directive의 `requiredSkills`에는 draft Skill snapshot이 비어 있어도 compact index인 `kiokuko-single-purpose-functions`가 포함됩니다. Zenki는 WorkUnit을 선택하기 전에 이 index를 사용해 의미 없는 micro-function을 만들지 않고 code 변경을 응집된 함수 또는 유스케이스 계약과 focused test target으로 나눕니다. code를 변경하는 각 WorkUnit은 이유와 함께 등록된 `expertRefs`를 1~3개 선택해야 하며, UI WorkUnit은 `code.*`와 `ui.*` expert를 각각 하나 이상 요구합니다. `enno_plan_submit`은 누락, 중복, 알 수 없음 또는 제한을 초과한 조합을 거부하고 정확한 선택을 revision과 함께 저장합니다. Goki는 모든 Skill reference가 아니라 해당 fragment만 읽습니다. controller Skill은 role 수준이며 WorkUnit Skill snapshot에 삽입되지 않습니다. Zenki의 전체 plan이 승인되고 필요한 확인이 성공하기 전에는 Goki로 전환할 수 없습니다. 최종 review가 실패해도 이전 Goki WorkUnit을 직접 재개하지 않습니다. 거부된 plan과 verifier 증거를 이전 revision의 기록으로 보존하고 `zenki_planning`으로 이동해 새로운 revision-bound plan을 요구합니다. 승인된 review는 직접 완료되지 않고 `oduno_meditation`으로 이동합니다. `enno_meditation_submit`은 repository를 변경하지 않고 검사한 repository-relative path와 근거가 있는 오래된 test 또는 함수 후보를 저장한 뒤 run을 완료합니다. 응답의 `orchestrationId`는 모든 Enno MCP 작업에서 사용되며 host session identity와 분리됩니다. 추론한 scope, acceptance criteria, Skill, expert 선택 또는 verifier command가 있으면 구현 전에 일반 클라이언트 UI로 확인을 반환합니다. `needs_confirmation` 응답에는 확정된 계약의 결정적 표시 projection인 `ennoOduno.directive.userFacingConfirmation`이 포함됩니다. scope, 제외 항목, 완료 조건, 표시 번호 의존성을 가진 작업 항목, reference-only 상태를 포함한 Skill, 선택 이유가 있는 전문 관점, focused/final checks, 시도 상한이 각각 provenance basis(사용자 지정, 저장소 검증, 제안) 라벨과 함께 한 번씩 나타납니다. 클라이언트 모델은 raw directive JSON이나 내부 식별자를 노출하지 않고 모든 항목을 사용자 언어로 제시한 뒤 명시적인 approve, revise, cancel을 기다립니다. 기밀처럼 보이는 표시 값이나 64 KiB를 초과하는 projection은 가리거나 잘라내는 대신 plan 제출을 거부합니다.
 
@@ -84,7 +131,7 @@ setup은 번들된 `kiokuko-enno-oduno` controller Skill을 `kiokuko-single-purp
 
 클라이언트는 안내를 사용자 언어로 번역하고 기계용 action, 내부 reason code와 tool/field 이름, capability catalog, 식별자, revision, 표시 형식 version 또는 raw JSON을 표시하지 않습니다. 사용자가 명시적으로 선택하기 전에는 재시도, 취소 또는 대체 시도 생성을 자동으로 수행하지 않습니다.
 
-세 역할은 현재 클라이언트 모델을 사용합니다. Kiokuko는 별도의 모델을 호출하지 않으며 OpenAI, Anthropic 또는 OpenCode API credential을 요구하지 않습니다. Codex와 Claude Code는 횟수가 제한된 Stop hook을 사용하고 OpenCode는 횟수가 제한된 `session.idle` plugin을 사용합니다. OpenCode는 child-session idle event를 무시하고 같은 완료 turn의 반복 delivery를 deduplicate합니다. `task_prepare`에서 host session을 사용할 수 없었다면 최초의 일치 hook은 pending active run이 정확히 하나일 때만 원자적으로 바인딩합니다. 모호하면 추측하지 않고 제어를 반환하며 완료된 binding은 변경할 수 없습니다. Kiokuko는 Claude Code의 기본 8회 연속 Stop-block override보다 먼저 제어를 반환합니다. adapter 실패 시 고정 warning과 함께 클라이언트가 중지될 수 있습니다. 외부 Skill은 신뢰할 수 없는 reference-only 자료이며 자동으로 설치되거나 실행되지 않습니다.
+세 역할은 현재 클라이언트 모델을 사용합니다. Kiokuko는 별도의 모델을 호출하지 않으며 OpenAI, Anthropic 또는 OpenCode API credential을 요구하지 않습니다. Codex와 Claude Code는 횟수가 제한된 Stop hook을 사용하고 OpenCode는 횟수가 제한된 `session.idle` plugin을 사용합니다. OpenCode는 child-session idle event를 무시하고 같은 완료 turn의 반복 delivery를 deduplicate합니다. 같은 OS 사용자로 canonical repository에 접근할 수 있는 local process는 해당 run을 재개할 수 있다고 신뢰합니다. PID, process ancestry, executable, code signing 또는 inherited token 증명은 추가하지 않습니다. adapter는 정확한 session route를 우선하고, 일치하는 route가 없으면 Codex, Claude Code, OpenCode 사이에서 canonical repository의 모호하지 않은 단 하나의 active run을 원자적으로 reroute하고 이전 client version을 지웁니다. 후보가 여러 개면 어떤 run도 변경하지 않고 제어를 반환합니다. 공개 응답의 `clientBinding`은 현재 route를 나타내며 `bound`는 소유자를 뜻하지 않습니다. session별 continuation 한도에 도달하면 그 session의 자동 계속만 중지하며 run과 ledger는 다른 local project client가 재개할 수 있도록 active 상태를 유지합니다. Kiokuko는 Claude Code의 기본 8회 연속 Stop-block override보다 먼저 제어를 반환합니다. Hermes에는 자동 continuation hook이 없지만 같은 run identity를 사용하는 MCP 작업은 계속할 수 있습니다. adapter 실패 시 고정 warning과 함께 클라이언트가 중지될 수 있습니다. 외부 Skill은 신뢰할 수 없는 reference-only 자료이며 자동으로 설치되거나 실행되지 않습니다.
 
 ```bash
 kiokuko setup --clients codex,opencode,claude --enno-oduno on
@@ -106,32 +153,6 @@ npm run test:e2e:agents
 - OpenCode
 - Claude Code
 - Hermes Agent
-
-## 사용할수록 똑똑해지는 구조
-
-```text
-사용자 요청
-      ↓
-관련 과거 메모리 검색
-      ↓
-AI가 메모리를 참고해 작업
-      ↓
-재사용 가능한 결과나 교훈 저장
-      ↓
-다음 요청에서 다시 검색
-```
-
-Kiokuko는 다음 흐름을 반복합니다.
-
-1. 작업 전에 현재 프로젝트와 Global 메모리를 검색합니다
-2. 관련성이 높은 메모리만 AI에 전달합니다
-3. AI가 작업을 수행합니다
-4. 작업 후 재사용할 수 있는 지식을 메모리로 저장합니다
-5. 다음 작업에서 그 메모리를 재사용합니다
-
-즉, Kiokuko는 **영구 메모리를 축적하는 RAG 시스템**입니다.
-
-MCP는 AI 클라이언트와 Kiokuko를 연결하고, RAG는 필요한 메모리를 검색해 AI에 전달합니다.
 
 ## 메모리는 프로젝트별로 분리됩니다
 

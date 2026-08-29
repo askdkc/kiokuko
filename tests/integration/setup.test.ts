@@ -444,8 +444,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /A failed review never returns directly to Goki/u);
     assert.match(instructions, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
     assert.match(instructions, /`ennoOduno\.orchestrationId`/u);
-    assert.match(instructions, /never select a repository-wide latest run/u);
-    assert.match(instructions, /Ambiguous candidates fail open without binding/u);
+    assert.match(instructions, /never select a repository-wide latest run/iu);
+    assert.match(instructions, /ambiguous candidates fail open without mutation/u);
+    assert.match(instructions, /routing metadata, not authorization ownership/u);
+    assert.match(instructions, /leaves the run active for another local project client/u);
     assert.match(instructions, /userFacingRecovery.*whenToChoose.*whatHappens.*explicit choice/isu);
     assert.match(instructions, /Do not retry, cancel, or create a new task automatically/iu);
     assert.match(instructions, /never ask the user to locate or construct that catalog/iu);
@@ -858,7 +860,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
-    `human project rule\n${staleAgent.replace('kiokuko-template-version: 18', 'kiokuko-template-version: 14')}`,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 19', 'kiokuko-template-version: 14')}`,
   );
   await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 12 }, null, 2)}\n`);
 
@@ -947,11 +949,11 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.match(refreshedAgent, /kiokuko-template-version: 18/u);
+  assert.match(refreshedAgent, /kiokuko-template-version: 19/u);
   assert.equal(refreshedAgent.includes('kiokuko-template-version: 14'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
-  assert.equal(refreshedBinding.templateVersion, 18);
+  assert.equal(refreshedBinding.templateVersion, 19);
 
   const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
@@ -964,7 +966,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryId: 'repo_setup_refresh_location_only',
     workspace: 'project:setup-refresh-location-only',
     agentFile: 'AGENTS.md',
-    templateVersion: 18,
+    templateVersion: 19,
   });
   assert.equal(
     await readFile(locationOnlyGitignorePath, 'utf8'),

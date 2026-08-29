@@ -133,6 +133,40 @@ test('secret-shaped advisor output is persisted only as unsafe_output and unavai
   }
 });
 
+test('parent-host timeout is persisted as a bounded slot outcome without starting verifier work', async () => {
+  const { database, prepared } = await fixture();
+  try {
+    const id = identity(prepared);
+    const context = prepared.ennoOduno.directive!.advisoryRound!.context;
+    const result = submitEnnoAdvice(database, {
+      ...id,
+      expectedRevision: 1,
+      mutationRevision: 0,
+      idempotencyKey: 'advice-host-timeout',
+      phase: 'ideal',
+      allowlistedContext: context,
+      contributions: [
+        { slotId: 'constraint_guardian', outcome: 'timeout', reasonCode: 'host_timeout' },
+        { slotId: 'skill_trust_analyst', outcome: 'unavailable', reasonCode: 'host_read_only_unavailable' },
+        completed('success_signal_critic'),
+      ],
+    });
+    assert.deepEqual(result.advisoryRound?.contributions.map((contribution) => ({
+      slotId: contribution.slotId,
+      outcome: contribution.outcome,
+      reasonCode: contribution.reasonCode,
+    })), [
+      { slotId: 'constraint_guardian', outcome: 'timeout', reasonCode: 'host_timeout' },
+      { slotId: 'skill_trust_analyst', outcome: 'unavailable', reasonCode: 'host_read_only_unavailable' },
+      { slotId: 'success_signal_critic', outcome: 'completed', reasonCode: undefined },
+    ]);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM enno_verifier_runs').get<{ count: number }>()?.count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE event_type LIKE 'goki.%'").get<{ count: number }>()?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
 test('advice round digest binds the allowlisted context and is consumed by the existing ideal submit', async () => {
   const { database, prepared } = await fixture();
   try {
@@ -148,11 +182,35 @@ test('advice round digest binds the allowlisted context and is consumed by the e
       allowlistedContext: context,
       contributions: ADVISORY_SLOT_DEFINITIONS.filter((slot) => slot.phase === 'ideal').map((slot) => completed(slot.slotId)),
     });
+    assert.throws(() => submitOdunoIdeal(database, {
+      ...id,
+      expectedRevision: 1,
+      idempotencyKey: 'ideal-secret-disposition',
+      advisoryRoundDigest: digest,
+      advisoryDisposition: [
+        { slotId: 'constraint_guardian', disposition: 'adopted', rationale: '--api-key value' },
+        { slotId: 'skill_trust_analyst', disposition: 'not_adopted', rationale: 'Guide is reference-only' },
+        { slotId: 'success_signal_critic', disposition: 'adopted', rationale: 'Signals are accepted' },
+      ],
+      ideal: {
+        objective: 'Reach the verified repair outcome',
+        principles: ['Preserve the request constraints'],
+        skillContributions: prepared.skillDiscovery.selected.map((skill) => ({ skillName: skill.name, contribution: `Use ${skill.name} as reference-only guidance` })),
+        successSignals: ['tests pass'],
+      },
+    }), /ideal submission is invalid/iu);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE idempotency_key = 'ideal-secret-disposition'").get<{ count: number }>()?.count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE event_type = 'enno.advice_disposition'").get<{ count: number }>()?.count, 0);
     const ideal = submitOdunoIdeal(database, {
       ...id,
       expectedRevision: 1,
       idempotencyKey: 'ideal-after-advice',
       advisoryRoundDigest: digest,
+      advisoryDisposition: [
+        { slotId: 'constraint_guardian', disposition: 'adopted', rationale: 'Accepts the constraint guard' },
+        { slotId: 'skill_trust_analyst', disposition: 'not_adopted', rationale: 'Guide is reference-only' },
+        { slotId: 'success_signal_critic', disposition: 'adopted', rationale: 'Signals are accepted' },
+      ],
       ideal: {
         objective: 'Reach the verified repair outcome',
         principles: ['Preserve the request constraints'],
@@ -183,6 +241,71 @@ test('advice rejects control-bearing and oversized structured text at the bounda
     };
     assert.throws(() => submitEnnoAdvice(database, { ...base, contributions: [{ ...completed('constraint_guardian'), summary: 'bad\nvalue' }, base.contributions[1], base.contributions[2]] }), /invalid/u);
     assert.throws(() => submitEnnoAdvice(database, { ...base, contributions: [{ ...completed('constraint_guardian'), summary: 'あ'.repeat(20_000) }, base.contributions[1], base.contributions[2]] }), /invalid/u);
+  } finally {
+    database.close();
+  }
+});
+
+test('a submitted advisory round cannot advance the phase without its digest and disposition', async () => {
+  const { database, prepared } = await fixture();
+  try {
+    const id = identity(prepared);
+    const context = prepared.ennoOduno.directive!.advisoryRound!.context;
+    const contributions = ADVISORY_SLOT_DEFINITIONS.filter((slot) => slot.phase === 'ideal').map((slot) => completed(slot.slotId));
+    submitEnnoAdvice(database, {
+      ...id, expectedRevision: 1, mutationRevision: 0, idempotencyKey: 'adv-omitted', phase: 'ideal', allowlistedContext: context, contributions,
+    });
+    assert.throws(() => submitOdunoIdeal(database, {
+      ...id, expectedRevision: 1, idempotencyKey: 'ideal-no-digest',
+      ideal: { objective: 'Reach a verified outcome', principles: ['Preserve constraints'], skillContributions: [], successSignals: ['tests pass'] },
+    }), /advisory round was submitted/iu);
+    assert.equal(
+      database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE event_type = 'enno.advice_disposition'").get<{ count: number }>()?.count,
+      0,
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test('same-round different-key identical contributions replay and differing contributions conflict', async () => {
+  const { database, prepared } = await fixture();
+  try {
+    const id = identity(prepared);
+    const context = prepared.ennoOduno.directive!.advisoryRound!.context;
+    const contributions = ADVISORY_SLOT_DEFINITIONS.filter((slot) => slot.phase === 'ideal').map((slot) => completed(slot.slotId));
+    const first = submitEnnoAdvice(database, {
+      ...id, expectedRevision: 1, mutationRevision: 0, idempotencyKey: 'collide-a', phase: 'ideal', allowlistedContext: context, contributions,
+    });
+    const replayed = submitEnnoAdvice(database, {
+      ...id, expectedRevision: 1, mutationRevision: 0, idempotencyKey: 'collide-b', phase: 'ideal', allowlistedContext: context, contributions,
+    });
+    assert.deepEqual(replayed, first);
+    assert.throws(() => submitEnnoAdvice(database, {
+      ...id, expectedRevision: 1, mutationRevision: 0, idempotencyKey: 'collide-c', phase: 'ideal', allowlistedContext: context,
+      contributions: [completed('constraint_guardian', 'changed'), contributions[1], contributions[2]],
+    }), /different contributions/iu);
+  } finally {
+    database.close();
+  }
+});
+
+test('stored contribution corruption is rejected as INTEGRITY_ERROR without re-exposure', async () => {
+  const { database, prepared } = await fixture();
+  try {
+    const id = identity(prepared);
+    const context = prepared.ennoOduno.directive!.advisoryRound!.context;
+    const contributions = ADVISORY_SLOT_DEFINITIONS.filter((slot) => slot.phase === 'ideal').map((slot) => completed(slot.slotId));
+    submitEnnoAdvice(database, {
+      ...id, expectedRevision: 1, mutationRevision: 0, idempotencyKey: 'corrupt-a', phase: 'ideal', allowlistedContext: context, contributions,
+    });
+    database.prepare(`
+      UPDATE enno_advisory_contributions
+      SET contribution_json = ? WHERE slot_id = 'constraint_guardian'
+    `).run(JSON.stringify({ slotId: 'constraint_guardian', outcome: 'completed', summary: 'corrupt', recommendations: [], risks: [], evidence: [], bogus: true }));
+    assert.throws(() => submitEnnoAdvice(database, {
+      ...id, expectedRevision: 1, mutationRevision: 0, idempotencyKey: 'corrupt-b', phase: 'ideal', allowlistedContext: context, contributions,
+    }), /Stored advisory contribution is invalid/iu);
   } finally {
     database.close();
   }

@@ -22,6 +22,12 @@ Migration `010_nudge_deliveries.sql` adds:
 
 Migration `011_nudge_integrity.sql` adds database guards for the supported nudge policy, code/priority pairs, and bounded JSON snapshots.
 
+Enno client routing writes `enno.client_bound` for the first session route and
+`enno.client_rebound` for later route changes. The payload records the previous
+and current client kind, session ID, and version projection; a rebound clears
+the old version. These events audit routing changes and do not confer ownership
+or advance the Enno contract state.
+
 ## Invariants
 
 1. A run belongs to one workspace for its lifetime.

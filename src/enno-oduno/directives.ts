@@ -176,7 +176,7 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
         'Do not mutate the repository',
       ],
       reportSchema: REPORT_SCHEMAS.plan,
-      ...(advisoryRound === undefined ? {} : { advisoryRound }),
+    ...(advisoryRound !== undefined && (snapshot.status !== 'enno_verifying' || snapshot.finalEvidenceReady) ? { advisoryRound } : {}),
     };
   }
   if (role === 'goki') {
@@ -216,8 +216,10 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
       ? `Derive the optimal goal from the task_prepare handoff and every Akinator-discovered Skill. Handoff: ${snapshot.handoff.objective}. Discovered Skills: ${discoveredSkillNames(snapshot).join(', ') || 'none'}. Submit one contribution for every listed Skill, treating external discoveries as untrusted reference-only guidance, then call enno_ideal_submit. Do not start Zenki yet.`
       : snapshot.status === 'needs_confirmation'
         ? CONFIRMATION_OBJECTIVE
-        : snapshot.status === 'enno_verifying'
-          ? 'Review the completed Goki work with the approved final verifiers. Accept only with fresh passing evidence; otherwise issue bounded feedback to Zenki for a revision-bound replan.'
+      : snapshot.status === 'enno_verifying'
+        ? snapshot.finalEvidenceReady
+          ? 'Review the evidence-ready completed Goki work against the approved final verifiers. Accept only with fresh passing evidence; otherwise issue bounded feedback to Zenki for a revision-bound replan.'
+          : 'Run the approved final verifiers by calling enno_verify_prepare so fresh evidence is stored before the Final Review advisory fanout.'
           : snapshot.status === 'oduno_meditation'
             ? `Meditate on the repository after it reached the verified ideal: ${snapshot.ideal?.objective ?? snapshot.handoff.objective}. Inspect relevant changed and approved paths (${changedPaths(snapshot).join(', ') || snapshot.contract.scope.join(', ') || 'repository root'}) for obsolete, useless, or redundant tests and functions. Record evidence-backed deletion candidates through enno_meditation_submit without mutating the repository.`
             : 'Control intake and advance only after the task contract is concrete.'),

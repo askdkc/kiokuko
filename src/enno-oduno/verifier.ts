@@ -75,6 +75,7 @@ export async function runVerifier(
     let settled = false;
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
+    let forceKillAttempted = false;
     const settle = (value: { status: VerifierRunResult['status']; exitCode: number | null; signal: string | null }): void => {
       if (settled) return;
       settled = true;
@@ -82,14 +83,35 @@ export async function runVerifier(
       if (killTimer !== undefined) clearTimeout(killTimer);
       resolve(value);
     };
+    const tryKill = (signal: NodeJS.Signals): boolean => {
+      try {
+        return child.kill(signal);
+      } catch {
+        return false;
+      }
+    };
+    const forceKill = (): void => {
+      if (settled || forceKillAttempted) return;
+      forceKillAttempted = true;
+      tryKill('SIGKILL');
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => child.kill('SIGKILL'), 1_000);
-      killTimer.unref();
+      if (!tryKill('SIGTERM')) forceKill();
+      if (!forceKillAttempted) {
+        killTimer = setTimeout(forceKill, 1_000);
+        killTimer.unref();
+      }
     }, normalized.timeoutMs);
     timer.unref();
-    child.once('error', () => settle({ status: timedOut ? 'timeout' : 'spawn_failed', exitCode: null, signal: timedOut ? 'SIGTERM' : null }));
+    child.on('error', () => {
+      if (timedOut) {
+        // A failed termination request is not completion; force the child down and wait for close.
+        forceKill();
+        return;
+      }
+      settle({ status: 'spawn_failed', exitCode: null, signal: null });
+    });
     child.once('close', (code, signal) => settle({
       status: timedOut ? 'timeout' : code === 0 ? 'passed' : 'failed',
       exitCode: timedOut ? null : code,

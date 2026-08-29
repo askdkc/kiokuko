@@ -92,7 +92,7 @@ export interface EnnoIdentity {
 }
 
 export interface OperationIdentity {
-  operation: 'ideal_submit' | 'advice_submit' | 'plan_submit' | 'answer' | 'work_report' | 'finish' | 'meditation_submit';
+  operation: 'ideal_submit' | 'advice_submit' | 'plan_submit' | 'answer' | 'work_report' | 'finish' | 'meditation_submit' | 'verify_prepare';
   idempotencyKey: string;
   requestDigest: string;
 }
@@ -188,7 +188,7 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
   }
   if ((row.client_kind !== null && !ENNO_CLIENT_KINDS.includes(row.client_kind))
     || ((row.client_version !== null || row.client_session_id !== null) && row.client_kind === null)) {
-    integrity('Stored Enno client binding is invalid');
+    integrity('Stored Enno client routing metadata is invalid');
   }
   const contract = parseEnnoContract(parseCanonicalJson(row.contract_json, 'Stored Enno contract is invalid'));
   const handoff = parseEnnoRequestHandoff(parseCanonicalJson(row.handoff_json, 'Stored Enno request handoff is invalid'));
@@ -206,6 +206,21 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
     integrity('Stored Oduno meditation phase is inconsistent');
   }
   if (meditation !== null && status !== 'completed') integrity('Stored Oduno meditation result is inconsistent');
+  const finalEvidenceReady = contract.finalVerifiers.length === 0
+    || hasFreshFinalVerifierResults(database, {
+      runId: row.run_id,
+      revision: row.revision,
+      mutationRevision: row.mutation_revision,
+      verifiers: contract.finalVerifiers,
+    });
+  const finalEvidence = finalEvidenceReady
+    ? readFreshFinalVerifierResults(database, {
+        runId: row.run_id,
+        revision: row.revision,
+        mutationRevision: row.mutation_revision,
+        verifiers: contract.finalVerifiers,
+      }) ?? []
+    : [];
   return {
     runId: row.run_id,
     workspace: row.workspace,
@@ -225,6 +240,8 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
     contract,
     handoff,
     workUnits: workUnits(database, identity.runId, row.revision),
+    finalEvidenceReady,
+    finalEvidence,
     blocker: row.blocker,
   };
 }
@@ -528,6 +545,19 @@ export function readFreshFinalVerifierResults(database: SqliteDatabase, input: {
       stderrDigest: row.stderr_digest,
     };
   });
+}
+
+export function hasFreshFinalVerifierResults(database: SqliteDatabase, input: {
+  runId: string;
+  revision: number;
+  mutationRevision: number;
+  verifiers: readonly VerifierSpec[];
+}): boolean {
+  try {
+    return readFreshFinalVerifierResults(database, input) !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 export function readOperationReceipt<T>(database: SqliteDatabase, runId: string, operation: OperationIdentity): T | undefined {

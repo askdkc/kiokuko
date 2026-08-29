@@ -20,6 +20,12 @@ Migration 004 adds the Agent Gateway execution ledger described in `execution-le
 
 Migration 010 adds `nudge_deliveries`, the content-free presentation history for deterministic checkpoint nudges. Migration 011 adds database guards for the supported nudge policy, code/priority pairs, and bounded JSON snapshots. Migration 012 validates the persisted structural identity of released `context-ranking-v2` and `context-ranking-v3` scoped deliveries during setup. It preserves their original delivery IDs, policy versions, character metadata, delivery items, and all historical references. Legacy preview text was not persisted and is not reconstructed during upgrade. Legacy deliveries remain available for audit and feedback references, but are never replayed as current `context-ranking-v4` context; invalid persisted legacy structure aborts the migration transaction. New scoped deliveries continue to use `context-ranking-v4`.
 
+Migration 018 removes the migration-013 trigger that made a completed Enno
+client binding immutable. The columns remain unchanged, but now store mutable
+routing metadata so the adapter can atomically move one unambiguous active run
+between local project clients. Run, workspace, orchestration, revision,
+idempotency, and terminal-state constraints are unchanged.
+
 `akinator_reasoning_paths` links one proposed entry revision to one run and its intake session. The unique `(run_id, entry_id, entry_revision)` key blocks same-run duplication. `qualified` is set only by the checkpoint service for completed actionable paths with fresh verification or a passing test. Concept aggregation uses a server-derived normalized hash; no user-supplied concept key or retrieval counter can increase it.
 
 Migration 009 adds the external-Skill tables and completes the revision-hash

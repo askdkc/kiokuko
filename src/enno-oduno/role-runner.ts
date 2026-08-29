@@ -13,12 +13,25 @@ import {
   ennoRequestHandoffSchema,
   odunoIdealSchema,
   odunoMeditationSchema,
+  verifierSpecSchema,
   workUnitSchema,
 } from './schemas.js';
 import { ENNO_ROLES, ENNO_STATUSES, type EnnoRole, type RoleDirective } from './types.js';
 
 export const MAX_ROLE_INPUT_BYTES = 2 * 1024 * 1024;
 export const MAX_ROLE_OUTPUT_BYTES = 256 * 1024;
+
+const verifierRunResultSchema = z.object({
+  verifier: verifierSpecSchema,
+  status: z.enum(['passed', 'failed', 'timeout', 'spawn_failed']),
+  exitCode: z.number().int().nullable(),
+  signal: z.string().max(200).nullable(),
+  durationMs: z.number().int().min(0),
+  stdoutPreview: z.string().max(8 * 1024),
+  stderrPreview: z.string().max(8 * 1024),
+  stdoutDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  stderrDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+}).strict();
 
 const roleInputSchema = z.object({
   runId: z.string().min(1).max(256),
@@ -50,6 +63,8 @@ const roleInputSchema = z.object({
     }).strict().nullable(),
   }).strict()).max(128).default([]),
   blocker: z.string().max(16_384).nullable().default(null),
+  finalEvidenceReady: z.boolean().default(false),
+  finalEvidence: z.array(verifierRunResultSchema).default([]),
   akinatorProfile: z.object({
     taskType: z.enum(['build', 'debug', 'review', 'devops']).nullable(),
     target: z.string().max(4_096).nullable(),
@@ -122,6 +137,8 @@ export function generateRoleDirective(role: EnnoRole, input: unknown): RoleDirec
     contract: parsed.data.contract,
     handoff: parsed.data.handoff,
     workUnits: parsed.data.workUnits,
+    finalEvidenceReady: parsed.data.finalEvidenceReady,
+    finalEvidence: parsed.data.finalEvidence,
     blocker: parsed.data.blocker,
   });
   if (directive === null || directive.role !== role) {

@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 18 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 19 -->/);
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
@@ -52,18 +52,23 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /Every Goki WorkUnit retains the master SOUL and directly required specialist indexes/u);
   assert.match(rendered, /Goki can start only after Zenki submits a complete WorkPlan/u);
   assert.match(rendered, /A failed review never returns directly to Goki/u);
+  assert.match(rendered, /Final Review is two-phase: `enno_verify_prepare` executes the final verifiers outside database transactions with shell disabled and repository-bounded cwd/u);
+  assert.match(rendered, /the final advisory fanout is returned only after that evidence is prepared/u);
+  assert.match(rendered, /`enno_finish` never spawns a subprocess and decides accept\/replan\/block from the stored fresh evidence/u);
   assert.match(rendered, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
   assert.match(rendered, /requires a new plan plus any required confirmation before Goki can resume/u);
   assert.match(rendered, /`ennoOduno\.orchestrationId`/u);
-  assert.match(rendered, /host client session ID is optional/u);
-  assert.match(rendered, /never select a repository-wide latest run/u);
+  assert.match(rendered, /host client session ID is optional routing metadata, not authorization ownership/u);
+  assert.match(rendered, /single unambiguous active run.*including across client kinds/u);
+  assert.match(rendered, /leaves the run active for another local project client/u);
+  assert.match(rendered, /never select a repository-wide latest run/iu);
   assert.match(rendered, /ask_user_confirmation.*userFacingConfirmation.*never output raw directive JSON/isu);
   assert.match(rendered, /userFacingRecovery.*whenToChoose.*whatHappens.*explicit choice/isu);
   assert.match(rendered, /Do not retry, cancel, or create a new task automatically/iu);
   assert.match(rendered, /never ask the user to locate or construct that catalog/iu);
   assert.match(rendered, /active planning attempt.*restart choice explicitly cancels it before starting a new `task_prepare`/iu);
   assert.match(rendered, /attempt already ended.*do not try to cancel it again/iu);
-  assert.match(rendered, /Ambiguous candidates fail open without binding/u);
+  assert.match(rendered, /ambiguous candidates fail open without mutation/u);
   assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
   assert.match(rendered, /Every descriptor must include its kind and canonical name/u);
   assert.match(rendered, /bounded opaque `requestId`/);

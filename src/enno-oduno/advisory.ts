@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { canonicalContentHash, canonicalJson } from '../serialization/validate.js';
 import { findSecret, findSecretInValue } from '../memory/secrets.js';
 import { KiokukoError } from '../errors.js';
@@ -12,9 +13,13 @@ import {
   type AdvisoryContext,
   type AdvisoryContribution,
   type AdvisoryFanoutDirective,
+  type AdvisoryFinalVerifierEvidence,
   type AdvisoryPhase,
+  type AdvisorySkillTrust,
   type AdvisorySlotId,
+  type AdvisoryWorkUnitOutcome,
   type EnnoRunSnapshot,
+  type SkillSetEntry,
 } from './types.js';
 
 const phaseSlots = (phase: AdvisoryPhase) => ADVISORY_SLOT_DEFINITIONS.filter((slot) => slot.phase === phase);
@@ -53,27 +58,104 @@ export function advisoryPhaseForStatus(status: EnnoRunSnapshot['status']): Advis
   return null;
 }
 
-function advisoryContextForSnapshot(snapshot: EnnoRunSnapshot, phase: AdvisoryPhase): AdvisoryContext {
-  const objective = phase === 'ideal'
-    ? snapshot.handoff.objective
-    : phase === 'planning'
-      ? snapshot.ideal?.objective ?? snapshot.handoff.objective
-      : snapshot.contract.workPlan.objective;
-  const reference = phase === 'final_review'
-    ? `Review the completed WorkPlan against its final verifiers: ${snapshot.contract.finalVerifiers.map((verifier) => verifier.id).join(', ')}`
-    : snapshot.handoff.objective;
+function skillTrustFromEntries(entries: readonly SkillSetEntry[]): AdvisorySkillTrust[] {
+  return entries.slice(0, 64).map((entry) => {
+    const trustStatus = entry.availability === 'external_reference'
+      ? 'reference_only' as const
+      : entry.availability === 'unavailable'
+        ? 'unavailable' as const
+        : 'available' as const;
+    return {
+      name: entry.name,
+      source: entry.availability,
+      required: entry.required,
+      trustStatus,
+    };
+  });
+}
+
+export function projectRepositoryRelativePath(repositoryRoot: string, value: string): string {
+  if (value.includes('\0')) return '#redacted';
+  if (value.split(/[\\/]/).includes('..')) return '#redacted';
+  if (path.win32.isAbsolute(value) && !path.posix.isAbsolute(value)) return '#redacted';
+  if (path.posix.isAbsolute(value)) {
+    const relative = path.relative(repositoryRoot, value).split(path.sep).join('/');
+    if (relative === '' || relative === '..' || relative.startsWith('../')) return '#redacted';
+    return relative;
+  }
+  return value;
+}
+
+function projectChangedPaths(repositoryRoot: string, paths: readonly string[]): string[] {
+  return paths.map((value) => projectRepositoryRelativePath(repositoryRoot, value));
+}
+
+function finalReviewEvidence(evidence: readonly EnnoRunSnapshot['finalEvidence'][number][]): AdvisoryFinalVerifierEvidence[] {
+  return evidence.map((result) => ({
+    id: result.verifier.id,
+    status: result.status,
+    exitCode: result.exitCode,
+    signal: result.signal,
+    stdoutDigest: result.stdoutDigest,
+    stderrDigest: result.stderrDigest,
+  }));
+}
+
+function finalReviewOutcomes(snapshot: EnnoRunSnapshot): AdvisoryWorkUnitOutcome[] {
+  return snapshot.workUnits
+    .filter((unit) => unit.status === 'completed' && unit.result !== null)
+    .map((unit) => ({
+      id: unit.workUnit.id,
+      status: unit.result!.outcome,
+      mutated: unit.result!.mutated,
+      changedPaths: projectChangedPaths(snapshot.repositoryRoot, unit.result!.changedPaths),
+    }));
+}
+
+export function advisoryContextForSnapshot(snapshot: EnnoRunSnapshot, phase: AdvisoryPhase): AdvisoryContext {
+  if (phase === 'ideal') {
+    return {
+      phase: 'ideal',
+      objective: snapshot.handoff.objective,
+      constraints: [...snapshot.handoff.constraints],
+      expectedOutcome: snapshot.handoff.expected ?? '',
+      successSignals: [...snapshot.handoff.verification],
+      skillTrust: skillTrustFromEntries(snapshot.contract.skillSet.entries),
+    };
+  }
+  if (phase === 'planning') {
+    return {
+      phase: 'planning',
+      idealObjective: snapshot.ideal?.objective ?? snapshot.handoff.objective,
+      acceptanceCriteria: snapshot.contract.acceptanceCriteria.map((criterion) => criterion.description),
+      planningConstraints: [...snapshot.handoff.constraints],
+      skillAvailability: skillTrustFromEntries(snapshot.contract.skillSet.entries),
+    };
+  }
+  const changedPaths = projectChangedPaths(
+    snapshot.repositoryRoot,
+    [...new Set(snapshot.workUnits.flatMap((unit) => unit.result?.changedPaths ?? []))],
+  );
+  const verifierEvidence = finalReviewEvidence(snapshot.finalEvidence);
   return {
-    objective,
-    scope: [...snapshot.contract.scope],
-    constraints: [...snapshot.handoff.constraints],
-    acceptanceCriteria: snapshot.contract.acceptanceCriteria.map((criterion) => criterion.description),
-    reference,
+    phase: 'final_review',
+    workPlanSummary: snapshot.contract.workPlan.objective,
+    workUnitOutcomes: finalReviewOutcomes(snapshot),
+    changedPaths,
+    verifierEvidence,
+    evidenceSetDigest: canonicalContentHash(verifierEvidence),
+    freshnessMarker: canonicalContentHash({
+      revision: snapshot.revision,
+      mutationRevision: snapshot.mutationRevision,
+      evidenceProjection: verifierEvidence,
+    }),
   };
 }
 
 export function advisoryDirectiveForSnapshot(snapshot: EnnoRunSnapshot): AdvisoryFanoutDirective | undefined {
   const phase = advisoryPhaseForStatus(snapshot.status);
   if (phase === null) return undefined;
+  if (phase === 'final_review' && !snapshot.finalEvidenceReady) return undefined;
   return {
     protocolVersion: 1,
     phase,

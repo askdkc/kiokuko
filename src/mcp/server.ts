@@ -27,6 +27,7 @@ import { absoluteCwdSchema } from '../repository/cwd-schema.js';
 import {
   answerEnno,
   finishEnno,
+  prepareEnnoVerification,
   reportEnnoWork,
   submitEnnoAdvice,
   submitEnnoPlan,
@@ -40,6 +41,7 @@ import {
   idealSubmissionSchema,
   meditationSubmissionSchema,
   planSubmissionSchema,
+  verificationPrepareSchema,
   workReportSchema,
 } from '../enno-oduno/schemas.js';
 import {
@@ -271,7 +273,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
       cwd: absoluteCwdSchema.optional().describe('Absolute current working directory; defaults to the MCP process cwd and is returned in canonical form through executionContext'),
       profileHints: profileHints.optional().describe('Task type, target, success condition, and constraints inferred from current evidence'),
       capabilities: capabilityCatalog.optional().describe("Complete capability descriptors for every capability available in this client as Array<{kind:'skill'|'mcp_tool';name:string;description?:string}>. Every item must include its kind and canonical name; description is optional and bounded. An explicit empty array means known-empty; omission or any malformed/dropped item means unknown. The catalog is ephemeral and never stored"),
-      client: z.object({ kind: z.string().trim().min(1).max(200).optional(), version: z.string().trim().min(1).max(100).optional(), sessionId: clientSessionId.optional() }).strict().optional().describe('Optional explicit client identity. Enno-Oduno normally identifies Codex, Claude Code, or OpenCode from the MCP initialize clientInfo and rejects a contradictory supported-client hint. The host session ID may be omitted and bound later by the matching hook.'),
+      client: z.object({ kind: z.string().trim().min(1).max(200).optional(), version: z.string().trim().min(1).max(100).optional(), sessionId: clientSessionId.optional() }).strict().optional().describe('Optional explicit client routing metadata. Enno-Oduno normally identifies Codex, Claude Code, or OpenCode from the MCP initialize clientInfo and rejects a contradictory supported-client hint. The host session ID is not authorization ownership: continuation prefers an exact session route, otherwise a matching hook may reroute the single unambiguous active run in the canonical repository.'),
       maxContextChars: z.number().int().min(1000).max(50_000).default(12_000).describe('Maximum characters for each bounded context lane; this normalized value is bound to the run'),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -357,9 +359,16 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await reportEnnoWork(database, input)))));
 
+  server.registerTool('enno_verify_prepare', {
+    title: 'Prepare final verification and fresh evidence',
+    description: `Prepare the final-review evidence for an Enno-Oduno run. ${ENNO_TOOL_IDENTITY_CONTRACT} The final verifiers are executed outside database transactions with shell disabled and repository-bounded cwd, then the fresh evidence is stored bound to the current contract revision plus mutation revision. Identical fresh evidence for the same revision plus mutation revision is reused after enno_verify_prepare has prepared it, and enno_finish reads only this stored evidence and never spawns a subprocess. Evidence must be prepared before the Final Review advisory fanout.`,
+    inputSchema: verificationPrepareSchema.shape,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await prepareEnnoVerification(database, input)))));
+
   server.registerTool('enno_finish', {
     title: 'Review an Enno-Oduno run',
-    description: `Enno-Oduno submits its own accept-or-replan Review and runs immutable final verifiers with shell disabled and repository-bounded cwd. ${ENNO_TOOL_IDENTITY_CONTRACT} Acceptance requires both an accept decision and fresh passing evidence, then advances a new run to Oduno meditation instead of completing it directly. A replan decision or bounded verification failure increments the contract revision and returns Review feedback to Zenki for a new plan; it never returns directly to Goki.`,
+    description: `Enno-Oduno submits its own accept-or-replan Review. It decides accept, replan, or block only from fresh evidence already prepared by enno_verify_prepare with shell disabled and repository-bounded cwd; it never spawns a subprocess itself. ${ENNO_TOOL_IDENTITY_CONTRACT} Acceptance requires both an accept decision and fresh passing evidence, then advances a new run to Oduno meditation instead of completing it directly. A replan decision or bounded verification failure increments the contract revision and returns Review feedback to Zenki for a new plan; it never returns directly to Goki.`,
     inputSchema: finishSchema.shape,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await finishEnno(database, input)))));

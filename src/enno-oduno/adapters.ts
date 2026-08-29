@@ -1,16 +1,13 @@
-import path from 'node:path';
 import * as z from 'zod/v4';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
-import { canonicalDirectory } from '../repository/detect-root.js';
+import { detectRepositoryRoot } from '../repository/detect-root.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import { directiveForRun } from './directives.js';
 import {
   appendEnnoEventInTransaction,
   readEnnoSnapshot,
-  terminalizeLedgerRunInTransaction,
-  updateContractInTransaction,
 } from './store.js';
 import {
   ENNO_CLIENT_KINDS,
@@ -36,6 +33,7 @@ interface CandidateRow extends SqliteRow {
   workspace: string;
   orchestrationId: string;
   clientKind: EnnoClient | null;
+  clientVersion: string | null;
   clientSessionId: string | null;
   repositoryRoot: string;
   status: EnnoOdunoState['status'];
@@ -50,40 +48,35 @@ export interface AdapterDecision {
   warning: string | null;
 }
 
-function isUnder(root: string, cwd: string): boolean {
-  const relative = path.relative(root, cwd);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
 function exactSessionCandidates(
   database: SqliteDatabase,
   client: EnnoClient,
   sessionId: string,
-  cwd: string,
+  repositoryRoot: string,
 ): CandidateRow[] {
   return database.prepare(`
     SELECT ec.run_id AS runId, ec.workspace, ec.orchestration_session_id AS orchestrationId,
-           ec.client_kind AS clientKind, ec.client_session_id AS clientSessionId,
+           ec.client_kind AS clientKind, ec.client_version AS clientVersion,
+           ec.client_session_id AS clientSessionId,
            ec.repository_root AS repositoryRoot, ec.status
     FROM enno_contracts AS ec
     WHERE ec.client_session_id = ?
       AND ec.client_kind = ?
+      AND ec.repository_root = ?
       AND ec.status IN ('zenki_planning', 'goki_executing', 'enno_verifying')
-  `).all<CandidateRow>(sessionId, client)
-    .filter((candidate) => isUnder(candidate.repositoryRoot, cwd));
+  `).all<CandidateRow>(sessionId, client, repositoryRoot);
 }
 
-function pendingSessionCandidates(database: SqliteDatabase, client: EnnoClient, cwd: string): CandidateRow[] {
+function repositoryCandidates(database: SqliteDatabase, repositoryRoot: string): CandidateRow[] {
   return database.prepare(`
     SELECT ec.run_id AS runId, ec.workspace, ec.orchestration_session_id AS orchestrationId,
-           ec.client_kind AS clientKind, ec.client_session_id AS clientSessionId,
+           ec.client_kind AS clientKind, ec.client_version AS clientVersion,
+           ec.client_session_id AS clientSessionId,
            ec.repository_root AS repositoryRoot, ec.status
     FROM enno_contracts AS ec
-    WHERE ec.client_session_id IS NULL
-      AND (ec.client_kind IS NULL OR ec.client_kind = ?)
+    WHERE ec.repository_root = ?
       AND ec.status IN ('zenki_planning', 'goki_executing', 'enno_verifying')
-  `).all<CandidateRow>(client)
-    .filter((candidate) => isUnder(candidate.repositoryRoot, cwd));
+  `).all<CandidateRow>(repositoryRoot);
 }
 
 type CandidateResolution =
@@ -91,19 +84,21 @@ type CandidateResolution =
   | { kind: 'ambiguous' }
   | { kind: 'resolved'; candidate: CandidateRow };
 
-function bindPendingCandidateInTransaction(
+function routeCandidateInTransaction(
   database: SqliteDatabase,
   candidate: CandidateRow,
   client: EnnoClient,
   sessionId: string,
 ): CandidateRow {
+  if (candidate.clientKind === client && candidate.clientSessionId === sessionId) return candidate;
   const updated = database.prepare(`
     UPDATE enno_contracts
-    SET client_kind = ?, client_session_id = ?, updated_at = ?
+    SET client_kind = ?, client_version = NULL, client_session_id = ?, updated_at = ?
     WHERE run_id = ?
       AND orchestration_session_id = ?
-      AND client_session_id IS NULL
-      AND (client_kind IS NULL OR client_kind = ?)
+      AND client_kind IS ?
+      AND client_version IS ?
+      AND client_session_id IS ?
     RETURNING run_id AS runId
   `).get<{ runId: string }>(
     client,
@@ -111,30 +106,45 @@ function bindPendingCandidateInTransaction(
     new Date().toISOString(),
     candidate.runId,
     candidate.orchestrationId,
-    client,
+    candidate.clientKind,
+    candidate.clientVersion,
+    candidate.clientSessionId,
   );
   if (updated?.runId !== candidate.runId) {
-    throw new KiokukoError('CONFLICT', 'Enno client binding changed concurrently');
+    throw new KiokukoError('CONFLICT', 'Enno client routing changed concurrently');
   }
-  appendEnnoEventInTransaction(database, candidate.runId, 'enno.client_bound', 'enno-oduno', 'bound', {
-    clientKind: client,
-  });
-  return { ...candidate, clientKind: client, clientSessionId: sessionId };
+  const firstBinding = candidate.clientSessionId === null;
+  appendEnnoEventInTransaction(
+    database,
+    candidate.runId,
+    firstBinding ? 'enno.client_bound' : 'enno.client_rebound',
+    'enno-oduno',
+    firstBinding ? 'bound' : 'rebound',
+    {
+      fromClientKind: candidate.clientKind,
+      fromClientSessionId: candidate.clientSessionId,
+      fromClientVersion: candidate.clientVersion,
+      toClientKind: client,
+      toClientSessionId: sessionId,
+      toClientVersion: null,
+    },
+  );
+  return { ...candidate, clientKind: client, clientVersion: null, clientSessionId: sessionId };
 }
 
 function resolveCandidateInTransaction(
   database: SqliteDatabase,
   client: EnnoClient,
   sessionId: string,
-  cwd: string,
+  repositoryRoot: string,
 ): CandidateResolution {
-  const exact = exactSessionCandidates(database, client, sessionId, cwd);
+  const exact = exactSessionCandidates(database, client, sessionId, repositoryRoot);
   if (exact.length > 1) return { kind: 'ambiguous' };
   if (exact[0] !== undefined) return { kind: 'resolved', candidate: exact[0] };
-  const pending = pendingSessionCandidates(database, client, cwd);
-  if (pending.length === 0) return { kind: 'none' };
-  if (pending.length > 1) return { kind: 'ambiguous' };
-  return { kind: 'resolved', candidate: bindPendingCandidateInTransaction(database, pending[0]!, client, sessionId) };
+  const repository = repositoryCandidates(database, repositoryRoot);
+  if (repository.length === 0) return { kind: 'none' };
+  if (repository.length > 1) return { kind: 'ambiguous' };
+  return { kind: 'resolved', candidate: routeCandidateInTransaction(database, repository[0]!, client, sessionId) };
 }
 
 function continuationPrompt(directive: RoleDirective): string {
@@ -148,7 +158,7 @@ function claimContinuation(
   directiveDigest: string,
 ): boolean {
   if (snapshot.clientSessionId === null || snapshot.clientKind !== client) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Enno continuation requires an exact client binding');
+    throw new KiokukoError('INTEGRITY_ERROR', 'Enno continuation requires the current client route');
   }
   const existing = database.prepare(`
     SELECT contract_revision AS contractRevision, mutation_revision AS mutationRevision,
@@ -212,29 +222,14 @@ function claimContinuation(
   return true;
 }
 
-function blockForContinuationLimit(database: SqliteDatabase, snapshot: ReturnType<typeof readEnnoSnapshot>): void {
-  updateContractInTransaction(database, snapshot, {
-    contract: snapshot.contract,
-    status: 'blocked',
-    confirmationState: snapshot.confirmationState,
-    blocker: 'Enno-Oduno continuation limit reached',
-  });
-  appendEnnoEventInTransaction(database, snapshot.runId, 'enno.blocked', 'enno-oduno', 'blocked', {
-    reason: 'continuation_limit',
-    contractRevision: snapshot.revision,
-    attempts: snapshot.attempts,
-  });
-  terminalizeLedgerRunInTransaction(database, snapshot.runId, 'failed');
-}
-
 export function decideAdapterContinuation(database: SqliteDatabase, client: EnnoClient, rawInput: unknown): AdapterDecision {
   const parsed = hookInputSchema.safeParse(rawInput);
   if (!parsed.success) throw new KiokukoError('VALIDATION_ERROR', 'Enno client hook input is invalid');
   const sessionId = parsed.data.session_id ?? parsed.data.sessionId;
   if (sessionId === undefined) throw new KiokukoError('VALIDATION_ERROR', 'Enno client session ID is required');
-  const cwd = canonicalDirectory(parsed.data.cwd);
+  const repositoryRoot = detectRepositoryRoot({ cwd: parsed.data.cwd }).root;
   const continuation = withImmediateTransaction(database, () => {
-    const resolution = resolveCandidateInTransaction(database, client, sessionId, cwd);
+    const resolution = resolveCandidateInTransaction(database, client, sessionId, repositoryRoot);
     if (resolution.kind !== 'resolved') return resolution;
     const candidate = resolution.candidate;
     const snapshot = readEnnoSnapshot(database, {
@@ -243,12 +238,11 @@ export function decideAdapterContinuation(database: SqliteDatabase, client: Enno
       orchestrationId: candidate.orchestrationId,
     });
     if (snapshot.clientKind !== client || snapshot.clientSessionId !== sessionId) {
-      throw new KiokukoError('INTEGRITY_ERROR', 'Enno client binding is inconsistent');
+      throw new KiokukoError('INTEGRITY_ERROR', 'Enno client routing is inconsistent');
     }
     const directive = directiveForRun(snapshot);
     if (directive === null) throw new KiokukoError('INTEGRITY_ERROR', 'Enno active run has no role directive');
     const claimed = claimContinuation(database, client, snapshot, canonicalContentHash(directive));
-    if (!claimed) blockForContinuationLimit(database, snapshot);
     return { kind: 'continuation', snapshot, directive, claimed } as const;
   });
   if (continuation.kind === 'none') {
@@ -269,10 +263,10 @@ export function decideAdapterContinuation(database: SqliteDatabase, client: Enno
     return {
       continue: false,
       runId: snapshot.runId,
-      status: 'blocked',
+      status: snapshot.status,
       directive: null,
       reason: null,
-      warning: 'Enno-Oduno continuation limit reached; returning control to the user.',
+      warning: 'Enno-Oduno continuation limit reached for this client session; the run remains active for another local project client.',
     };
   }
   return {
