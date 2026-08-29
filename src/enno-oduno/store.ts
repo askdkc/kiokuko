@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
@@ -38,7 +39,12 @@ import {
   type WorkReportResult,
   type WorkUnitStatus,
 } from './types.js';
-import { advisoryPhaseForStatus, advisorySlotDefinitions } from './advisory.js';
+import {
+  advisoryContextForSnapshot,
+  advisoryInputDigest,
+  advisoryPhaseForStatus,
+  advisorySlotDefinitions,
+} from './advisory.js';
 import type { SkillDiscoveryMode, SkillDiscoverySummary } from '../skills/types.js';
 import { captureRepositoryState } from './repository-state.js';
 
@@ -105,7 +111,14 @@ interface AdvisoryStateRow extends SqliteRow {
 
 function advisoryPhaseState(
   database: SqliteDatabase,
-  input: { runId: string; status: EnnoStatus; revision: number; mutationRevision: number; finalEvidenceReady: boolean },
+  input: {
+    runId: string;
+    status: EnnoStatus;
+    revision: number;
+    mutationRevision: number;
+    finalEvidenceReady: boolean;
+    currentInputDigest: string | undefined;
+  },
 ): AdvisoryPhaseState {
   const phase = advisoryPhaseForStatus(input.status);
   if (phase === null || (phase === 'final_review' && !input.finalEvidenceReady)) return { state: 'not_started' };
@@ -116,7 +129,9 @@ function advisoryPhaseState(
     ORDER BY created_at DESC, round_id DESC
     LIMIT 1
   `).get<AdvisoryStateRow>(input.runId, input.revision, input.mutationRevision, phase);
-  if (row === undefined) return { state: 'fanout_requested', slots: advisorySlotDefinitions(phase) };
+  if (row === undefined || row.inputDigest !== input.currentInputDigest) {
+    return { state: 'fanout_requested', slots: advisorySlotDefinitions(phase) };
+  }
   if (row.state === 'consumed') return { state: 'consumed', inputDigest: row.inputDigest };
   if (row.state !== 'aggregated') return integrity('Stored advisory lifecycle state is invalid');
   const contributions = database.prepare(`
@@ -212,10 +227,20 @@ export interface OperationIdentity {
   operation: 'ideal_submit' | 'advice_submit' | 'plan_submit' | 'answer' | 'work_report' | 'finish' | 'meditation_submit' | 'verify_prepare';
   idempotencyKey: string;
   requestDigest: string;
+  legacyRequestDigests?: readonly string[] | undefined;
 }
 
 const OPERATION_LEASE_MS = 6 * 60_000;
 const VERIFIER_LEASE_GRACE_MS = 60_000;
+const VERIFIER_TERMINATION_GRACE_MS = 1_000;
+
+export function operationLeaseMsForVerifiers(verifiers: readonly VerifierSpec[]): number {
+  const sequentialRuntime = verifiers.reduce(
+    (total, verifier) => total + verifier.timeoutMs + VERIFIER_TERMINATION_GRACE_MS,
+    VERIFIER_LEASE_GRACE_MS,
+  );
+  return Math.max(OPERATION_LEASE_MS, sequentialRuntime);
+}
 
 function integrity(message: string): never {
   throw new KiokukoError('INTEGRITY_ERROR', message);
@@ -264,7 +289,20 @@ function persistedState(status: EnnoStatus): { status: string; phase: string | n
   return { status, phase: null };
 }
 
-function workUnits(database: SqliteDatabase, runId: string, revision: number): StoredWorkUnit[] {
+function storedWorkResult(value: unknown, repositoryRoot: string): WorkReportResult {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return parseWorkReportResult(value);
+  const result = value as Record<string, unknown>;
+  if (!Array.isArray(result.changedPaths)) return parseWorkReportResult(value);
+  const changedPaths = result.changedPaths.map((candidate) => {
+    if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) return candidate;
+    const relative = path.relative(repositoryRoot, candidate);
+    if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return candidate;
+    return (relative || '.').split(path.sep).join('/');
+  });
+  return parseWorkReportResult({ ...result, changedPaths });
+}
+
+function workUnits(database: SqliteDatabase, runId: string, revision: number, repositoryRoot: string): StoredWorkUnit[] {
   const rows = database.prepare(`
     SELECT work_unit_json, status, attempt_count, result_json
     FROM enno_work_units
@@ -282,7 +320,7 @@ function workUnits(database: SqliteDatabase, runId: string, revision: number): S
     attemptCount: row.attempt_count,
     result: row.result_json === null
       ? null
-      : parseWorkReportResult(parseCanonicalJson(row.result_json, 'Stored Enno work result is invalid')),
+      : storedWorkResult(parseCanonicalJson(row.result_json, 'Stored Enno work result is invalid'), repositoryRoot),
   }));
 }
 
@@ -347,14 +385,7 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
         ...(currentRepositoryDigest === undefined ? {} : { repositoryDigest: currentRepositoryDigest }),
       }) ?? []
     : [];
-  const currentAdvisoryState = advisoryPhaseState(database, {
-    runId: row.run_id,
-    status,
-    revision: row.revision,
-    mutationRevision: row.mutation_revision,
-    finalEvidenceReady,
-  });
-  return {
+  const snapshot: EnnoRunSnapshot = {
     runId: row.run_id,
     workspace: row.workspace,
     orchestrationId: row.orchestration_session_id,
@@ -373,12 +404,30 @@ export function readEnnoSnapshot(database: SqliteDatabase, identity: EnnoIdentit
     meditation,
     contract,
     handoff,
-    workUnits: workUnits(database, identity.runId, row.revision),
+    workUnits: workUnits(database, identity.runId, row.revision, row.repository_root),
     finalEvidenceReady,
     finalEvidence,
     blocker: row.blocker,
-    advisoryPhaseState: currentAdvisoryState,
+    advisoryPhaseState: { state: 'not_started' },
   };
+  const advisoryPhase = advisoryPhaseForStatus(status);
+  const currentInputDigest = advisoryPhase === null || (advisoryPhase === 'final_review' && !finalEvidenceReady)
+    ? undefined
+    : advisoryInputDigest({
+        phase: advisoryPhase,
+        contractRevision: row.revision,
+        mutationRevision: row.mutation_revision,
+        allowlistedContext: advisoryContextForSnapshot(snapshot, advisoryPhase),
+      });
+  snapshot.advisoryPhaseState = advisoryPhaseState(database, {
+    runId: row.run_id,
+    status,
+    revision: row.revision,
+    mutationRevision: row.mutation_revision,
+    finalEvidenceReady,
+    currentInputDigest,
+  });
+  return snapshot;
 }
 
 function emptyDiscovery(mode: SkillDiscoveryMode): SkillDiscoverySummary {
@@ -706,6 +755,27 @@ export function releaseExecutionLeaseInTransaction(database: SqliteDatabase, run
   database.prepare('DELETE FROM enno_execution_leases WHERE run_id = ?').run(runId);
 }
 
+export function renewExecutionLeaseInTransaction(
+  database: SqliteDatabase,
+  snapshot: EnnoRunSnapshot,
+  input: { workUnitId: string; leaseToken?: string | undefined; routeEpoch?: number | undefined },
+  minimumLeaseMs: number,
+): void {
+  assertExecutionLeaseInTransaction(database, snapshot, input);
+  const existing = database.prepare('SELECT 1 AS present FROM enno_execution_leases WHERE run_id = ?')
+    .get<{ present: number }>(snapshot.runId);
+  if (existing === undefined) return;
+  const now = new Date();
+  const leaseExpiresAt = new Date(now.getTime() + Math.max(EXECUTION_LEASE_MS, minimumLeaseMs)).toISOString();
+  const updated = database.prepare(`
+    UPDATE enno_execution_leases
+    SET lease_expires_at = ?, heartbeat_at = ?, updated_at = ?
+    WHERE run_id = ?
+    RETURNING run_id AS runId
+  `).get<{ runId: string }>(leaseExpiresAt, now.toISOString(), now.toISOString(), snapshot.runId);
+  if (updated?.runId !== snapshot.runId) throw new KiokukoError('CONFLICT', 'Enno execution lease changed concurrently');
+}
+
 export function startVerifierRunsInTransaction(database: SqliteDatabase, input: {
   runId: string;
   workUnitId: string | null;
@@ -732,7 +802,7 @@ export function startVerifierRunsInTransaction(database: SqliteDatabase, input: 
       repository_state_policy_version, pre_repository_digest, verifier_spec_digest, started_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?, ?, ?, ?)
   `);
-  const leaseMs = Math.max(VERIFIER_LEASE_GRACE_MS, ...input.verifiers.map((verifier) => verifier.timeoutMs + VERIFIER_LEASE_GRACE_MS));
+  const leaseMs = operationLeaseMsForVerifiers(input.verifiers);
   const leaseExpiresAt = new Date(nowDate.getTime() + leaseMs).toISOString();
   return input.verifiers.map((verifier) => {
     const verifierRunId = randomUUID();
@@ -865,8 +935,24 @@ export function readOperationReceipt<T>(database: SqliteDatabase, runId: string,
     WHERE run_id = ? AND operation = ? AND idempotency_key = ?
   `).get<ReceiptRow>(runId, operation.operation, operation.idempotencyKey);
   if (row === undefined) return undefined;
-  if (row.request_digest !== operation.requestDigest) {
+  if (row.request_digest !== operation.requestDigest
+    && !operation.legacyRequestDigests?.includes(row.request_digest)) {
     throw new KiokukoError('CONFLICT', 'Enno idempotency key was reused with different input');
+  }
+  if (row.request_digest !== operation.requestDigest) {
+    const normalized = database.prepare(`
+      UPDATE enno_operation_receipts SET request_digest = ?
+      WHERE run_id = ? AND operation = ? AND idempotency_key = ? AND request_digest = ?
+      RETURNING run_id AS runId
+    `).get<{ runId: string }>(
+      operation.requestDigest,
+      runId,
+      operation.operation,
+      operation.idempotencyKey,
+      row.request_digest,
+    );
+    if (normalized?.runId !== runId) throw new KiokukoError('CONFLICT', 'Enno operation receipt changed concurrently');
+    row.request_digest = operation.requestDigest;
   }
   if (row.state === 'started') {
     if (row.lease_expires_at === null || !Number.isFinite(Date.parse(row.lease_expires_at))) {
@@ -896,19 +982,30 @@ export function readOperationReceipt<T>(database: SqliteDatabase, runId: string,
   return parseCanonicalJson(row.response_json, 'Stored Enno operation receipt is invalid') as T;
 }
 
-export function startOperationInTransaction(database: SqliteDatabase, runId: string, operation: OperationIdentity): string {
+export function startOperationInTransaction(
+  database: SqliteDatabase,
+  runId: string,
+  operation: OperationIdentity,
+  leaseMs = OPERATION_LEASE_MS,
+): string {
   const replay = readOperationReceipt<unknown>(database, runId, operation);
   if (replay !== undefined) throw new KiokukoError('CONFLICT', 'Completed Enno operation must be replayed before mutation');
+  if (!Number.isSafeInteger(leaseMs) || leaseMs < OPERATION_LEASE_MS) integrity('Enno operation lease duration is invalid');
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  database.prepare(`
+    UPDATE enno_operation_receipts
+    SET state = 'abandoned', failure_code = 'lease_expired', finished_at = ?
+    WHERE run_id = ? AND state = 'started' AND lease_expires_at <= ?
+  `).run(now, runId, now);
   const active = database.prepare(`
     SELECT operation FROM enno_operation_receipts
     WHERE run_id = ? AND state = 'started' AND lease_expires_at > ?
     LIMIT 1
-  `).get<{ operation: string }>(runId, new Date().toISOString());
+  `).get<{ operation: string }>(runId, now);
   if (active !== undefined) throw new KiokukoError('CONFLICT', 'Another Enno operation is already in progress');
-  const nowDate = new Date();
-  const now = nowDate.toISOString();
   const ownerNonce = randomUUID();
-  const leaseExpiresAt = new Date(nowDate.getTime() + OPERATION_LEASE_MS).toISOString();
+  const leaseExpiresAt = new Date(nowDate.getTime() + leaseMs).toISOString();
   const started = database.prepare(`
     INSERT INTO enno_operation_receipts (
       run_id, operation, idempotency_key, request_digest, state, response_json,
@@ -943,20 +1040,23 @@ export function completeOperationInTransaction(
   response: unknown,
 ): void {
   const serialized = canonicalJson(response);
+  const finishedAt = new Date().toISOString();
   const updated = database.prepare(`
     UPDATE enno_operation_receipts
     SET state = 'completed', response_json = ?, finished_at = ?
     WHERE run_id = ? AND operation = ? AND idempotency_key = ?
       AND request_digest = ? AND state = 'started' AND owner_nonce = ?
+      AND lease_expires_at > ?
     RETURNING run_id AS runId
   `).get<{ runId: string }>(
     serialized,
-    new Date().toISOString(),
+    finishedAt,
     runId,
     operation.operation,
     operation.idempotencyKey,
     operation.requestDigest,
     ownerNonce,
+    finishedAt,
   );
   if (updated?.runId !== runId) throw new KiokukoError('CONFLICT', 'Enno operation receipt changed concurrently');
 }

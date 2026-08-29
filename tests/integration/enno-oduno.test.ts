@@ -301,6 +301,17 @@ test('task_prepare derives the Oduno ideal before handing the request to harness
       idempotencyKey: 'new-route-verification',
     });
     assert.equal(verifiedWithNewRoute.verifierResults?.[0]?.status, 'passed');
+    const refreshedRoute = decideAdapterContinuation(database, 'opencode', {
+      sessionId: 'latest-opencode-session', cwd: root,
+    });
+    assert.ok(refreshedRoute.resumeToken);
+    const replayedWithRotatedCredentials = await prepareEnnoVerification(database, {
+      runId: planned.identity.runId,
+      resumeToken: refreshedRoute.resumeToken,
+      expectedRevision: 2,
+      idempotencyKey: 'new-route-verification',
+    });
+    assert.deepEqual(replayedWithRotatedCredentials, verifiedWithNewRoute);
   } finally {
     database.close();
   }
@@ -539,8 +550,11 @@ test('a missing plan environment catalog returns a recoverable choice without co
       .get<{ count: number }>(identity.runId)?.count, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ? AND event_type = 'zenki.plan_created'")
       .get<{ count: number }>(identity.runId)?.count, 0);
+    assert.equal(decideAdapterContinuation(database, 'codex', {
+      session_id: 'codex-plan-environment-missing', cwd: root,
+    }).continue, false);
 
-    const continued = await submitEnnoPlan(database, completeInput);
+    const continued = await submitEnnoPlan(database, { ...completeInput, recoveryAction: 'continue_same_plan' });
     assert.equal(continued.ennoOduno.status, 'goki_executing');
     assert.equal(continued.ennoOduno.contractRevision, 2);
   } finally {
@@ -842,6 +856,17 @@ test('Zenki discovery uses a new plan digest and only the remaining run budget a
     assert.equal(replanning.ennoOduno.status, 'zenki_planning');
     assert.equal(replanning.ennoOduno.contractRevision, 3);
 
+    await assert.rejects(submitEnnoPlan(database, {
+      ...planInput(3, 'zenki-discovery-exhausted-plan', 'Repair with an exhausted attempt budget'),
+      maxAttempts: 2,
+    }, { discoverSkills: discover }), (error: unknown) => {
+      assert.ok(error instanceof KiokukoError);
+      assert.equal(error.code, 'VALIDATION_ERROR');
+      assert.match(JSON.stringify(error.details), /maxAttempts/u);
+      return true;
+    });
+    assert.equal(calls.length, 1);
+
     const secondPlan = await submitEnnoPlan(database, planInput(3, 'zenki-discovery-plan-2', 'Repair the narrower component plan'), {
       discoverSkills: discover,
     });
@@ -1091,7 +1116,12 @@ test('Oduno ideal requires one contribution for every Akinator-discovered Skill 
         skillContributions: [],
         successSignals: ['tests pass'],
       },
-    }), /every Akinator-discovered Skill exactly once/iu);
+    }), (error: unknown) => {
+      assert.ok(error instanceof KiokukoError);
+      assert.equal(error.code, 'VALIDATION_ERROR');
+      assert.match(JSON.stringify(error.details), /skillContributions/u);
+      return true;
+    });
     const idealized = submitOdunoIdeal(database, {
       ...identity,
       expectedRevision: 1,
@@ -1538,6 +1568,12 @@ test('a pre-migration active run without an Oduno ideal keeps its legacy complet
       ...identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'legacy-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Repaired legacy run', mutated: true, changedPaths: ['src/add.js'] },
     });
+    database.prepare('UPDATE enno_work_units SET result_json = ? WHERE run_id = ? AND work_unit_id = ?')
+      .run(canonicalJson({
+        outcome: 'completed', summary: 'Repaired legacy run', mutated: true,
+        changedPaths: [path.join(prepared.project.repositoryRoot, 'src', 'add.js')],
+      }), identity.runId, 'repair');
+    assert.deepEqual(readEnnoSnapshot(database, identity).workUnits[0]?.result?.changedPaths, ['src/add.js']);
     await prepareEnnoVerification(database, {
       ...identity, expectedRevision: 2, idempotencyKey: 'legacy-prepare',
     });
@@ -2407,6 +2443,10 @@ test('final evidence is invalidated by repository changes after preparation', as
       review: { decision: 'accept', summary: 'Attempt to accept stale evidence' },
     }), /final verification evidence is not prepared/iu);
     assert.equal(readEnnoSnapshot(database, planned.identity).status, 'enno_verifying');
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE run_id = ? AND operation = 'finish'")
+      .get<{ count: number }>(planned.identity.runId)?.count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ? AND event_type = 'enno.review_started'")
+      .get<{ count: number }>(planned.identity.runId)?.count, 0);
   } finally {
     database.close();
   }

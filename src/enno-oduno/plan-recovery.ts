@@ -9,6 +9,19 @@ export const PLAN_START_RECOVERY_REASONS = [
 ] as const;
 
 export type PlanStartRecoveryReason = (typeof PLAN_START_RECOVERY_REASONS)[number];
+export const PLAN_START_RECOVERY_BLOCKER_PREFIX = 'plan_start_recovery:';
+
+export function planStartRecoveryBlocker(reason: PlanStartRecoveryReason): string {
+  return `${PLAN_START_RECOVERY_BLOCKER_PREFIX}${reason}`;
+}
+
+export function planStartRecoveryReasonFromBlocker(value: string | null): PlanStartRecoveryReason | null {
+  if (value?.startsWith(PLAN_START_RECOVERY_BLOCKER_PREFIX) !== true) return null;
+  const reason = value.slice(PLAN_START_RECOVERY_BLOCKER_PREFIX.length);
+  return PLAN_START_RECOVERY_REASONS.includes(reason as PlanStartRecoveryReason)
+    ? reason as PlanStartRecoveryReason
+    : null;
+}
 
 export type PlanStartRecoveryAction =
   | 'continue_same_plan'
@@ -39,6 +52,7 @@ export interface PlanStartRecovery {
   userFacingRecovery: UserFacingPlanRecovery;
   effect: {
     mutationApplied: false;
+    continuationPaused: true;
     planPersisted: false;
     advisoryConsumed: false;
     operationReceiptCreated: false;
@@ -47,8 +61,9 @@ export interface PlanStartRecovery {
   retry: { sameRunAllowed: boolean; requiresUserChoice: true };
 }
 
-const ZERO_EFFECT = {
+const RECOVERY_EFFECT = {
   mutationApplied: false,
+  continuationPaused: true,
   planPersisted: false,
   advisoryConsumed: false,
   operationReceiptCreated: false,
@@ -62,7 +77,7 @@ export function buildPlanStartRecovery(reason: PlanStartRecoveryReason): PlanSta
     return {
       code: PLAN_START_RECOVERY_CODE,
       reason,
-      effect: ZERO_EFFECT,
+      effect: RECOVERY_EFFECT,
       retry: { sameRunAllowed: true, requiresUserChoice: true },
       userFacingRecovery: {
         presentationVersion: 1,
@@ -99,7 +114,7 @@ export function buildPlanStartRecovery(reason: PlanStartRecoveryReason): PlanSta
     return {
       code: PLAN_START_RECOVERY_CODE,
       reason,
-      effect: ZERO_EFFECT,
+      effect: RECOVERY_EFFECT,
       retry: { sameRunAllowed: false, requiresUserChoice: true },
       userFacingRecovery: {
         presentationVersion: 1,
@@ -135,7 +150,7 @@ export function buildPlanStartRecovery(reason: PlanStartRecoveryReason): PlanSta
   return {
     code: PLAN_START_RECOVERY_CODE,
     reason,
-    effect: ZERO_EFFECT,
+    effect: RECOVERY_EFFECT,
     retry: { sameRunAllowed: false, requiresUserChoice: true },
     userFacingRecovery: {
       presentationVersion: 1,

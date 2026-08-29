@@ -236,9 +236,10 @@ New WorkUnits require one or more local routes: `code`, `ui`, `test`, `docs`,
 or `operations`. Code requires a `code.*` expert; UI requires `code.*` and
 `ui.*`; other routes do not inherit those requirements. New verifier
 directories are repository-relative and escaping or absolute paths are
-rejected. `userFacingRecovery` is zero-effect until the user chooses: no
-discovery attempt, advisory consumption, receipt, contract revision, or
-repository mutation is created.
+rejected. `userFacingRecovery` persists only a continuation pause until the
+user chooses: no discovery attempt, advisory consumption, receipt, contract
+revision, plan persistence, implementation, or repository mutation is created.
+A same-run retry carries the selected recovery action.
 
 Continuation responses may carry an opaque 15-minute resume token and, for an
 active WorkUnit, an execution lease. Tokens bind run, canonical repository,

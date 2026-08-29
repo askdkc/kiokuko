@@ -1585,6 +1585,20 @@ test('doctor reports integrity, migration, FTS, and permissions checks', async (
   }
 });
 
+test('doctor fails closed when the current Enno lease schema is incomplete', async () => {
+  const data = await database('doctor-enno-schema');
+  try {
+    data.db.exec('DROP TABLE enno_verifier_runs');
+    const result = await runDoctorWithDatabase(data.databasePath, path.join(data.directory, 'runtime', 'server.json'));
+    assert.equal(result.checks.ennoOperations.ok, false);
+    assert.equal(result.checks.ennoOperations.count, 1);
+    assert.match(result.checks.ennoOperations.detail ?? '', /schema is incomplete/iu);
+    assert.equal(result.ok, false);
+  } finally {
+    data.db.close();
+  }
+});
+
 test('doctor and ledger inspect detect the same corrupt nudge row without exposing its value', async () => {
   const data = await database('doctor-nudge-integrity');
   const sentinel = 'corrupt-nudge-secret-sentinel';

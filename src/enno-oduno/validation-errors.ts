@@ -68,8 +68,8 @@ export interface PublicEnnoValidationError {
 }
 
 const publicExpectedSchema = z.object({
-  minItems: z.number().int().min(0).max(1_000).optional(),
-  maxItems: z.number().int().min(0).max(1_000).optional(),
+  minItems: z.number().int().min(0).max(1_000_000).optional(),
+  maxItems: z.number().int().min(0).max(1_000_000).optional(),
   allowedValues: z.array(z.string().min(1).max(100)).max(32).optional(),
   requiredExpertKinds: z.array(z.enum(['code', 'ui'])).max(2).optional(),
   requiredSlotIds: z.array(z.string().min(1).max(100)).max(3).optional(),

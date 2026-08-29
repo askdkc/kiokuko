@@ -132,7 +132,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     const ennoAnswerTool = tools.tools.find((tool) => tool.name === 'enno_answer');
     assert.match(ennoPlanTool?.description ?? '', /needs_confirmation response carries the decided ennoOduno\.directive\.userFacingConfirmation projection/u);
     assert.match(ennoPlanTool?.description ?? '', /without raw directive JSON or internal identifiers/u);
-    assert.match(ennoPlanTool?.description ?? '', /non-mutating user-facing recovery projection.*wait for the user's explicit choice/iu);
+    assert.match(ennoPlanTool?.description ?? '', /automatic-continuation pause.*wait for the user's explicit choice/iu);
+    assert.match(ennoPlanTool?.description ?? '', /same-run retry must pass the selected recoveryAction/iu);
     assert.match(ennoAnswerTool?.description ?? '', /only the action the user explicitly chose after seeing the user-facing confirmation or plan-start recovery choices/iu);
     assert.match(ennoAnswerTool?.description ?? '', /During planning, only explicit cancellation is accepted/iu);
     assert.match(ennoIdealTool?.description ?? '', /optimal goal.*task_prepare handoff.*every Akinator-discovered Skill.*before Zenki planning/iu);
@@ -1136,6 +1137,7 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
       reason: string;
       effect: {
         mutationApplied: boolean;
+        continuationPaused: boolean;
         planPersisted: boolean;
         advisoryConsumed: boolean;
         operationReceiptCreated: boolean;
@@ -1160,6 +1162,7 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
     assert.equal(recoveryContent.reason, 'environment_information_missing');
     assert.deepEqual(recoveryContent.effect, {
       mutationApplied: false,
+      continuationPaused: true,
       planPersisted: false,
       advisoryConsumed: false,
       operationReceiptCreated: false,
@@ -1222,7 +1225,12 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
 
     const continued = await client.callTool({
       name: 'enno_plan_submit',
-      arguments: { ...plan, idempotencyKey: 'mcp-plan-recovery-continued', capabilities },
+      arguments: {
+        ...plan,
+        idempotencyKey: 'mcp-plan-recovery-continued',
+        capabilities,
+        recoveryAction: 'continue_same_plan',
+      },
     });
     assert.equal(continued.isError, undefined);
     assert.equal((continued.structuredContent as { ennoOduno: { status: string } }).ennoOduno.status, 'goki_executing');

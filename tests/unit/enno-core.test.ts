@@ -12,16 +12,18 @@ import {
   resolveTaskPrepareClient,
 } from '../../src/enno-oduno/harness.js';
 import { generateRoleDirective, parseRoleJson, serializeRoleOutput, MAX_ROLE_OUTPUT_BYTES } from '../../src/enno-oduno/role-runner.js';
-import { runVerifier } from '../../src/enno-oduno/verifier.js';
+import { runVerifier, runVerifiers } from '../../src/enno-oduno/verifier.js';
 import { assertWorkPlanExpertCoverage } from '../../src/enno-oduno/experts.js';
 import {
   completeRequiredSkillList,
   orderedUniqueSkillNames,
   unavailableRequiredSkills,
 } from '../../src/enno-oduno/skills.js';
-import { parseEnnoContract, parsePlanSubmission } from '../../src/enno-oduno/schemas.js';
+import { parseEnnoContract, parseIdealSubmission, parsePlanSubmission } from '../../src/enno-oduno/schemas.js';
+import { sanitizePlanSubmission } from '../../src/enno-oduno/sanitize.js';
 import type { EnnoRequestHandoff } from '../../src/enno-oduno/types.js';
 import { captureRepositoryState } from '../../src/enno-oduno/repository-state.js';
+import { operationLeaseMsForVerifiers } from '../../src/enno-oduno/store.js';
 import {
   ENNO_INPUT_INVALID_DETAIL_KEY,
   ENNO_MAX_PUBLIC_ISSUES,
@@ -85,7 +87,13 @@ test('role scripts reject revision conflicts and generate only the role owning t
   };
   const input = {
     runId: 'run-1', taskType: 'debug', status: 'goki_executing', contractRevision: 2,
-    clientKind: 'codex', clientVersion: '1.0.0',
+    clientKind: 'codex', clientVersion: '1.0.0', routeEpoch: 7,
+    advisoryPhaseState: { state: 'not_started' as const },
+    finalEvidence: [{
+      verifier: contract.finalVerifiers[0], status: 'passed' as const, exitCode: 0, signal: null,
+      durationMs: 1, stdoutPreview: '', stderrPreview: '', stdoutDigest: '0'.repeat(64), stderrDigest: '0'.repeat(64),
+      repositoryStatePolicyVersion: 1, repositoryStateDigest: '1'.repeat(64), changedDuringVerification: false,
+    }],
     contract, handoff: requestHandoff('debug'),
     workUnits: [{ workUnit: contract.workPlan.units[0], status: 'in_progress', attemptCount: 0, result: null }],
   };
@@ -98,12 +106,16 @@ test('role scripts reject revision conflicts and generate only the role owning t
   assert.equal(directive.workUnit?.id, 'fix-add');
   assert.equal(directive.handoff?.sourceRole, 'enno-oduno');
   assert.equal(directive.harness.kind, 'codex');
+  assert.equal(directive.routeEpoch, 7);
   assert.equal(directive.harness.continuation, 'stop_hook');
   assert.match(directive.objective, /^Orchestrate the approved WorkUnit:/u);
   assert.deepEqual(directive.requiredSkills, [
     'kiokuko-soul',
     'kiokuko-single-purpose-functions',
   ]);
+  assert.equal((directive.reportSchema.required as string[]).includes('leaseToken'), false);
+  const leasedDirective = generateRoleDirective('goki', { ...input, clientSessionId: 'codex-session' });
+  assert.equal((leasedDirective.reportSchema.required as string[]).includes('leaseToken'), true);
   assert.throws(() => generateRoleDirective('zenki', input), /does not own/iu);
   assert.throws(() => generateRoleDirective('goki', { ...input, contractRevision: 1 }), /revision mismatch/iu);
   const ideal = generateRoleDirective('enno-oduno', {
@@ -453,6 +465,61 @@ test('plan validation diagnostics are bounded, value-free, and directly correcti
   }));
   assert.equal(tooManyIssues.issues.length, ENNO_MAX_PUBLIC_ISSUES);
   assert.deepEqual(tooManyIssues.issues.map((issue) => issue.path[2]), Array.from({ length: ENNO_MAX_PUBLIC_ISSUES }, (_, index) => index));
+
+  const oversizedIdeal = validationDetail(() => parseIdealSubmission({
+    runId: 'diagnostic-run', workspace: 'workspace', orchestrationId: 'orchestration',
+    expectedRevision: 1, idempotencyKey: 'diagnostic-ideal',
+    ideal: {
+      objective: 'x'.repeat(16_385),
+      principles: ['Keep the contract'],
+      skillContributions: [],
+      successSignals: ['Tests pass'],
+    },
+  }));
+  assert.deepEqual(oversizedIdeal.issues[0], {
+    path: ['ideal', 'objective'],
+    reasonCode: 'too_many_items',
+    expected: { maxItems: 16_384 },
+  });
+});
+
+test('plan sanitization rejects split credentials without rewriting safe verifier commands', () => {
+  const base = parsePlanSubmission({
+    runId: 'sanitize-run', workspace: 'workspace', orchestrationId: 'orchestration',
+    expectedRevision: 1, idempotencyKey: 'sanitize-plan',
+    scope: ['src/a.ts'], exclusions: [], acceptanceCriteria: [{ id: 'done', description: 'Done' }],
+    workPlan: { objective: 'Build', units: [{
+      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], routes: ['code'], skillNames: [],
+      expertRefs: [{ id: 'code.boundary.v1', reason: 'Protect the boundary' }],
+      acceptanceCriteria: ['Done'],
+      focusedVerifiers: [{
+        id: 'focused', kind: 'test', executable: '/repo/scripts/check.mjs',
+        args: ['https://example.test/check?mode=strict#expected'], cwd: 'subdir', timeoutMs: 1_000,
+      }],
+    }] },
+    skillRequirements: [],
+    finalVerifiers: [{
+      id: 'final', kind: 'test', executable: 'curl',
+      args: ['https://example.test/check?mode=strict#expected'], cwd: '.', timeoutMs: 1_000,
+    }],
+    maxAttempts: 8,
+    provenance: {
+      scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+      workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+    },
+  });
+
+  const sanitized = sanitizePlanSubmission(base, '/repo');
+  assert.deepEqual(sanitized.finalVerifiers, base.finalVerifiers);
+  assert.deepEqual(sanitized.workPlan.units[0]?.focusedVerifiers, base.workPlan.units[0]?.focusedVerifiers);
+
+  assert.throws(
+    () => sanitizePlanSubmission({
+      ...base,
+      finalVerifiers: [{ ...base.finalVerifiers[0]!, args: ['--password', 'correct-horse'] }],
+    }, '/repo'),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'SECURITY_REJECTION',
+  );
 });
 
 test('mixed WorkUnit routes enforce experts locally and do not infect test or docs units', () => {
@@ -616,6 +683,34 @@ test('verifier uses shell false semantics, bounds output, and rejects repository
   assert.equal(timeout.status, 'timeout');
 });
 
+test('verifier batches remember transient and delayed descendant repository mutations', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-verifier-mutation-'));
+  const tracked = path.join(root, 'tracked.txt');
+  await writeFile(tracked, 'original\n');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'tests@example.invalid']);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'Kiokuko Tests']);
+  execFileSync('git', ['-C', root, 'add', 'tracked.txt']);
+  execFileSync('git', ['-C', root, 'commit', '-qm', 'fixture']);
+  const mutateRestore = await runVerifiers([{
+    id: 'mutate-restore', kind: 'test', executable: process.execPath,
+    args: ['--eval', `const fs=require('node:fs');const p=${JSON.stringify(tracked)};const v=fs.readFileSync(p);fs.writeFileSync(p,'temporary\\n');setTimeout(()=>fs.writeFileSync(p,v),60);`],
+    cwd: root,
+    timeoutMs: 5_000,
+  }], root, { descendantSettleMs: 100 });
+  assert.equal(mutateRestore[0]?.status, 'passed');
+  assert.equal(mutateRestore[0]?.changedDuringVerification, true);
+
+  const delayedDescendant = await runVerifiers([{
+    id: 'delayed-descendant', kind: 'test', executable: process.execPath,
+    args: ['--eval', `const {spawn}=require('node:child_process');const p=${JSON.stringify(tracked)};spawn(process.execPath,['--eval',${JSON.stringify(`setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(tracked)},'late\\n'),100)`)}],{detached:true,stdio:'ignore'}).unref();`],
+    cwd: root,
+    timeoutMs: 5_000,
+  }], root, { descendantSettleMs: 300 });
+  assert.equal(delayedDescendant[0]?.status, 'passed');
+  assert.equal(delayedDescendant[0]?.changedDuringVerification, true);
+});
+
 test('repository-state evidence changes for staged, untracked, renamed, and symlink state', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-state-'));
   execFileSync('git', ['init', '-q', root]);
@@ -649,6 +744,29 @@ test('repository-state evidence changes for staged, untracked, renamed, and syml
   assert.equal(changedSymlink.policyVersion, 1);
 });
 
+test('repository-state evidence includes dirty submodule contents', async () => {
+  const source = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-submodule-source-'));
+  execFileSync('git', ['init', '-q', source]);
+  execFileSync('git', ['-C', source, 'config', 'user.email', 'tests@example.invalid']);
+  execFileSync('git', ['-C', source, 'config', 'user.name', 'Kiokuko Tests']);
+  await writeFile(path.join(source, 'nested.txt'), 'committed\n');
+  execFileSync('git', ['-C', source, 'add', '.']);
+  execFileSync('git', ['-C', source, 'commit', '-qm', 'fixture']);
+
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-submodule-root-'));
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'tests@example.invalid']);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'Kiokuko Tests']);
+  execFileSync('git', ['-C', root, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', source, 'module']);
+  execFileSync('git', ['-C', root, 'commit', '-qam', 'add submodule']);
+
+  await writeFile(path.join(root, 'module', 'nested.txt'), 'dirty-a\n');
+  const dirtyA = captureRepositoryState(root);
+  await writeFile(path.join(root, 'module', 'nested.txt'), 'dirty-b\n');
+  const dirtyB = captureRepositoryState(root);
+  assert.notEqual(dirtyB.digest, dirtyA.digest);
+});
+
 test('verifier waits for close and escalates when termination emits an error', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-verifier-cleanup-'));
   const child = new EventEmitter();
@@ -677,4 +795,12 @@ test('verifier waits for close and escalates when termination emits an error', a
   }, root, { spawn: (() => fakeChild) as never });
   assert.equal(result.status, 'timeout');
   assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+});
+
+test('operation lease covers the full sequential verifier timeout budget', () => {
+  const leaseMs = operationLeaseMsForVerifiers([
+    { id: 'first', kind: 'test', executable: 'node', args: [], cwd: '.', timeoutMs: 300_000 },
+    { id: 'second', kind: 'test', executable: 'node', args: [], cwd: '.', timeoutMs: 300_000 },
+  ]);
+  assert.equal(leaseMs, 662_000);
 });

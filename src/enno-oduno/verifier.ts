@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
+import { unwatchFile, watchFile, type Stats } from 'node:fs';
 import type { Readable } from 'node:stream';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
@@ -8,10 +9,44 @@ import { assertVerifierCwd, parseVerifierSpec } from './schemas.js';
 import type { VerifierRunResult, VerifierSpec } from './types.js';
 
 const MAX_PREVIEW_BYTES = 8 * 1024;
+const DESCENDANT_SETTLE_MS = 500;
 
 export interface VerifierDependencies {
   spawn?: typeof spawn;
   now?: () => number;
+  descendantSettleMs?: number;
+}
+
+function repositoryMutationAudit(repositoryRoot: string): { close: () => void; observed: () => boolean } {
+  let changed = false;
+  const watched: Array<{ target: string; listener: (current: Stats, previous: Stats) => void }> = [];
+  try {
+    const paths = execFileSync('git', [
+      '-C', repositoryRoot, 'ls-files', '--cached', '--others', '--exclude-standard', '-z',
+    ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).split('\0').filter(Boolean);
+    const targets = new Set([repositoryRoot]);
+    for (const candidate of paths) {
+      const target = path.resolve(repositoryRoot, candidate);
+      if (target !== repositoryRoot && !target.startsWith(`${repositoryRoot}${path.sep}`)) throw new Error('invalid Git path');
+      targets.add(target);
+      targets.add(path.dirname(target));
+    }
+    for (const target of targets) {
+      const listener = (current: Stats, previous: Stats): void => {
+        if (current.mtimeMs !== previous.mtimeMs || current.ctimeMs !== previous.ctimeMs
+          || current.size !== previous.size || current.ino !== previous.ino) changed = true;
+      };
+      watchFile(target, { persistent: false, interval: 20 }, listener);
+      watched.push({ target, listener });
+    }
+  } catch {
+    // Evidence cannot be called mutation-free when the audit boundary is unavailable.
+    changed = true;
+  }
+  return {
+    close: () => watched.forEach(({ target, listener }) => unwatchFile(target, listener)),
+    observed: () => changed,
+  };
 }
 
 function appendPreview(current: Buffer<ArrayBufferLike>, chunk: Buffer<ArrayBufferLike>): Buffer<ArrayBufferLike> {
@@ -45,6 +80,7 @@ export async function runVerifier(
   try {
     child = (dependencies.spawn ?? spawn)(normalized.executable, normalized.args, {
       cwd: normalized.cwd,
+      detached: process.platform !== 'win32',
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -88,6 +124,10 @@ export async function runVerifier(
     };
     const tryKill = (signal: NodeJS.Signals): boolean => {
       try {
+        if (process.platform !== 'win32' && child.pid !== undefined) {
+          process.kill(-child.pid, signal);
+          return true;
+        }
         return child.kill(signal);
       } catch {
         return false;
@@ -115,11 +155,14 @@ export async function runVerifier(
       }
       settle({ status: 'spawn_failed', exitCode: null, signal: null });
     });
-    child.once('close', (code, signal) => settle({
-      status: timedOut ? 'timeout' : code === 0 ? 'passed' : 'failed',
-      exitCode: timedOut ? null : code,
-      signal: timedOut ? signal ?? 'SIGTERM' : signal,
-    }));
+    child.once('close', (code, signal) => {
+      if (!timedOut) tryKill('SIGTERM');
+      settle({
+        status: timedOut ? 'timeout' : code === 0 ? 'passed' : 'failed',
+        exitCode: timedOut ? null : code,
+        signal: timedOut ? signal ?? 'SIGTERM' : signal,
+      });
+    });
   });
   return {
     verifier: { ...verifier, args: [...verifier.args] },
@@ -137,7 +180,15 @@ export async function runVerifiers(
   repositoryRoot: string,
   dependencies: VerifierDependencies = {},
 ): Promise<VerifierRunResult[]> {
+  const audit = repositoryMutationAudit(repositoryRoot);
   const results: VerifierRunResult[] = [];
-  for (const verifier of verifiers) results.push(await runVerifier(verifier, repositoryRoot, dependencies));
-  return results;
+  try {
+    for (const verifier of verifiers) results.push(await runVerifier(verifier, repositoryRoot, dependencies));
+    const settleMs = dependencies.descendantSettleMs ?? DESCENDANT_SETTLE_MS;
+    if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
+    const changedDuringVerification = audit.observed();
+    return results.map((result) => ({ ...result, changedDuringVerification }));
+  } finally {
+    audit.close();
+  }
 }

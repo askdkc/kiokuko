@@ -91,8 +91,9 @@ function advisoryAwareReportSchema(
   return clone;
 }
 
-function executionReportSchema(): Record<string, unknown> {
+function executionReportSchema(snapshot: EnnoRunSnapshot): Record<string, unknown> {
   const clone = structuredClone(REPORT_SCHEMAS.work);
+  if (snapshot.clientKind === null || snapshot.clientSessionId === null) return clone;
   const required = Array.isArray(clone.required) ? clone.required.filter((item): item is string => typeof item === 'string') : [];
   clone.required = [...new Set([...required, 'leaseToken', 'routeEpoch'])];
   return clone;
@@ -238,7 +239,7 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
         'Report exactly one WorkUnit outcome',
         'Stop and report when user judgment or unsafe execution is required',
       ],
-      reportSchema: executionReportSchema(),
+      reportSchema: executionReportSchema(snapshot),
     };
   }
   return {

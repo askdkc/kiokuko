@@ -109,9 +109,11 @@ If plan submission returns `userFacingRecovery`, present only its explanation of
 
 During `zenki_planning`, `enno_answer` accepts only explicit cancellation for this user-owned recovery path. Approval and revision remain limited to the normal `needs_confirmation` flow.
 
-Returning this recovery projection is zero-effect: no Skill-discovery attempt,
-advisory consumption, operation receipt, contract revision, or repository
-mutation may be created until the user chooses.
+Returning this recovery projection persists only a continuation pause: no
+Skill-discovery attempt, advisory consumption, operation receipt, contract
+revision, plan persistence, implementation, or repository mutation may be
+created until the user chooses. A same-run retry includes the chosen recovery
+action together with the host-retained capability catalog.
 
 ## Final review
 

@@ -354,24 +354,30 @@ async function collectDoctorResult(
     detail: `scanned=${options.legacyDeliveries.scanned}, valid=${options.legacyDeliveries.valid}, invalid=${options.legacyDeliveries.invalid}, findings=${options.legacyDeliveries.findings.length}, scanTruncated=${options.legacyDeliveries.scanTruncated}, findingsTruncated=${options.legacyDeliveries.findingsTruncated}`,
   };
   const runtime = await runtimeCheck(options.databasePath, options.runtimeDescriptorPath);
-  const ennoTablesPresent = Boolean(database.prepare(`
-    SELECT 1 AS present FROM sqlite_schema
-    WHERE type = 'table' AND name = 'enno_operation_receipts'
-  `).get());
-  const ennoOperations = !ennoTablesPresent || !hasColumn(database, 'enno_operation_receipts', 'lease_expires_at')
+  const ennoLeaseSchemaPresent = ['enno_operation_receipts', 'enno_verifier_runs'].every((table) => (
+    Boolean(database.prepare(`
+      SELECT 1 AS present FROM sqlite_schema
+      WHERE type = 'table' AND name = ?
+    `).get(table)) && hasColumn(database, table, 'lease_expires_at')
+  ));
+  const ennoOperations = options.databaseVersion < 19
     ? { ok: true, count: 0, detail: 'Enno operation lease inspection is unavailable before migration 019' }
+    : !ennoLeaseSchemaPresent
+      ? { ok: false, count: 1, detail: 'Migration 019 Enno operation lease schema is incomplete' }
     : (() => {
       const now = new Date().toISOString();
       const expiredReceipts = count(database, `
         SELECT COUNT(*) AS count FROM enno_operation_receipts
-        WHERE state = 'started' AND lease_expires_at <= ?
+        WHERE state = 'started'
+          AND (julianday(lease_expires_at) IS NULL OR lease_expires_at <= ?)
       `, now);
       const recoveredReceipts = count(database, `
         SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE state = 'abandoned'
       `);
       const expiredVerifiers = count(database, `
         SELECT COUNT(*) AS count FROM enno_verifier_runs
-        WHERE status = 'started' AND lease_expires_at <= ?
+        WHERE status = 'started'
+          AND (julianday(lease_expires_at) IS NULL OR lease_expires_at <= ?)
       `, now);
       const recoveredVerifiers = count(database, `
         SELECT COUNT(*) AS count FROM enno_verifier_runs WHERE status = 'abandoned'

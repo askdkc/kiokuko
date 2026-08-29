@@ -35,14 +35,22 @@ function sanitizedObject(value: unknown, repositoryRoot: string): Record<string,
   return sanitizeJson(omitUndefined(value), { workspace: repositoryRoot }).value as Record<string, unknown>;
 }
 
+export function verifierCommandContainsSecret(verifier: Pick<PlanSubmission['finalVerifiers'][number], 'executable' | 'args'>): boolean {
+  if (findSecret(verifier.executable) !== undefined) return true;
+  return verifier.args.some((argument, index) => (
+    findSecret(argument) !== undefined
+    || index + 1 < verifier.args.length
+      && findSecret(`${argument} ${verifier.args[index + 1]}`) !== undefined
+  ));
+}
+
 function assertSafeVerifierCommands(plan: PlanSubmission): void {
   const verifiers = [
     ...plan.finalVerifiers,
     ...plan.workPlan.units.flatMap((unit) => unit.focusedVerifiers),
   ];
   for (const verifier of verifiers) {
-    if (findSecret(verifier.executable) !== undefined
-      || verifier.args.some((argument) => findSecret(argument) !== undefined)) {
+    if (verifierCommandContainsSecret(verifier)) {
       throw new KiokukoError('SECURITY_REJECTION', 'Verifier command resembles secret material and was rejected');
     }
   }
@@ -50,18 +58,33 @@ function assertSafeVerifierCommands(plan: PlanSubmission): void {
 
 export function sanitizePlanSubmission(input: PlanSubmission, repositoryRoot: string): PlanSubmission {
   assertSafeVerifierCommands(input);
+  const workPlanWithoutVerifierCommands = {
+    ...input.workPlan,
+    units: input.workPlan.units.map((unit) => ({ ...unit, focusedVerifiers: [] })),
+  };
   const sanitized = sanitizedObject({
     scope: input.scope,
     exclusions: input.exclusions,
     acceptanceCriteria: input.acceptanceCriteria,
-    workPlan: input.workPlan,
+    workPlan: workPlanWithoutVerifierCommands,
     skillRequirements: input.skillRequirements,
-    finalVerifiers: input.finalVerifiers,
     advisoryDisposition: input.advisoryDisposition,
   }, repositoryRoot);
+  const sanitizedWorkPlan = sanitized.workPlan as PlanSubmission['workPlan'];
   return parsePlanSubmission({
     ...input,
     ...sanitized,
+    workPlan: {
+      ...sanitizedWorkPlan,
+      units: sanitizedWorkPlan.units.map((unit, index) => ({
+        ...unit,
+        focusedVerifiers: input.workPlan.units[index]?.focusedVerifiers.map((verifier) => ({
+          ...verifier,
+          args: [...verifier.args],
+        })) ?? [],
+      })),
+    },
+    finalVerifiers: input.finalVerifiers.map((verifier) => ({ ...verifier, args: [...verifier.args] })),
   });
 }
 

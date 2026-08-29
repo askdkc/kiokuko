@@ -7,6 +7,7 @@ import { canonicalContentHash } from '../serialization/validate.js';
 export const REPOSITORY_STATE_POLICY_VERSION = 1;
 const MAX_FILES = 50_000;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_STABILITY_ATTEMPTS = 3;
 const FALLBACK_IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'coverage']);
 
 export interface RepositoryStateSnapshot {
@@ -31,7 +32,17 @@ function nulPaths(output: Buffer): string[] {
   return output.toString('utf8').split('\0').filter((value) => value.length > 0);
 }
 
-function fileProjection(root: string, relativePath: string): Record<string, unknown> {
+function nestedGitRepository(directory: string): boolean {
+  const topLevel = gitOutput(directory, ['rev-parse', '--show-toplevel'])?.toString('utf8').trim();
+  if (topLevel === undefined || topLevel.length === 0) return false;
+  try {
+    return realpathSync(topLevel) === realpathSync(directory);
+  } catch {
+    return false;
+  }
+}
+
+function fileProjection(root: string, relativePath: string, ancestors: ReadonlySet<string>): Record<string, unknown> {
   if (path.isAbsolute(relativePath) || relativePath.split(/[\\/]/u).includes('..')) {
     throw new KiokukoError('SECURITY_REJECTION', 'Repository snapshot path escapes the canonical root');
   }
@@ -43,7 +54,22 @@ function fileProjection(root: string, relativePath: string): Record<string, unkn
   const stat = lstatSync(absolute, { throwIfNoEntry: false });
   if (stat === undefined) return { path: relativePath, type: 'missing' };
   if (stat.isSymbolicLink()) return { path: relativePath, type: 'symlink', mode: stat.mode, target: readlinkSync(absolute) };
-  if (stat.isDirectory()) return { path: relativePath, type: 'directory', mode: stat.mode };
+  if (stat.isDirectory()) {
+    const nestedRoot = realpathSync(absolute);
+    if (nestedGitRepository(nestedRoot)) {
+      if (ancestors.has(nestedRoot)) throw new KiokukoError('INTEGRITY_ERROR', 'Repository snapshot contains a recursive Git repository');
+      const nested = captureStableRepositoryState(nestedRoot, new Set([...ancestors, nestedRoot]));
+      return {
+        path: relativePath,
+        type: 'git_repository',
+        mode: stat.mode,
+        policyVersion: nested.policyVersion,
+        contentDigest: nested.digest,
+        nestedFileCount: nested.fileCount,
+      };
+    }
+    return { path: relativePath, type: 'directory', mode: stat.mode };
+  }
   if (!stat.isFile()) return { path: relativePath, type: 'other', mode: stat.mode };
   if (stat.size > MAX_FILE_BYTES) throw new KiokukoError('SECURITY_REJECTION', 'Repository snapshot file exceeds the safety limit');
   return {
@@ -70,8 +96,7 @@ function fallbackPaths(root: string): string[] {
   return paths.sort();
 }
 
-export function captureRepositoryState(repositoryRoot: string): RepositoryStateSnapshot {
-  const root = realpathSync(repositoryRoot);
+function captureRepositoryStateOnce(root: string, ancestors: ReadonlySet<string>): RepositoryStateSnapshot {
   const trackedAndUntracked = gitOutput(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
   const paths = trackedAndUntracked === undefined
     ? fallbackPaths(root)
@@ -80,7 +105,11 @@ export function captureRepositoryState(repositoryRoot: string): RepositoryStateS
   const head = gitOutput(root, ['rev-parse', '--verify', 'HEAD'])?.toString('utf8').trim() ?? null;
   const index = gitOutput(root, ['ls-files', '-s', '-z'])?.toString('base64') ?? null;
   const status = gitOutput(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])?.toString('base64') ?? null;
-  const files = paths.map((relativePath) => fileProjection(root, relativePath));
+  const files = paths.map((relativePath) => fileProjection(root, relativePath, ancestors));
+  const fileCount = files.reduce((count, file) => (
+    count + 1 + (typeof file.nestedFileCount === 'number' ? file.nestedFileCount : 0)
+  ), 0);
+  if (fileCount > MAX_FILES) throw new KiokukoError('SECURITY_REJECTION', 'Repository snapshot exceeds the file-count safety limit');
   return {
     policyVersion: REPOSITORY_STATE_POLICY_VERSION,
     digest: canonicalContentHash({
@@ -91,6 +120,21 @@ export function captureRepositoryState(repositoryRoot: string): RepositoryStateS
       status,
       files,
     }),
-    fileCount: files.length,
+    fileCount,
   };
+}
+
+function captureStableRepositoryState(root: string, ancestors: ReadonlySet<string>): RepositoryStateSnapshot {
+  let previous: RepositoryStateSnapshot | undefined;
+  for (let attempt = 0; attempt < MAX_STABILITY_ATTEMPTS; attempt += 1) {
+    const current = captureRepositoryStateOnce(root, ancestors);
+    if (previous !== undefined && previous.digest === current.digest && previous.fileCount === current.fileCount) return current;
+    previous = current;
+  }
+  throw new KiokukoError('CONFLICT', 'Repository changed while its verification state was being captured');
+}
+
+export function captureRepositoryState(repositoryRoot: string): RepositoryStateSnapshot {
+  const root = realpathSync(repositoryRoot);
+  return captureStableRepositoryState(root, new Set([root]));
 }

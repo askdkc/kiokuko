@@ -74,7 +74,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /attempt already ended.*do not try to cancel it again/iu);
   assert.match(rendered, /ambiguous candidates fail open without mutation/u);
   assert.match(rendered, /`ENNO_INPUT_INVALID`/u);
-  assert.match(rendered, /Plan-start recovery is zero-effect until the user chooses/u);
+  assert.match(rendered, /Plan-start recovery persists only a continuation pause until the user chooses/u);
   assert.match(rendered, /expired started rows are atomically abandoned/u);
   assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
   assert.match(rendered, /Every descriptor must include its kind and canonical name/u);

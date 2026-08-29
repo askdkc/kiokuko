@@ -51,7 +51,7 @@ local project client.
 Template version 20 also documents bounded `ENNO_INPUT_INVALID` diagnostics,
 the explicit advisory lifecycle and dynamic report schema, WorkUnit-local
 `code`/`ui`/`test`/`docs`/`operations` routes, repository-relative verifier
-directories, zero-effect plan recovery, pre-persistence sanitization,
+directories, continuation-pausing plan recovery, pre-persistence sanitization,
 crash-recoverable receipts, and repository-state-bound Final Review evidence.
 
 The instructions require one new bounded opaque `requestId` per logical user

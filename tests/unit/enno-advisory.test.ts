@@ -254,6 +254,36 @@ test('final_review context binds fresh evidence projection with bounded output p
   assert.ok(Buffer.byteLength(context.verifierEvidence[0]!.stderrPreview, 'utf8') <= 2_048);
 });
 
+test('final_review projections hide embedded repository paths and truncate UTF-8 on code-point boundaries', () => {
+  const workUnits: EnnoRunSnapshot['workUnits'] = [{
+    workUnit: snapshot().contract.workPlan.units[0]!,
+    status: 'completed',
+    attemptCount: 1,
+    result: {
+      outcome: 'completed',
+      summary: `Read ${REPOSITORY_ROOT}/private/build.log`,
+      mutated: true,
+      changedPaths: ['src/api.ts'],
+    },
+  }];
+  const evidence = [verifierResult('final-check', {
+    verifier: verifier('final-check', { args: [`--config=${REPOSITORY_ROOT}/private/config.json`] }),
+    stdoutPreview: `${'a'.repeat(2_047)}😀`,
+    stderrPreview: `Error at ${REPOSITORY_ROOT}/src/api.ts:1`,
+  })];
+  const context = advisoryContextForSnapshot(snapshot({
+    status: 'enno_verifying',
+    finalEvidenceReady: true,
+    finalEvidence: evidence,
+    workUnits,
+  }), 'final_review');
+  if (context.phase !== 'final_review') assert.fail('Expected final-review context');
+  const serialized = canonicalJson(context);
+  assert.equal(serialized.includes(REPOSITORY_ROOT), false);
+  assert.ok(Buffer.byteLength(context.verifierEvidence[0]!.stdoutPreview, 'utf8') <= 2_048);
+  assert.doesNotThrow(() => canonicalJson(context.verifierEvidence[0]!.stdoutPreview));
+});
+
 test('oversized final-review context fails closed without echoing its raw content', () => {
   const oversized = snapshot({
     status: 'enno_verifying',

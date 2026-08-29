@@ -111,7 +111,8 @@ Advisory rounds move through `not_started`, `fanout_requested`, `aggregated`, an
 consumption. New WorkUnits declare local `code`, `ui`, `test`, `docs`, or
 `operations` routes; code requires a `code.*` expert and UI requires both
 `code.*` and `ui.*`, without imposing those experts on test/docs/operations
-units. Plan recovery is zero-effect until the user chooses. Continuation uses
+units. Plan recovery persists only a continuation pause until the user chooses;
+it does not persist a plan or start implementation. Continuation uses
 short-lived route-epoch-bound resume tokens and one-owner execution leases;
 expired operation or verifier work can be atomically abandoned and reclaimed.
 Narrative/evidence data is sanitized before hashing and persistence, and
@@ -130,7 +131,7 @@ Incomplete intake therefore returns an Enno-Oduno directive and `answer_intake`;
 
 ### Recovering when plan-start environment information is missing or changed
 
-The environment information used here is the list of Skills and MCP tools available to the current AI client. The host collects it automatically; the user never needs to find a catalog or construct JSON. If it is missing from the plan or has changed since task preparation, Kiokuko stops before Skill discovery, advisory consumption, receipt creation, or contract revision. This plan-start attempt therefore begins no new work and makes no additional code changes.
+The environment information used here is the list of Skills and MCP tools available to the current AI client. The host collects it automatically; the user never needs to find a catalog or construct JSON. If it is missing from the plan or has changed since task preparation, Kiokuko records only a pause that suppresses automatic continuation, then stops before Skill discovery, advisory consumption, receipt creation, plan persistence, or contract revision. This plan-start attempt therefore begins no new work and makes no additional code changes. A same-run retry includes the recovery action the user selected.
 
 Every recovery choice is displayed in the same order: its label and recommendation, when the choice fits the user's intent, and exactly what happens after selection. The three situations are:
 

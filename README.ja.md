@@ -112,7 +112,8 @@ advisory roundは`not_started`、`fanout_requested`、`aggregated`、`consumed`�
 集約結果の消費待ちでだけadvisory fieldが必須です。新しいWorkUnitは`code`、`ui`、
 `test`、`docs`、`operations`のlocal routeを宣言します。codeは`code.*` expert、UIは
 `code.*`と`ui.*`の両方を必要としますが、その要件をtest/docs/operations unitへ
-波及させません。plan recoveryはユーザー選択まで副作用ゼロです。continuationは
+波及させません。plan recoveryはユーザー選択まで自動continuationを止めるmarkerだけを保存し、
+plan保存や実装開始は行いません。continuationは
 route epochに固定した短命resume tokenと単一所有者のexecution leaseを使い、期限切れの
 operation/verifierはatomicにabandonして再取得できます。narrativeと証拠はhash化・保存前に
 sanitizeし、secretを含むverifier commandは拒否します。
@@ -130,7 +131,7 @@ code変更という理由だけで選びません。このexpertは利用側か�
 
 ここでいう「環境情報」は、現在のAIクライアントで利用できるSkillとMCPツールの一覧です。ホストが自動収集する内部情報であり、ユーザーが一覧の保存場所を探したり、設定データを手作業で作成したりする必要はありません。
 
-この一覧が何らかの理由で計画へ引き継がれていない、またはタスク準備時から変わっている場合、Kiokukoは安全確認を完了できないため作業を開始しません。関連するSkillの探索、3件の助言結果の計画への反映、重複実行を防ぐ受付記録の作成、計画版の更新より前に停止するため、この計画開始による新しい作業や追加のコード変更はありません。そのうえで、状況に応じて次の選択肢を表示し、ユーザーの明示回答を待ちます。
+この一覧が何らかの理由で計画へ引き継がれていない、またはタスク準備時から変わっている場合、Kiokukoは自動continuationを止めるmarkerだけを保存し、安全確認を完了できないため作業を開始しません。関連するSkillの探索、3件の助言結果の計画への反映、重複実行を防ぐ受付記録の作成、plan保存、計画版の更新より前に停止するため、この計画開始による新しい作業や追加のコード変更はありません。同じrunを再送する場合は、ユーザーが選んだrecovery actionも添付します。そのうえで、状況に応じて次の選択肢を表示し、ユーザーの明示回答を待ちます。
 
 各選択肢は、ラベルと推奨表示、どのような意図に適するか、選択後に何が起きるか、の順で表示されます。
 

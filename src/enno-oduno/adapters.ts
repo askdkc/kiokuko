@@ -6,6 +6,7 @@ import { KiokukoError } from '../errors.js';
 import { detectRepositoryRoot } from '../repository/detect-root.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import { directiveForRun } from './directives.js';
+import { PLAN_START_RECOVERY_BLOCKER_PREFIX } from './plan-recovery.js';
 import {
   appendEnnoEventInTransaction,
   claimExecutionLeaseInTransaction,
@@ -70,8 +71,9 @@ function exactSessionCandidates(
     WHERE ec.client_session_id = ?
       AND ec.client_kind = ?
       AND ec.repository_root = ?
+      AND (ec.blocker IS NULL OR ec.blocker NOT LIKE ?)
       AND ec.status IN ('zenki_planning', 'goki_executing', 'enno_verifying')
-  `).all<CandidateRow>(sessionId, client, repositoryRoot);
+  `).all<CandidateRow>(sessionId, client, repositoryRoot, `${PLAN_START_RECOVERY_BLOCKER_PREFIX}%`);
 }
 
 function repositoryCandidates(database: SqliteDatabase, repositoryRoot: string): CandidateRow[] {
@@ -82,8 +84,9 @@ function repositoryCandidates(database: SqliteDatabase, repositoryRoot: string):
            ec.repository_root AS repositoryRoot, ec.status, ec.route_epoch AS routeEpoch
     FROM enno_contracts AS ec
     WHERE ec.repository_root = ?
+      AND (ec.blocker IS NULL OR ec.blocker NOT LIKE ?)
       AND ec.status IN ('zenki_planning', 'goki_executing', 'enno_verifying')
-  `).all<CandidateRow>(repositoryRoot);
+  `).all<CandidateRow>(repositoryRoot, `${PLAN_START_RECOVERY_BLOCKER_PREFIX}%`);
 }
 
 type CandidateResolution =

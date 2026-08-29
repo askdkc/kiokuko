@@ -110,8 +110,8 @@ advisory round는 `not_started`, `fanout_requested`, `aggregated`, `consumed` �
 전환되며 집계 결과가 소비 대기 중일 때만 advisory field가 필수입니다. 새 WorkUnit은
 `code`, `ui`, `test`, `docs`, `operations` local route를 선언합니다. code에는 `code.*`,
 UI에는 `code.*`와 `ui.*` expert가 필요하지만 이 요구 사항은 test/docs/operations
-unit에 전파되지 않습니다. plan recovery는 사용자가 선택할 때까지 부작용이 없습니다.
-continuation은 route epoch에 바인딩된 단기 resume token과 단일 소유자 execution lease를
+unit에 전파되지 않습니다. plan recovery는 사용자가 선택할 때까지 자동 continuation을
+중지하는 marker만 저장하며 plan 저장이나 구현 시작은 하지 않습니다. continuation은 route epoch에 바인딩된 단기 resume token과 단일 소유자 execution lease를
 사용하며 만료된 operation/verifier는 원자적으로 abandoned 처리 후 다시 claim할 수 있습니다.
 narrative와 증거는 hash 및 저장 전에 sanitize되고 secret이 포함된 verifier command는 거부됩니다.
 
@@ -126,7 +126,7 @@ narrative와 증거는 hash 및 저장 전에 sanitize되고 secret이 포함된
 
 ### 계획 시작 환경 정보가 누락되거나 변경된 경우
 
-여기서 환경 정보는 현재 AI 클라이언트에서 사용할 수 있는 Skill과 MCP tool 목록입니다. host가 자동으로 수집하므로 사용자가 catalog 위치를 찾거나 JSON을 만들 필요가 없습니다. 이 정보가 계획에 전달되지 않았거나 작업 준비 후 변경되면 Kiokuko는 Skill discovery, advisory 소비, receipt 생성 또는 계약 revision 변경 전에 중지합니다. 따라서 이번 계획 시작으로 새 작업이나 추가 code 변경은 발생하지 않습니다.
+여기서 환경 정보는 현재 AI 클라이언트에서 사용할 수 있는 Skill과 MCP tool 목록입니다. host가 자동으로 수집하므로 사용자가 catalog 위치를 찾거나 JSON을 만들 필요가 없습니다. 이 정보가 계획에 전달되지 않았거나 작업 준비 후 변경되면 Kiokuko는 자동 continuation을 중지하는 marker만 저장하고 Skill discovery, advisory 소비, receipt 생성, plan 저장 또는 계약 revision 변경 전에 중지합니다. 따라서 이번 계획 시작으로 새 작업이나 추가 code 변경은 발생하지 않습니다. 같은 run을 다시 제출할 때는 사용자가 선택한 recovery action도 함께 전달합니다.
 
 각 선택지는 label과 추천 여부, 어떤 사용자 의도에 맞는지, 선택 후 정확히 무엇이 일어나는지의 순서로 표시됩니다.
 

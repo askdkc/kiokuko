@@ -3,6 +3,7 @@ import { canonicalContentHash, canonicalJson } from '../serialization/validate.j
 import { findSecret, findSecretInValue } from '../memory/secrets.js';
 import { KiokukoError } from '../errors.js';
 import { ennoValidationError } from './validation-errors.js';
+import { verifierCommandContainsSecret } from './sanitize.js';
 import {
   ADVISORY_FAILURE_CODES,
   ADVISORY_MAX_ROUND_BYTES,
@@ -91,27 +92,63 @@ function projectChangedPaths(repositoryRoot: string, paths: readonly string[]): 
   return paths.map((value) => projectRepositoryRelativePath(repositoryRoot, value));
 }
 
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let projected = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (bytes + characterBytes > maxBytes) break;
+    projected += character;
+    bytes += characterBytes;
+  }
+  return projected;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function projectRepositoryText(repositoryRoot: string, value: string): string {
+  if (findSecret(value) !== undefined) return '#redacted';
+  const canonicalRoot = path.resolve(repositoryRoot);
+  const variants = new Set([
+    canonicalRoot,
+    canonicalRoot.split(path.sep).join('/'),
+    canonicalRoot.split(path.sep).join('\\'),
+  ]);
+  let projected = value;
+  for (const variant of variants) {
+    if (variant.length === 0) continue;
+    projected = projected.replace(new RegExp(`${escapeRegExp(variant)}(?=$|[\\\\/\\s:;,)}\\]])`, 'gu'), '.');
+  }
+  return projected;
+}
+
 function finalReviewEvidence(
   repositoryRoot: string,
   evidence: readonly EnnoRunSnapshot['finalEvidence'][number][],
 ): AdvisoryFinalVerifierEvidence[] {
-  return evidence.map((result) => ({
-    id: result.verifier.id,
-    kind: result.verifier.kind,
-    executable: result.verifier.executable,
-    args: [...result.verifier.args],
-    directory: projectRepositoryRelativePath(repositoryRoot, result.verifier.cwd),
-    timeoutMs: result.verifier.timeoutMs,
-    status: result.status,
-    exitCode: result.exitCode,
-    signal: result.signal,
-    stdoutDigest: result.stdoutDigest,
-    stderrDigest: result.stderrDigest,
-    stdoutPreview: result.stdoutPreview.slice(0, 2_048),
-    stderrPreview: result.stderrPreview.slice(0, 2_048),
-    repositoryStatePolicyVersion: result.repositoryStatePolicyVersion ?? null,
-    repositoryStateDigest: result.repositoryStateDigest ?? null,
-  }));
+  return evidence.map((result) => {
+    const unsafeCommand = verifierCommandContainsSecret(result.verifier);
+    return {
+      id: result.verifier.id,
+      kind: result.verifier.kind,
+      executable: unsafeCommand ? '#redacted' : projectRepositoryText(repositoryRoot, result.verifier.executable),
+      args: unsafeCommand ? ['#redacted'] : result.verifier.args.map((argument) => projectRepositoryText(repositoryRoot, argument)),
+      directory: projectRepositoryRelativePath(repositoryRoot, result.verifier.cwd),
+      timeoutMs: result.verifier.timeoutMs,
+      status: result.status,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      stdoutDigest: result.stdoutDigest,
+      stderrDigest: result.stderrDigest,
+      stdoutPreview: truncateUtf8(projectRepositoryText(repositoryRoot, result.stdoutPreview), 2_048),
+      stderrPreview: truncateUtf8(projectRepositoryText(repositoryRoot, result.stderrPreview), 2_048),
+      repositoryStatePolicyVersion: result.repositoryStatePolicyVersion ?? null,
+      repositoryStateDigest: result.repositoryStateDigest ?? null,
+    };
+  });
 }
 
 function finalReviewOutcomes(snapshot: EnnoRunSnapshot): AdvisoryWorkUnitOutcome[] {
@@ -119,11 +156,11 @@ function finalReviewOutcomes(snapshot: EnnoRunSnapshot): AdvisoryWorkUnitOutcome
     .filter((unit) => unit.status === 'completed' && unit.result !== null)
     .map((unit) => ({
       id: unit.workUnit.id,
-      objective: unit.workUnit.objective,
-      acceptanceCriteria: [...unit.workUnit.acceptanceCriteria],
+      objective: projectRepositoryText(snapshot.repositoryRoot, unit.workUnit.objective),
+      acceptanceCriteria: unit.workUnit.acceptanceCriteria.map((criterion) => projectRepositoryText(snapshot.repositoryRoot, criterion)),
       routes: [...(unit.workUnit.routes ?? [])],
       status: unit.result!.outcome,
-      summary: unit.result!.summary,
+      summary: projectRepositoryText(snapshot.repositoryRoot, unit.result!.summary),
       mutated: unit.result!.mutated,
       changedPaths: projectChangedPaths(snapshot.repositoryRoot, unit.result!.changedPaths),
     }));
@@ -171,8 +208,11 @@ export function advisoryContextForSnapshot(snapshot: EnnoRunSnapshot, phase: Adv
   }
   return boundedAdvisoryContext({
     phase: 'final_review',
-    workPlanSummary: snapshot.contract.workPlan.objective,
-    acceptanceCriteria: snapshot.contract.acceptanceCriteria.map((criterion) => ({ ...criterion })),
+    workPlanSummary: projectRepositoryText(snapshot.repositoryRoot, snapshot.contract.workPlan.objective),
+    acceptanceCriteria: snapshot.contract.acceptanceCriteria.map((criterion) => ({
+      ...criterion,
+      description: projectRepositoryText(snapshot.repositoryRoot, criterion.description),
+    })),
     workUnitOutcomes: finalReviewOutcomes(snapshot),
     changedPaths,
     verifierEvidence,
