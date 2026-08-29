@@ -40,6 +40,24 @@ memory. Global candidates, including preferences, require caller-supplied
 structured applicability or an explicit portable reason. Curator suggestions
 are deterministic heuristics over project candidates plus qualified Akinator
 paths, not trusted model decisions.
+
+Plan submission validates the supplied catalog against the hash bound when the
+run opened before Skill discovery, advisory consumption, operation receipt
+creation, or contract mutation. Omission or mismatch returns only a fixed,
+non-mutating recovery projection. Its user-visible text contains a general
+explanation, confirms that the attempted plan start caused no new work or
+additional code changes, explains the remedy, and presents bounded choices.
+Each choice carries a label, one recommendation flag, a `whenToChoose` intent,
+and an exact `whatHappens` result. The renderer preserves that order while
+hiding machine actions, structure field names, the presentation version, raw
+catalog, hash, run identity, revision, reason code, internal error message, raw
+JSON, and internal tool name. No retry, cancellation, or replacement run occurs
+before an explicit user choice. A legacy attempt is classified as an environment-loss
+failure only when its saved unavailable-Skill state and the exact catalog
+binding prove that the plan ended before work while the required local Skill
+was available. The client must wait for an explicit user choice; restart
+cancels an active planning attempt, while an already-ended attempt remains
+terminal before opening a replacement.
 Retrieval frequency is never accepted as qualification. The path store requires
 a linked intake/run, one path per entry revision per run, a completed actionable
 silo, grounded target/success sources, and fresh verification or a passing test.

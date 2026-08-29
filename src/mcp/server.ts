@@ -47,6 +47,13 @@ import {
   ENNO_ORCHESTRATION_ENTRY_CONTRACT_WITH_ADVISORY,
 } from '../enno-oduno/instructions.js';
 import { resolveTaskPrepareClient } from '../enno-oduno/harness.js';
+import {
+  buildPlanStartRecovery,
+  PLAN_START_RECOVERY_DETAIL_KEY,
+  PLAN_START_RECOVERY_REASONS,
+  renderPlanStartRecovery,
+  type PlanStartRecoveryReason,
+} from '../enno-oduno/plan-recovery.js';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../setup/standard-skills.js';
 
 export interface McpServerDependencies {
@@ -168,6 +175,22 @@ function checkpointEligibilityToolError(error: unknown): McpToolErrorResult | un
   };
 }
 
+function planStartRecoveryToolError(error: unknown): McpToolErrorResult | undefined {
+  if (!(error instanceof KiokukoError) || error.code !== 'CONFLICT') return undefined;
+  const details = safeOwnRecord(error.details);
+  if (details === undefined || Object.keys(details).length !== 1
+    || !Object.hasOwn(details, PLAN_START_RECOVERY_DETAIL_KEY)) return undefined;
+  const reason = details[PLAN_START_RECOVERY_DETAIL_KEY];
+  if (typeof reason !== 'string'
+    || !PLAN_START_RECOVERY_REASONS.includes(reason as PlanStartRecoveryReason)) return undefined;
+  const recovery = buildPlanStartRecovery(reason as PlanStartRecoveryReason);
+  return {
+    isError: true,
+    content: [{ type: 'text', text: renderPlanStartRecovery(recovery) }],
+    structuredContent: { ...recovery },
+  };
+}
+
 function boundedRetryAfterSeconds(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 1;
   return Math.min(60, Math.max(1, Math.trunc(value)));
@@ -186,6 +209,16 @@ async function withPublicCheckpointToolError<T>(operation: () => Promise<T>): Pr
     return await operation();
   } catch (error) {
     const result = checkpointEligibilityToolError(error);
+    if (result !== undefined) return result;
+    throw publicToolError(error);
+  }
+}
+
+async function withPublicPlanStartRecovery<T>(operation: () => Promise<T>): Promise<T | McpToolErrorResult> {
+  try {
+    return await operation();
+  } catch (error) {
+    const result = planStartRecoveryToolError(error);
     if (result !== undefined) return result;
     throw publicToolError(error);
   }
@@ -289,10 +322,10 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
 
   server.registerTool('enno_plan_submit', {
     title: 'Submit an Enno-Oduno WorkPlan',
-    description: `Zenki submits one revision-bound WorkPlan, Skill requirement set, and verifier contract. ${ENNO_TOOL_IDENTITY_CONTRACT} Missing capabilities alone use shared Skill discovery. Required unavailable Skills block execution; non-user-explicit fields require confirmation. A needs_confirmation response carries the decided ennoOduno.directive.userFacingConfirmation projection; present every item of it to the user in the user's language without raw directive JSON or internal identifiers, then stop and wait for an explicit approve, revise, or cancel.`,
+    description: `Zenki submits one revision-bound WorkPlan, Skill requirement set, and verifier contract. ${ENNO_TOOL_IDENTITY_CONTRACT} Supply the same complete client capability catalog used when the task was prepared. Missing or changed environment information returns a non-mutating user-facing recovery projection before discovery, advisory consumption, or plan persistence. Present its concise explanation and every choice in the user's language: label and recommendation first, then the translated intent in whenToChoose and exact result in whatHappens. Never display the machine action, reason code, internal tool or field names, capability catalog, identifiers, revision, presentation version, or raw JSON, and wait for the user's explicit choice without retrying, cancelling, or starting a replacement automatically. Required unavailable Skills block execution; non-user-explicit fields require confirmation. A needs_confirmation response carries the decided ennoOduno.directive.userFacingConfirmation projection; present every item of it to the user in the user's language without raw directive JSON or internal identifiers, then stop and wait for an explicit approve, revise, or cancel.`,
     inputSchema: planSubmissionSchema.shape,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-  }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(await submitEnnoPlan(database, input, {
+  }, async (input) => withPublicPlanStartRecovery(() => withDatabase(dependencies, async (database) => toolResult(await submitEnnoPlan(database, input, {
     ...(dependencies.fetchImpl === undefined ? {} : { fetchImpl: dependencies.fetchImpl }),
   })))));
 
@@ -312,7 +345,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
 
   server.registerTool('enno_answer', {
     title: 'Answer an Enno-Oduno contract confirmation',
-    description: `Apply explicit user approval, revision, or cancellation. ${ENNO_TOOL_IDENTITY_CONTRACT} Only Enno-Oduno advances state. Pass only the action the user explicitly chose after seeing the userFacingConfirmation projection; never infer approve from model judgment.`,
+    description: `Apply explicit user approval, revision, or cancellation. ${ENNO_TOOL_IDENTITY_CONTRACT} Only Enno-Oduno advances state. Pass only the action the user explicitly chose after seeing the user-facing confirmation or plan-start recovery choices; never infer a choice from model judgment. During planning, only explicit cancellation is accepted; approval and revision remain limited to the normal confirmation state.`,
     inputSchema: ennoAnswerSchema.shape,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => withPublicToolError(() => withDatabase(dependencies, async (database) => toolResult(answerEnno(database, input)))));

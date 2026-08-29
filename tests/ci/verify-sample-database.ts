@@ -7,6 +7,7 @@ import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import { getGlobalDatabasePath } from '../../src/config/paths.js';
 import { openConnection } from '../../src/db/connection.js';
+import { inspectMigrationSnapshot } from '../../src/db/migrate.js';
 import {
   SAMPLE_DATABASE_BASELINE_VERSION,
   SAMPLE_EXTERNAL_SKILL_DOCUMENT_COUNT,
@@ -18,6 +19,12 @@ import {
   SAMPLE_PROJECT_UNICODE_BODY,
   SAMPLE_PROJECT_WORKSPACE,
 } from '../fixtures/sample-database.js';
+import {
+  CURRENT_MIGRATION_SNAPSHOT,
+  CURRENT_MIGRATION_VERSIONS,
+  CURRENT_SCHEMA_VERSION,
+  migrationVersionsAfter,
+} from '../fixtures/current-migrations.js';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, '../..');
@@ -80,6 +87,10 @@ async function runCliJson(args: string[], operation: string, environment: NodeJS
 }
 
 function assertLegacyFixture(): void {
+  assert.ok(
+    CURRENT_SCHEMA_VERSION > SAMPLE_DATABASE_BASELINE_VERSION,
+    'The sample database baseline must remain older than the current schema',
+  );
   const database = openConnection(sampleDatabasePath, { readOnly: true });
   try {
     const versions = database.prepare('SELECT version FROM schema_migrations ORDER BY version')
@@ -87,7 +98,7 @@ function assertLegacyFixture(): void {
       .map(({ version }) => version);
     assert.deepEqual(
       versions,
-      Array.from({ length: SAMPLE_DATABASE_BASELINE_VERSION }, (_, index) => index + 1),
+      CURRENT_MIGRATION_VERSIONS.slice(0, SAMPLE_DATABASE_BASELINE_VERSION),
       'The committed sample database must remain on the legacy baseline',
     );
   } finally {
@@ -137,8 +148,11 @@ async function verifySetup(environment: NodeJS.ProcessEnv, databasePath: string)
   assert.equal(setup.data.databaseAction, 'initialized');
   assert.equal(setup.data.recoveredEntries, 0);
   const applied = migrationVersions(setup.data.appliedMigrations);
-  assert.ok(applied.length > 0, 'setup must apply at least one migration to the sample database');
-  assert.equal(applied[0], SAMPLE_DATABASE_BASELINE_VERSION + 1);
+  assert.deepEqual(
+    applied,
+    migrationVersionsAfter(SAMPLE_DATABASE_BASELINE_VERSION),
+    'setup must apply every migration after the committed sample database baseline',
+  );
   const backupPath = setup.data.databaseBackupPath;
   assert.equal(typeof backupPath, 'string', 'migration must create a pre-migration backup');
   assert.ok((await stat(backupPath as string)).isFile(), 'pre-migration backup must exist');
@@ -149,11 +163,24 @@ async function verifyDoctor(environment: NodeJS.ProcessEnv): Promise<void> {
   assert.equal(doctor.data.ok, true);
   const currentVersion = doctor.data.currentVersion;
   assert.ok(Number.isSafeInteger(currentVersion));
-  assert.ok((currentVersion as number) > SAMPLE_DATABASE_BASELINE_VERSION);
+  assert.equal(currentVersion, CURRENT_SCHEMA_VERSION);
   const checks = objectValue(doctor.data.checks, 'doctor.checks');
   assert.ok(Object.keys(checks).length > 0, 'doctor must return integrity checks');
   for (const [name, value] of Object.entries(checks)) {
     assert.equal(objectValue(value, `doctor.checks.${name}`).ok, true, `doctor check failed: ${name}`);
+  }
+}
+
+function verifyCurrentMigrationHistory(databasePath: string): void {
+  const database = openConnection(databasePath, { readOnly: true });
+  try {
+    const plan = inspectMigrationSnapshot(database, CURRENT_MIGRATION_SNAPSHOT);
+    assert.deepEqual(plan.applied, CURRENT_MIGRATION_VERSIONS);
+    assert.deepEqual(plan.pending, []);
+    assert.equal(plan.databaseVersion, CURRENT_SCHEMA_VERSION);
+    assert.equal(plan.currentVersion, CURRENT_SCHEMA_VERSION);
+  } finally {
+    database.close();
   }
 }
 
@@ -324,6 +351,7 @@ async function main(): Promise<void> {
     await copyFile(sampleDatabasePath, isolated.databasePath);
     await chmod(isolated.databasePath, 0o600);
     await verifySetup(isolated.env, isolated.databasePath);
+    verifyCurrentMigrationHistory(isolated.databasePath);
     await verifyDoctor(isolated.env);
     await verifyWeb(isolated.env);
     await verifyDoctor(isolated.env);

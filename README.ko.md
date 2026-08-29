@@ -58,6 +58,32 @@ setup은 번들된 `kiokuko-enno-oduno` controller Skill을 `kiokuko-single-purp
 
 따라서 intake가 완료되지 않으면 Enno-Oduno directive와 `answer_intake`를 반환하며, `requiredSkills`에는 `kiokuko-enno-oduno`가 포함되고 Zenki는 아직 시작되지 않습니다. 준비된 intake는 먼저 `oduno_ideal`과 `submit_ideal`을 반환합니다. `enno_ideal_submit`은 Akinator가 선택한 discovery set의 모든 Skill에 대해 정확히 하나의 기여를 요구하며, 외부 Skill은 신뢰할 수 없는 reference-only 지침으로 유지됩니다. 그 후에만 run은 revision-bound Zenki directive를 반환합니다. 이 directive의 `requiredSkills`에는 draft Skill snapshot이 비어 있어도 compact index인 `kiokuko-single-purpose-functions`가 포함됩니다. Zenki는 WorkUnit을 선택하기 전에 이 index를 사용해 의미 없는 micro-function을 만들지 않고 code 변경을 응집된 함수 또는 유스케이스 계약과 focused test target으로 나눕니다. code를 변경하는 각 WorkUnit은 이유와 함께 등록된 `expertRefs`를 1~3개 선택해야 하며, UI WorkUnit은 `code.*`와 `ui.*` expert를 각각 하나 이상 요구합니다. `enno_plan_submit`은 누락, 중복, 알 수 없음 또는 제한을 초과한 조합을 거부하고 정확한 선택을 revision과 함께 저장합니다. Goki는 모든 Skill reference가 아니라 해당 fragment만 읽습니다. controller Skill은 role 수준이며 WorkUnit Skill snapshot에 삽입되지 않습니다. Zenki의 전체 plan이 승인되고 필요한 확인이 성공하기 전에는 Goki로 전환할 수 없습니다. 최종 review가 실패해도 이전 Goki WorkUnit을 직접 재개하지 않습니다. 거부된 plan과 verifier 증거를 이전 revision의 기록으로 보존하고 `zenki_planning`으로 이동해 새로운 revision-bound plan을 요구합니다. 승인된 review는 직접 완료되지 않고 `oduno_meditation`으로 이동합니다. `enno_meditation_submit`은 repository를 변경하지 않고 검사한 repository-relative path와 근거가 있는 오래된 test 또는 함수 후보를 저장한 뒤 run을 완료합니다. 응답의 `orchestrationId`는 모든 Enno MCP 작업에서 사용되며 host session identity와 분리됩니다. 추론한 scope, acceptance criteria, Skill, expert 선택 또는 verifier command가 있으면 구현 전에 일반 클라이언트 UI로 확인을 반환합니다. `needs_confirmation` 응답에는 확정된 계약의 결정적 표시 projection인 `ennoOduno.directive.userFacingConfirmation`이 포함됩니다. scope, 제외 항목, 완료 조건, 표시 번호 의존성을 가진 작업 항목, reference-only 상태를 포함한 Skill, 선택 이유가 있는 전문 관점, focused/final checks, 시도 상한이 각각 provenance basis(사용자 지정, 저장소 검증, 제안) 라벨과 함께 한 번씩 나타납니다. 클라이언트 모델은 raw directive JSON이나 내부 식별자를 노출하지 않고 모든 항목을 사용자 언어로 제시한 뒤 명시적인 approve, revise, cancel을 기다립니다. 기밀처럼 보이는 표시 값이나 64 KiB를 초과하는 projection은 가리거나 잘라내는 대신 plan 제출을 거부합니다.
 
+### 계획 시작 환경 정보가 누락되거나 변경된 경우
+
+여기서 환경 정보는 현재 AI 클라이언트에서 사용할 수 있는 Skill과 MCP tool 목록입니다. host가 자동으로 수집하므로 사용자가 catalog 위치를 찾거나 JSON을 만들 필요가 없습니다. 이 정보가 계획에 전달되지 않았거나 작업 준비 후 변경되면 Kiokuko는 Skill discovery, advisory 소비, receipt 생성 또는 계약 revision 변경 전에 중지합니다. 따라서 이번 계획 시작으로 새 작업이나 추가 code 변경은 발생하지 않습니다.
+
+각 선택지는 label과 추천 여부, 어떤 사용자 의도에 맞는지, 선택 후 정확히 무엇이 일어나는지의 순서로 표시됩니다.
+
+환경 정보만 누락되어 현재 시도를 계속할 수 있는 경우:
+
+- **같은 계획으로 계속(권장)** — 계획은 여전히 올바르고 현재 환경 정보만 다시 붙이면 될 때 선택합니다. host가 정보를 자동으로 붙이고 같은 시도를 계속합니다.
+- **계획 검토** — 계속하기 전에 범위, 작업 항목 또는 검증 방법을 바꾸고 싶을 때 선택합니다. 클라이언트가 변경 내용을 묻고 답변 전에는 구현을 시작하지 않습니다.
+- **취소** — 작업을 계속하지 않을 때 선택합니다. 현재 시도를 취소하며 대체 시도를 만들지 않습니다.
+
+작업 준비 후 사용할 수 있는 기능이 변경된 경우:
+
+- **현재 환경에서 같은 계획 다시 시작(권장)** — 계획은 올바르고 사용할 수 있는 기능만 바뀌었을 때 선택합니다. 현재 시도를 먼저 취소한 뒤 현재 환경과 같은 합의된 계획으로 새 시도를 시작합니다.
+- **계획을 검토한 뒤 다시 시작** — 기능 변경에 맞춰 범위, 작업 항목 또는 검증 방법도 바꾸고 싶을 때 선택합니다. 클라이언트가 변경 내용을 묻고, 답변 후 현재 시도를 취소한 다음 현재 환경과 수정된 계획으로 새 시도를 시작합니다.
+- **취소** — 작업을 계속하지 않을 때 선택합니다. 현재 시도를 취소하며 대체 시도를 만들지 않습니다.
+
+이전 동작으로 해당 시도가 이미 종료된 경우:
+
+- **같은 계획으로 다시 시작(권장)** — 종료된 시도의 계획이 여전히 올바르고 재사용하려는 경우 선택합니다. 종료된 시도는 그대로 두고 현재 환경과 같은 합의된 계획으로 새 시도를 시작합니다.
+- **계획을 검토한 뒤 다시 시작** — 대체 시도를 만들기 전에 범위, 작업 항목 또는 검증 방법을 바꾸려는 경우 선택합니다. 클라이언트가 변경 내용을 묻고 종료된 시도는 그대로 두며, 답변 후 현재 환경과 수정된 계획으로 새 시도를 시작합니다.
+- **취소** — 작업을 다시 시작하지 않을 때 선택합니다. 종료된 시도는 종료 상태로 유지되고 새 시도는 만들어지지 않습니다.
+
+클라이언트는 안내를 사용자 언어로 번역하고 기계용 action, 내부 reason code와 tool/field 이름, capability catalog, 식별자, revision, 표시 형식 version 또는 raw JSON을 표시하지 않습니다. 사용자가 명시적으로 선택하기 전에는 재시도, 취소 또는 대체 시도 생성을 자동으로 수행하지 않습니다.
+
 세 역할은 현재 클라이언트 모델을 사용합니다. Kiokuko는 별도의 모델을 호출하지 않으며 OpenAI, Anthropic 또는 OpenCode API credential을 요구하지 않습니다. Codex와 Claude Code는 횟수가 제한된 Stop hook을 사용하고 OpenCode는 횟수가 제한된 `session.idle` plugin을 사용합니다. OpenCode는 child-session idle event를 무시하고 같은 완료 turn의 반복 delivery를 deduplicate합니다. `task_prepare`에서 host session을 사용할 수 없었다면 최초의 일치 hook은 pending active run이 정확히 하나일 때만 원자적으로 바인딩합니다. 모호하면 추측하지 않고 제어를 반환하며 완료된 binding은 변경할 수 없습니다. Kiokuko는 Claude Code의 기본 8회 연속 Stop-block override보다 먼저 제어를 반환합니다. adapter 실패 시 고정 warning과 함께 클라이언트가 중지될 수 있습니다. 외부 Skill은 신뢰할 수 없는 reference-only 자료이며 자동으로 설치되거나 실행되지 않습니다.
 
 ```bash

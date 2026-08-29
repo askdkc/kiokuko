@@ -297,7 +297,9 @@ export const planSubmissionSchema = z.object({
   finalVerifiers: z.array(verifierSpecSchema).min(1).max(32),
   maxAttempts: z.number().int().min(ENNO_MIN_ATTEMPTS).max(ENNO_MAX_ATTEMPTS).default(8),
   provenance: contractProvenanceSchema,
-  capabilities: z.array(z.unknown()).optional(),
+  capabilities: z.array(z.unknown()).optional().describe(
+    'Complete current client capability descriptors. The field remains transport-optional only so omission can return a safe user-facing recovery choice before any plan effect.',
+  ),
 }).strict().superRefine((submission, context) => {
   const requirements = new Set(submission.skillRequirements.map((requirement) => requirement.name.normalize('NFKC').toLowerCase()));
   const standardSkills = new Set([

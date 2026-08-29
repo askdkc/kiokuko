@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -65,6 +65,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
     assert.match(instructions, /never select a repository-wide latest run/u);
     assert.match(instructions, /ask_user_confirmation.*userFacingConfirmation.*never output raw directive JSON/isu);
+    assert.match(instructions, /userFacingRecovery.*whenToChoose.*whatHappens.*explicit choice/isu);
+    assert.match(instructions, /Do not retry, cancel, or create a new task automatically/iu);
+    assert.match(instructions, /never ask the user to locate or construct that catalog/iu);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'curator_check',
@@ -86,6 +89,10 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_globalize')?.annotations?.idempotentHint, true);
     assert.match(tools.tools.find((tool) => tool.name === 'curator_globalize')?.description ?? '', /stored as verified\/system_verified memory created by kiokuko-curator/);
+    const planDescription = tools.tools.find((tool) => tool.name === 'enno_plan_submit')?.description ?? '';
+    assert.match(planDescription, /label and recommendation.*whenToChoose.*whatHappens/isu);
+    assert.match(planDescription, /Never display the machine action.*reason code.*raw JSON/isu);
+    assert.match(planDescription, /without retrying, cancelling, or starting a replacement automatically/iu);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, false);
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
@@ -124,8 +131,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     const ennoAnswerTool = tools.tools.find((tool) => tool.name === 'enno_answer');
     assert.match(ennoPlanTool?.description ?? '', /needs_confirmation response carries the decided ennoOduno\.directive\.userFacingConfirmation projection/u);
     assert.match(ennoPlanTool?.description ?? '', /without raw directive JSON or internal identifiers/u);
-    assert.match(ennoAnswerTool?.description ?? '', /only the action the user explicitly chose after seeing the userFacingConfirmation projection/iu);
-    assert.match(ennoAnswerTool?.description ?? '', /never infer approve from model judgment/iu);
+    assert.match(ennoPlanTool?.description ?? '', /non-mutating user-facing recovery projection.*wait for the user's explicit choice/iu);
+    assert.match(ennoAnswerTool?.description ?? '', /only the action the user explicitly chose after seeing the user-facing confirmation or plan-start recovery choices/iu);
+    assert.match(ennoAnswerTool?.description ?? '', /During planning, only explicit cancellation is accepted/iu);
     assert.match(ennoIdealTool?.description ?? '', /optimal goal.*task_prepare handoff.*every Akinator-discovered Skill.*before Zenki planning/iu);
     assert.match(ennoMeditationTool?.description ?? '', /obsolete test or function deletion candidates.*without mutating the repository/iu);
     assert.match(taskAnswerTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
@@ -143,6 +151,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     type ToolInputSchema = JsonSchema;
     const taskAnswerSchema = taskAnswerTool?.inputSchema as ToolInputSchema;
     const taskPrepareSchema = taskPrepareTool?.inputSchema as ToolInputSchema;
+    const ennoPlanSchema = ennoPlanTool?.inputSchema as ToolInputSchema;
     assert.ok(taskPrepareSchema.required?.includes('soulRead'));
     assert.equal(taskPrepareSchema.properties?.soulRead?.const, true);
     assert.match(taskPrepareSchema.properties?.soulRead?.description ?? '', /self-attestation.*complete exact local kiokuko-soul/iu);
@@ -161,6 +170,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       );
       assert.match(schema.properties?.capabilities?.description ?? '', /kind and canonical name/u);
     }
+    assert.equal(ennoPlanSchema.properties?.capabilities?.type, 'array');
+    assert.match(ennoPlanSchema.properties?.capabilities?.description ?? '', /transport-optional.*user-facing recovery choice/iu);
     for (const toolName of [
       'enno_advice_submit',
       'enno_ideal_submit',
@@ -797,6 +808,177 @@ test('enno_plan_submit returns the userFacingConfirmation projection over the MC
     for (const forbidden of ['repair-add', 'final-test', 'code.verification.v1', 'expertRefs', 'focusedVerifiers', 'finalVerifiers', 'provenance']) {
       assert.equal(rendered.includes(forbidden), false, `MCP projection leaked internal token: ${forbidden}`);
     }
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('plan-start recovery exposes only concise user choices and leaves the same run reusable', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-plan-recovery-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-plan-recovery-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'kiokuko-plan-recovery-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const capabilities = [SOUL_CAPABILITY, {
+      kind: 'skill',
+      name: 'kiokuko-single-purpose-functions',
+      description: 'Focused code contracts and tests.',
+    }];
+    const prepared = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'mcp-plan-recovery-request',
+        task: 'Repair the add function',
+        profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass' },
+        capabilities,
+      },
+    });
+    const preparedContent = prepared.structuredContent as {
+      run: { runId: string };
+      project: { workspace: string; repositoryRoot: string };
+      intake: { sessionId: string };
+    };
+    const identity = {
+      runId: preparedContent.run.runId,
+      workspace: preparedContent.project.workspace,
+      orchestrationId: preparedContent.intake.sessionId,
+    };
+    await client.callTool({
+      name: 'enno_ideal_submit',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'mcp-plan-recovery-ideal',
+        ideal: {
+          objective: 'Repair the add function with focused verification',
+          principles: ['Preserve the public API'],
+          skillContributions: [],
+          successSignals: ['tests pass'],
+        },
+      },
+    });
+    const plan = {
+      ...identity,
+      expectedRevision: 1,
+      scope: ['src/add.js'],
+      exclusions: [],
+      acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
+      workPlan: {
+        objective: 'Repair add with a reusable plan',
+        units: [{
+          id: 'repair-add',
+          objective: 'Repair the add implementation',
+          scope: ['src/add.js'],
+          dependencies: [],
+          skillNames: ['kiokuko-single-purpose-functions'],
+          expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the regression with focused evidence' }],
+          acceptanceCriteria: ['tests pass'],
+          focusedVerifiers: [],
+        }],
+      },
+      skillRequirements: [],
+      finalVerifiers: [{
+        id: 'final-test', kind: 'test', executable: process.execPath,
+        args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000,
+      }],
+      maxAttempts: 5,
+      provenance: {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+    };
+
+    const recovery = await client.callTool({
+      name: 'enno_plan_submit',
+      arguments: { ...plan, idempotencyKey: 'mcp-plan-recovery-missing' },
+    });
+    assert.equal(recovery.isError, true);
+    const recoveryContent = recovery.structuredContent as {
+      code: string;
+      reason: string;
+      userFacingRecovery: {
+        presentationVersion: number;
+        whatHappened: string;
+        workState: string;
+        resolution: string;
+        options: Array<{
+          action: string;
+          label: string;
+          recommended: boolean;
+          whenToChoose: string;
+          whatHappens: string;
+        }>;
+      };
+    };
+    assert.equal(recoveryContent.code, 'PLAN_START_RECOVERY_REQUIRED');
+    assert.equal(recoveryContent.reason, 'environment_information_missing');
+    assert.equal(recoveryContent.userFacingRecovery.presentationVersion, 1);
+    assert.match(recoveryContent.userFacingRecovery.whatHappened, /features available in this environment.*not carried into the plan/iu);
+    assert.match(recoveryContent.userFacingRecovery.workState, /did not begin new work or make additional code changes/iu);
+    assert.match(recoveryContent.userFacingRecovery.resolution, /continue with the same plan/iu);
+    assert.deepEqual(recoveryContent.userFacingRecovery.options, [
+      {
+        action: 'continue_same_plan',
+        label: 'Continue with the same plan',
+        recommended: true,
+        whenToChoose: 'The plan is still correct and only the current environment information needs to be attached.',
+        whatHappens: 'The current environment information is attached automatically, and the same attempt continues.',
+      },
+      {
+        action: 'revise_plan',
+        label: 'Review the plan',
+        recommended: false,
+        whenToChoose: 'You want to change the scope, work items, or verification before continuing.',
+        whatHappens: 'You are asked what to change, and implementation does not start until you answer.',
+      },
+      {
+        action: 'cancel',
+        label: 'Cancel',
+        recommended: false,
+        whenToChoose: 'You no longer want this work to continue.',
+        whatHappens: 'The current attempt is cancelled, and no replacement attempt is created.',
+      },
+    ]);
+    const visible = JSON.stringify(recovery.content);
+    for (const option of recoveryContent.userFacingRecovery.options) {
+      assert.match(visible, new RegExp(option.label, 'u'));
+      assert.match(visible, new RegExp(option.whenToChoose, 'u'));
+      assert.match(visible, new RegExp(option.whatHappens, 'u'));
+    }
+    assert.equal((visible.match(/Recommended/gu) ?? []).length, 1);
+    for (const forbidden of [
+      'enno_', 'capabilities', 'catalog', 'digest', 'revision', identity.runId,
+      'continue_same_plan', 'whenToChoose', 'whatHappens', 'presentationVersion',
+    ]) {
+      assert.equal(visible.toLowerCase().includes(forbidden.toLowerCase()), false, `recovery display leaked internal token: ${forbidden}`);
+    }
+    const inspection = openConnection(databasePath);
+    try {
+      assert.equal(inspection.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
+        .get<{ status: string }>(identity.runId)?.status, 'active');
+      const contract = inspection.prepare('SELECT status, revision FROM enno_contracts WHERE run_id = ?')
+        .get<{ status: string; revision: number }>(identity.runId);
+      assert.deepEqual(contract === undefined ? undefined : { ...contract }, { status: 'zenki_planning', revision: 1 });
+      assert.equal(inspection.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE run_id = ? AND operation = 'plan_submit'")
+        .get<{ count: number }>(identity.runId)?.count, 0);
+    } finally {
+      inspection.close();
+    }
+    await assert.rejects(access(path.join(root, 'src', 'add.js')));
+
+    const continued = await client.callTool({
+      name: 'enno_plan_submit',
+      arguments: { ...plan, idempotencyKey: 'mcp-plan-recovery-continued', capabilities },
+    });
+    assert.equal(continued.isError, undefined);
+    assert.equal((continued.structuredContent as { ennoOduno: { status: string } }).ennoOduno.status, 'goki_executing');
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();

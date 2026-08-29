@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
+import { assertCapabilityCatalogBinding } from '../akinator/capability-binding.js';
+import { normalizeCapabilityCatalog } from '../akinator/capabilities.js';
 import { getAkinatorContextService } from '../akinator/service.js';
 import type { AkinatorQuestion, AkinatorReasoning, TaskProfile } from '../akinator/types.js';
 import {
@@ -19,6 +21,7 @@ import { SkillProviderError } from '../skills/providers/schema.js';
 import type { DiscoverSkillsInput, SkillDiscoverySummary } from '../skills/types.js';
 import { canonicalContentHash, canonicalJson } from '../serialization/validate.js';
 import { sanitizeJson } from '../security/sanitize.js';
+import { LedgerStore } from '../ledger/store.js';
 import { directiveForIntake, directiveForRun } from './directives.js';
 import { advisoryDirectiveForSnapshot, advisoryInputDigest, advisoryPhaseForStatus } from './advisory.js';
 import {
@@ -89,6 +92,7 @@ import {
   type VerifierRunResult,
 } from './types.js';
 import { runVerifiers, type VerifierDependencies } from './verifier.js';
+import { planStartRecoveryError } from './plan-recovery.js';
 import type * as z from 'zod/v4';
 import {
   STANDARD_FUNCTION_SKILL_NAME,
@@ -569,6 +573,54 @@ function assertIdealSkillCoverage(snapshot: EnnoRunSnapshot, ideal: IdealSubmiss
   }
 }
 
+function assertPlanCapabilityCatalog(
+  database: SqliteDatabase,
+  input: Pick<PlanSubmission, 'runId' | 'workspace' | 'capabilities'>,
+): void {
+  if (input.capabilities === undefined) {
+    throw planStartRecoveryError('environment_information_missing');
+  }
+  const run = new LedgerStore(database).readRun(input.runId, input.workspace);
+  if (run === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Enno ledger run disappeared during plan validation');
+  try {
+    assertCapabilityCatalogBinding(run.metadata, input.capabilities);
+  } catch (error) {
+    if (error instanceof KiokukoError && error.code === 'CONFLICT') {
+      throw planStartRecoveryError('environment_changed');
+    }
+    throw error;
+  }
+}
+
+function endedBeforeWorkBecausePlanCatalogWasLost(
+  database: SqliteDatabase,
+  snapshot: EnnoRunSnapshot,
+  capabilities: PlanSubmission['capabilities'],
+): boolean {
+  if (capabilities === undefined
+    || snapshot.status !== 'blocked'
+    || snapshot.blocker?.startsWith('Required Skills unavailable:') !== true
+    || snapshot.workUnits.length === 0
+    || snapshot.workUnits.some((unit) => unit.status !== 'pending')) return false;
+  const soulEntry = snapshot.contract.skillSet.entries.find((entry) => (
+    entry.name.normalize('NFKC').toLowerCase() === STANDARD_SOUL_SKILL_NAME
+  ));
+  if (soulEntry?.required !== true || soulEntry.availability !== 'unavailable') return false;
+  const catalog = normalizeCapabilityCatalog(capabilities);
+  if (!catalog.skills.some((skill) => skill.name.normalize('NFKC').toLowerCase() === STANDARD_SOUL_SKILL_NAME)) {
+    return false;
+  }
+  const run = new LedgerStore(database).readRun(snapshot.runId, snapshot.workspace);
+  if (run === undefined) return false;
+  try {
+    assertCapabilityCatalogBinding(run.metadata, capabilities);
+    return true;
+  } catch (error) {
+    if (error instanceof KiokukoError && error.code === 'CONFLICT') return false;
+    throw error;
+  }
+}
+
 function sanitizedIdeal(ideal: IdealSubmission['ideal'], repositoryRoot: string): OdunoIdeal {
   return parseOdunoIdeal(sanitizeJson(ideal, { workspace: repositoryRoot }).value);
 }
@@ -630,11 +682,16 @@ export async function submitEnnoPlan(
   dependencies: EnnoServiceDependencies = {},
 ): Promise<EnnoOperationResponse> {
   const input = parsePlanSubmission(rawInput);
+  const current = readEnnoSnapshot(database, identity(input));
+  if (endedBeforeWorkBecausePlanCatalogWasLost(database, current, input.capabilities)) {
+    throw planStartRecoveryError('previous_attempt_ended');
+  }
   const operation = operationIdentity('plan_submit', input.idempotencyKey, input);
   const replay = readOperationReceipt<EnnoOperationResponse>(database, input.runId, operation);
   if (replay !== undefined) return replay;
-  const before = readEnnoSnapshot(database, identity(input));
+  const before = current;
   assertExpected(before, input.expectedRevision, ['zenki_planning']);
+  assertPlanCapabilityCatalog(database, input);
   if (input.advisoryRoundDigest !== undefined) {
     requireAdvisoryRound(database, before, 'planning', before.mutationRevision, advisoryContextForSubmission(before, 'planning'), input.advisoryRoundDigest);
   }
@@ -756,7 +813,11 @@ export function answerEnno(
   if (replay !== undefined) return replay;
   return withImmediateTransaction(database, () => {
     const current = readEnnoSnapshot(database, identity(input));
-    assertExpected(current, input.expectedRevision, ['needs_confirmation']);
+    assertExpected(
+      current,
+      input.expectedRevision,
+      input.action === 'cancel' ? ['needs_confirmation', 'zenki_planning'] : ['needs_confirmation'],
+    );
     startOperationInTransaction(database, input.runId, operation);
     let next: EnnoRunSnapshot;
     if (input.action === 'approve') {
