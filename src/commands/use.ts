@@ -688,6 +688,7 @@ async function readSettledAgentPlan(
   intendedFromOriginal?: (
     original: RegularFileSnapshot,
   ) => { content: string; mode: number } | undefined,
+  readFile: typeof readRegularFile = readRegularFile,
 ): Promise<RegularFileSnapshot | undefined> {
   const continuePendingMutation = async (
     pending: PendingAtomicMutation,
@@ -732,7 +733,24 @@ async function readSettledAgentPlan(
   };
   let linkedCandidate: RegularFileSnapshot | undefined;
   for (let attempt = 0; attempt < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS; attempt += 1) {
-    let observed = await readObservedTarget(filePath, containmentRoot, parentIdentity);
+    let observed: ObservedTarget | undefined;
+    try {
+      observed = await readObservedTarget(
+        filePath,
+        containmentRoot,
+        parentIdentity,
+        readFile,
+      );
+    } catch (error) {
+      if (!isTargetConflict(error, filePath)) throw error;
+      if (attempt + 1 < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS) {
+        await delay(CONCURRENT_IDENTICAL_OBSERVATION_DELAY_MS);
+        continue;
+      }
+      throw new KiokukoError('CONFLICT', 'Concurrent agent mutation did not settle', {
+        target: filePath,
+      });
+    }
     if (observed === undefined && linkedCandidate !== undefined) {
       throw new KiokukoError('CONFLICT', 'Agent target disappeared while settling', {
         target: filePath,
@@ -741,7 +759,23 @@ async function readSettledAgentPlan(
     if (observed === undefined) {
       let pending = await readPendingAtomicMutation(filePath, parentIdentity, containmentRoot);
       if (pending === undefined) {
-        observed = await readObservedTarget(filePath, containmentRoot, parentIdentity);
+        try {
+          observed = await readObservedTarget(
+            filePath,
+            containmentRoot,
+            parentIdentity,
+            readFile,
+          );
+        } catch (error) {
+          if (!isTargetConflict(error, filePath)) throw error;
+          if (attempt + 1 < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS) {
+            await delay(CONCURRENT_IDENTICAL_OBSERVATION_DELAY_MS);
+            continue;
+          }
+          throw new KiokukoError('CONFLICT', 'Concurrent agent mutation did not settle', {
+            target: filePath,
+          });
+        }
         if (observed === undefined) {
           pending = await readPendingAtomicMutation(filePath, parentIdentity, containmentRoot);
           if (pending === undefined) return undefined;
@@ -1031,6 +1065,7 @@ async function useRepositoryAttempt(
               content: renderAgentFile(original.content, agentTemplateValues).content,
               mode: original.mode,
             }),
+        dependencies.readAgentFileForConvergence,
       )
     : await readRetriedAgentPlan(
         agentFile,

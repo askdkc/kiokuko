@@ -285,6 +285,59 @@ test('binding convergence retries when the intended agent result replaces a stal
   assert.equal(binding.workspace, 'project:concurrent-observation');
 });
 
+test('initial agent planning retries when a concurrent setup installs the intended result', async () => {
+  const root = await repository('initial-agent-observation-retry');
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const agentPath = path.join(root, 'AGENTS.md');
+  const canonicalRoot = await realpath(root);
+  const originalAgent = 'human header\n';
+  const repositoryId = 'repo_initial_agent_observation';
+  const workspace = 'project:initial-agent-observation';
+  await writeFile(agentPath, originalAgent);
+  const parent = await stat(canonicalRoot, { bigint: true });
+  const intendedAgent = renderAgentFile(originalAgent, {
+    repositoryId,
+    workspace,
+    cliCommand: 'kiokuko',
+    templateVersion: AGENT_TEMPLATE_VERSION,
+  }).content;
+  let injected = false;
+
+  const result = await useRepository({
+    root,
+    databasePath,
+    repositoryId,
+    workspace,
+  }, {
+    readAgentFileForConvergence: async (filePath, options) => {
+      const snapshot = await readRegularFile(filePath, options);
+      if (!injected && path.basename(filePath) === 'AGENTS.md') {
+        injected = true;
+        if (snapshot === undefined) assert.fail('planned agent file is missing');
+        const outcome = await atomicWriteTextIfUnchanged(
+          filePath,
+          intendedAgent,
+          {
+            expected: snapshot,
+            containmentRoot: canonicalRoot,
+            expectedParentDirectory: { device: parent.dev, inode: parent.ino },
+          },
+          snapshot.mode,
+        );
+        assert.deepEqual(outcome.cleanupFailures, []);
+      }
+      return snapshot;
+    },
+  });
+
+  assert.equal(injected, true);
+  assert.equal(result.repositoryId, repositoryId);
+  assert.equal(result.workspace, workspace);
+  assert.equal(result.agentFileAction, 'unchanged');
+  assert.equal(await readFile(agentPath, 'utf8'), intendedAgent);
+});
+
 test('use rejects desired agent bytes written in place on the planned inode', async () => {
   const root = await repository('concurrent-in-place-agent');
   const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-data-'));
