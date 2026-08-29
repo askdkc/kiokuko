@@ -1002,7 +1002,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     const cleanupNotice = removed === 0
       ? ''
       : ` Removed ${removed} missing repository location${removed === 1 ? '' : 's'}.`;
-    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED'}${cleanupNotice}`);
+    const failureNotice = data.ok
+      ? ''
+      : ` Failed checks: ${Object.entries(data.checks).filter(([, check]) => !check.ok).map(([name]) => name).join(', ')}.\nrun kiokuko doctor --json for detailed output`;
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 

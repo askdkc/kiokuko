@@ -157,6 +157,8 @@ test('declining interactive doctor cleanup preserves missing locations', async (
   const result = await invokeDoctor(value.databasePath, 'n\n');
   assert.match(result.prompt, /Remove these stale locations\? \[Y\/n\]/u);
   assert.match(result.stdout, /Kiokuko doctor: FAILED/u);
+  assert.match(result.stdout, /Failed checks: bindings\./u);
+  assert.match(result.stdout, /\nrun kiokuko doctor --json for detailed output/u);
 
   const database = openConnection(value.databasePath);
   try {

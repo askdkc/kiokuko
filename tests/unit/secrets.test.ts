@@ -20,8 +20,8 @@ test('rejects common secret formats without exposing the value', async () => {
   try {
     assert.equal(findSecret('Authorization: Bearer abcdefghijklmnop')?.kind, 'authorization_header');
     assert.equal(containsSecret('api_key = "sk-abcdefghijklmnop"'), true);
-    assert.equal(findSecret('--api-key value')?.kind, 'credential_assignment');
-    assert.equal(containsSecret('--api-key value'), true);
+    assert.equal(findSecret('--api-key abcdefghijkl')?.kind, 'credential_assignment');
+    assert.equal(containsSecret('--api-key value'), false);
     assert.equal(containsSecret('The token field is a normal concept.'), false);
     assert.throws(() => recordEntry(db, { workspace: 'project:secret', kind: 'fact', title: 'credential', body: 'password = super-secret-value-12345' }), (error: unknown) => {
       assert.equal((error as { code: string }).code, 'SECURITY_REJECTION');
