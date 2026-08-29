@@ -189,7 +189,7 @@ test('advice round digest binds the allowlisted context and is consumed by the e
       idempotencyKey: 'ideal-secret-disposition',
       advisoryRoundDigest: digest,
       advisoryDisposition: [
-        { slotId: 'constraint_guardian', disposition: 'adopted', rationale: '--api-key value' },
+        { slotId: 'constraint_guardian', disposition: 'adopted', rationale: '--api-key abcdefghijkl' },
         { slotId: 'skill_trust_analyst', disposition: 'not_adopted', rationale: 'Guide is reference-only' },
         { slotId: 'success_signal_critic', disposition: 'adopted', rationale: 'Signals are accepted' },
       ],
