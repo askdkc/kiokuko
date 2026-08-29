@@ -37,7 +37,23 @@ export interface PlanStartRecovery {
   code: typeof PLAN_START_RECOVERY_CODE;
   reason: PlanStartRecoveryReason;
   userFacingRecovery: UserFacingPlanRecovery;
+  effect: {
+    mutationApplied: false;
+    planPersisted: false;
+    advisoryConsumed: false;
+    operationReceiptCreated: false;
+    implementationStarted: false;
+  };
+  retry: { sameRunAllowed: boolean; requiresUserChoice: true };
 }
+
+const ZERO_EFFECT = {
+  mutationApplied: false,
+  planPersisted: false,
+  advisoryConsumed: false,
+  operationReceiptCreated: false,
+  implementationStarted: false,
+} as const;
 
 const NO_NEW_WORK = 'Starting this plan did not begin new work or make additional code changes.';
 
@@ -46,6 +62,8 @@ export function buildPlanStartRecovery(reason: PlanStartRecoveryReason): PlanSta
     return {
       code: PLAN_START_RECOVERY_CODE,
       reason,
+      effect: ZERO_EFFECT,
+      retry: { sameRunAllowed: true, requiresUserChoice: true },
       userFacingRecovery: {
         presentationVersion: 1,
         whatHappened: 'Information about the features available in this environment was not carried into the plan.',
@@ -81,6 +99,8 @@ export function buildPlanStartRecovery(reason: PlanStartRecoveryReason): PlanSta
     return {
       code: PLAN_START_RECOVERY_CODE,
       reason,
+      effect: ZERO_EFFECT,
+      retry: { sameRunAllowed: false, requiresUserChoice: true },
       userFacingRecovery: {
         presentationVersion: 1,
         whatHappened: 'Required environment information was not included when this plan was submitted, so this attempt has ended.',
@@ -115,6 +135,8 @@ export function buildPlanStartRecovery(reason: PlanStartRecoveryReason): PlanSta
   return {
     code: PLAN_START_RECOVERY_CODE,
     reason,
+    effect: ZERO_EFFECT,
+    retry: { sameRunAllowed: false, requiresUserChoice: true },
     userFacingRecovery: {
       presentationVersion: 1,
       whatHappened: 'The features available in this environment have changed since this plan was created.',

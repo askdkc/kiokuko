@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import { performance } from 'node:perf_hooks';
+import path from 'node:path';
 import { canonicalDirectory } from '../repository/detect-root.js';
 import { assertVerifierCwd, parseVerifierSpec } from './schemas.js';
 import type { VerifierRunResult, VerifierSpec } from './types.js';
@@ -29,7 +30,9 @@ export async function runVerifier(
 ): Promise<VerifierRunResult> {
   const verifier = parseVerifierSpec(rawVerifier);
   const canonicalRoot = canonicalDirectory(repositoryRoot);
-  const canonicalCwd = canonicalDirectory(verifier.cwd);
+  const canonicalCwd = canonicalDirectory(path.isAbsolute(verifier.cwd)
+    ? verifier.cwd
+    : path.resolve(canonicalRoot, verifier.cwd));
   const normalized = { ...verifier, cwd: canonicalCwd };
   assertVerifierCwd(canonicalRoot, normalized);
 
@@ -48,7 +51,7 @@ export async function runVerifier(
     });
   } catch {
     return {
-      verifier: normalized,
+      verifier: { ...verifier, args: [...verifier.args] },
       status: 'spawn_failed',
       exitCode: null,
       signal: null,
@@ -119,7 +122,7 @@ export async function runVerifier(
     }));
   });
   return {
-    verifier: normalized,
+    verifier: { ...verifier, args: [...verifier.args] },
     ...completion,
     durationMs: Math.max(0, Math.round((dependencies.now?.() ?? performance.now()) - start)),
     stdoutPreview: stdoutPreview.toString('utf8'),

@@ -28,6 +28,21 @@ and current client kind, session ID, and version projection; a rebound clears
 the old version. These events audit routing changes and do not confer ownership
 or advance the Enno contract state.
 
+The Enno execution ledger also uses database-backed ownership rows rather than
+process memory. Resume tokens are stored only as hashes and bind a route epoch;
+rerouting invalidates old epochs. A WorkUnit execution lease prevents two local
+clients from reporting the same unit and blocks rerouting while current.
+Operation receipts and verifier runs have `started`, `completed`, `failed`, and
+`abandoned` states with bounded leases and owner nonces. Recovery atomically
+abandons an expired owner before one new owner claims the exact operation; a
+losing or stale nonce cannot complete it.
+
+Final evidence binds contract revision, mutation revision, verifier
+specification digest, and complete repository-state digests captured before and
+after verifier execution. A verifier-caused repository mutation marks the run
+unacceptable, and any later HEAD/index/worktree/untracked/symlink change makes
+the evidence stale before `enno_finish` can commit.
+
 ## Invariants
 
 1. A run belongs to one workspace for its lifetime.

@@ -85,6 +85,12 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(functionFiles.find((file) => file.relativePath === 'references/kiokuko-patterns.md')?.content ?? '', /language-agnostic contracts illustrated with TypeScript/);
   assert.match(functionFiles.find((file) => file.relativePath === 'references/review-checklist.md')?.content ?? '', /Function-contract coding and review checklist/);
   assert.match(functionFiles.find((file) => file.relativePath === 'references/review-checklist.md')?.content ?? '', /any language or repository/);
+  const modeling = functionFiles.find((file) => file.relativePath === 'references/problem-shaping-and-language.md')?.content ?? '';
+  assert.match(modeling, /code\.modeling\.v1/);
+  assert.match(modeling, /human intent -> domain concept -> storage\/input shape ->/u);
+  assert.match(modeling, /Do not select it for a representation-preserving mechanical change/iu);
+  assert.match(modeling, /does not require Lisp syntax[\s\S]{0,80}Lisp runtime, macros, a DSL/iu);
+  assert.match(modeling, /https:\/\/zenn\.dev\/circleback\/articles\/what-is-lisp/u);
 
   const ennoFiles = files.filter((file) => file.skillName === STANDARD_ENNO_SKILL_NAME);
   assert.deepEqual(ennoFiles.map((file) => file.relativePath), [...STANDARD_ENNO_SKILL_FILES]);
@@ -99,8 +105,11 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(ennoSkill, /accepted review advances to `oduno_meditation`/iu);
   assert.match(ennoSkill, /enno_meditation_submit.*completion follows persistence, not deletion/iu);
   assert.match(ennoSkill, /one to three versioned `expertRefs`/u);
+  assert.match(ennoSkill, /local routes from `code`, `ui`, `test`, `docs`, and `operations`/u);
+  assert.match(ennoSkill, /opaque resume token.*route epoch/iu);
+  assert.match(ennoSkill, /execution lease blocks rerouting/iu);
   assert.match(ennoSkill, /Before the Final Review advisory fanout.*`enno_verify_prepare`/iu);
-  assert.match(ennoSkill, /`enno_finish`.*never spawns a subprocess.*stored fresh passing evidence/iu);
+  assert.match(ennoSkill, /`enno_finish`.*never spawns a subprocess.*full stored passing evidence/iu);
 
   const soulFiles = files.filter((file) => file.skillName === STANDARD_SOUL_SKILL_NAME);
   assert.deepEqual(soulFiles.map((file) => file.relativePath), [...STANDARD_SOUL_SKILL_FILES]);

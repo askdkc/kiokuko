@@ -1,4 +1,5 @@
 import * as z from 'zod/v4';
+import { createHash, randomBytes } from 'node:crypto';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
@@ -7,12 +8,14 @@ import { canonicalContentHash } from '../serialization/validate.js';
 import { directiveForRun } from './directives.js';
 import {
   appendEnnoEventInTransaction,
+  claimExecutionLeaseInTransaction,
   readEnnoSnapshot,
 } from './store.js';
 import {
   ENNO_CLIENT_KINDS,
   type EnnoClientKind,
   type EnnoOdunoState,
+  type EnnoExecutionLease,
   type RoleDirective,
 } from './types.js';
 
@@ -37,6 +40,7 @@ interface CandidateRow extends SqliteRow {
   clientSessionId: string | null;
   repositoryRoot: string;
   status: EnnoOdunoState['status'];
+  routeEpoch: number;
 }
 
 export interface AdapterDecision {
@@ -46,6 +50,9 @@ export interface AdapterDecision {
   directive: RoleDirective | null;
   reason: string | null;
   warning: string | null;
+  resumeToken: string | null;
+  routeEpoch: number | null;
+  executionLease: EnnoExecutionLease | null;
 }
 
 function exactSessionCandidates(
@@ -58,7 +65,7 @@ function exactSessionCandidates(
     SELECT ec.run_id AS runId, ec.workspace, ec.orchestration_session_id AS orchestrationId,
            ec.client_kind AS clientKind, ec.client_version AS clientVersion,
            ec.client_session_id AS clientSessionId,
-           ec.repository_root AS repositoryRoot, ec.status
+           ec.repository_root AS repositoryRoot, ec.status, ec.route_epoch AS routeEpoch
     FROM enno_contracts AS ec
     WHERE ec.client_session_id = ?
       AND ec.client_kind = ?
@@ -72,7 +79,7 @@ function repositoryCandidates(database: SqliteDatabase, repositoryRoot: string):
     SELECT ec.run_id AS runId, ec.workspace, ec.orchestration_session_id AS orchestrationId,
            ec.client_kind AS clientKind, ec.client_version AS clientVersion,
            ec.client_session_id AS clientSessionId,
-           ec.repository_root AS repositoryRoot, ec.status
+           ec.repository_root AS repositoryRoot, ec.status, ec.route_epoch AS routeEpoch
     FROM enno_contracts AS ec
     WHERE ec.repository_root = ?
       AND ec.status IN ('zenki_planning', 'goki_executing', 'enno_verifying')
@@ -91,16 +98,26 @@ function routeCandidateInTransaction(
   sessionId: string,
 ): CandidateRow {
   if (candidate.clientKind === client && candidate.clientSessionId === sessionId) return candidate;
+  const activeLease = database.prepare(`
+    SELECT owner_client_kind AS clientKind, owner_session_id AS sessionId,
+           lease_expires_at AS expiresAt
+    FROM enno_execution_leases WHERE run_id = ?
+  `).get<{ clientKind: EnnoClient; sessionId: string; expiresAt: string }>(candidate.runId);
+  if (activeLease !== undefined && activeLease.expiresAt > new Date().toISOString()
+    && (activeLease.clientKind !== client || activeLease.sessionId !== sessionId)) {
+    throw new KiokukoError('CONFLICT', 'An active Enno WorkUnit lease prevents automatic rerouting');
+  }
   const updated = database.prepare(`
     UPDATE enno_contracts
-    SET client_kind = ?, client_version = NULL, client_session_id = ?, updated_at = ?
+    SET client_kind = ?, client_version = NULL, client_session_id = ?,
+        route_epoch = route_epoch + 1, updated_at = ?
     WHERE run_id = ?
       AND orchestration_session_id = ?
       AND client_kind IS ?
       AND client_version IS ?
       AND client_session_id IS ?
-    RETURNING run_id AS runId
-  `).get<{ runId: string }>(
+    RETURNING run_id AS runId, route_epoch AS routeEpoch
+  `).get<{ runId: string; routeEpoch: number }>(
     client,
     sessionId,
     new Date().toISOString(),
@@ -129,7 +146,13 @@ function routeCandidateInTransaction(
       toClientVersion: null,
     },
   );
-  return { ...candidate, clientKind: client, clientVersion: null, clientSessionId: sessionId };
+  return {
+    ...candidate,
+    clientKind: client,
+    clientVersion: null,
+    clientSessionId: sessionId,
+    routeEpoch: updated.routeEpoch,
+  };
 }
 
 function resolveCandidateInTransaction(
@@ -147,8 +170,42 @@ function resolveCandidateInTransaction(
   return { kind: 'resolved', candidate: routeCandidateInTransaction(database, repository[0]!, client, sessionId) };
 }
 
-function continuationPrompt(directive: RoleDirective): string {
-  return `Enno-Oduno requires continuation. Follow this run-bound role directive exactly and do not claim completion early:\n${JSON.stringify(directive)}`;
+function continuationPrompt(
+  directive: RoleDirective,
+  resumeToken: string,
+  routeEpoch: number,
+  executionLease: EnnoExecutionLease | null,
+): string {
+  return `Enno-Oduno requires continuation. Follow this run-bound role directive exactly and do not claim completion early. Use the supplied resumeToken and routeEpoch for the next Enno operation; do not reuse credentials from an older route:\n${JSON.stringify({ resumeToken, routeEpoch, executionLease, directive })}`;
+}
+
+function issueResumeTokenInTransaction(
+  database: SqliteDatabase,
+  snapshot: ReturnType<typeof readEnnoSnapshot>,
+): string {
+  if (snapshot.clientKind === null || snapshot.clientSessionId === null) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Enno resume token requires a bound client route');
+  }
+  const token = randomBytes(32).toString('base64url');
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 15 * 60_000).toISOString();
+  database.prepare('DELETE FROM enno_resume_tokens WHERE expires_at <= ?').run(now.toISOString());
+  database.prepare(`
+    INSERT INTO enno_resume_tokens (
+      token_hash, run_id, repository_root, route_epoch, client_kind,
+      client_session_id, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    createHash('sha256').update(token, 'utf8').digest('hex'),
+    snapshot.runId,
+    snapshot.repositoryRoot,
+    snapshot.routeEpoch ?? 0,
+    snapshot.clientKind,
+    snapshot.clientSessionId,
+    expiresAt,
+    now.toISOString(),
+  );
+  return token;
 }
 
 function claimContinuation(
@@ -243,10 +300,14 @@ export function decideAdapterContinuation(database: SqliteDatabase, client: Enno
     const directive = directiveForRun(snapshot);
     if (directive === null) throw new KiokukoError('INTEGRITY_ERROR', 'Enno active run has no role directive');
     const claimed = claimContinuation(database, client, snapshot, canonicalContentHash(directive));
-    return { kind: 'continuation', snapshot, directive, claimed } as const;
+    const resumeToken = claimed ? issueResumeTokenInTransaction(database, snapshot) : null;
+    const executionLease = claimed && directive.role === 'goki' && directive.workUnit !== null
+      ? claimExecutionLeaseInTransaction(database, snapshot, directive.workUnit.id, { clientKind: client, sessionId })
+      : null;
+    return { kind: 'continuation', snapshot, directive, claimed, resumeToken, executionLease } as const;
   });
   if (continuation.kind === 'none') {
-    return { continue: false, runId: null, status: null, directive: null, reason: null, warning: null };
+    return { continue: false, runId: null, status: null, directive: null, reason: null, warning: null, resumeToken: null, routeEpoch: null, executionLease: null };
   }
   if (continuation.kind === 'ambiguous') {
     return {
@@ -256,6 +317,9 @@ export function decideAdapterContinuation(database: SqliteDatabase, client: Enno
       directive: null,
       reason: null,
       warning: 'Multiple Enno-Oduno runs match this client and repository; returning control without guessing.',
+      resumeToken: null,
+      routeEpoch: null,
+      executionLease: null,
     };
   }
   const { snapshot } = continuation;
@@ -267,6 +331,9 @@ export function decideAdapterContinuation(database: SqliteDatabase, client: Enno
       directive: null,
       reason: null,
       warning: 'Enno-Oduno continuation limit reached for this client session; the run remains active for another local project client.',
+      resumeToken: null,
+      routeEpoch: snapshot.routeEpoch ?? 0,
+      executionLease: null,
     };
   }
   return {
@@ -274,8 +341,16 @@ export function decideAdapterContinuation(database: SqliteDatabase, client: Enno
     runId: snapshot.runId,
     status: snapshot.status,
     directive: continuation.directive,
-    reason: continuationPrompt(continuation.directive),
+    reason: continuationPrompt(
+      continuation.directive,
+      continuation.resumeToken!,
+      snapshot.routeEpoch ?? 0,
+      continuation.executionLease,
+    ),
     warning: null,
+    resumeToken: continuation.resumeToken,
+    routeEpoch: snapshot.routeEpoch ?? 0,
+    executionLease: continuation.executionLease,
   };
 }
 
@@ -291,6 +366,6 @@ export function renderOpenCodeDecision(decision: AdapterDecision): object {
 
 export function failOpenAdapterOutput(client: EnnoClient): object {
   return client === 'opencode'
-    ? { continue: false, runId: null, status: null, directive: null, reason: null, warning: ENNO_ADAPTER_WARNING }
+    ? { continue: false, runId: null, status: null, directive: null, reason: null, warning: ENNO_ADAPTER_WARNING, resumeToken: null, routeEpoch: null, executionLease: null }
     : { systemMessage: ENNO_ADAPTER_WARNING };
 }

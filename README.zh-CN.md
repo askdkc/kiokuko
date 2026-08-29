@@ -95,12 +95,28 @@ MCP 将 AI 客户端与 Kiokuko 连接起来，RAG 则检索所需记忆并传�
 ```
 
 Final Review 有意分为两个阶段。`enno_verify_prepare` 在数据库事务之外、禁用
-shell 并限制在 repository cwd 内运行已批准的 verifier，然后将最新证据绑定到
-当前 contract revision 和 mutation revision。`enno_finish` 不会启动 subprocess，
-只接受已保存且最新、通过的证据。测试通过本身并不会接受 run。
+shell 并使用 repository-relative cwd 运行已批准的 verifier。证据绑定到
+contract/mutation revision、verifier 规格，以及包含 Git、index、worktree、
+untracked file 和 symlink 的完整 repository 状态。`enno_finish` 会重新检查该状态，
+不会启动 subprocess，并且只接受完整、已保存且通过的证据。测试通过本身并不会接受 run。
 启用 Enno continuation 时，Codex 和 Claude Code 使用受限的 Stop hook，OpenCode
 使用受限的 `session.idle` plugin。Hermes 只使用 native stdio MCP 和内置 Skill，
 不安装 Enno continuation adapter。
+
+Enno 输入错误以有上限且不含输入值的 `ENNO_INPUT_INVALID` 返回。advisory round 按
+`not_started`、`fanout_requested`、`aggregated`、`consumed` 转换，只有聚合结果等待消费时
+advisory field 才是必需项。新的 WorkUnit 声明本地 `code`、`ui`、`test`、`docs` 或
+`operations` route；code 需要 `code.*` expert，UI 同时需要 `code.*` 与 `ui.*`，但这些
+要求不会扩散到 test/docs/operations unit。用户作出选择之前，plan recovery 保持零副作用。
+continuation 使用绑定 route epoch 的短期 resume token 和单一所有者 execution lease；
+过期 operation/verifier 可被原子地标记为 abandoned 并重新 claim。narrative 与证据在
+hash 和持久化之前会被 sanitize，包含 secret 的 verifier command 会被拒绝。
+
+内置 coding Skill 会按实际风险应用问题结构化。当 WorkUnit 定义领域词汇、公开
+response、DTO、ViewModel，或 storage、API、serialization、UI 之间的转换时，选择
+`code.modeling.v1` expert。保持既有表示不变的机械修改，不会仅因修改 code 就选择它。
+该 expert 从使用者需要的形状出发设计命名转换，但不要求使用 Lisp 语法、macro 或
+DSL。现有安装会在下次运行 `kiokuko setup` 时收到该 managed reference。
 
 因此，未完成的 intake 会返回 Enno-Oduno directive 和 `answer_intake`；其 `requiredSkills` 包含 `kiokuko-enno-oduno`，此时不会启动 Zenki。准备完成的 intake 会先返回 `oduno_ideal` 和 `submit_ideal`。`enno_ideal_submit` 要求对 Akinator 选定 discovery set 中的每个 Skill 恰好提供一项贡献；外部 Skill 仍然是不可信的 reference-only 指导。只有完成这一步后，run 才会返回绑定 revision 的 Zenki directive；即使 draft Skill snapshot 为空，其 `requiredSkills` 也会包含 compact index `kiokuko-single-purpose-functions`。Zenki 在选择 WorkUnit 前使用该 index，把 code 变更拆分为内聚的函数或用例契约以及 focused test target，而不会创建无意义的 micro-function。每个会修改 code 的 WorkUnit 必须选择 1 至 3 个已注册的 `expertRefs` 并说明理由；UI WorkUnit 至少需要一个 `code.*` expert 和一个 `ui.*` expert。`enno_plan_submit` 会拒绝缺失、重复、未知或超出上限的组合，然后将准确选择与 revision 一起保存。Goki 只读取这些 fragment，而不是每个 Skill reference。controller Skill 属于 role 级别，不会插入 WorkUnit Skill snapshot。在 Zenki 的完整 plan 被接受且所需确认成功之前，不能进入 Goki。最终 review 失败时也绝不会直接恢复旧的 Goki WorkUnit；它会把被拒绝的 plan 和 verifier 证据保存在旧 revision 的历史记录中，进入 `zenki_planning` 并要求新的 revision-bound plan。接受 review 后不会直接完成，而是进入 `oduno_meditation`。`enno_meditation_submit` 不会修改 repository；它会保存已检查的 repository-relative path，以及有证据支持的过时 test 或函数候选项，然后完成 run。响应中的 `orchestrationId` 用于所有 Enno MCP 操作，并与 host session identity 分离。如果推导出了 scope、acceptance criteria、Skill、expert 选择或 verifier command，则会在实现前通过常规客户端 UI 请求确认。`needs_confirmation` 响应包含确定性的显示投影 `ennoOduno.directive.userFacingConfirmation`：scope、排除项、完成条件、带显示编号依赖的作业项、带 reference-only 状态的 Skill、带选择理由的专业视角、focused/final checks 以及尝试上限，每一项都带有 provenance basis（用户指定、仓库验证或提案）标记且只出现一次。客户端模型以用户的语言呈现全部条目，不输出原始 directive JSON 或内部标识符，然后等待明确的 approve、revise 或 cancel；疑似机密的显示值或超过 64 KiB 的投影会直接拒绝 plan 提交，而不是做遮蔽或截断。
 
@@ -130,7 +146,7 @@ shell 并限制在 repository cwd 内运行已批准的 verifier，然后将最�
 
 客户端会使用用户的语言显示这些说明，不显示机器用 action、内部 reason code、tool/field 名称、capability catalog、标识符、revision、显示格式 version 或 raw JSON。在用户明确选择前，不会自动重试、取消当前尝试或创建替代尝试。
 
-三个角色使用当前的客户端模型；Kiokuko 不会调用第二个模型，也不需要 OpenAI、Anthropic 或 OpenCode API credential。Codex 和 Claude Code 使用次数受限的 Stop hook，OpenCode 使用次数受限的 `session.idle` plugin。OpenCode 会忽略 child-session idle event，并对同一已完成 turn 的重复 delivery 去重。同一 OS 用户下、可访问 canonical repository 的 local process 均被信任可以恢复该 run；不会增加 PID、process ancestry、executable、code signing 或 inherited token 证明。adapter 优先使用完全匹配的 session route；若无匹配，则可在 Codex、Claude Code 和 OpenCode 之间原子地 reroute canonical repository 中唯一且无歧义的 active run，并清除旧 client version。若候选不止一个，则交还控制权且不修改任何 run。公开响应中的 `clientBinding` 表示当前 route，`bound` 不表示所有者。单个 session 达到 continuation 上限时，只停止该 session 的自动继续；run 和 ledger 保持 active，以供其他 local project client 恢复。Kiokuko 会在 Claude Code 原生的第八次连续 Stop-block 强制覆盖之前交还控制权。Hermes 没有自动 continuation hook，但可以用相同 run identity 继续 MCP 操作。adapter 失败时，客户端可以在显示固定 warning 后停止。外部 Skill 始终是不可信的 reference-only 资料，绝不会自动安装或执行。
+三个角色使用当前的客户端模型；Kiokuko 不会调用第二个模型，也不需要 OpenAI、Anthropic 或 OpenCode API credential。Codex 和 Claude Code 使用次数受限的 Stop hook，OpenCode 使用次数受限的 `session.idle` plugin。OpenCode 会忽略 child-session idle event，并对同一已完成 turn 的重复 delivery 去重。同一 OS 用户下、可访问 canonical repository 的 local process 均被信任可以恢复该 run；不会增加 PID、process ancestry、executable 或 code signing 证明。adapter 优先使用当前短期 resume token；若没有有效 token route，则可在 Codex、Claude Code 和 OpenCode 之间原子地 reroute canonical repository 中唯一且无歧义的 active run。reroute 会递增 route epoch 并使旧 token 失效；存在 active WorkUnit execution lease 时禁止 reroute。若候选不止一个，则交还控制权且不修改任何 run。公开响应中的 `clientBinding` 表示当前 route，`bound` 不表示所有者。单个 session 达到 continuation 上限时，只停止该 session 的自动继续；run 和 ledger 保持 active，以供其他 local project client 恢复。Kiokuko 会在 Claude Code 原生的第八次连续 Stop-block 强制覆盖之前交还控制权。Hermes 没有自动 continuation hook，但可以用相同 run identity 继续 MCP 操作。adapter 失败时，客户端可以在显示固定 warning 后停止。外部 Skill 始终是不可信的 reference-only 资料，绝不会自动安装或执行。
 
 ```bash
 kiokuko setup --clients codex,opencode,claude --enno-oduno on

@@ -287,7 +287,7 @@ const SKILL_REASONS: Record<string, string> = {
   'code-review': 'The review task benefits from a structured code-review workflow.',
   [MEMORY_REASONING_SKILL_NAME]: 'Relevant stored memory was delivered for a build or debug task; verify its premises, invariants, counterexamples, and tests before changing code.',
   [STANDARD_SOUL_SKILL_NAME]: 'Every non-trivial Kiokuko-governed task starts with the canonical SOUL router before applying any role-specific, code, or interactive UI Skill.',
-  [STANDARD_FUNCTION_SKILL_NAME]: 'The task explicitly involves writing, changing, debugging, or reviewing code and benefits from cohesive function contracts, explicit boundaries, and focused tests.',
+  [STANDARD_FUNCTION_SKILL_NAME]: 'The task explicitly involves writing, changing, debugging, or reviewing code and benefits from problem-shaped concepts, cohesive function contracts, explicit representation boundaries, and focused tests.',
   [STANDARD_UI_SKILL_NAME]: 'The task explicitly involves UI implementation, design, or review and benefits from Kiokuko\'s interaction-state and accessibility contract.',
 };
 

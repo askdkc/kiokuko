@@ -19,38 +19,40 @@ import type {
   WorkUnit,
 } from './types.js';
 import { advisoryDirectiveForSnapshot } from './advisory.js';
+import * as z from 'zod/v4';
+import {
+  finishSchema,
+  idealSubmissionSchema,
+  meditationSubmissionSchema,
+  planSubmissionSchema,
+  verificationPrepareSchema,
+  workReportSchema,
+} from './schemas.js';
+
+function jsonSchemaValue(value: unknown): unknown {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map(jsonSchemaValue);
+  if (typeof value !== 'object') {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Generated Enno report schema is not JSON-compatible');
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, jsonSchemaValue(child)]));
+}
+
+const schemaProjection = (schema: z.ZodType): Record<string, unknown> => (
+  jsonSchemaValue(z.toJSONSchema(schema, { unrepresentable: 'any' })) as Record<string, unknown>
+);
 
 const REPORT_SCHEMAS = {
   intake: {
     type: 'object',
     required: ['runId', 'sessionId', 'questionId', 'value'],
   },
-  plan: {
-    type: 'object',
-    required: ['scope', 'acceptanceCriteria', 'workPlan', 'skillRequirements', 'finalVerifiers', 'provenance'],
-  },
-  ideal: {
-    type: 'object',
-    required: ['runId', 'expectedRevision', 'ideal'],
-  },
-  work: {
-    type: 'object',
-    required: ['workUnitId', 'result'],
-  },
-  verification: {
-    type: 'object',
-    required: ['runId', 'expectedRevision', 'review'],
-    properties: {
-      review: {
-        type: 'object',
-        required: ['decision', 'summary'],
-        properties: {
-          decision: { enum: ['accept', 'replan'] },
-          summary: { type: 'string' },
-        },
-      },
-    },
-  },
+  plan: schemaProjection(planSubmissionSchema),
+  ideal: schemaProjection(idealSubmissionSchema),
+  work: schemaProjection(workReportSchema),
+  verificationPrepare: schemaProjection(verificationPrepareSchema),
+  finalReview: schemaProjection(finishSchema),
   confirmation: {
     type: 'object',
     required: ['runId', 'expectedRevision', 'idempotencyKey', 'action'],
@@ -59,11 +61,42 @@ const REPORT_SCHEMAS = {
       requestedChanges: { type: 'string' },
     },
   },
-  meditation: {
-    type: 'object',
-    required: ['runId', 'expectedRevision', 'meditation'],
-  },
+  meditation: schemaProjection(meditationSubmissionSchema),
 } as const;
+
+function advisoryAwareReportSchema(
+  base: Record<string, unknown>,
+  snapshot: EnnoRunSnapshot,
+): Record<string, unknown> {
+  const clone = structuredClone(base);
+  if (snapshot.advisoryPhaseState?.state !== 'aggregated') {
+    if (typeof clone.properties === 'object' && clone.properties !== null && !Array.isArray(clone.properties)) {
+      delete (clone.properties as Record<string, unknown>).advisoryRoundDigest;
+      delete (clone.properties as Record<string, unknown>).advisoryDisposition;
+    }
+    if (Array.isArray(clone.required)) {
+      clone.required = clone.required.filter((item) => item !== 'advisoryRoundDigest' && item !== 'advisoryDisposition');
+    }
+    return clone;
+  }
+  const required = Array.isArray(clone.required) ? clone.required.filter((item): item is string => typeof item === 'string') : [];
+  clone.required = [...new Set([...required, 'advisoryRoundDigest', 'advisoryDisposition'])];
+  clone.advisoryConsumption = {
+    advisoryRoundDigest: snapshot.advisoryPhaseState.inputDigest,
+    advisoryDisposition: snapshot.advisoryPhaseState.requiredDispositionSlots.map((slot) => ({
+      slotId: slot.slotId,
+      allowedDispositions: [...slot.allowedDispositions],
+    })),
+  };
+  return clone;
+}
+
+function executionReportSchema(): Record<string, unknown> {
+  const clone = structuredClone(REPORT_SCHEMAS.work);
+  const required = Array.isArray(clone.required) ? clone.required.filter((item): item is string => typeof item === 'string') : [];
+  clone.required = [...new Set([...required, 'leaseToken', 'routeEpoch'])];
+  return clone;
+}
 
 const CONFIRMATION_OBJECTIVE = `Return every item in userFacingConfirmation to the user in the user's language. Translate headings only; preserve paths, executable names, arguments, limits, and every listed item. Do not expose raw directive JSON, internal field names, WorkUnit IDs, expert IDs, or verifier IDs. Wait for explicit approve, revise, or cancel before calling enno_answer.`;
 
@@ -155,6 +188,7 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
       protocolVersion: 1,
       runId: snapshot.runId,
       contractRevision: snapshot.revision,
+      routeEpoch: snapshot.routeEpoch ?? 0,
       role,
       harness: harnessDirective(snapshot.clientKind, snapshot.clientVersion, role),
       handoff: snapshot.handoff,
@@ -175,7 +209,7 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
         'Stop if a required capability is unavailable',
         'Do not mutate the repository',
       ],
-      reportSchema: REPORT_SCHEMAS.plan,
+      reportSchema: advisoryAwareReportSchema(REPORT_SCHEMAS.plan, snapshot),
     ...(advisoryRound !== undefined && (snapshot.status !== 'enno_verifying' || snapshot.finalEvidenceReady) ? { advisoryRound } : {}),
     };
   }
@@ -185,6 +219,7 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
       protocolVersion: 1,
       runId: snapshot.runId,
       contractRevision: snapshot.revision,
+      routeEpoch: snapshot.routeEpoch ?? 0,
       role,
       harness: harnessDirective(snapshot.clientKind, snapshot.clientVersion, role),
       handoff: snapshot.handoff,
@@ -199,16 +234,18 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
       stopConditions: [
         'Do not change the approved scope, acceptance criteria, Skill snapshot, or verifiers',
         'Read only the approved expertRefs unless the WorkUnit is returned to Zenki for replanning',
+        'Use only the current execution lease and route epoch; stop on a stale or conflicting lease',
         'Report exactly one WorkUnit outcome',
         'Stop and report when user judgment or unsafe execution is required',
       ],
-      reportSchema: REPORT_SCHEMAS.work,
+      reportSchema: executionReportSchema(),
     };
   }
   return {
     protocolVersion: 1,
     runId: snapshot.runId,
     contractRevision: snapshot.revision,
+    routeEpoch: snapshot.routeEpoch ?? 0,
     role,
     harness: harnessDirective(snapshot.clientKind, snapshot.clientVersion, role),
     handoff: snapshot.handoff,
@@ -237,12 +274,14 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
       ]
       : ['Only Enno-Oduno may advance state', 'Fail closed on revision or identity mismatch'],
     reportSchema: snapshot.status === 'oduno_ideal'
-      ? REPORT_SCHEMAS.ideal
+      ? advisoryAwareReportSchema(REPORT_SCHEMAS.ideal, snapshot)
       : snapshot.status === 'needs_confirmation'
         ? REPORT_SCHEMAS.confirmation
         : snapshot.status === 'oduno_meditation'
           ? REPORT_SCHEMAS.meditation
-        : REPORT_SCHEMAS.verification,
+        : snapshot.finalEvidenceReady
+          ? advisoryAwareReportSchema(REPORT_SCHEMAS.finalReview, snapshot)
+          : REPORT_SCHEMAS.verificationPrepare,
     ...(advisoryRound === undefined ? {} : { advisoryRound }),
     ...(snapshot.status === 'needs_confirmation'
       ? { userFacingConfirmation: confirmationFor(snapshot) }
@@ -261,6 +300,7 @@ export function directiveForIntake(input: {
     protocolVersion: 1,
     runId: input.runId,
     contractRevision: null,
+    routeEpoch: null,
     role: 'enno-oduno',
     harness: harnessDirective(input.clientKind, input.clientVersion, 'enno-oduno'),
     handoff: null,

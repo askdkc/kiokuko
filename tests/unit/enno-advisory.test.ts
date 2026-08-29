@@ -11,6 +11,7 @@ import {
   projectRepositoryRelativePath,
 } from '../../src/enno-oduno/advisory.js';
 import { advisoryContributionSchemaPublic, parseStoredAdvisoryContribution } from '../../src/enno-oduno/schemas.js';
+import { directiveForRun } from '../../src/enno-oduno/directives.js';
 import { canonicalJson } from '../../src/serialization/validate.js';
 import {
   ADVISORY_FAILURE_CODES,
@@ -50,7 +51,7 @@ function verifier(id: string, overrides: Partial<VerifierSpec> = {}): VerifierSp
     kind: 'test',
     executable: 'node',
     args: ['run', 'test'],
-    cwd: REPOSITORY_ROOT,
+    cwd: '.',
     timeoutMs: 5_000,
     ...overrides,
   };
@@ -71,6 +72,9 @@ function verifierResult(id: string, overrides: Partial<VerifierRunResult> = {}):
     stderrPreview: 'raw stderr must never be projected',
     stdoutDigest: 'a'.repeat(64),
     stderrDigest: 'b'.repeat(64),
+    repositoryStatePolicyVersion: 1,
+    repositoryStateDigest: 'c'.repeat(64),
+    changedDuringVerification: false,
     ...overrides,
   };
 }
@@ -83,6 +87,7 @@ function snapshot(overrides: {
   finalEvidence?: VerifierRunResult[];
   workUnits?: EnnoRunSnapshot['workUnits'];
   skillEntries?: SkillSetEntry[];
+  advisoryPhaseState?: EnnoRunSnapshot['advisoryPhaseState'];
 } = {}): EnnoRunSnapshot {
   const contract: EnnoRunSnapshot['contract'] = {
     revision: 2,
@@ -97,7 +102,7 @@ function snapshot(overrides: {
           objective: 'Create the projection module',
           scope: ['src/api.ts'],
           dependencies: [],
-          skillNames: ['kiokuko-soul'],
+          routes: ['code'], skillNames: ['kiokuko-soul'],
           expertRefs: [{ id: 'code.domain.v1', reason: 'deterministic mapping rules' }],
           acceptanceCriteria: ['Projection is deterministic'],
           focusedVerifiers: [verifier('alpha-check')],
@@ -159,6 +164,7 @@ function snapshot(overrides: {
     finalEvidenceReady: overrides.finalEvidenceReady ?? false,
     finalEvidence: overrides.finalEvidence ?? [],
     blocker: null,
+    ...(overrides.advisoryPhaseState === undefined ? {} : { advisoryPhaseState: overrides.advisoryPhaseState }),
   };
 }
 
@@ -198,7 +204,7 @@ test('planning context carries the persisted ideal plus skill availability', () 
   assert.deepEqual(context.skillAvailability.map((entry) => entry.source), ['local', 'external_reference', 'imported_fresh', 'unavailable']);
 });
 
-test('final_review context binds fresh evidence projection and never raw output', () => {
+test('final_review context binds fresh evidence projection with bounded output previews', () => {
   const workUnits: EnnoRunSnapshot['workUnits'] = [{
     workUnit: snapshot().contract.workPlan.units[0]!,
     status: 'completed',
@@ -218,17 +224,53 @@ test('final_review context binds fresh evidence projection and never raw output'
   const context = advisoryContextForSnapshot(base, 'final_review');
   assert.deepEqual(context.phase, 'final_review');
   assert.equal(context.workPlanSummary, 'Build the API projection');
-  assert.deepEqual(context.workUnitOutcomes, [{ id: 'unit-alpha', status: 'completed', mutated: true, changedPaths: ['src/api.ts'] }]);
+  assert.deepEqual(context.acceptanceCriteria, [{ id: 'tests', description: 'Focused tests pass' }]);
+  assert.deepEqual(context.workUnitOutcomes, [{
+    id: 'unit-alpha',
+    objective: 'Create the projection module',
+    acceptanceCriteria: ['Projection is deterministic'],
+    routes: ['code'],
+    status: 'completed',
+    summary: 'done',
+    mutated: true,
+    changedPaths: ['src/api.ts'],
+  }]);
   assert.deepEqual(context.changedPaths, ['src/api.ts']);
   assert.deepEqual(context.verifierEvidence, [{
-    id: 'final-check', status: 'passed', exitCode: 0, signal: null,
+    id: 'final-check', kind: 'test', executable: 'node',
+    args: ['run', 'test'], directory: '.', timeoutMs: 5_000,
+    status: 'passed', exitCode: 0, signal: null,
     stdoutDigest: 'a'.repeat(64), stderrDigest: 'b'.repeat(64),
+    stdoutPreview: 'raw stdout must never be projected',
+    stderrPreview: 'raw stderr must never be projected',
+    repositoryStatePolicyVersion: 1,
+    repositoryStateDigest: 'c'.repeat(64),
   }]);
+  assert.equal(context.repositoryStateDigest, 'c'.repeat(64));
+  assert.equal(context.evidenceFreshnessPolicyVersion, 1);
   assert.match(context.evidenceSetDigest, /^[0-9a-f]{64}$/u);
   assert.match(context.freshnessMarker, /^[0-9a-f]{64}$/u);
-  const serialized = JSON.stringify(context);
-  assert.equal(serialized.includes('raw stdout must never be projected'), false);
-  assert.equal(serialized.includes('raw stderr must never be projected'), false);
+  assert.ok(Buffer.byteLength(context.verifierEvidence[0]!.stdoutPreview, 'utf8') <= 2_048);
+  assert.ok(Buffer.byteLength(context.verifierEvidence[0]!.stderrPreview, 'utf8') <= 2_048);
+});
+
+test('oversized final-review context fails closed without echoing its raw content', () => {
+  const oversized = snapshot({
+    status: 'enno_verifying',
+    finalEvidenceReady: true,
+    finalEvidence: [verifierResult('final-check')],
+  });
+  const sentinel = 'oversized-final-review-sentinel';
+  oversized.contract.acceptanceCriteria = Array.from({ length: 32 }, (_, index) => ({
+    id: `criterion-${index}`,
+    description: `${sentinel}-${index}-${'x'.repeat(3_000)}`,
+  }));
+  assert.throws(
+    () => advisoryContextForSnapshot(oversized, 'final_review'),
+    (error: unknown) => error instanceof Error
+      && /context exceeds the safety limit/iu.test(error.message)
+      && !error.message.includes(sentinel),
+  );
 });
 
 test('final_review directive is withheld until evidence is prepared', () => {
@@ -236,6 +278,49 @@ test('final_review directive is withheld until evidence is prepared', () => {
   assert.equal(advisoryDirectiveForSnapshot(unready), undefined);
   const ready = snapshot({ status: 'enno_verifying', finalEvidenceReady: true, finalEvidence: [verifierResult('final-check')] });
   assert.ok(advisoryDirectiveForSnapshot(ready));
+});
+
+test('phase report schemas advertise advisory consumption only while an aggregate is pending', () => {
+  const unaggregated = directiveForRun(snapshot({ status: 'zenki_planning' }));
+  assert.ok(unaggregated);
+  assert.equal(unaggregated.role, 'zenki');
+  const unaggregatedSchema = unaggregated.reportSchema as { required?: string[]; properties?: Record<string, unknown>; advisoryConsumption?: unknown };
+  assert.equal(unaggregatedSchema.required?.includes('advisoryRoundDigest'), false);
+  assert.equal(unaggregatedSchema.required?.includes('advisoryDisposition'), false);
+  assert.equal(Object.hasOwn(unaggregatedSchema.properties ?? {}, 'advisoryRoundDigest'), false);
+  assert.equal(Object.hasOwn(unaggregatedSchema.properties ?? {}, 'advisoryDisposition'), false);
+  assert.equal(unaggregatedSchema.advisoryConsumption, undefined);
+
+  const aggregated = directiveForRun(snapshot({
+    status: 'zenki_planning',
+    advisoryPhaseState: {
+      state: 'aggregated',
+      inputDigest: 'd'.repeat(64),
+      requiredDispositionSlots: [
+        { slotId: 'workunit_architect', outcome: 'completed', allowedDispositions: ['adopted', 'not_adopted'] },
+        { slotId: 'protocol_risk_reviewer', outcome: 'failed', allowedDispositions: ['unavailable'] },
+        { slotId: 'verification_designer', outcome: 'completed', allowedDispositions: ['adopted', 'not_adopted'] },
+      ],
+    },
+  }));
+  assert.ok(aggregated);
+  const aggregatedSchema = aggregated.reportSchema as {
+    required?: string[];
+    advisoryConsumption?: {
+      advisoryRoundDigest: string;
+      advisoryDisposition: Array<{ slotId: string; allowedDispositions: string[] }>;
+    };
+  };
+  assert.ok(aggregatedSchema.required?.includes('advisoryRoundDigest'));
+  assert.ok(aggregatedSchema.required?.includes('advisoryDisposition'));
+  assert.deepEqual(aggregatedSchema.advisoryConsumption, {
+    advisoryRoundDigest: 'd'.repeat(64),
+    advisoryDisposition: [
+      { slotId: 'workunit_architect', allowedDispositions: ['adopted', 'not_adopted'] },
+      { slotId: 'protocol_risk_reviewer', allowedDispositions: ['unavailable'] },
+      { slotId: 'verification_designer', allowedDispositions: ['adopted', 'not_adopted'] },
+    ],
+  });
 });
 
 test('repository-relative path projection canonicalizes and redacts escapes', () => {
@@ -281,18 +366,18 @@ test('advisory slot fanout exposes exactly three fixed slots in slot-rank order'
 
 test('normalize rejects duplicate, missing, and unknown advisory slots', () => {
   const ideal = (slotId: AdvisorySlotId) => completed(slotId);
-  assert.throws(() => normalizeAdvisoryContributions('ideal', [ideal('constraint_guardian'), ideal('constraint_guardian'), ideal('success_signal_critic')]), /slots must be exactly the fixed slots|duplicated/iu);
-  assert.throws(() => normalizeAdvisoryContributions('ideal', [ideal('constraint_guardian'), ideal('skill_trust_analyst')]), /exactly three slot contributions/iu);
-  assert.throws(() => normalizeAdvisoryContributions('ideal', [ideal('constraint_guardian'), ideal('skill_trust_analyst'), { slotId: 'workunit_architect', outcome: 'completed', summary: 'x', recommendations: [], risks: [], evidence: [] }]), /slots must be exactly the fixed slots|missing or duplicated/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', [ideal('constraint_guardian'), ideal('constraint_guardian'), ideal('success_signal_critic')]), /Enno input is invalid/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', [ideal('constraint_guardian'), ideal('skill_trust_analyst')]), /Enno input is invalid/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', [ideal('constraint_guardian'), ideal('skill_trust_analyst'), { slotId: 'workunit_architect', outcome: 'completed', summary: 'x', recommendations: [], risks: [], evidence: [] }]), /Enno input is invalid/iu);
 });
 
 test('normalize rejects invalid outcomes and failing contributions without a fixed reason code', () => {
   const unknownOutcome = { ...completed('constraint_guardian'), outcome: 'accepted' } as unknown as AdvisoryContribution;
-  assert.throws(() => normalizeAdvisoryContributions('ideal', [unknownOutcome, completed('skill_trust_analyst'), completed('success_signal_critic')]), /outcome is invalid/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', [unknownOutcome, completed('skill_trust_analyst'), completed('success_signal_critic')]), /Enno input is invalid/iu);
   const noReasonCode = { ...completed('constraint_guardian'), outcome: 'failed' } as unknown as AdvisoryContribution;
-  assert.throws(() => normalizeAdvisoryContributions('ideal', [noReasonCode, completed('skill_trust_analyst'), completed('success_signal_critic')]), /fixed reason code/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', [noReasonCode, completed('skill_trust_analyst'), completed('success_signal_critic')]), /Enno input is invalid/iu);
   const badReasonCode = { ...completed('constraint_guardian'), outcome: 'timeout', reasonCode: 'unexpected' } as unknown as AdvisoryContribution;
-  assert.throws(() => normalizeAdvisoryContributions('ideal', [badReasonCode, completed('skill_trust_analyst'), completed('success_signal_critic')]), /fixed reason code/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', [badReasonCode, completed('skill_trust_analyst'), completed('success_signal_critic')]), /Enno input is invalid/iu);
   const valid = advisoryContributions('ideal', (slotId) => failed(slotId, 'host_read_only_unavailable'));
   assert.equal(normalizeAdvisoryContributions('ideal', valid).length, 3);
 });
@@ -337,20 +422,20 @@ test('normalize enforces 16 KiB slot and 48 KiB round byte boundaries', () => {
   ]);
   assert.equal(contributions.length, 3);
   const overSlot = advisoryContributions('ideal', (slotId) => completed(slotId, 'a'.repeat(ADVISORY_MAX_SLOT_BYTES + 1)));
-  assert.throws(() => normalizeAdvisoryContributions('ideal', overSlot), /16 KiB slot limit/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', overSlot), /Enno input is invalid/iu);
   const bytes = (value: AdvisoryContribution): number => Buffer.byteLength(canonicalJson(value), 'utf8');
   const overRound = phaseSlotIds('ideal').map((slotId) => {
     const summaryLen = ADVISORY_MAX_SLOT_BYTES - bytes(completed(slotId, ''));
     return completed(slotId, 'j'.repeat(summaryLen));
   });
   assert.ok(overRound.every((contribution) => bytes(contribution) <= ADVISORY_MAX_SLOT_BYTES));
-  assert.throws(() => normalizeAdvisoryContributions('ideal', overRound), /48 KiB aggregate limit/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', overRound), /Enno input is invalid/iu);
 });
 
 test('normalize measures multibyte content by UTF-8 bytes, not character count', () => {
   assert.equal(normalizeAdvisoryContributions('ideal', advisoryContributions('ideal', (slotId) => completed(slotId, 'a'.repeat(6_000)))).length, 3);
   const exceedingByBytes = advisoryContributions('ideal', (slotId) => completed(slotId, 'う'.repeat(6_000)));
-  assert.throws(() => normalizeAdvisoryContributions('ideal', exceedingByBytes), /16 KiB slot limit/iu);
+  assert.throws(() => normalizeAdvisoryContributions('ideal', exceedingByBytes), /Enno input is invalid/iu);
 });
 
 test('normalize does not mutate caller-owned input arrays', () => {

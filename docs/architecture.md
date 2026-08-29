@@ -26,20 +26,39 @@ Kiokuko is a model-agnostic local control plane with three deliberately separate
   fixed read-only advisor slots for the ideal, plan, and final-review phases,
   then submits bounded canonical contributions through `enno_advice_submit`.
   The round has its own phase/revision/mutation identity and never adds a main
-  `EnnoStatus` or lets an advisor mutate the contract.
+  `EnnoStatus` or lets an advisor mutate the contract. Its explicit lifecycle
+  is `not_started → fanout_requested → aggregated → consumed`; only the
+  `aggregated` phase schema accepts and requires the stored digest plus complete
+  slot dispositions.
 - Enno Final Review is two-phase. `enno_verify_prepare` runs the approved final
   verifiers outside database transactions with shell disabled and a
-  repository-bounded cwd, stores fresh evidence for the current contract and
-  mutation revisions, and only then permits the final-review advisory fanout.
-  `enno_finish` decides accept/replan/block from that stored evidence and never
-  launches a subprocess. Codex and Claude Code may use bounded Stop hooks and
+  repository-relative cwd, stores evidence bound to contract/mutation revision,
+  verifier-specification digest, and a complete repository-state digest, and
+  only then permits final-review advisory fanout. Repository state includes
+  HEAD, index, tracked and non-ignored untracked files, mode/type/content, and
+  symlink targets. `enno_finish` recomputes that state inside its mutation
+  transaction and never launches a subprocess. Codex and Claude Code may use bounded Stop hooks and
   OpenCode may use a bounded `session.idle` plugin when Enno continuation is
   enabled; Hermes has no Enno continuation adapter. Client session identity is
   routing metadata, not authorization ownership. The adapter first resolves an
-  exact route, then may atomically reroute the single unambiguous active run in
-  the canonical repository across supported clients. Multiple candidates are
+  exact short-lived resume token, which binds repository, client session/kind,
+  and route epoch, then may atomically reroute the single unambiguous active run
+  in the canonical repository across supported clients. Rerouting increments
+  the epoch and invalidates old tokens; an active WorkUnit execution lease
+  blocks rerouting and stale holders cannot report. Multiple candidates are
   not selected or mutated, and one session's continuation exhaustion does not
   terminalize the run or ledger.
+- Enno structured submissions use strict bounded validation with the public
+  `ENNO_INPUT_INVALID` envelope. WorkUnit routing is local to `code`, `ui`,
+  `test`, `docs`, or `operations`; verifier directories are repository-relative.
+  Narrative and evidence data is sanitized before digesting or persistence.
+  Expired operation/verifier owners are atomically abandoned before reclaim.
+- The bundled code Skill applies a lightweight problem-shaping invariant to all
+  code work and routes representation-owning WorkUnits to `code.modeling.v1`.
+  That expert separates human intent, domain concepts, storage/input shapes,
+  public shapes, and consumer/UI shapes, while representation-preserving work
+  does not load it. It is another registered `code.*` expert, not a new
+  top-level Skill or Enno route.
 
 The gateway is not a transparent provider-traffic reverse proxy. Provider credentials and model APIs are outside the v1 boundary.
 

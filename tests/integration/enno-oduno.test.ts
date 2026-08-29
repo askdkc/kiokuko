@@ -11,6 +11,7 @@ import { withImmediateTransaction } from '../../src/db/transaction.js';
 import { KiokukoError } from '../../src/errors.js';
 import { decideAdapterContinuation, renderStopHookDecision } from '../../src/enno-oduno/adapters.js';
 import { advisoryInputDigest } from '../../src/enno-oduno/advisory.js';
+import { captureRepositoryState } from '../../src/enno-oduno/repository-state.js';
 import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 import {
   answerEnno,
@@ -23,9 +24,12 @@ import {
   submitOdunoMeditation,
 } from '../../src/enno-oduno/service.js';
 import {
+  completeOperationInTransaction,
   finishVerifierRunsInTransaction,
+  readOperationReceipt,
   readEnnoSnapshot,
   replaceWorkUnitsInTransaction,
+  startOperationInTransaction,
   startVerifierRunsInTransaction,
   terminalizeLedgerRunInTransaction,
   updateContractInTransaction,
@@ -62,6 +66,14 @@ function advisoryDigest(phase: AdvisoryPhase, contractRevision: number, mutation
   return advisoryInputDigest({ phase, contractRevision, mutationRevision, allowlistedContext: context });
 }
 
+function executionCredentials(response: { executionLease?: { leaseToken: string; routeEpoch: number } | null | undefined }) {
+  assert.ok(response.executionLease);
+  return {
+    leaseToken: response.executionLease.leaseToken,
+    routeEpoch: response.executionLease.routeEpoch,
+  };
+}
+
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-repo-'));
   execFileSync('git', ['init', '-q', root]);
@@ -71,8 +83,8 @@ async function fixture() {
   return { root, databasePath, database: openConnection(databasePath) };
 }
 
-function verifier(root: string, id: string) {
-  return { id, kind: 'test' as const, executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: root, timeoutMs: 5000 };
+function verifier(_root: string, id: string) {
+  return { id, kind: 'test' as const, executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 };
 }
 
 function submitPreparedIdeal(
@@ -166,11 +178,11 @@ async function plannedExecution(
     ...identity, expectedRevision: 1, idempotencyKey: `plan-${requestId}`,
     scope: ['src/add.js'], exclusions: [], acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
     workPlan: { objective: 'Repair add', units: [{
-      id: 'repair', objective: 'Repair add', scope: ['src/add.js'], dependencies: [], skillNames: [],
+      id: 'repair', objective: 'Repair add', scope: ['src/add.js'], dependencies: [], routes: ['code'], skillNames: [],
       expertRefs: [{ id: 'code.verification.v1', reason: 'Repair the reported regression with matching evidence' }],
-      acceptanceCriteria: ['tests pass'], focusedVerifiers: (options.focusedVerifiers ?? []).map((item) => ({ ...item, cwd: repositoryRoot })),
+      acceptanceCriteria: ['tests pass'], focusedVerifiers: (options.focusedVerifiers ?? []).map((item) => ({ ...item, cwd: '.' })),
     }] },
-    skillRequirements: [], finalVerifiers: [{ ...finalVerifier, cwd: repositoryRoot }], maxAttempts: options.maxAttempts ?? 5,
+    skillRequirements: [], finalVerifiers: [{ ...finalVerifier, cwd: '.' }], maxAttempts: options.maxAttempts ?? 5,
     provenance: {
       scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
       workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
@@ -178,7 +190,7 @@ async function plannedExecution(
     capabilities,
   });
   assert.equal(response.ennoOduno.status, 'goki_executing');
-  return { identity, repositoryRoot, hostSessionId: sessionId, prepared, idealized };
+  return { identity, repositoryRoot, hostSessionId: sessionId, prepared, idealized, executionLease: response.executionLease };
 }
 
 test('task_prepare derives the Oduno ideal before handing the request to harness-specific Zenki', async () => {
@@ -239,19 +251,56 @@ test('task_prepare derives the Oduno ideal before handing the request to harness
       WHERE run_id = ? AND event_type = 'enno.client_bound'
     `).get<{ count: number }>(planned.identity.runId)?.count, 1);
 
-    const rerouted = decideAdapterContinuation(database, 'opencode', {
+    assert.throws(() => decideAdapterContinuation(database, 'opencode', {
       sessionId: 'different-opencode-session',
       cwd: root,
-    });
-    assert.equal(rerouted.continue, true);
-    assert.equal(rerouted.runId, planned.identity.runId);
+    }), /active Enno WorkUnit lease/iu);
     assert.equal(database.prepare(`
       SELECT client_session_id AS clientSessionId FROM enno_contracts WHERE run_id = ?
-    `).get<{ clientSessionId: string }>(planned.identity.runId)?.clientSessionId, 'different-opencode-session');
+    `).get<{ clientSessionId: string }>(planned.identity.runId)?.clientSessionId, planned.hostSessionId);
     assert.equal(database.prepare(`
       SELECT COUNT(*) AS count FROM ledger_events
       WHERE run_id = ? AND event_type = 'enno.client_rebound'
-    `).get<{ count: number }>(planned.identity.runId)?.count, 1);
+    `).get<{ count: number }>(planned.identity.runId)?.count, 0);
+
+    assert.ok(claimed.resumeToken);
+    assert.ok(claimed.executionLease);
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) AS count FROM enno_resume_tokens
+      WHERE run_id = ? AND token_hash = ?
+    `).get<{ count: number }>(planned.identity.runId, claimed.resumeToken)?.count, 0);
+    const reportedWithAdapterOutput = await reportEnnoWork(database, {
+      runId: claimed.runId,
+      resumeToken: claimed.resumeToken,
+      leaseToken: claimed.executionLease.leaseToken,
+      routeEpoch: claimed.routeEpoch,
+      expectedRevision: 2,
+      idempotencyKey: 'adapter-output-only-work',
+      workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Used only adapter continuation credentials', mutated: false, changedPaths: [] },
+    });
+    assert.equal(reportedWithAdapterOutput.ennoOduno.status, 'enno_verifying');
+
+    const rerouted = decideAdapterContinuation(database, 'opencode', {
+      sessionId: 'new-opencode-session',
+      cwd: root,
+    });
+    assert.equal(rerouted.continue, true);
+    assert.ok(rerouted.resumeToken);
+    assert.equal(rerouted.routeEpoch, (claimed.routeEpoch ?? 0) + 1);
+    await assert.rejects(prepareEnnoVerification(database, {
+      runId: planned.identity.runId,
+      resumeToken: claimed.resumeToken,
+      expectedRevision: 2,
+      idempotencyKey: 'stale-route-verification',
+    }), /resume token is stale/iu);
+    const verifiedWithNewRoute = await prepareEnnoVerification(database, {
+      runId: planned.identity.runId,
+      resumeToken: rerouted.resumeToken,
+      expectedRevision: 2,
+      idempotencyKey: 'new-route-verification',
+    });
+    assert.equal(verifiedWithNewRoute.verifierResults?.[0]?.status, 'passed');
   } finally {
     database.close();
   }
@@ -297,7 +346,7 @@ test('hook prefers an exact session and otherwise refuses ambiguous active repos
   }
 });
 
-test('a bound client is routing metadata and may be rerouted to another trusted local client', async () => {
+test('an active WorkUnit lease prevents automatic rerouting to another local client', async () => {
   const { root, database } = await fixture();
   try {
     const planned = await plannedExecution(database, root, 'pending-codex-kind', verifier(root, 'pass'), {
@@ -312,32 +361,23 @@ test('a bound client is routing metadata and may be rerouted to another trusted 
       identified: true,
     });
 
-    const crossClient = decideAdapterContinuation(database, 'claude', {
+    assert.throws(() => decideAdapterContinuation(database, 'claude', {
       session_id: 'claude-local-session',
       cwd: root,
-    });
-    assert.equal(crossClient.continue, true);
-    assert.equal(crossClient.runId, planned.identity.runId);
+    }), /active Enno WorkUnit lease/iu);
     const routedBinding = database.prepare(`
       SELECT client_kind AS clientKind, client_version AS clientVersion, client_session_id AS clientSessionId
       FROM enno_contracts WHERE run_id = ?
     `).get<{ clientKind: string; clientVersion: string | null; clientSessionId: string }>(planned.identity.runId);
     assert.deepEqual(routedBinding === undefined ? undefined : { ...routedBinding }, {
-      clientKind: 'claude', clientVersion: null, clientSessionId: 'claude-local-session',
+      clientKind: 'codex', clientVersion: 'codex-1.2.3', clientSessionId: planned.hostSessionId,
     });
     const rebound = database.prepare(`
       SELECT payload_json AS payloadJson FROM ledger_events
       WHERE run_id = ? AND event_type = 'enno.client_rebound'
       ORDER BY sequence DESC LIMIT 1
     `).get<{ payloadJson: string }>(planned.identity.runId);
-    assert.deepEqual(JSON.parse(rebound?.payloadJson ?? '{}'), {
-      fromClientKind: 'codex',
-      fromClientSessionId: planned.hostSessionId,
-      fromClientVersion: 'codex-1.2.3',
-      toClientKind: 'claude',
-      toClientSessionId: 'claude-local-session',
-      toClientVersion: null,
-    });
+    assert.equal(rebound, undefined);
 
     const returned = decideAdapterContinuation(database, 'codex', {
       session_id: planned.hostSessionId,
@@ -345,6 +385,52 @@ test('a bound client is routing metadata and may be rerouted to another trusted 
     });
     assert.equal(returned.continue, true);
     assert.equal(returned.directive?.role, 'goki');
+    assert.ok(returned.executionLease);
+    await assert.rejects(reportEnnoWork(database, {
+      ...planned.identity,
+      expectedRevision: 2,
+      idempotencyKey: 'lease-loser-report',
+      leaseToken: 'invalid-current-lease-token',
+      routeEpoch: returned.routeEpoch,
+      workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Stale actor must lose', mutated: false, changedPaths: [] },
+    }), /lease is stale or belongs to another actor/iu);
+    assert.equal(database.prepare(`
+      SELECT COUNT(*) AS count FROM enno_operation_receipts
+      WHERE run_id = ? AND idempotency_key = 'lease-loser-report'
+    `).get<{ count: number }>(planned.identity.runId)?.count, 0);
+
+    database.prepare(`
+      UPDATE enno_execution_leases SET lease_expires_at = ? WHERE run_id = ?
+    `).run('2000-01-01T00:00:00.000Z', planned.identity.runId);
+    const recovered = decideAdapterContinuation(database, 'claude', {
+      session_id: 'claude-recovered-owner',
+      cwd: root,
+    });
+    assert.equal(recovered.continue, true);
+    assert.equal(recovered.routeEpoch, (returned.routeEpoch ?? 0) + 1);
+    assert.ok(recovered.resumeToken);
+    assert.ok(recovered.executionLease);
+    await assert.rejects(reportEnnoWork(database, {
+      ...planned.identity,
+      expectedRevision: 2,
+      idempotencyKey: 'expired-owner-report',
+      leaseToken: returned.executionLease.leaseToken,
+      routeEpoch: returned.routeEpoch,
+      workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Expired owner must not report', mutated: false, changedPaths: [] },
+    }), /lease is stale or belongs to another actor/iu);
+    const completed = await reportEnnoWork(database, {
+      runId: planned.identity.runId,
+      resumeToken: recovered.resumeToken,
+      expectedRevision: 2,
+      idempotencyKey: 'recovered-owner-report',
+      leaseToken: recovered.executionLease.leaseToken,
+      routeEpoch: recovered.routeEpoch,
+      workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Recovered owner completed the WorkUnit', mutated: false, changedPaths: [] },
+    });
+    assert.equal(completed.ennoOduno.status, 'enno_verifying');
   } finally {
     database.close();
   }
@@ -632,12 +718,12 @@ test('persisted WorkUnits validate the complete dependency graph during read-bac
         objective: 'Build the dependent module pair',
         units: [
           {
-            id: 'prepare', objective: 'Prepare the shared module', scope: ['src/prepare.js'], dependencies: [], skillNames: [],
+            id: 'prepare', objective: 'Prepare the shared module', scope: ['src/prepare.js'], dependencies: [], routes: ['code'], skillNames: [],
             expertRefs: [{ id: 'code.domain.v1', reason: 'Keep the prerequisite module contract deterministic' }],
             acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
           },
           {
-            id: 'finalize', objective: 'Finalize the dependent module', scope: ['src/finalize.js'], dependencies: ['prepare'], skillNames: [],
+            id: 'finalize', objective: 'Finalize the dependent module', scope: ['src/finalize.js'], dependencies: ['prepare'], routes: ['code'], skillNames: [],
             expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the dependent module after its prerequisite completes' }],
             acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
           },
@@ -710,7 +796,7 @@ test('Zenki discovery uses a new plan digest and only the remaining run budget a
       exclusions: [],
       acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
       workPlan: { objective, units: [{
-        id: 'repair', objective: 'Repair the Svelte component', scope: ['src/component.ts'], dependencies: [], skillNames: [],
+        id: 'repair', objective: 'Repair the Svelte component', scope: ['src/component.ts'], dependencies: [], routes: ['code'], skillNames: [],
         expertRefs: [{ id: 'code.verification.v1', reason: 'Verify each replanned component repair with focused evidence' }],
         acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
       }] },
@@ -735,6 +821,7 @@ test('Zenki discovery uses a new plan digest and only the remaining run budget a
     });
     await reportEnnoWork(database, {
       ...identity,
+      ...executionCredentials(firstPlan),
       expectedRevision: 2,
       idempotencyKey: 'zenki-discovery-work-1',
       workUnitId: 'repair',
@@ -815,7 +902,7 @@ test('Zenki recovers migrated malformed-provider attempts without relaxing diges
       acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
       workPlan: { objective: 'Repair the Svelte component', units: [{
         id: 'repair', objective: 'Repair the Svelte component', scope: ['src/component.ts'], dependencies: [],
-        skillNames: [],
+        routes: ['code'], skillNames: [],
         expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the recovered plan with focused evidence' }],
         acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
       }] },
@@ -939,7 +1026,7 @@ test('Zenki cannot submit a code WorkUnit without a selected expert fragment', a
       acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
       workPlan: { objective: 'Build the module', units: [{
         id: 'module', objective: 'Build the module', scope: ['src/module.js'], dependencies: [],
-        skillNames: [], acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
+        routes: ['code'], skillNames: [], acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
       }] },
       skillRequirements: [],
       finalVerifiers: [verifier(prepared.project.repositoryRoot, 'missing-expert-final')],
@@ -949,7 +1036,7 @@ test('Zenki cannot submit a code WorkUnit without a selected expert fragment', a
         workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
       },
       capabilities,
-    }), /must select a code expert fragment/iu);
+    }), /Enno input is invalid/iu);
     assert.equal(database.prepare('SELECT revision FROM enno_contracts WHERE run_id = ?')
       .get<{ revision: number }>(prepared.run.runId)?.revision, 1);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ? AND event_type = 'zenki.plan_created'")
@@ -1089,7 +1176,7 @@ test('fake agent completes the Enno-Zenki-Goki loop in ledger order with fresh v
       acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
       workPlan: { objective: 'Repair add and test it', units: [{
         id: 'repair-add', objective: 'Repair the add implementation', scope: ['src/add.js'], dependencies: [],
-        skillNames: ['kiokuko-single-purpose-functions'], acceptanceCriteria: ['node --test passes'],
+        routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'], acceptanceCriteria: ['node --test passes'],
         expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the add regression through the focused test pipeline' }],
         focusedVerifiers: [verifier(repositoryRoot, 'focused-test')],
       }] },
@@ -1121,7 +1208,7 @@ test('fake agent completes the Enno-Zenki-Goki loop in ledger order with fresh v
     assert.deepEqual(hook.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-single-purpose-functions']);
 
     const worked = await reportEnnoWork(database, {
-      ...identity, expectedRevision: 2, idempotencyKey: 'work-1', workUnitId: 'repair-add',
+      ...identity, ...executionCredentials(hook), expectedRevision: 2, idempotencyKey: 'work-1', workUnitId: 'repair-add',
       result: { outcome: 'completed', summary: 'Fixed add and added coverage', mutated: true, changedPaths: ['src/add.js'] },
     });
     assert.equal(worked.ennoOduno.status, 'enno_verifying');
@@ -1264,7 +1351,7 @@ function confirmationProjectionPlanInput(
     acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
     workPlan: { objective, units: [{
       id: 'repair-add', objective: 'Repair the add implementation', scope: ['src/add.js'], dependencies: [],
-      skillNames: ['kiokuko-single-purpose-functions'],
+      routes: ['code' as const], skillNames: ['kiokuko-single-purpose-functions'],
       expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the add regression with focused tests' }],
       acceptanceCriteria: ['node --test passes'],
       focusedVerifiers: [verifier(repositoryRoot, 'focused-test')],
@@ -1435,7 +1522,7 @@ test('a pre-migration active run without an Oduno ideal keeps its legacy complet
       ...identity, expectedRevision: 1, idempotencyKey: 'legacy-plan',
       scope: ['src/add.js'], exclusions: [], acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
       workPlan: { objective: 'Repair the legacy run', units: [{
-        id: 'repair', objective: 'Repair add', scope: ['src/add.js'], dependencies: [], skillNames: [],
+        id: 'repair', objective: 'Repair add', scope: ['src/add.js'], dependencies: [], routes: ['code' as const], skillNames: [],
         expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the legacy repair through its matching test' }],
         acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
       }] },
@@ -1448,7 +1535,7 @@ test('a pre-migration active run without an Oduno ideal keeps its legacy complet
     });
     assert.equal(planned.ennoOduno.status, 'goki_executing');
     await reportEnnoWork(database, {
-      ...identity, expectedRevision: 2, idempotencyKey: 'legacy-work', workUnitId: 'repair',
+      ...identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'legacy-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Repaired legacy run', mutated: true, changedPaths: ['src/add.js'] },
     });
     await prepareEnnoVerification(database, {
@@ -1468,7 +1555,7 @@ test('a pre-migration active run without an Oduno ideal keeps its legacy complet
   }
 });
 
-test('code plus UI work carries SOUL first through Goki and the four-Skill Enno review', async () => {
+test('mixed UI, code, test, docs, and operations WorkUnits route experts and Skills locally', async () => {
   const { root, database } = await fixture();
   try {
     const prepared = await prepareAgentTask(database, {
@@ -1484,17 +1571,37 @@ test('code plus UI work carries SOUL first through Goki and the four-Skill Enno 
     submitPreparedIdeal(database, prepared, 'code-ui-ideal');
     const plan = await submitEnnoPlan(database, {
       ...identity, expectedRevision: 1, idempotencyKey: 'code-ui-plan',
-      scope: ['src/Settings.tsx'], exclusions: [], acceptanceCriteria: [{ id: 'ui-tests', description: 'UI tests pass' }],
-      workPlan: { objective: 'Build the accessible settings panel', units: [{
-        id: 'settings-ui', objective: 'Implement the settings panel', scope: ['src/Settings.tsx'], dependencies: [],
-        skillNames: ['kiokuko-ui-design-soul', 'kiokuko-soul'], acceptanceCriteria: ['UI tests pass'], focusedVerifiers: [],
-        expertRefs: [
-          { id: 'code.domain.v1', reason: 'Keep settings state transitions deterministic' },
-          { id: 'ui.accessibility.v1', reason: 'The panel must support accessible labels, focus, and keyboard use' },
-        ],
-      }] },
+      scope: ['src/Settings.tsx', 'src/catalog.ts', 'tests/settings.test.ts', 'README.md', '.gitignore'], exclusions: [],
+      acceptanceCriteria: [{ id: 'ui-tests', description: 'UI tests pass' }],
+      workPlan: { objective: 'Build the accessible settings panel', units: [
+        {
+          id: 'settings-ui', objective: 'Implement the settings panel', scope: ['src/Settings.tsx'], dependencies: [],
+          routes: ['ui'], skillNames: ['kiokuko-ui-design-soul', 'kiokuko-soul'], acceptanceCriteria: ['UI tests pass'], focusedVerifiers: [],
+          expertRefs: [
+            { id: 'code.domain.v1', reason: 'Keep settings state transitions deterministic' },
+            { id: 'ui.accessibility.v1', reason: 'The panel must support accessible labels, focus, and keyboard use' },
+          ],
+        },
+        {
+          id: 'catalog', objective: 'Convert the settings catalog', scope: ['src/catalog.ts'], dependencies: ['settings-ui'],
+          routes: ['code'], skillNames: [], acceptanceCriteria: ['Catalog conversion is deterministic'], focusedVerifiers: [],
+          expertRefs: [{ id: 'code.domain.v1', reason: 'Preserve catalog invariants' }],
+        },
+        {
+          id: 'tests', objective: 'Add regression tests', scope: ['tests/settings.test.ts'], dependencies: ['catalog'],
+          routes: ['test'], skillNames: [], expertRefs: [], acceptanceCriteria: ['Regression is covered'], focusedVerifiers: [],
+        },
+        {
+          id: 'docs', objective: 'Update usage documentation', scope: ['README.md'], dependencies: ['tests'],
+          routes: ['docs'], skillNames: [], expertRefs: [], acceptanceCriteria: ['Documentation matches behavior'], focusedVerifiers: [],
+        },
+        {
+          id: 'residual', objective: 'Remove residual references', scope: ['.gitignore'], dependencies: ['docs'],
+          routes: ['operations'], skillNames: [], expertRefs: [], acceptanceCriteria: ['No stale references remain'], focusedVerifiers: [],
+        },
+      ] },
       skillRequirements: [{ name: 'kiokuko-ui-design-soul', purposes: ['ui', 'implementation', 'testing'], required: true }],
-      finalVerifiers: [verifier(prepared.project.repositoryRoot, 'code-ui-final')], maxAttempts: 3,
+      finalVerifiers: [verifier(prepared.project.repositoryRoot, 'code-ui-final')], maxAttempts: 8,
       provenance: {
         scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
         workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
@@ -1517,9 +1624,36 @@ test('code plus UI work carries SOUL first through Goki and the four-Skill Enno 
       'ui.accessibility.v1',
     ]);
 
-    const reviewed = await reportEnnoWork(database, {
-      ...identity, expectedRevision: 2, idempotencyKey: 'code-ui-work', workUnitId: 'settings-ui',
+    const catalog = await reportEnnoWork(database, {
+      ...identity, ...executionCredentials(plan), expectedRevision: 2, idempotencyKey: 'code-ui-work', workUnitId: 'settings-ui',
       result: { outcome: 'completed', summary: 'Implemented the accessible settings panel', mutated: true, changedPaths: ['src/Settings.tsx'] },
+    });
+    assert.equal(catalog.ennoOduno.directive?.workUnit?.id, 'catalog');
+    assert.deepEqual(catalog.ennoOduno.directive?.requiredSkills, [
+      'kiokuko-soul',
+      'kiokuko-single-purpose-functions',
+    ]);
+    const tests = await reportEnnoWork(database, {
+      ...identity, ...executionCredentials(catalog), expectedRevision: 2, idempotencyKey: 'code-catalog-work', workUnitId: 'catalog',
+      result: { outcome: 'completed', summary: 'Converted the settings catalog', mutated: true, changedPaths: ['src/catalog.ts'] },
+    });
+    assert.equal(tests.ennoOduno.directive?.workUnit?.id, 'tests');
+    assert.deepEqual(tests.ennoOduno.directive?.requiredSkills, ['kiokuko-soul']);
+    const docs = await reportEnnoWork(database, {
+      ...identity, ...executionCredentials(tests), expectedRevision: 2, idempotencyKey: 'code-tests-work', workUnitId: 'tests',
+      result: { outcome: 'completed', summary: 'Added regression tests', mutated: true, changedPaths: ['tests/settings.test.ts'] },
+    });
+    assert.equal(docs.ennoOduno.directive?.workUnit?.id, 'docs');
+    assert.deepEqual(docs.ennoOduno.directive?.requiredSkills, ['kiokuko-soul']);
+    const residual = await reportEnnoWork(database, {
+      ...identity, ...executionCredentials(docs), expectedRevision: 2, idempotencyKey: 'code-docs-work', workUnitId: 'docs',
+      result: { outcome: 'completed', summary: 'Updated usage documentation', mutated: true, changedPaths: ['README.md'] },
+    });
+    assert.equal(residual.ennoOduno.directive?.workUnit?.id, 'residual');
+    assert.deepEqual(residual.ennoOduno.directive?.requiredSkills, ['kiokuko-soul']);
+    const reviewed = await reportEnnoWork(database, {
+      ...identity, ...executionCredentials(residual), expectedRevision: 2, idempotencyKey: 'code-residual-work', workUnitId: 'residual',
+      result: { outcome: 'completed', summary: 'Removed residual references', mutated: true, changedPaths: ['.gitignore'] },
     });
     assert.equal(reviewed.ennoOduno.status, 'enno_verifying');
     assert.deepEqual(reviewed.ennoOduno.directive?.requiredSkills, [
@@ -1553,7 +1687,7 @@ test('an Enno plan blocks when the exact local kiokuko-soul capability is absent
       expectedRevision: 1, idempotencyKey: 'missing-soul-plan', scope: ['src/add.js'], exclusions: [],
       acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
       workPlan: { objective: 'Repair add', units: [{
-        id: 'repair', objective: 'Repair add', scope: ['src/add.js'], dependencies: [], skillNames: [],
+        id: 'repair', objective: 'Repair add', scope: ['src/add.js'], dependencies: [], routes: ['code'], skillNames: [],
         expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the repair while testing the missing required Skill gate' }],
         acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
       }] },
@@ -1588,7 +1722,7 @@ test('run identity rejects cross-run progress while trusted repository routing c
       ...identity, expectedRevision: 1, idempotencyKey: 'wrong-owner', scope: ['src/module.js'], exclusions: [],
       acceptanceCriteria: [{ id: 'test', description: 'tests pass' }],
       workPlan: { objective: 'Build module', units: [{
-        id: 'build', objective: 'Build module', scope: ['src/module.js'], dependencies: [], skillNames: [],
+        id: 'build', objective: 'Build module', scope: ['src/module.js'], dependencies: [], routes: ['code'], skillNames: [],
         expertRefs: [{ id: 'code.domain.v1', reason: 'Implement the module as deterministic domain behavior' }],
         acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
       }] }, skillRequirements: [], finalVerifiers: [verifier(root, 'test')], maxAttempts: 2,
@@ -1620,9 +1754,10 @@ test('failed Enno review returns to Zenki for a revision-bound replan before Gok
       args: ['--eval', `import('node:fs').then(({existsSync}) => process.exit(existsSync(${JSON.stringify(marker)}) ? 0 : 1))`],
       cwd: root, timeoutMs: 5000,
     };
-    const { identity, repositoryRoot } = await plannedExecution(database, root, 'fresh-evidence', conditional);
+    const planned = await plannedExecution(database, root, 'fresh-evidence', conditional);
+    const { identity, repositoryRoot } = planned;
     await reportEnnoWork(database, {
-      ...identity, expectedRevision: 2, idempotencyKey: 'fresh-work-1', workUnitId: 'repair',
+      ...identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'fresh-work-1', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Initial repair', mutated: true, changedPaths: ['src/add.js'] },
     });
     const preparedFresh = await prepareEnnoVerification(database, {
@@ -1657,11 +1792,11 @@ test('failed Enno review returns to Zenki for a revision-bound replan before Gok
       ...identity, expectedRevision: 3, idempotencyKey: 'fresh-replan',
       scope: ['src/add.js'], exclusions: [], acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
       workPlan: { objective: 'Replan repair after Enno review', units: [{
-        id: 'repair', objective: 'Repair the final verification failure', scope: ['src/add.js'], dependencies: [], skillNames: [],
+        id: 'repair', objective: 'Repair the final verification failure', scope: ['src/add.js'], dependencies: [], routes: ['code'], skillNames: [],
         expertRefs: [{ id: 'code.verification.v1', reason: 'Address the failed final verifier with fresh evidence' }],
         acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
       }] },
-      skillRequirements: [], finalVerifiers: [{ ...conditional, cwd: repositoryRoot }], maxAttempts: 5,
+      skillRequirements: [], finalVerifiers: [{ ...conditional, cwd: '.' }], maxAttempts: 5,
       provenance: {
         scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
         workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
@@ -1674,7 +1809,7 @@ test('failed Enno review returns to Zenki for a revision-bound replan before Gok
 
     await writeFile(marker, 'ready\n');
     await reportEnnoWork(database, {
-      ...identity, expectedRevision: 4, idempotencyKey: 'fresh-work-2', workUnitId: 'repair',
+      ...identity, ...executionCredentials(replanned), expectedRevision: 4, idempotencyKey: 'fresh-work-2', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Repaired final failure', mutated: true, changedPaths: ['src/add.js'] },
     });
     const preparedRevision4 = await prepareEnnoVerification(database, {
@@ -1730,9 +1865,10 @@ test('failed Enno review returns to Zenki for a revision-bound replan before Gok
 test('Enno can reject passing verifier evidence and require Zenki to replan', async () => {
   const { root, database } = await fixture();
   try {
-    const { identity } = await plannedExecution(database, root, 'review-rejects-pass', verifier(root, 'pass'));
+    const planned = await plannedExecution(database, root, 'review-rejects-pass', verifier(root, 'pass'));
+    const { identity } = planned;
     await reportEnnoWork(database, {
-      ...identity, expectedRevision: 2, idempotencyKey: 'review-reject-work', workUnitId: 'repair',
+      ...identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'review-reject-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Implemented the approved unit', mutated: true, changedPaths: ['src/add.js'] },
     });
     await prepareEnnoVerification(database, {
@@ -1769,7 +1905,7 @@ test('replanning invalidates old final evidence and advisory digests', async () 
   try {
     const planned = await plannedExecution(database, root, 'stale-final-review', verifier(root, 'stale-final'));
     await reportEnnoWork(database, {
-      ...planned.identity, expectedRevision: 2, idempotencyKey: 'stale-initial-work', workUnitId: 'repair',
+      ...planned.identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'stale-initial-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Initial work is complete', mutated: false, changedPaths: [] },
     });
     await assert.rejects(finishEnno(database, {
@@ -1816,7 +1952,7 @@ test('replanning invalidates old final evidence and advisory digests', async () 
       exclusions: [],
       acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
       workPlan: { objective: 'Replan after stale review', units: [{
-        id: 'repair', objective: 'Repair add with fresh review', scope: ['src/add.js'], dependencies: [], skillNames: [],
+        id: 'repair', objective: 'Repair add with fresh review', scope: ['src/add.js'], dependencies: [], routes: ['code'], skillNames: [],
         expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the revised contract with fresh evidence' }],
         acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
       }] },
@@ -1832,7 +1968,7 @@ test('replanning invalidates old final evidence and advisory digests', async () 
     assert.equal(nextPlan.ennoOduno.status, 'goki_executing');
     assert.equal(nextPlan.ennoOduno.contractRevision, 4);
     await reportEnnoWork(database, {
-      ...planned.identity, expectedRevision: 4, idempotencyKey: 'stale-replanned-work', workUnitId: 'repair',
+      ...planned.identity, ...executionCredentials(nextPlan), expectedRevision: 4, idempotencyKey: 'stale-replanned-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Replanned work is complete', mutated: false, changedPaths: [] },
     });
     await assert.rejects(finishEnno(database, {
@@ -1852,7 +1988,7 @@ test('replanning invalidates old final evidence and advisory digests', async () 
       advisoryRoundDigest: oldDigest,
       advisoryDisposition: advisoryDispositions('final_review'),
       review: { decision: 'accept', summary: 'Attempt to reuse old advisory digest' },
-    }), /advisory round digest does not match the current contract/iu);
+    }), /Enno input is invalid/iu);
     assert.equal(readEnnoSnapshot(database, planned.identity).status, 'enno_verifying');
     const finished = await finishEnno(database, {
       ...planned.identity, expectedRevision: 4, idempotencyKey: 'stale-fresh-finish',
@@ -1868,9 +2004,10 @@ test('spawn failure blocks the run while continuation exhaustion only stops the 
   const first = await fixture();
   try {
     const unsafe = { ...verifier(first.root, 'missing'), executable: 'kiokuko-executable-that-does-not-exist' };
-    const { identity } = await plannedExecution(first.database, first.root, 'spawn-failure', unsafe);
+    const planned = await plannedExecution(first.database, first.root, 'spawn-failure', unsafe);
+    const { identity } = planned;
     await reportEnnoWork(first.database, {
-      ...identity, expectedRevision: 2, idempotencyKey: 'spawn-work', workUnitId: 'repair',
+      ...identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'spawn-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Ready to verify', mutated: true, changedPaths: ['src/add.js'] },
     });
     const preparedUnsafe = await prepareEnnoVerification(first.database, {
@@ -1898,9 +2035,9 @@ test('spawn failure blocks the run while continuation exhaustion only stops the 
     assert.match(exhausted.warning ?? '', /run remains active/iu);
     assert.equal(second.database.prepare('SELECT status FROM enno_contracts WHERE run_id = ?').get<{ status: string }>(planned.identity.runId)?.status, 'goki_executing');
     assert.equal(second.database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(planned.identity.runId)?.status, 'active');
-    const resumed = decideAdapterContinuation(second.database, 'codex', { session_id: 'replacement-codex-session', cwd: second.root });
-    assert.equal(resumed.continue, true);
-    assert.equal(resumed.runId, planned.identity.runId);
+    assert.throws(() => decideAdapterContinuation(second.database, 'codex', {
+      session_id: 'replacement-codex-session', cwd: second.root,
+    }), /active Enno WorkUnit lease/iu);
   } finally {
     second.database.close();
   }
@@ -1916,7 +2053,7 @@ test('timeout final evidence cannot be accepted', async () => {
     };
     const planned = await plannedExecution(database, root, 'timeout-final-review', timeoutVerifier);
     await reportEnnoWork(database, {
-      ...planned.identity, expectedRevision: 2, idempotencyKey: 'timeout-work', workUnitId: 'repair',
+      ...planned.identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'timeout-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Ready for timeout verification', mutated: false, changedPaths: [] },
     });
     const verified = await prepareEnnoVerification(database, {
@@ -1960,11 +2097,9 @@ test('Claude returns control before its native eighth consecutive Stop block ove
     `).get<{ totalCount: number }>(planned.identity.runId)?.totalCount, 7);
     assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
       .get<{ status: string }>(planned.identity.runId)?.status, 'active');
-    const resumed = decideAdapterContinuation(database, 'opencode', {
+    assert.throws(() => decideAdapterContinuation(database, 'opencode', {
       session_id: 'opencode-after-claude-limit', cwd: root,
-    });
-    assert.equal(resumed.continue, true);
-    assert.equal(resumed.runId, planned.identity.runId);
+    }), /active Enno WorkUnit lease/iu);
   } finally {
     database.close();
   }
@@ -1979,9 +2114,10 @@ test('focused verifier process can write the same database because no transactio
       args: ['--eval', `import('node:sqlite').then(({DatabaseSync}) => { const db = new DatabaseSync(${JSON.stringify(databasePath)}); db.exec("INSERT INTO enno_lock_probe VALUES ('ok')"); db.close(); })`],
       cwd: root, timeoutMs: 5000,
     };
-    const { identity } = await plannedExecution(database, root, 'no-db-lock', verifier(root, 'final'), { focusedVerifiers: [probe] });
+    const planned = await plannedExecution(database, root, 'no-db-lock', verifier(root, 'final'), { focusedVerifiers: [probe] });
+    const { identity } = planned;
     const reported = await reportEnnoWork(database, {
-      ...identity, expectedRevision: 2, idempotencyKey: 'lock-work', workUnitId: 'repair',
+      ...identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'lock-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Run lock probe', mutated: false, changedPaths: [] },
     });
     assert.equal(reported.verifierResults?.[0]?.status, 'passed');
@@ -1998,6 +2134,7 @@ test('concurrent work reports allow only one revision-bound state transition', a
     const staleSnapshot = readEnnoSnapshot(database, planned.identity);
     const report = (idempotencyKey: string) => reportEnnoWork(database, {
       ...planned.identity,
+      ...executionCredentials(planned),
       expectedRevision: 2,
       idempotencyKey,
       workUnitId: 'repair',
@@ -2034,22 +2171,148 @@ test('concurrent work reports allow only one revision-bound state transition', a
   }
 });
 
+test('expired operation and verifier owners are abandoned before an atomic reclaim', async () => {
+  const { root, database } = await fixture();
+  try {
+    const planned = await plannedExecution(database, root, 'crash-recovery', verifier(root, 'crash-recovery-final'));
+    const operation = {
+      operation: 'verify_prepare' as const,
+      idempotencyKey: 'crashed-verification',
+      requestDigest: 'a'.repeat(64),
+    };
+    const firstOwner = withImmediateTransaction(database, () => startOperationInTransaction(
+      database,
+      planned.identity.runId,
+      operation,
+    ));
+    database.prepare(`
+      UPDATE enno_operation_receipts SET lease_expires_at = ?
+      WHERE run_id = ? AND operation = ? AND idempotency_key = ?
+    `).run('2000-01-01T00:00:00.000Z', planned.identity.runId, operation.operation, operation.idempotencyKey);
+    assert.equal(readOperationReceipt(database, planned.identity.runId, operation), undefined);
+    assert.equal(database.prepare(`
+      SELECT state FROM enno_operation_receipts
+      WHERE run_id = ? AND operation = ? AND idempotency_key = ?
+    `).get<{ state: string }>(planned.identity.runId, operation.operation, operation.idempotencyKey)?.state, 'abandoned');
+    assert.throws(() => readOperationReceipt(database, planned.identity.runId, {
+      ...operation,
+      requestDigest: 'b'.repeat(64),
+    }), /different input/iu);
+    const secondOwner = withImmediateTransaction(database, () => startOperationInTransaction(
+      database,
+      planned.identity.runId,
+      operation,
+    ));
+    assert.notEqual(secondOwner, firstOwner);
+    assert.throws(() => completeOperationInTransaction(
+      database,
+      planned.identity.runId,
+      operation,
+      firstOwner,
+      { stale: true },
+    ), /receipt changed concurrently/iu);
+    withImmediateTransaction(database, () => completeOperationInTransaction(
+      database,
+      planned.identity.runId,
+      operation,
+      secondOwner,
+      { recovered: true },
+    ));
+    assert.deepEqual(readOperationReceipt(database, planned.identity.runId, operation), { recovered: true });
+
+    const snapshot = readEnnoSnapshot(database, planned.identity);
+    const abandonedVerifierIds = startVerifierRunsInTransaction(database, {
+      runId: planned.identity.runId,
+      workUnitId: null,
+      revision: snapshot.revision,
+      mutationRevision: snapshot.mutationRevision,
+      verifiers: snapshot.contract.finalVerifiers,
+    });
+    const abandonedVerifierId = abandonedVerifierIds[0];
+    assert.ok(abandonedVerifierId);
+    database.prepare(`
+      UPDATE enno_verifier_runs SET lease_expires_at = ?
+      WHERE verifier_run_id = ?
+    `).run('2000-01-01T00:00:00.000Z', abandonedVerifierId);
+    const reclaimedVerifierIds = startVerifierRunsInTransaction(database, {
+      runId: planned.identity.runId,
+      workUnitId: null,
+      revision: snapshot.revision,
+      mutationRevision: snapshot.mutationRevision,
+      verifiers: snapshot.contract.finalVerifiers,
+    });
+    const reclaimedVerifierId = reclaimedVerifierIds[0];
+    assert.ok(reclaimedVerifierId);
+    assert.equal(database.prepare('SELECT status FROM enno_verifier_runs WHERE verifier_run_id = ?')
+      .get<{ status: string }>(abandonedVerifierId)?.status, 'abandoned');
+    assert.equal(database.prepare('SELECT status FROM enno_verifier_runs WHERE verifier_run_id = ?')
+      .get<{ status: string }>(reclaimedVerifierId)?.status, 'started');
+  } finally {
+    database.close();
+  }
+});
+
+test('work-report secrets are sanitized before result, event, and receipt persistence', async () => {
+  const { root, database } = await fixture();
+  try {
+    const planned = await plannedExecution(database, root, 'work-secret-sanitization', verifier(root, 'work-secret-final'));
+    const secret = 'password=supersecretvalue12345';
+    const response = await reportEnnoWork(database, {
+      ...planned.identity,
+      ...executionCredentials(planned),
+      expectedRevision: 2,
+      idempotencyKey: 'work-secret-report',
+      workUnitId: 'repair',
+      result: { outcome: 'completed', summary: `Completed with ${secret}`, mutated: false, changedPaths: [] },
+    });
+    assert.equal(response.ennoOduno.status, 'enno_verifying');
+    const persisted = {
+      workUnit: database.prepare(`
+        SELECT result_json AS value FROM enno_work_units
+        WHERE run_id = ? AND work_unit_id = 'repair'
+      `).get<{ value: string }>(planned.identity.runId)?.value,
+      event: database.prepare(`
+        SELECT payload_json AS value FROM ledger_events
+        WHERE run_id = ? AND event_type = 'goki.work_completed'
+        ORDER BY sequence DESC LIMIT 1
+      `).get<{ value: string }>(planned.identity.runId)?.value,
+      receipt: database.prepare(`
+        SELECT response_json AS value FROM enno_operation_receipts
+        WHERE run_id = ? AND idempotency_key = 'work-secret-report'
+      `).get<{ value: string }>(planned.identity.runId)?.value,
+      blocker: database.prepare('SELECT blocker AS value FROM enno_contracts WHERE run_id = ?')
+        .get<{ value: string | null }>(planned.identity.runId)?.value,
+    };
+    const serialized = JSON.stringify(persisted);
+    assert.equal(serialized.includes(secret), false);
+    assert.match(serialized, /REDACTED/iu);
+  } finally {
+    database.close();
+  }
+});
+
 test('final verifier evidence is reused for the same revision and mutation without a second subprocess', async () => {
   const { root, database } = await fixture();
   try {
     const planned = await plannedExecution(database, root, 'final-evidence-replay', verifier(root, 'final-replay'));
     await reportEnnoWork(database, {
-      ...planned.identity, expectedRevision: 2, idempotencyKey: 'final-replay-work', workUnitId: 'repair',
+      ...planned.identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'final-replay-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Prepared final verification', mutated: false, changedPaths: [] },
     });
     const current = readEnnoSnapshot(database, planned.identity);
     const verifierSpec = current.contract.finalVerifiers[0]!;
+    const repositoryState = captureRepositoryState(current.repositoryRoot);
     const verifierRunIds = startVerifierRunsInTransaction(database, {
       runId: planned.identity.runId,
       workUnitId: null,
       revision: current.revision,
       mutationRevision: current.mutationRevision,
       verifiers: current.contract.finalVerifiers,
+      repositoryEvidence: {
+        policyVersion: repositoryState.policyVersion,
+        preDigest: repositoryState.digest,
+        verifierSpecDigest: canonicalContentHash(current.contract.finalVerifiers),
+      },
     });
     finishVerifierRunsInTransaction(database, verifierRunIds, [{
       verifier: verifierSpec,
@@ -2061,7 +2324,7 @@ test('final verifier evidence is reused for the same revision and mutation witho
       stderrPreview: '',
       stdoutDigest: '0'.repeat(64),
       stderrDigest: '0'.repeat(64),
-    }]);
+    }], { postDigest: repositoryState.digest, changedDuringVerification: false });
     let spawnCalls = 0;
     const finished = await finishEnno(database, {
       ...planned.identity, expectedRevision: 2, idempotencyKey: 'final-replay-finish',
@@ -2089,7 +2352,7 @@ test('final verification preparation reuses fresh evidence across keys and finis
   try {
     const planned = await plannedExecution(database, root, 'final-evidence-cross-key', verifier(root, 'final-cross-key'));
     await reportEnnoWork(database, {
-      ...planned.identity, expectedRevision: 2, idempotencyKey: 'cross-key-work', workUnitId: 'repair',
+      ...planned.identity, ...executionCredentials(planned), expectedRevision: 2, idempotencyKey: 'cross-key-work', workUnitId: 'repair',
       result: { outcome: 'completed', summary: 'Prepared final verification', mutated: false, changedPaths: [] },
     });
     let spawnCalls = 0;
@@ -2117,6 +2380,65 @@ test('final verification preparation reuses fresh evidence across keys and finis
       SELECT COUNT(*) AS count FROM enno_verifier_runs
       WHERE run_id = ? AND work_unit_id IS NULL AND contract_revision = 2 AND mutation_revision = 0
     `).get<{ count: number }>(planned.identity.runId)?.count, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('final evidence is invalidated by repository changes after preparation', async () => {
+  const { root, database } = await fixture();
+  try {
+    await writeFile(path.join(root, 'tracked.js'), 'export const value = 1;\n');
+    execFileSync('git', ['-C', root, 'add', 'tracked.js']);
+    const planned = await plannedExecution(database, root, 'repository-evidence-stale', verifier(root, 'repository-evidence-final'));
+    await reportEnnoWork(database, {
+      ...planned.identity, ...executionCredentials(planned), expectedRevision: 2,
+      idempotencyKey: 'repository-evidence-work', workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Prepared work for repository evidence', mutated: false, changedPaths: [] },
+    });
+    const prepared = await prepareEnnoVerification(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'repository-evidence-prepare',
+    });
+    assert.equal(prepared.verifierResults?.[0]?.status, 'passed');
+    assert.equal(prepared.verifierResults?.[0]?.changedDuringVerification, false);
+    await writeFile(path.join(root, 'tracked.js'), 'export const value = 2;\n');
+    await assert.rejects(finishEnno(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'repository-evidence-finish',
+      review: { decision: 'accept', summary: 'Attempt to accept stale evidence' },
+    }), /final verification evidence is not prepared/iu);
+    assert.equal(readEnnoSnapshot(database, planned.identity).status, 'enno_verifying');
+  } finally {
+    database.close();
+  }
+});
+
+test('a verifier that mutates repository state cannot produce acceptable final evidence', async () => {
+  const { root, database } = await fixture();
+  try {
+    const mutatingVerifier = {
+      id: 'mutating-final',
+      kind: 'test' as const,
+      executable: process.execPath,
+      args: ['--eval', "require('node:fs').writeFileSync('verifier-mutated.txt', 'changed')"],
+      cwd: '.',
+      timeoutMs: 5_000,
+    };
+    const planned = await plannedExecution(database, root, 'repository-evidence-mutation', mutatingVerifier);
+    await reportEnnoWork(database, {
+      ...planned.identity, ...executionCredentials(planned), expectedRevision: 2,
+      idempotencyKey: 'repository-mutation-work', workUnitId: 'repair',
+      result: { outcome: 'completed', summary: 'Prepared work for a mutating verifier', mutated: false, changedPaths: [] },
+    });
+    const prepared = await prepareEnnoVerification(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'repository-mutation-prepare',
+    });
+    assert.equal(prepared.verifierResults?.[0]?.status, 'passed');
+    assert.equal(prepared.verifierResults?.[0]?.changedDuringVerification, true);
+    assert.equal(readEnnoSnapshot(database, planned.identity).finalEvidenceReady, false);
+    await assert.rejects(finishEnno(database, {
+      ...planned.identity, expectedRevision: 2, idempotencyKey: 'repository-mutation-finish',
+      review: { decision: 'accept', summary: 'Mutating verifier evidence must be rejected' },
+    }), /final verification evidence is not prepared/iu);
   } finally {
     database.close();
   }

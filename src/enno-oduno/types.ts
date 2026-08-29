@@ -73,6 +73,20 @@ export type AdvisorySource = 'host_reported';
 
 export type AdvisoryDispositionKind = 'adopted' | 'not_adopted' | 'unavailable';
 
+export type AdvisoryPhaseState =
+  | { state: 'not_started' }
+  | { state: 'fanout_requested'; slots: AdvisorySlotDirective[] }
+  | {
+      state: 'aggregated';
+      inputDigest: string;
+      requiredDispositionSlots: Array<{
+        slotId: AdvisorySlotId;
+        outcome: AdvisoryOutcome;
+        allowedDispositions: AdvisoryDispositionKind[];
+      }>;
+    }
+  | { state: 'consumed'; inputDigest: string };
+
 export interface AdvisoryDisposition {
   slotId: AdvisorySlotId;
   disposition: AdvisoryDispositionKind;
@@ -103,16 +117,29 @@ export interface AdvisorySkillTrust {
 
 export interface AdvisoryFinalVerifierEvidence {
   id: string;
+  kind: VerifierSpec['kind'];
+  executable: string;
+  args: string[];
+  directory: string;
+  timeoutMs: number;
   status: 'passed' | 'failed' | 'timeout' | 'spawn_failed';
   exitCode: number | null;
   signal: string | null;
   stdoutDigest: string;
   stderrDigest: string;
+  stdoutPreview: string;
+  stderrPreview: string;
+  repositoryStatePolicyVersion: number | null;
+  repositoryStateDigest: string | null;
 }
 
 export interface AdvisoryWorkUnitOutcome {
   id: string;
+  objective: string;
+  acceptanceCriteria: string[];
+  routes: WorkUnitRoute[];
   status: 'completed' | 'failed' | 'blocked';
+  summary: string;
   mutated: boolean;
   changedPaths: string[];
 }
@@ -137,11 +164,14 @@ export interface PlanningAdvisoryContext {
 export interface FinalReviewAdvisoryContext {
   phase: 'final_review';
   workPlanSummary: string;
+  acceptanceCriteria: AcceptanceCriterion[];
   workUnitOutcomes: AdvisoryWorkUnitOutcome[];
   changedPaths: string[];
   verifierEvidence: AdvisoryFinalVerifierEvidence[];
   freshnessMarker: string;
   evidenceSetDigest: string;
+  repositoryStateDigest: string;
+  evidenceFreshnessPolicyVersion: number;
 }
 
 export type AdvisoryContext =
@@ -205,6 +235,9 @@ export interface VerifierSpec {
   timeoutMs: number;
 }
 
+export const WORK_UNIT_ROUTES = ['code', 'ui', 'test', 'docs', 'operations'] as const;
+export type WorkUnitRoute = (typeof WORK_UNIT_ROUTES)[number];
+
 export interface ExpertRef {
   id: string;
   reason: string;
@@ -219,6 +252,8 @@ export interface WorkUnit {
   expertRefs: ExpertRef[];
   acceptanceCriteria: string[];
   focusedVerifiers: VerifierSpec[];
+  /** Optional only while reading v0.2.x stored WorkUnits. New submissions require it. */
+  routes?: WorkUnitRoute[] | undefined;
 }
 
 export interface WorkPlan {
@@ -350,6 +385,7 @@ export interface RoleDirective {
   protocolVersion: 1;
   runId: string;
   contractRevision: number | null;
+  routeEpoch: number | null;
   role: EnnoRole;
   harness: EnnoHarnessDirective;
   handoff: EnnoRequestHandoff | null;
@@ -374,11 +410,22 @@ export interface EnnoOdunoState {
     identified: boolean;
   } | null;
   contractRevision: number | null;
+  routeEpoch: number | null;
   ideal: OdunoIdeal | null;
   meditation: OdunoMeditation | null;
   currentRole: EnnoRole | null;
   directive: RoleDirective | null;
   nextAction: EnnoNextAction;
+  advisoryPhaseState: AdvisoryPhaseState;
+}
+
+export interface EnnoExecutionLease {
+  leaseToken: string;
+  routeEpoch: number;
+  contractRevision: number;
+  mutationRevision: number;
+  workUnitId: string;
+  expiresAt: string;
 }
 
 export type WorkUnitStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked';
@@ -402,11 +449,11 @@ export interface EnnoFinalReview {
   summary: string;
 }
 
-export type VerifierRunStatus = 'started' | 'passed' | 'failed' | 'timeout' | 'spawn_failed';
+export type VerifierRunStatus = 'started' | 'passed' | 'failed' | 'timeout' | 'spawn_failed' | 'abandoned';
 
 export interface VerifierRunResult {
   verifier: VerifierSpec;
-  status: Exclude<VerifierRunStatus, 'started'>;
+  status: Exclude<VerifierRunStatus, 'started' | 'abandoned'>;
   exitCode: number | null;
   signal: string | null;
   durationMs: number;
@@ -414,6 +461,9 @@ export interface VerifierRunResult {
   stderrPreview: string;
   stdoutDigest: string;
   stderrDigest: string;
+  repositoryStatePolicyVersion?: number | undefined;
+  repositoryStateDigest?: string | undefined;
+  changedDuringVerification?: boolean | undefined;
 }
 
 export interface EnnoRunSnapshot {
@@ -430,6 +480,7 @@ export interface EnnoRunSnapshot {
   confirmationState: 'not_required' | 'pending' | 'approved' | 'revision_requested' | 'cancelled';
   attempts: number;
   mutationRevision: number;
+  routeEpoch?: number | undefined;
   ideal: OdunoIdeal | null;
   meditation: OdunoMeditation | null;
   contract: EnnoOdunoContract;
@@ -438,4 +489,5 @@ export interface EnnoRunSnapshot {
   finalEvidenceReady: boolean;
   finalEvidence: VerifierRunResult[];
   blocker: string | null;
+  advisoryPhaseState?: AdvisoryPhaseState | undefined;
 }

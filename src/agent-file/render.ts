@@ -3,12 +3,13 @@ import { validateRepositoryBindingIdentity } from '../repository/identity-value.
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
 import {
   ENNO_ADVISORY_ROUND_CONTRACT,
+  ENNO_EXECUTION_INTEGRITY_CONTRACT,
   ENNO_ORCHESTRATION_ENTRY_CONTRACT,
   PLAN_START_RECOVERY_DISPLAY_CONTRACT,
 } from '../enno-oduno/instructions.js';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../setup/standard-skills.js';
 
-export const AGENT_TEMPLATE_VERSION = 19;
+export const AGENT_TEMPLATE_VERSION = 20;
 
 export interface AgentTemplateValues {
   repositoryId: string;
@@ -45,6 +46,8 @@ export function renderManagedBlock(values: AgentTemplateValues): string {
     ENNO_ADVISORY_ROUND_CONTRACT,
     '',
     PLAN_START_RECOVERY_DISPLAY_CONTRACT,
+    '',
+    ENNO_EXECUTION_INTEGRITY_CONTRACT,
     '',
     SOUL_ROUTING_ENTRY_CONTRACT,
     '',

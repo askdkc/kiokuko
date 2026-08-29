@@ -96,12 +96,34 @@ User request
 
 Final Review is deliberately two-phase. `enno_verify_prepare` runs approved
 verifiers outside database transactions with shell disabled and a
-repository-bounded cwd, then binds the fresh evidence to the current contract
-and mutation revisions. `enno_finish` never launches a subprocess and accepts
-only stored fresh passing evidence. Passing tests alone do not accept a run.
+repository-relative cwd, then binds evidence to the contract/mutation revision,
+verifier specification, and complete Git/index/worktree/untracked/symlink state.
+`enno_finish` rechecks that state, never launches a subprocess, and accepts only
+complete stored passing evidence. Passing tests alone do not accept a run.
 Codex and Claude Code use bounded Stop hooks and OpenCode uses a bounded
 `session.idle` plugin when Enno continuation is enabled. Hermes uses native
 stdio MCP and bundled Skills only; it has no Enno continuation adapter.
+
+Enno submissions use bounded, value-free `ENNO_INPUT_INVALID` diagnostics.
+Advisory rounds move through `not_started`, `fanout_requested`, `aggregated`, and
+`consumed`, with advisory fields required only while an aggregate awaits
+consumption. New WorkUnits declare local `code`, `ui`, `test`, `docs`, or
+`operations` routes; code requires a `code.*` expert and UI requires both
+`code.*` and `ui.*`, without imposing those experts on test/docs/operations
+units. Plan recovery is zero-effect until the user chooses. Continuation uses
+short-lived route-epoch-bound resume tokens and one-owner execution leases;
+expired operation or verifier work can be atomically abandoned and reclaimed.
+Narrative/evidence data is sanitized before hashing and persistence, and
+secret-bearing verifier commands are rejected.
+
+The bundled coding Skill applies problem shaping proportionally. Its
+`code.modeling.v1` expert is selected when a WorkUnit defines domain vocabulary,
+a public response/DTO/ViewModel, or a translation between storage, API,
+serialization, and UI representations. Representation-preserving mechanical
+changes do not select it merely because they modify code. The expert defines
+consumer-first shapes and named transformations without requiring Lisp syntax,
+macros, or a DSL; existing installations receive the managed reference on the
+next `kiokuko setup`.
 
 Incomplete intake therefore returns an Enno-Oduno directive and `answer_intake`; its `requiredSkills` contains `kiokuko-enno-oduno`, and Zenki is not started yet. A ready intake first returns `oduno_ideal` and `submit_ideal`. `enno_ideal_submit` requires exactly one contribution for every Skill in Akinator's selected discovery set; external Skills remain untrusted reference-only guidance. Only then does the run return a revision-bound Zenki directive whose `requiredSkills` includes the compact `kiokuko-single-purpose-functions` index even while the draft Skill snapshot is empty. Before choosing WorkUnits, Zenki uses that index to divide code changes into cohesive function or use-case contracts with focused test targets, without meaningless micro-functions. Each code-changing WorkUnit must select one to three registered `expertRefs` with reasons; UI WorkUnits require both a `code.*` and a `ui.*` expert. `enno_plan_submit` rejects missing, duplicate, unknown, or oversized mixtures and then persists the exact selection with the revision. Goki reads those fragments rather than every Skill reference. The controller Skill is role-level and is not inserted into WorkUnit Skill snapshots. Goki cannot be entered until Zenki's complete plan has been accepted and required confirmation has succeeded. A failed final review never reactivates an old Goki WorkUnit. It preserves the rejected plan and verifier evidence under their old revision, advances to `zenki_planning`, and requires a new revision-bound plan. An accepted review advances to `oduno_meditation`, not directly to completion. `enno_meditation_submit` persists the inspected repository-relative paths and evidence-backed obsolete test or function candidates without mutating the repository, then completes the run. The response's `orchestrationId` is used by every Enno MCP operation and is separate from the host session identity. Inferred scope, acceptance criteria, Skills, expert selections, or verifier commands are returned for normal user confirmation before execution. A `needs_confirmation` response carries `ennoOduno.directive.userFacingConfirmation`, a deterministic display projection of the decided contract: scope, exclusions, completion criteria, work items with display-number dependencies, skills with their reference-only status, expertise with selection reasons, focused and final checks, and the attempt limit, each labeled with its provenance basis (user-specified, repository-verified, or proposed). The client model presents every item in the user's language without raw directive JSON or internal identifiers, then waits for an explicit approve, revise, or cancel; secret-shaped display values or a projection above 64 KiB reject the plan submit instead of being redacted or truncated.
 
@@ -131,7 +153,7 @@ The earlier attempt already ended under the legacy behavior:
 
 The client translates this guidance into the user's language. It never displays machine actions, reason codes, internal tool or field names, the capability catalog, identifiers, revisions, presentation versions, or raw JSON. No retry, cancellation, or replacement task occurs before the user's explicit choice.
 
-The three roles use the current client model; Kiokuko does not call a second model or require OpenAI, Anthropic, or OpenCode API credentials. Codex and Claude Code use bounded Stop hooks, while OpenCode uses a bounded `session.idle` plugin. OpenCode ignores child-session idle events and deduplicates repeated delivery of the same completed turn. Local processes running as the same OS user with access to the canonical repository are trusted to resume its run without PID, process-ancestry, executable, signing, or inherited-token proof. The adapter prefers an exact session route; when no exact route exists, it may atomically reroute the single unambiguous active run across Codex, Claude Code, and OpenCode, clearing the previous client version. Ambiguity returns control without mutation. The public `clientBinding` response field reports the current route; `bound` does not mean owner. Reaching one session's continuation limit stops only that session and leaves the run and ledger active for another local project client. Kiokuko returns control before Claude Code's native eighth consecutive Stop-block override. Hermes has no automatic continuation hook, but can continue through MCP with the same run identity. Adapter failure allows the client to stop with a fixed warning. External Skills remain untrusted reference-only and are never installed or executed automatically.
+The three roles use the current client model; Kiokuko does not call a second model or require OpenAI, Anthropic, or OpenCode API credentials. Codex and Claude Code use bounded Stop hooks, while OpenCode uses a bounded `session.idle` plugin. OpenCode ignores child-session idle events and deduplicates repeated delivery of the same completed turn. Local processes running as the same OS user with access to the canonical repository are trusted to resume its run without PID, process-ancestry, executable, or signing proof. The adapter prefers the current short-lived resume token; when no valid token route exists, it may atomically reroute the single unambiguous active run across Codex, Claude Code, and OpenCode, incrementing the route epoch and invalidating old tokens. An active WorkUnit execution lease blocks rerouting. Ambiguity returns control without mutation. The public `clientBinding` response field reports the current route; `bound` does not mean owner. Reaching one session's continuation limit stops only that session and leaves the run and ledger active for another local project client. Kiokuko returns control before Claude Code's native eighth consecutive Stop-block override. Hermes has no automatic continuation hook, but can continue through MCP with the same run identity. Adapter failure allows the client to stop with a fixed warning. External Skills remain untrusted reference-only and are never installed or executed automatically.
 
 ```bash
 kiokuko setup --clients codex,opencode,claude --enno-oduno on

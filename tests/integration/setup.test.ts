@@ -407,6 +407,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
       /Function-contract coding and review checklist/,
     );
     assert.match(
+      await readFile(path.join(skillsDirectory, 'kiokuko-single-purpose-functions', 'references', 'problem-shaping-and-language.md'), 'utf8'),
+      /problem shaping and representation design/iu,
+    );
+    assert.match(
       await readFile(path.join(skillsDirectory, 'kiokuko-enno-oduno', 'SKILL.md'), 'utf8'),
       /Enno-Oduno alone owns this state machine/,
     );
@@ -860,7 +864,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
-    `human project rule\n${staleAgent.replace('kiokuko-template-version: 19', 'kiokuko-template-version: 14')}`,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 20', 'kiokuko-template-version: 14')}`,
   );
   await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 12 }, null, 2)}\n`);
 
@@ -949,11 +953,11 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.match(refreshedAgent, /kiokuko-template-version: 19/u);
+  assert.match(refreshedAgent, /kiokuko-template-version: 20/u);
   assert.equal(refreshedAgent.includes('kiokuko-template-version: 14'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
-  assert.equal(refreshedBinding.templateVersion, 19);
+  assert.equal(refreshedBinding.templateVersion, 20);
 
   const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
@@ -966,7 +970,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryId: 'repo_setup_refresh_location_only',
     workspace: 'project:setup-refresh-location-only',
     agentFile: 'AGENTS.md',
-    templateVersion: 19,
+    templateVersion: 20,
   });
   assert.equal(
     await readFile(locationOnlyGitignorePath, 'utf8'),
@@ -1081,10 +1085,16 @@ test('setup upgrades an older managed standard skill and then reports it unchang
   const skillDirectory = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul');
   const skillPath = path.join(skillDirectory, 'SKILL.md');
   const checklistPath = path.join(skillDirectory, 'references', 'ui-checklist.md');
+  const functionSkillDirectory = path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions');
+  const functionSkillPath = path.join(functionSkillDirectory, 'SKILL.md');
+  const modelingPath = path.join(functionSkillDirectory, 'references', 'problem-shaping-and-language.md');
   const marker = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-ui-design-soul -->';
+  const functionMarker = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-single-purpose-functions -->';
   await mkdir(path.dirname(checklistPath), { recursive: true });
+  await mkdir(functionSkillDirectory, { recursive: true });
   await writeFile(skillPath, `---\nname: kiokuko-ui-design-soul\ndescription: old\n---\n\n${marker}\nold\n`);
   await writeFile(checklistPath, `${marker}\nold checklist\n`);
+  await writeFile(functionSkillPath, `---\nname: kiokuko-single-purpose-functions\ndescription: old\n---\n\n${functionMarker}\nold\n`);
 
   const first = await setupGlobalClients({
     clients: ['codex'],
@@ -1093,14 +1103,15 @@ test('setup upgrades an older managed standard skill and then reports it unchang
     databasePath: temporary.databasePath,
   });
   const standardSkillActions = first.files.filter((file) => file.purpose === 'standard-skill').map((file) => file.action);
-  assert.equal(standardSkillActions.filter((action) => action === 'updated').length, 2);
-  assert.equal(standardSkillActions.filter((action) => action === 'created').length, standardSkillPaths('ignored').length - 2);
+  assert.equal(standardSkillActions.filter((action) => action === 'updated').length, 3);
+  assert.equal(standardSkillActions.filter((action) => action === 'created').length, standardSkillPaths('ignored').length - 3);
   assert.match(await readFile(skillPath, 'utf8'), /description: Prevent common UI and UX failures/);
   assert.match(await readFile(checklistPath, 'utf8'), /Eight-principle map/);
   assert.match(
-    await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'), 'utf8'),
-    /one cohesive externally observable responsibility/,
+    await readFile(functionSkillPath, 'utf8'),
+    /problem-shaping contracts/,
   );
+  assert.match(await readFile(modelingPath, 'utf8'), /code\.modeling\.v1/u);
   assert.match(
     await readFile(path.join(temporary.home, '.agents', 'skills', 'kiokuko-enno-oduno', 'SKILL.md'), 'utf8'),
     /Enno-Oduno alone owns this state machine/,

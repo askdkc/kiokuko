@@ -9,6 +9,7 @@ import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { advisoryInputDigest } from '../../src/enno-oduno/advisory.js';
 import { submitEnnoAdvice, submitOdunoIdeal } from '../../src/enno-oduno/service.js';
+import { readEnnoSnapshot } from '../../src/enno-oduno/store.js';
 import { ADVISORY_SLOT_DEFINITIONS } from '../../src/enno-oduno/types.js';
 
 const capabilities = [
@@ -198,9 +199,23 @@ test('advice round digest binds the allowlisted context and is consumed by the e
         skillContributions: prepared.skillDiscovery.selected.map((skill) => ({ skillName: skill.name, contribution: `Use ${skill.name} as reference-only guidance` })),
         successSignals: ['tests pass'],
       },
-    }), /ideal submission is invalid/iu);
+    }), /Enno input is invalid/iu);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE idempotency_key = 'ideal-secret-disposition'").get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE event_type = 'enno.advice_disposition'").get<{ count: number }>()?.count, 0);
+    assert.equal(database.prepare("SELECT state FROM enno_advisory_rounds WHERE phase = 'ideal'").get<{ state: string }>()?.state, 'aggregated');
+    const afterRejectedConsumption = readEnnoSnapshot(database, id);
+    assert.equal(afterRejectedConsumption.advisoryPhaseState?.state, 'aggregated');
+    assert.equal(afterRejectedConsumption.finalEvidenceReady, false);
+    assert.equal(afterRejectedConsumption.status, 'oduno_ideal');
+    assert.equal(afterRejectedConsumption.advisoryPhaseState?.state === 'aggregated'
+      ? afterRejectedConsumption.advisoryPhaseState.inputDigest
+      : null, digest);
+    assert.equal(afterRejectedConsumption.advisoryPhaseState?.state === 'aggregated'
+      ? afterRejectedConsumption.advisoryPhaseState.requiredDispositionSlots.length
+      : 0, 3);
+    assert.equal(afterRejectedConsumption.advisoryPhaseState?.state === 'aggregated'
+      ? afterRejectedConsumption.advisoryPhaseState.requiredDispositionSlots.every((slot) => slot.allowedDispositions.length > 0)
+      : false, true);
     const ideal = submitOdunoIdeal(database, {
       ...id,
       expectedRevision: 1,
@@ -258,7 +273,7 @@ test('a submitted advisory round cannot advance the phase without its digest and
     assert.throws(() => submitOdunoIdeal(database, {
       ...id, expectedRevision: 1, idempotencyKey: 'ideal-no-digest',
       ideal: { objective: 'Reach a verified outcome', principles: ['Preserve constraints'], skillContributions: [], successSignals: ['tests pass'] },
-    }), /advisory round was submitted/iu);
+    }), /Enno input is invalid/iu);
     assert.equal(
       database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE event_type = 'enno.advice_disposition'").get<{ count: number }>()?.count,
       0,

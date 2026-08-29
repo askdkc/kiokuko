@@ -151,9 +151,12 @@ When Enno-Oduno continuation is enabled, setup installs one bounded native
 adapter for each selected client: a Codex or Claude Code Stop hook, or an
 OpenCode `session.idle` plugin. Hermes receives no Enno continuation adapter.
 The adapters treat `client_session_id` as routing metadata rather than
-authorization ownership. They prefer an exact session route, then atomically
+authorization ownership. They prefer the current short-lived resume token,
+then atomically
 reroute the single unambiguous active run in the canonical repository across
-Codex, Claude Code, and OpenCode. Multiple active candidates remain unchanged.
+Codex, Claude Code, and OpenCode when no valid token route exists. Rerouting
+increments the route epoch and invalidates old tokens; an active WorkUnit
+execution lease blocks it. Multiple active candidates remain unchanged.
 Reaching a per-session continuation limit stops only that session's automatic
 continuation and leaves the run and ledger active. Hermes can still continue
 the same run through MCP by supplying its exact run identity.
@@ -171,12 +174,19 @@ rejects symlinks, and is idempotent. Before an existing database is migrated,
 `databaseBackupPath` in JSON. It rejects databases created by a newer Kiokuko
 schema before opening them for writes. `--dry-run` performs no writes.
 
-Standard-skill input is the package's fixed four-skill, seven-file manifest; setup
+Standard-skill input is the package's fixed four-skill manifest; setup
 performs no network fetch or dynamic skill discovery. Each managed destination file contains a Kiokuko
 marker. A same-name unmarked file causes `CONFLICT` before all writes. Managed
 older files are replaced, byte-identical files are `unchanged`, unrelated sibling
 files are not touched, and `files[].purpose` is `standard-skill`. JSON setup
 results include the effective `standardSkills` boolean.
+
+The bundled `kiokuko-single-purpose-functions` index registers
+`code.modeling.v1` for WorkUnits that own domain vocabulary, public data shapes,
+or transformations among storage, API, serialization, and UI representations.
+It remains optional for representation-preserving mechanical changes. Existing
+managed installations receive its `problem-shaping-and-language.md` reference
+on the next `kiokuko setup`; unmanaged same-name files still fail closed.
 
 For Hermes, use `kiokuko setup` when Hermes detection is intended, or
 `kiokuko setup --clients hermes` for an explicit selection, then restart Hermes
@@ -204,14 +214,37 @@ only the gated task entry points and lifecycle tools:
 
 Enno-Oduno Final Review is two-phase. `enno_verify_prepare` runs the approved
 final verifiers outside database transactions with shell disabled and a
-repository-bounded cwd, stores fresh evidence bound to the current contract and
-mutation revisions, and only then permits the final-review advisory fanout.
-`enno_finish` decides accept/replan/block from that stored evidence and never
-spawns a subprocess; unready evidence is rejected as a conflict. A successful
+repository-relative cwd, stores evidence bound to contract/mutation revision,
+verifier-specification digest, and full repository-state digest, and only then
+permits the final-review advisory fanout. `enno_finish` recomputes repository
+state inside its mutation transaction, decides accept/replan/block from the
+complete stored context, and never spawns a subprocess; changed or
+legacy-unbound evidence is rejected as a conflict. A successful
 accept advances to read-only Oduno meditation, and
 `enno_meditation_submit` completes the run only after that reflection is
 persisted. Kiokuko never launches the three fixed Advisor slots; the parent
 host verifies isolation and submits bounded contributions.
+
+Structured Enno tool validation returns `code=ENNO_INPUT_INVALID`,
+`version=1`, the operation name, `mutationApplied=false`, and at most 16
+value-free issues. Each issue contains only a bounded path, fixed reason code,
+and expected shape or limit. This applies to ideal, advice, plan, work-report,
+verification preparation, finish, and meditation submissions; raw validator
+errors and rejected values are never exposed.
+
+New WorkUnits require one or more local routes: `code`, `ui`, `test`, `docs`,
+or `operations`. Code requires a `code.*` expert; UI requires `code.*` and
+`ui.*`; other routes do not inherit those requirements. New verifier
+directories are repository-relative and escaping or absolute paths are
+rejected. `userFacingRecovery` is zero-effect until the user chooses: no
+discovery attempt, advisory consumption, receipt, contract revision, or
+repository mutation is created.
+
+Continuation responses may carry an opaque 15-minute resume token and, for an
+active WorkUnit, an execution lease. Tokens bind run, canonical repository,
+client kind/session, and route epoch. Rerouting increments the epoch and
+invalidates old tokens. An unexpired execution lease blocks rerouting and only
+its holder may submit that WorkUnit; after expiry one new holder may recover.
 
 Run-bound `memory_checkpoint` accepts only an `active` run. Clients must inspect
 `nextAction` after every `task_prepare` and `task_answer` response and continue

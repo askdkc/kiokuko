@@ -34,6 +34,7 @@ export const STANDARD_FUNCTION_EXPERT_IDS = [
   'code.effects.v1',
   'code.protocol.v1',
   'code.verification.v1',
+  'code.modeling.v1',
 ] as const;
 export const STANDARD_FUNCTION_EXPERT_FILES = [
   'references/boundaries-and-ownership.md',
@@ -41,6 +42,7 @@ export const STANDARD_FUNCTION_EXPERT_FILES = [
   'references/effects-and-data.md',
   'references/protocols-and-idempotency.md',
   'references/verification.md',
+  'references/problem-shaping-and-language.md',
 ] as const;
 export const STANDARD_FUNCTION_SKILL_FILES = [
   'SKILL.md',

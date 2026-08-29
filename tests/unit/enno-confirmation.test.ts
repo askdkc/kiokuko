@@ -191,11 +191,12 @@ test('dependencies become display numbers resolved from the stored contract orde
 
 test('expert selections display registered areas with preserved reasons', () => {
   const projection = buildUserFacingConfirmation(snapshot({
-    expertIds: ['code.effects.v1', 'ui.safety.v1'],
+    expertIds: ['code.effects.v1', 'ui.safety.v1', 'code.modeling.v1'],
   }))!;
-  const [effects, safety] = projection.workItems[0]!.expertise;
+  const [effects, safety, modeling] = projection.workItems[0]!.expertise;
   assert.equal(effects!.area, 'Database, filesystem, network, and process effects');
   assert.equal(safety!.area, 'UI safety and review');
+  assert.equal(modeling!.area, 'Problem shaping and representation design');
   assert.equal(effects!.reason, 'deterministic mapping rules');
   assert.equal(effects!.basis, 'proposal');
   assert.throws(

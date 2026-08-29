@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
+import { KiokukoError } from '../../src/errors.js';
 import {
   identifyEnnoClientKind,
   resolveTaskPrepareClient,
@@ -19,6 +21,26 @@ import {
 } from '../../src/enno-oduno/skills.js';
 import { parseEnnoContract, parsePlanSubmission } from '../../src/enno-oduno/schemas.js';
 import type { EnnoRequestHandoff } from '../../src/enno-oduno/types.js';
+import { captureRepositoryState } from '../../src/enno-oduno/repository-state.js';
+import {
+  ENNO_INPUT_INVALID_DETAIL_KEY,
+  ENNO_MAX_PUBLIC_ISSUES,
+  publicEnnoValidationErrorSchema,
+  type PublicEnnoValidationError,
+} from '../../src/enno-oduno/validation-errors.js';
+
+function validationDetail(operation: () => unknown): PublicEnnoValidationError {
+  try {
+    operation();
+  } catch (error) {
+    assert.ok(error instanceof KiokukoError);
+    assert.equal(error.code, 'VALIDATION_ERROR');
+    const parsed = publicEnnoValidationErrorSchema.safeParse(error.details[ENNO_INPUT_INVALID_DETAIL_KEY]);
+    assert.equal(parsed.success, true);
+    if (parsed.success) return parsed.data as PublicEnnoValidationError;
+  }
+  assert.fail('Expected a structured Enno validation error');
+}
 
 function requestHandoff(taskType: EnnoRequestHandoff['taskType']): EnnoRequestHandoff {
   return {
@@ -43,7 +65,7 @@ test('role scripts reject revision conflicts and generate only the role owning t
       objective: 'Fix add',
       units: [{
         id: 'fix-add', objective: 'Fix add', scope: ['src/add.js'], dependencies: [],
-        skillNames: ['kiokuko-single-purpose-functions'], acceptanceCriteria: ['Tests pass'], focusedVerifiers: [],
+        routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'], acceptanceCriteria: ['Tests pass'], focusedVerifiers: [],
       }],
     },
     skillSet: {
@@ -54,7 +76,7 @@ test('role scripts reject revision conflicts and generate only the role owning t
       intakeDiscovery: { attempted: false, mode: 'off', requirements: [], queries: [], cacheHits: 0, candidates: 0, selected: [], failures: [] },
       zenkiDiscovery: { attempted: false, mode: 'off', requirements: [], queries: [], cacheHits: 0, candidates: 0, selected: [], failures: [] },
     },
-    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: process.cwd(), timeoutMs: 1000 }],
+    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 1000 }],
     maxAttempts: 8,
     provenance: {
       scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -104,7 +126,7 @@ test('role scripts reject revision conflicts and generate only the role owning t
   });
   assert.match(ideal.objective, /optimal goal.*task_prepare handoff/iu);
   assert.match(ideal.objective, /external-debug-reference/u);
-  assert.deepEqual(ideal.reportSchema.required, ['runId', 'expectedRevision', 'ideal']);
+  assert.deepEqual(ideal.reportSchema.required, ['runId', 'expectedRevision', 'idempotencyKey', 'ideal']);
   const review = generateRoleDirective('enno-oduno', {
     ...input,
     status: 'enno_verifying',
@@ -117,7 +139,7 @@ test('role scripts reject revision conflicts and generate only the role owning t
     'kiokuko-single-purpose-functions',
   ]);
   assert.ok(review.harness.instructions.some((instruction) => /Read and apply kiokuko-soul first, then kiokuko-enno-oduno/u.test(instruction)));
-  assert.deepEqual(review.reportSchema.required, ['runId', 'expectedRevision', 'review']);
+  assert.deepEqual(review.reportSchema.required, ['runId', 'expectedRevision', 'idempotencyKey']);
   const meditation = generateRoleDirective('enno-oduno', {
     ...input,
     status: 'oduno_meditation',
@@ -136,7 +158,7 @@ test('role scripts reject revision conflicts and generate only the role owning t
   assert.match(meditation.objective, /obsolete, useless, or redundant tests and functions/iu);
   assert.match(meditation.objective, /src\/add\.js/u);
   assert.ok(meditation.stopConditions.some((condition) => /Do not mutate or delete/iu.test(condition)));
-  assert.deepEqual(meditation.reportSchema.required, ['runId', 'expectedRevision', 'meditation']);
+  assert.deepEqual(meditation.reportSchema.required, ['runId', 'expectedRevision', 'idempotencyKey', 'meditation']);
   assert.throws(() => parseRoleJson(Buffer.from('{"x":1,"x":2}')), /strict JSON/iu);
 });
 
@@ -151,7 +173,7 @@ test('confirmation directives carry the projection, fixed instruction, and confi
       objective: 'Fix add behind the confirmation',
       units: [{
         id: 'fix-add', objective: 'Fix add', scope: ['src/add.js'], dependencies: [],
-        skillNames: ['kiokuko-single-purpose-functions'],
+        routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
         expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the regression with focused tests' }],
         acceptanceCriteria: ['node --test passes'], focusedVerifiers: [],
       }],
@@ -164,7 +186,7 @@ test('confirmation directives carry the projection, fixed instruction, and confi
       intakeDiscovery: discovery,
       zenkiDiscovery: discovery,
     },
-    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: process.cwd(), timeoutMs: 1000 }],
+    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 1000 }],
     maxAttempts: 5,
     provenance: {
       scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -200,7 +222,7 @@ test('confirmation directives carry the projection, fixed instruction, and confi
   assert.equal('userFacingConfirmation' in zenki, false);
   const verification = generateRoleDirective('enno-oduno', { ...input, status: 'enno_verifying', confirmationState: 'approved' });
   assert.equal('userFacingConfirmation' in verification, false);
-  assert.deepEqual(verification.reportSchema.required, ['runId', 'expectedRevision', 'review']);
+  assert.deepEqual(verification.reportSchema.required, ['runId', 'expectedRevision', 'idempotencyKey']);
 });
 
 test('Zenki directive binds Akinator, repository, local capability, and reference-only Skill context', () => {
@@ -250,8 +272,8 @@ test('work plans reject multi-unit dependency cycles', () => {
   const contract = {
     objective: 'Reject a deadlocked plan',
     units: [
-      { id: 'a', objective: 'A', scope: ['a.ts'], dependencies: ['b'], skillNames: [], acceptanceCriteria: ['A done'], focusedVerifiers: [] },
-      { id: 'b', objective: 'B', scope: ['b.ts'], dependencies: ['a'], skillNames: [], acceptanceCriteria: ['B done'], focusedVerifiers: [] },
+      { id: 'a', objective: 'A', scope: ['a.ts'], dependencies: ['b'], routes: ['code'], skillNames: [], acceptanceCriteria: ['A done'], focusedVerifiers: [] },
+      { id: 'b', objective: 'B', scope: ['b.ts'], dependencies: ['a'], routes: ['code'], skillNames: [], acceptanceCriteria: ['B done'], focusedVerifiers: [] },
     ],
   };
   assert.throws(() => generateRoleDirective('zenki', {
@@ -279,7 +301,7 @@ test('WorkUnits select a bounded versioned expert mixture for their actual route
     objective: 'Build an accessible save flow',
     units: [{
       id: 'save', objective: 'Implement save', scope: ['src/Save.tsx'], dependencies: [],
-      skillNames: ['kiokuko-single-purpose-functions', 'kiokuko-ui-design-soul'],
+      routes: ['ui' as const], skillNames: ['kiokuko-single-purpose-functions', 'kiokuko-ui-design-soul'],
       expertRefs: [
         { id: 'code.effects.v1', reason: 'Persist the settings atomically' },
         { id: 'ui.async.v1', reason: 'Expose processing, failure, and retry' },
@@ -297,14 +319,23 @@ test('WorkUnits select a bounded versioned expert mixture for their actual route
       ...unit,
       expertRefs: [{ id: 'ui.async.v1', reason: 'Only the UI risk was selected' }],
     })),
-  }, { includesCodeChanges: true, includesUiWork: true }), /must select a code expert fragment/iu);
+  }, { includesCodeChanges: true, includesUiWork: true }), /Enno input is invalid/iu);
   assert.throws(() => assertWorkPlanExpertCoverage({
     ...workPlan,
     units: workPlan.units.map((unit) => ({
       ...unit,
       expertRefs: [{ id: 'code.effects.v1', reason: 'Only the code risk was selected' }],
     })),
-  }, { includesCodeChanges: true, includesUiWork: true }), /must select a UI expert fragment/iu);
+  }, { includesCodeChanges: true, includesUiWork: true }), /Enno input is invalid/iu);
+  assert.doesNotThrow(() => assertWorkPlanExpertCoverage({
+    objective: 'Define a public article representation',
+    units: [{
+      id: 'article-shape', objective: 'Map domain articles to the public response', scope: ['src/article.ts'], dependencies: [],
+      routes: ['code' as const], skillNames: ['kiokuko-single-purpose-functions'],
+      expertRefs: [{ id: 'code.modeling.v1', reason: 'Separate domain and public article representations' }],
+      acceptanceCriteria: ['The public response contains only consumer-facing fields'], focusedVerifiers: [],
+    }],
+  }));
 });
 
 test('WorkUnit expertRefs reject unknown, duplicate, or oversized mixtures', () => {
@@ -312,7 +343,7 @@ test('WorkUnit expertRefs reject unknown, duplicate, or oversized mixtures', () 
     runId: 'run', workspace: 'workspace', orchestrationId: 'session', expectedRevision: 1, idempotencyKey: 'plan',
     scope: ['src/a.ts'], exclusions: [], acceptanceCriteria: [{ id: 'done', description: 'Done' }],
     skillRequirements: [], finalVerifiers: [{
-      id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: process.cwd(), timeoutMs: 1000,
+      id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: '.', timeoutMs: 1000,
     }], maxAttempts: 8,
     provenance: {
       scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -322,28 +353,151 @@ test('WorkUnit expertRefs reject unknown, duplicate, or oversized mixtures', () 
   const submission = (expertRefs: { id: string; reason: string }[]) => ({
     ...base,
     workPlan: { objective: 'Build', units: [{
-      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], skillNames: [],
+      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], routes: ['code'], skillNames: [],
       expertRefs, acceptanceCriteria: ['Done'], focusedVerifiers: [],
     }] },
   });
   assert.throws(() => parsePlanSubmission(submission([
     { id: 'code.unknown.v1', reason: 'Not registered' },
-  ])), /plan submission is invalid/iu);
+  ])), /Enno input is invalid/iu);
   assert.throws(() => parsePlanSubmission(submission([
     { id: 'code.domain.v1', reason: 'First' },
     { id: 'code.domain.v1', reason: 'Duplicate' },
-  ])), /plan submission is invalid/iu);
+  ])), /Enno input is invalid/iu);
   assert.throws(() => parsePlanSubmission(submission([
     { id: 'code.boundary.v1', reason: 'One' },
     { id: 'code.domain.v1', reason: 'Two' },
     { id: 'code.effects.v1', reason: 'Three' },
     { id: 'code.protocol.v1', reason: 'Four is too many' },
-  ])), /plan submission is invalid/iu);
+  ])), /Enno input is invalid/iu);
+  assert.doesNotThrow(() => parsePlanSubmission(submission([
+    { id: 'code.modeling.v1', reason: 'Define the public representation before serialization' },
+  ])));
   const validSubmission = submission([]);
   assert.throws(() => parsePlanSubmission({
     ...validSubmission,
     finalVerifiers: [validSubmission.finalVerifiers[0], { ...validSubmission.finalVerifiers[0] }],
-  }), /plan submission is invalid/iu);
+  }), /Enno input is invalid/iu);
+});
+
+test('plan validation diagnostics are bounded, value-free, and directly corrective', () => {
+  const base = {
+    runId: 'diagnostic-run', workspace: 'workspace', orchestrationId: 'orchestration',
+    expectedRevision: 1, idempotencyKey: 'diagnostic-plan',
+    scope: ['src/a.ts'], exclusions: [], acceptanceCriteria: [{ id: 'done', description: 'Done' }],
+    workPlan: { objective: 'Build', units: [{
+      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], routes: ['code'], skillNames: [],
+      expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the change' }],
+      acceptanceCriteria: ['Done'], focusedVerifiers: [],
+    }] },
+    skillRequirements: [],
+    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: '.', timeoutMs: 1_000 }],
+    maxAttempts: 8,
+    provenance: {
+      scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+      workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+    },
+  };
+
+  const oversizedExperts = validationDetail(() => parsePlanSubmission({
+    ...base,
+    workPlan: { ...base.workPlan, units: [{
+      ...base.workPlan.units[0],
+      expertRefs: [
+        { id: 'code.boundary.v1', reason: 'Boundary' },
+        { id: 'code.domain.v1', reason: 'Domain' },
+        { id: 'code.effects.v1', reason: 'Effects' },
+        { id: 'code.protocol.v1', reason: 'Protocol' },
+      ],
+    }] },
+  }));
+  assert.deepEqual(oversizedExperts.issues[0], {
+    path: ['workPlan', 'units', 0, 'expertRefs'],
+    reasonCode: 'too_many_items',
+    expected: { maxItems: 3 },
+  });
+  assert.equal(oversizedExperts.retry, 'correct_input');
+  assert.equal(oversizedExperts.mutationApplied, false);
+
+  const missingSlot = validationDetail(() => parsePlanSubmission({
+    ...base,
+    advisoryRoundDigest: 'a'.repeat(64),
+    advisoryDisposition: [{ disposition: 'adopted', rationale: 'Use the advice' }],
+  }));
+  assert.deepEqual(missingSlot.issues[0], {
+    path: ['advisoryDisposition', 0, 'slotId'],
+    reasonCode: 'missing_required_field',
+  });
+
+  const absoluteDirectory = '/private/tmp/secret-repository-path';
+  const invalidDirectory = validationDetail(() => parsePlanSubmission({
+    ...base,
+    finalVerifiers: [{ ...base.finalVerifiers[0], cwd: absoluteDirectory }],
+  }));
+  assert.deepEqual(invalidDirectory.issues[0], {
+    path: ['finalVerifiers', 0, 'cwd'],
+    reasonCode: 'invalid_verifier_directory',
+    expected: { directoryPolicy: 'repository_relative' },
+  });
+  assert.equal(JSON.stringify(invalidDirectory).includes(absoluteDirectory), false);
+
+  const tooManyIssues = validationDetail(() => parsePlanSubmission({
+    ...base,
+    workPlan: {
+      objective: 'Build',
+      units: Array.from({ length: ENNO_MAX_PUBLIC_ISSUES + 5 }, (_, index) => ({
+        id: `unit-${index}`, objective: 'Build', scope: [`src/${index}.ts`], dependencies: [], skillNames: [],
+        expertRefs: [], acceptanceCriteria: ['Done'], focusedVerifiers: [],
+      })),
+    },
+  }));
+  assert.equal(tooManyIssues.issues.length, ENNO_MAX_PUBLIC_ISSUES);
+  assert.deepEqual(tooManyIssues.issues.map((issue) => issue.path[2]), Array.from({ length: ENNO_MAX_PUBLIC_ISSUES }, (_, index) => index));
+});
+
+test('mixed WorkUnit routes enforce experts locally and do not infect test or docs units', () => {
+  const mixedPlan = {
+    objective: 'Implement a mixed product change',
+    units: [
+      {
+        id: 'ui', objective: 'Implement the UI', scope: ['src/ui.ts'], dependencies: [], routes: ['ui' as const], skillNames: [],
+        expertRefs: [
+          { id: 'code.effects.v1', reason: 'Control UI effects' },
+          { id: 'ui.async.v1', reason: 'Represent async UI state' },
+        ],
+        acceptanceCriteria: ['UI works'], focusedVerifiers: [],
+      },
+      {
+        id: 'data', objective: 'Convert catalog data', scope: ['src/data.ts'], dependencies: [], routes: ['code' as const], skillNames: [],
+        expertRefs: [{ id: 'code.domain.v1', reason: 'Preserve catalog invariants' }],
+        acceptanceCriteria: ['Data converts'], focusedVerifiers: [],
+      },
+      {
+        id: 'tests', objective: 'Add tests', scope: ['tests/data.test.ts'], dependencies: ['data'], routes: ['test' as const], skillNames: [],
+        expertRefs: [], acceptanceCriteria: ['Tests cover conversion'], focusedVerifiers: [],
+      },
+      {
+        id: 'docs', objective: 'Update docs', scope: ['README.md'], dependencies: [], routes: ['docs' as const], skillNames: [],
+        expertRefs: [], acceptanceCriteria: ['Docs match behavior'], focusedVerifiers: [],
+      },
+      {
+        id: 'residual', objective: 'Check residual references', scope: ['.gitignore'], dependencies: [], routes: ['operations' as const], skillNames: [],
+        expertRefs: [], acceptanceCriteria: ['No stale references'], focusedVerifiers: [],
+      },
+    ],
+  };
+  assert.doesNotThrow(() => assertWorkPlanExpertCoverage(mixedPlan));
+  const missingUi = validationDetail(() => assertWorkPlanExpertCoverage({
+    ...mixedPlan,
+    units: mixedPlan.units.map((unit, index) => index === 0
+      ? { ...unit, expertRefs: [{ id: 'code.effects.v1', reason: 'Only code expertise' }] }
+      : unit),
+  }));
+  assert.deepEqual(missingUi.issues[0], {
+    path: ['workPlan', 'units', 0, 'expertRefs'],
+    reasonCode: 'missing_ui_expert',
+    expected: { requiredExpertKinds: ['ui'] },
+  });
 });
 
 test('canonical WorkPlan text rejects embedded control and format characters', () => {
@@ -351,12 +505,12 @@ test('canonical WorkPlan text rejects embedded control and format characters', (
     runId: 'canonical-text', workspace: 'workspace', orchestrationId: 'session', expectedRevision: 1, idempotencyKey: 'canonical-plan',
     scope: ['src/a.ts'], exclusions: [], acceptanceCriteria: [{ id: 'done', description: 'Done' }],
     workPlan: { objective, units: [{
-      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], skillNames: [],
+      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], routes: ['code'], skillNames: [],
       expertRefs: [{ id: 'code.verification.v1', reason: 'Verify the canonical text boundary' }],
       acceptanceCriteria: ['Done'], focusedVerifiers: [],
     }] },
     skillRequirements: [],
-    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: process.cwd(), timeoutMs: 1000 }],
+    finalVerifiers: [{ id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: '.', timeoutMs: 1000 }],
     maxAttempts: 8,
     provenance: {
       scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -364,7 +518,7 @@ test('canonical WorkPlan text rejects embedded control and format characters', (
     },
   });
   for (const control of ['\r', '\n', '\t', '\u0000', '\u007f', '\u200b']) {
-    assert.throws(() => parsePlanSubmission(submission(`Repair${control}the module`)), /plan submission is invalid/iu);
+    assert.throws(() => parsePlanSubmission(submission(`Repair${control}the module`)), /Enno input is invalid/iu);
   }
 });
 
@@ -422,17 +576,17 @@ test('a WorkUnit cannot smuggle an undeclared Skill into the role directive', ()
     runId: 'run', workspace: 'workspace', orchestrationId: 'session', expectedRevision: 1, idempotencyKey: 'plan',
     scope: ['src/a.ts'], exclusions: [], acceptanceCriteria: [{ id: 'done', description: 'Done' }],
     workPlan: { objective: 'Build', units: [{
-      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], skillNames: ['undeclared'],
+      id: 'build', objective: 'Build', scope: ['src/a.ts'], dependencies: [], routes: ['code'], skillNames: ['undeclared'],
       acceptanceCriteria: ['Done'], focusedVerifiers: [],
     }] },
     skillRequirements: [], finalVerifiers: [{
-      id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: process.cwd(), timeoutMs: 1000,
+      id: 'test', kind: 'test', executable: process.execPath, args: [], cwd: '.', timeoutMs: 1000,
     }], maxAttempts: 8,
     provenance: {
       scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
       workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
     },
-  }), /plan submission is invalid/iu);
+  }), /Enno input is invalid/iu);
 });
 
 test('verifier uses shell false semantics, bounds output, and rejects repository escapes', async () => {
@@ -450,11 +604,49 @@ test('verifier uses shell false semantics, bounds output, and rejects repository
   await assert.rejects(runVerifier({
     id: 'shell', kind: 'custom', executable: 'node --eval', args: [], cwd: root, timeoutMs: 1000,
   }, root), /verifier is invalid/iu);
+  const outside = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-verifier-outside-'));
+  await symlink(outside, path.join(root, 'escape-link'));
+  await assert.rejects(runVerifier({
+    id: 'symlink-escape', kind: 'custom', executable: process.execPath, args: [], cwd: 'escape-link', timeoutMs: 1000,
+  }, root), /inside the canonical repository root/iu);
   const timeout = await runVerifier({
     id: 'timeout', kind: 'test', executable: process.execPath,
     args: ['--eval', 'setTimeout(() => {}, 10000)'], cwd: root, timeoutMs: 100,
   }, root);
   assert.equal(timeout.status, 'timeout');
+});
+
+test('repository-state evidence changes for staged, untracked, renamed, and symlink state', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-enno-state-'));
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['-C', root, 'config', 'user.email', 'tests@example.invalid']);
+  execFileSync('git', ['-C', root, 'config', 'user.name', 'Kiokuko Tests']);
+  await writeFile(path.join(root, 'tracked.txt'), 'initial\n');
+  await writeFile(path.join(root, 'target-a.txt'), 'a\n');
+  await writeFile(path.join(root, 'target-b.txt'), 'b\n');
+  await symlink('target-a.txt', path.join(root, 'current-target'));
+  execFileSync('git', ['-C', root, 'add', '.']);
+  execFileSync('git', ['-C', root, 'commit', '-qm', 'fixture']);
+  const initial = captureRepositoryState(root);
+
+  await writeFile(path.join(root, 'tracked.txt'), 'staged\n');
+  execFileSync('git', ['-C', root, 'add', 'tracked.txt']);
+  const staged = captureRepositoryState(root);
+  assert.notEqual(staged.digest, initial.digest);
+
+  await writeFile(path.join(root, 'untracked.txt'), 'new\n');
+  const untracked = captureRepositoryState(root);
+  assert.notEqual(untracked.digest, staged.digest);
+
+  await rename(path.join(root, 'target-b.txt'), path.join(root, 'renamed.txt'));
+  const renamed = captureRepositoryState(root);
+  assert.notEqual(renamed.digest, untracked.digest);
+
+  execFileSync('git', ['-C', root, 'rm', 'current-target']);
+  await symlink('renamed.txt', path.join(root, 'current-target'));
+  const changedSymlink = captureRepositoryState(root);
+  assert.notEqual(changedSymlink.digest, renamed.digest);
+  assert.equal(changedSymlink.policyVersion, 1);
 });
 
 test('verifier waits for close and escalates when termination emits an error', async () => {

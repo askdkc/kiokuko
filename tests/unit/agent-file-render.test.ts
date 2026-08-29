@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 19 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 20 -->/);
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
@@ -47,18 +47,22 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /Zenki must read the master SOUL and then the compact `kiokuko-single-purpose-functions` index/u);
   assert.match(rendered, /one cohesive function or use-case contract/u);
   assert.match(rendered, /focused runnable test target/u);
+  assert.match(rendered, /declares its local `code`, `ui`, `test`, `docs`, or `operations` routes/u);
   assert.match(rendered, /one to three versioned `expertRefs`/u);
   assert.match(rendered, /Goki receives only approved, already-decomposed WorkUnits/u);
   assert.match(rendered, /Every Goki WorkUnit retains the master SOUL and directly required specialist indexes/u);
   assert.match(rendered, /Goki can start only after Zenki submits a complete WorkPlan/u);
   assert.match(rendered, /A failed review never returns directly to Goki/u);
-  assert.match(rendered, /Final Review is two-phase: `enno_verify_prepare` executes the final verifiers outside database transactions with shell disabled and repository-bounded cwd/u);
-  assert.match(rendered, /the final advisory fanout is returned only after that evidence is prepared/u);
-  assert.match(rendered, /`enno_finish` never spawns a subprocess and decides accept\/replan\/block from the stored fresh evidence/u);
+  assert.match(rendered, /Final Review is two-phase: `enno_verify_prepare` executes final verifiers outside database transactions with shell disabled and repository-relative cwd/u);
+  assert.match(rendered, /The final advisory fanout is returned only after evidence is prepared/u);
+  assert.match(rendered, /`enno_finish` never spawns a subprocess, rechecks repository state inside its mutation transaction, and decides accept\/replan\/block/u);
   assert.match(rendered, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
   assert.match(rendered, /requires a new plan plus any required confirmation before Goki can resume/u);
   assert.match(rendered, /`ennoOduno\.orchestrationId`/u);
   assert.match(rendered, /host client session ID is optional routing metadata, not authorization ownership/u);
+  assert.match(rendered, /opaque, short-lived resume token/u);
+  assert.match(rendered, /route change increments the route epoch and invalidates prior tokens/u);
+  assert.match(rendered, /active WorkUnit execution lease blocks rerouting/u);
   assert.match(rendered, /single unambiguous active run.*including across client kinds/u);
   assert.match(rendered, /leaves the run active for another local project client/u);
   assert.match(rendered, /never select a repository-wide latest run/iu);
@@ -69,6 +73,9 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /active planning attempt.*restart choice explicitly cancels it before starting a new `task_prepare`/iu);
   assert.match(rendered, /attempt already ended.*do not try to cancel it again/iu);
   assert.match(rendered, /ambiguous candidates fail open without mutation/u);
+  assert.match(rendered, /`ENNO_INPUT_INVALID`/u);
+  assert.match(rendered, /Plan-start recovery is zero-effect until the user chooses/u);
+  assert.match(rendered, /expired started rows are atomically abandoned/u);
   assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
   assert.match(rendered, /Every descriptor must include its kind and canonical name/u);
   assert.match(rendered, /bounded opaque `requestId`/);

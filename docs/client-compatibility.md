@@ -137,11 +137,19 @@ user confirmation.
 
 Final Review is two-phase. `enno_verify_prepare` runs the approved final
 verifiers outside database transactions with shell disabled and a
-repository-bounded cwd, stores fresh evidence bound to the current contract and
-mutation revisions, and only then permits the final-review advisory fanout.
-`enno_finish` decides accept/replan/block from that stored evidence, never
-spawns a subprocess, and rejects unready evidence as a conflict. Passing tests
-alone do not accept a run; Enno-Oduno must accept the current contract.
+repository-relative cwd, stores evidence bound to contract/mutation revision,
+verifier specification, and complete repository state, and only then permits
+the final-review advisory fanout. `enno_finish` rechecks that state, decides
+accept/replan/block from the complete stored context, never spawns a subprocess,
+and rejects unready evidence as a conflict. Passing tests alone do not accept a
+run; Enno-Oduno must accept the current contract.
+
+All supported clients consume the same bounded `ENNO_INPUT_INVALID` validation
+envelope and the same WorkUnit-local route contract. New verifier cwd values are
+repository-relative. Continuation adapters transport opaque resume tokens and
+route epochs; Goki transports the returned execution lease. Old tokens become
+invalid after rerouting, and an active lease prevents another client from
+rerouting or reporting the same WorkUnit.
 
 If the environment information needed to start a plan is absent or no longer
 matches the task-preparation binding, the MCP result instead contains a
@@ -171,10 +179,11 @@ enabled by default; existing managed installations remain unchanged until
 for each of those clients: a Codex or Claude Code Stop hook, or an OpenCode
 `session.idle` plugin. Hermes receives no Enno continuation adapter. During an
 adapter continuation, `client_session_id` is routing metadata rather than
-authorization ownership. An exact session route wins; otherwise the current
+authorization ownership. A valid short-lived resume token wins; otherwise the current
 local Codex, Claude Code, or OpenCode session may atomically reroute the single
 unambiguous active run in the canonical repository, including across client
-kinds, while clearing the old client version. Multiple active candidates remain
+kinds. Rerouting increments the route epoch and invalidates old tokens; an
+active WorkUnit execution lease blocks it. Multiple active candidates remain
 unchanged. A per-session continuation limit stops only that session and leaves
 the run and ledger active for another local project client. Hermes has no
 automatic hook but may continue the same run through MCP with its exact run

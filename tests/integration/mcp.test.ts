@@ -186,10 +186,11 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     ]) {
       const tool = tools.tools.find((candidate) => candidate.name === toolName);
       const schema = tool?.inputSchema as ToolInputSchema;
-      assert.match(tool?.description ?? '', /orchestrationId.*not a host client session ID/u);
-      assert.ok(schema.required?.includes('orchestrationId'));
+      assert.match(tool?.description ?? '', /resumeToken.*workspace.*orchestrationId/iu);
+      assert.equal(schema.required?.includes('orchestrationId'), false);
       assert.equal(schema.required?.includes('clientSessionId'), false);
       assert.match(schema.properties?.orchestrationId?.description ?? '', /Exact ennoOduno\.orchestrationId returned by task_prepare or task_answer/u);
+      assert.ok(schema.properties?.resumeToken);
     }
     assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /call no more tools/);
     const checkpointTool = tools.tools.find((tool) => tool.name === 'memory_checkpoint');
@@ -758,14 +759,14 @@ test('enno_plan_submit returns the userFacingConfirmation projection over the MC
             objective: 'Repair the add implementation',
             scope: ['src/add.js'],
             dependencies: [],
-            skillNames: ['kiokuko-single-purpose-functions'],
+            routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
             expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the add regression with focused tests' }],
             acceptanceCriteria: ['node --test passes'],
             focusedVerifiers: [],
           }],
         },
         skillRequirements: [],
-        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000 }],
+        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
         maxAttempts: 5,
         provenance: {
           scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -937,12 +938,12 @@ test('MCP transports advisory submission and final verification preparation with
           objective: 'Repair add',
           units: [{
             id: 'repair-add', objective: 'Repair add', scope: ['src/add.js'], dependencies: [],
-            skillNames: [], expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the repair with focused verification' }],
+            routes: ['code'], skillNames: [], expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the repair with focused verification' }],
             acceptanceCriteria: ['node --test passes'], focusedVerifiers: [],
           }],
         },
         skillRequirements: [],
-        finalVerifiers: [{ id: 'mcp-final', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000 }],
+        finalVerifiers: [{ id: 'mcp-final', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
         maxAttempts: 3,
         provenance: {
           scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
@@ -1062,7 +1063,7 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
           objective: 'Repair the add implementation',
           scope: ['src/add.js'],
           dependencies: [],
-          skillNames: ['kiokuko-single-purpose-functions'],
+          routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
           expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the regression with focused evidence' }],
           acceptanceCriteria: ['tests pass'],
           focusedVerifiers: [],
@@ -1071,7 +1072,7 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
       skillRequirements: [],
       finalVerifiers: [{
         id: 'final-test', kind: 'test', executable: process.execPath,
-        args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000,
+        args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000,
       }],
       maxAttempts: 5,
       provenance: {
@@ -1079,6 +1080,41 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
         workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
       },
     };
+
+    const invalidPlan = await client.callTool({
+      name: 'enno_plan_submit',
+      arguments: {
+        ...plan,
+        idempotencyKey: 'mcp-plan-structured-invalid',
+        capabilities,
+        workPlan: {
+          ...plan.workPlan,
+          units: [{
+            ...plan.workPlan.units[0],
+            expertRefs: [
+              { id: 'code.boundary.v1', reason: 'Boundary' },
+              { id: 'code.domain.v1', reason: 'Domain' },
+              { id: 'code.effects.v1', reason: 'Effects' },
+              { id: 'code.protocol.v1', reason: 'Protocol' },
+            ],
+          }],
+        },
+      },
+    });
+    assert.equal(invalidPlan.isError, true);
+    assert.deepEqual(invalidPlan.content, [{ type: 'text', text: 'Request is invalid' }]);
+    assert.deepEqual(invalidPlan.structuredContent, {
+      code: 'ENNO_INPUT_INVALID',
+      operation: 'plan_submit',
+      presentationVersion: 1,
+      issues: [{
+        path: ['workPlan', 'units', 0, 'expertRefs'],
+        reasonCode: 'too_many_items',
+        expected: { maxItems: 3 },
+      }],
+      retry: 'correct_input',
+      mutationApplied: false,
+    });
 
     const recovery = await client.callTool({
       name: 'enno_plan_submit',
@@ -1088,6 +1124,14 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
     const recoveryContent = recovery.structuredContent as {
       code: string;
       reason: string;
+      effect: {
+        mutationApplied: boolean;
+        planPersisted: boolean;
+        advisoryConsumed: boolean;
+        operationReceiptCreated: boolean;
+        implementationStarted: boolean;
+      };
+      retry: { sameRunAllowed: boolean; requiresUserChoice: boolean };
       userFacingRecovery: {
         presentationVersion: number;
         whatHappened: string;
@@ -1104,6 +1148,14 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
     };
     assert.equal(recoveryContent.code, 'PLAN_START_RECOVERY_REQUIRED');
     assert.equal(recoveryContent.reason, 'environment_information_missing');
+    assert.deepEqual(recoveryContent.effect, {
+      mutationApplied: false,
+      planPersisted: false,
+      advisoryConsumed: false,
+      operationReceiptCreated: false,
+      implementationStarted: false,
+    });
+    assert.deepEqual(recoveryContent.retry, { sameRunAllowed: true, requiresUserChoice: true });
     assert.equal(recoveryContent.userFacingRecovery.presentationVersion, 1);
     assert.match(recoveryContent.userFacingRecovery.whatHappened, /features available in this environment.*not carried into the plan/iu);
     assert.match(recoveryContent.userFacingRecovery.workState, /did not begin new work or make additional code changes/iu);
@@ -1264,7 +1316,7 @@ test('malformed compatibility discovery degrades across task_prepare and enno_pl
             objective: 'Repair the Svelte component',
             scope: ['src/component.ts'],
             dependencies: [],
-            skillNames: ['kiokuko-single-purpose-functions'],
+            routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
             expertRefs: [
               { id: 'code.boundary.v1', reason: 'Keep malformed provider data outside the planning boundary' },
               { id: 'code.protocol.v1', reason: 'Preserve replay and idempotency contracts' },
@@ -1275,7 +1327,7 @@ test('malformed compatibility discovery degrades across task_prepare and enno_pl
           }],
         },
         skillRequirements: [],
-        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: await realpath(root), timeoutMs: 5000 }],
+        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
         maxAttempts: 1,
         provenance: {
           scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
