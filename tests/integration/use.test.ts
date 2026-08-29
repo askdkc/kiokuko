@@ -11,7 +11,11 @@ import {
   readRegularFile,
   unlinkRegularFileIfUnchanged,
 } from '../../src/agent-file/atomic-write.js';
-import { renderAgentFile, renderManagedBlock } from '../../src/agent-file/render.js';
+import {
+  AGENT_TEMPLATE_VERSION,
+  renderAgentFile,
+  renderManagedBlock,
+} from '../../src/agent-file/render.js';
 import { useRepository } from '../../src/commands/use.js';
 import { openConnection } from '../../src/db/connection.js';
 import { TransactionCommitUncertainError } from '../../src/db/transaction.js';
@@ -428,6 +432,74 @@ test('use starting after a concurrent binding link waits for its cleanup boundar
   assert.equal(result.workspace, 'project:initial-link-winner');
   assert.equal((await stat(bindingPath)).nlink, 1);
   assert.match(await readFile(path.join(root, 'AGENTS.md'), 'utf8'), /^human header\n/u);
+});
+
+test('use retries when a concurrent setup installs the binding after the initial read', async () => {
+  const root = await repository('initial-binding-observation-race');
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const bindingPath = path.join(root, '.kiokuko.json');
+  const agentPath = path.join(root, 'AGENTS.md');
+  const originalAgent = 'human header\n';
+  await writeFile(agentPath, originalAgent);
+  const parent = await stat(root, { bigint: true });
+  const winner = {
+    schemaVersion: 1 as const,
+    repositoryId: 'repo_initial_observation_winner',
+    workspace: 'project:initial-observation-winner',
+    agentFile: 'AGENTS.md',
+    templateVersion: AGENT_TEMPLATE_VERSION,
+  };
+  const winnerBinding = `${JSON.stringify(winner, null, 2)}\n`;
+  const winnerAgent = renderAgentFile(originalAgent, {
+    repositoryId: winner.repositoryId,
+    workspace: winner.workspace,
+    cliCommand: 'kiokuko',
+    templateVersion: winner.templateVersion,
+  }).content;
+  let injected = false;
+
+  const result = await useRepository({ root, databasePath }, {
+    readBindingFileForConvergence: async (filePath, options) => {
+      const snapshot = await readRegularFile(filePath, options);
+      if (!injected) {
+        injected = true;
+        const bindingOutcome = await atomicWriteTextIfUnchanged(
+          bindingPath,
+          winnerBinding,
+          {
+            expected: snapshot,
+            containmentRoot: root,
+            expectedParentDirectory: { device: parent.dev, inode: parent.ino },
+          },
+          0o644,
+        );
+        assert.deepEqual(bindingOutcome.cleanupFailures, []);
+        const plannedAgent = await readRegularFile(agentPath, { containmentRoot: root });
+        if (plannedAgent === undefined) assert.fail('planned agent file is missing');
+        const agentOutcome = await atomicWriteTextIfUnchanged(
+          agentPath,
+          winnerAgent,
+          {
+            expected: plannedAgent,
+            containmentRoot: root,
+            expectedParentDirectory: { device: parent.dev, inode: parent.ino },
+          },
+          plannedAgent.mode,
+        );
+        assert.deepEqual(agentOutcome.cleanupFailures, []);
+      }
+      return snapshot;
+    },
+  });
+
+  assert.equal(injected, true);
+  assert.equal(result.repositoryId, winner.repositoryId);
+  assert.equal(result.workspace, winner.workspace);
+  assert.equal(result.bindingAction, 'unchanged');
+  assert.equal(result.agentFileAction, 'unchanged');
+  assert.equal(await readFile(bindingPath, 'utf8'), winnerBinding);
+  assert.equal(await readFile(agentPath, 'utf8'), winnerAgent);
 });
 
 test('use never adopts an existing binding with retained quarantine cleanup', async () => {
