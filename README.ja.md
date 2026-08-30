@@ -22,7 +22,20 @@ kiokuko setup
 
 `setup`は、インストール済みの対応クライアントを検出し、SQLiteデータベースとMCP接続を自動設定します。
 同時に、同梱の`memory-reasoning` Skillと他のKiokuko標準Skillも配置します。既存環境には次回の`kiokuko setup`で追加され、同名の非managedファイルは上書きしません。
+標準の`kiokuko-soul` routerは、範囲が明確で低リスクなcode変更と、明示的なminimal・YAGNI依頼に`kiokuko-simple-work`を適用します。通常のcode契約、security、accessibility、error handling、検証は省略しません。
 対話式setupでは、監査済みcommunity Skillも参考資料として利用するか確認します。既定は「いいえ」です。
+
+Codex向けsetupは、次の正確なmanaged MCP coreを生成します（この後にSkill discovery用のenvironment行が続きます）。
+
+```toml
+[mcp_servers.kiokuko]
+command = "kiokuko"
+args = ["mcp"]
+enabled = true
+required = true
+```
+
+`required = true`により、Kiokukoを初期化できない場合は、必須SOUL・policyなしで続行せずCodexのstartupまたはresumeが失敗します。`kiokuko setup`を再実行すると、`required`だけを含まない正確な旧managed blockは更新されます。値、順序、重複key、追加fieldが変更されたblockは上書きせず、conflictを返します。明示的に`required = false`へ変更したblockはuser-managedとなり、以後のsetupでは上書きしません。KiokukoはCodex全体のoptional MCP graceやstartup timeoutを変更しません。
 
 設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。setupがCodexのStop hookを作成または更新した場合は、Codexで`/hooks`を開き、そのhookを明示的に信頼してください。
 
@@ -68,6 +81,8 @@ AIエージェントへの依頼を処理するLoop処理：役小角 が有効�
 
 モデル向けの記憶は、capability gateを通るMCPツール `task_prepare` と
 `task_answer` からだけタスクへ渡されます。`task_prepare`は役小角の入口です。タスクを処理した後に内容が記録され、必要に応じてAIが使う知識へと昇華可能かを検討します。実用に耐える知識が昇格されるように自動調整されています。
+
+ready応答にモデル向けcontextがなく、project内にはretrievable entryが残っている場合、`memoryPolicy`に`deliveryEmpty: true`と`storedEntryCount`が入ります。意図的なcapability withholdingと検索結果ゼロを区別するには`contextWithheld`も確認してください。
 
 ### Enno-Oduno（役小角）Agent Loop 詳細
 
@@ -127,6 +142,12 @@ code変更という理由だけで選びません。このexpertは利用側か�
 
 したがってintakeが未完了なら、返すのは役小角directiveと`answer_intake`であり、その`requiredSkills`には`kiokuko-enno-oduno`が含まれ、前鬼はまだ開始しません。準備完了したintakeは、まず`oduno_ideal`と`submit_ideal`を返します。`enno_ideal_submit`では、Akinatorが選択したdiscovery setの全Skillについて貢献を正確に一件ずつ指定する必要があり、外部Skillは引き続きuntrusted reference-onlyの指針として扱います。その後にだけ、runはrevision固定の前鬼directiveを返します。このdirectiveは、空のdraft Skill snapshotでもcompact indexである`kiokuko-single-purpose-functions`を`requiredSkills`へ含めます。前鬼はこのindexをWorkUnit選定前に使い、無意味な微小関数を作らず、code変更を凝集した関数またはユースケース契約とfocused test targetへ分割します。各code変更WorkUnitは理由付きの登録済み`expertRefs`を1〜3個選ぶ必要があり、UI WorkUnitは`code.*`と`ui.*`を少なくとも一つずつ要求します。`enno_plan_submit`は欠落、重複、未知、上限超過のmixtureを拒否し、その選択をrevisionとともに保存します。後鬼はSkillの全referenceではなく、そのfragmentだけを読みます。controller Skillはrole単位であり、WorkUnitのSkill snapshotには混ぜません。完全なプランの受理と必要な確認が成功するまで、後鬼には遷移できません。最終Review失敗時も古い後鬼WorkUnitを直接再開しません。却下したplanと検証証拠を旧revisionの履歴として保持し、`zenki_planning`へ戻して新しいplanを必須にします。Reviewを受け入れると、直接完了せず`oduno_meditation`へ移行します。`enno_meditation_submit`はrepositoryを変更せず、検査したrepository-relative pathと根拠付きの古いtestまたは関数の候補を保存してからrunを完了します。応答の`orchestrationId`を全Enno MCP操作で使い、ホスト側session identityとは分離します。推論したscope、達成条件、Skill、expert選択、検証コマンドがある場合、実装前に通常のクライアントUIへ確認を返します。`needs_confirmation`応答には、確定済み契約の決定的な表示projectionである`ennoOduno.directive.userFacingConfirmation`が含まれます。scope、除外、達成条件、表示番号付き依存を持つ作業項目、reference-only状態を含むSkill、選定理由付きの専門観点、focused/final checks、試行上限が、それぞれprovenance basis（ユーザー指定・リポジトリ検証済み・提案）付きで一度ずつ現れます。クライアントモデルはraw directive JSONや内部識別子を出さずに全項目をユーザーの言語で提示し、明示的なapprove・revise・cancelを待ちます。secretを示す表示値や64 KiBを超えるprojectionは、redactionや切り詰めではなくplan submitの拒否になります。
 
+公開MCP tool failureは通常の`isError: true` tool resultです。一般failureはallowlist済みの人間向け文言と`structuredContent.code`、`structuredContent.retryable`だけを含み、`BACKPRESSURE`だけが上限付き`retryAfterSeconds`も返せます。元のmessage、stack、任意のdetails、path、SQL、request payload、credentialらしい値は一般payloadへコピーしません。checkpoint、plan recovery、Enno validationの専用errorは、用途別の上限付きfieldを維持します。
+
+Codex extensionは、completion eventとmodel inputより前に、成功・errorのどちらのMCP resultも検査・置換できます。したがってextension層はtrusted computing baseの一部です。`userFacingConfirmation`はKiokuko serverが生成したprojectionであり、extension処理後に実際に表示またはmodelへ送信された内容の証明ではありません。重要なKiokuko resultを変更するextensionとは併用しないでください。KiokukoはCodexから改変不能なoriginal-result provenanceやmodified flagを受け取れないため、end-to-end真正性を主張せず、server-only digestやHMACで代用しません。完全な上流契約には、extensionが偽装できないoriginal-result digestまたはidentifier、modified flag、正確なtool callとのbindingが必要です。
+
+Codexのeffective plugin catalogは、requested repositoryや選択modelによって変化し得ます。hostはtask preparationから保持した完全なeffective Skill/MCP tool catalogを渡す必要があります。順序と同一descriptorの重複はbindingを変えませんが、項目の追加・削除、canonical name、kind、descriptionの変更は環境変更としてplan開始を止めます。catalog省略と明示的な空catalogは別の意味です。一つのplugin marketplaceのload errorを空catalogへ潰して、他の有効なcapabilityまで隠してはいけません。load errorは別に診断可能な状態を維持する必要があります。
+
 ### 計画開始時に環境情報が不足・変化した場合
 
 ここでいう「環境情報」は、現在のAIクライアントで利用できるSkillとMCPツールの一覧です。ホストが自動収集する内部情報であり、ユーザーが一覧の保存場所を探したり、設定データを手作業で作成したりする必要はありません。
@@ -170,6 +191,8 @@ npm run test:e2e:opencode
 npm run test:e2e:claude
 npm run test:e2e:agents
 ```
+
+`RUN_CODEX_E2E=1`を指定した場合、Codex runnerは実行ファイルのversionを記録し、agent作業を始める前に0.151.0以上を要求します。その後、意図的に失敗する`required = true` MCP serverを持つ隔離configを使い、明示的なMCP startup failureを観測した場合だけ先へ進みます。インストール済みCodex CLIには、このrepositoryから`ToolLifecycleContributor`を注入する経路がありません。そのためdirect/Code Modeでのsuccess・error result置換、immutable provenance、repository-local marketplace分離は、対応する外部Codex fixtureが用意されるまで明示的な`not-run` subcheckです。推論だけでpassとは報告しません。
 
 対応クライアント：
 

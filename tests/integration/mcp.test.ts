@@ -15,7 +15,7 @@ import { recordEntry } from '../../src/memory/entries.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
 import { MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS, MAX_RAW_CAPABILITY_DESCRIPTION_CHARS } from '../../src/akinator/capabilities.js';
-import { KiokukoError } from '../../src/errors.js';
+import { KiokukoError, type ErrorCode } from '../../src/errors.js';
 import { PACKAGE_VERSION } from '../../src/package-version.js';
 
 const SOUL_CAPABILITY = {
@@ -51,6 +51,10 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/iu);
     assert.match(instructions, /Every `task_prepare` call must set `soulRead: true` only after that read/iu);
     assert.match(instructions, /exact local `kiokuko-soul` capability is required for every task/iu);
+    assert.match(instructions, /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
+    assert.match(instructions, /whether or not Enno-Oduno applies/iu);
+    assert.match(instructions, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
+    assert.match(instructions, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
     assert.match(instructions, /`task_prepare` is the Enno-Oduno orchestration entry point/u);
     assert.match(instructions, /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
     assert.match(instructions, /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
@@ -105,6 +109,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
     assert.match(taskPrepareTool?.description ?? '', /Reusing an ID with changed bound input is a conflict/);
     assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction and memoryPolicy before proceeding/);
+    assert.match(taskPrepareTool?.description ?? '', /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
+    assert.match(taskPrepareTool?.description ?? '', /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
     assert.match(taskPrepareTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
@@ -251,7 +257,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       },
     });
     assert.equal(missingRequestId.isError, true);
-    assert.match(JSON.stringify(missingRequestId.content), /requestId/u);
+    assert.deepEqual(missingRequestId.structuredContent, { code: 'VALIDATION_ERROR', retryable: false });
+    assert.match(JSON.stringify(missingRequestId.content), /Request is invalid/u);
 
     const checkpoint = await client.callTool({
       name: 'memory_checkpoint',
@@ -462,7 +469,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       },
     });
     assert.equal(missingRunId.isError, true);
-    assert.match(JSON.stringify(missingRunId.content), /runId/);
+    assert.deepEqual(missingRunId.structuredContent, { code: 'VALIDATION_ERROR', retryable: false });
+    assert.match(JSON.stringify(missingRunId.content), /Request is invalid/u);
 
     const targetAnswered = await client.callTool({
       name: 'task_answer',
@@ -578,6 +586,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
         withheldReason: catalogAvailability === 'missing'
           ? 'memory_reasoning_missing'
           : 'memory_reasoning_unknown',
+        deliveryEmpty: true,
+        storedEntryCount: 1,
       });
       assert.equal(stoppedContent.context, null);
       assert.equal('memory' in stoppedContent, false);
@@ -595,6 +605,34 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       assert.equal('externalSkillFallback' in stoppedContent.capabilities, false);
       assert.equal(stoppedContent.skillDiscovery.attempted, false);
       assert.deepEqual(stoppedContent.skillDiscovery.selected, []);
+    }
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('MCP transport projects non-Enno input validation failures to the stable public envelope', async () => {
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-validation-'));
+  const server = createKiokukoMcpServer({ databasePath: path.join(data, 'kiokuko.sqlite3') });
+  const client = new Client({ name: 'kiokuko-validation-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const calls = [
+      { name: 'task_prepare', arguments: { requestId: 'missing-soul', task: 'review' } },
+      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'relative-cwd', task: 'review', cwd: 'relative/path' } },
+      { name: 'task_answer', arguments: { sessionId: 'session', runId: 'run', questionId: 'wrong', value: 'answer' } },
+      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'extra-field', task: 'review', unexpected: true } },
+    ];
+    for (const call of calls) {
+      const result = await client.callTool(call);
+      assert.equal(result.isError, true);
+      assert.deepEqual(result.structuredContent, { code: 'VALIDATION_ERROR', retryable: false });
+      const serialized = JSON.stringify(result);
+      assert.match(serialized, /Request is invalid/u);
+      assert.doesNotMatch(serialized, /Input validation error|invalid_type|unrecognized_keys/iu);
     }
   } finally {
     await client.close();
@@ -1574,6 +1612,8 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       memoryReasoningRequired: true,
       contextWithheld: true,
       withheldReason: 'memory_reasoning_missing',
+      deliveryEmpty: true,
+      storedEntryCount: 1,
     });
     assert.equal(knownMissingContent.capabilities.availability, 'known-nonempty');
     assert.ok(knownMissingContent.capabilities.recommendations.some(
@@ -1616,6 +1656,8 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       memoryReasoningRequired: true,
       contextWithheld: true,
       withheldReason: 'memory_reasoning_unknown',
+      deliveryEmpty: true,
+      storedEntryCount: 1,
     });
     assert.equal('memory' in content, false);
     assert.equal('references' in content, false);
@@ -1656,7 +1698,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     });
     assert.equal(availableContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(availableContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
-    assert.equal(availableContent.context.policyVersion, 'context-ranking-v4');
+    assert.equal(availableContent.context.policyVersion, 'context-ranking-v5');
 
     const exactBoundary = await client.callTool({
       name: 'task_prepare',
@@ -1765,7 +1807,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       });
       assert.equal(persisted.includes(sentinel), false);
       assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(content.run.runId)?.count, 0);
-      assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v4');
+      assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v5');
       const storedReasons = database.prepare(`
         SELECT selection_reason_json
           FROM context_delivery_entries
@@ -1941,9 +1983,60 @@ test('MCP tool failures redact arbitrary internal error messages', async () => {
     assert.doesNotMatch(serialized, /Database unavailable/u);
     assert.equal(serialized.includes(sentinel), false);
     assert.equal(serialized.includes(privateMigrationsPath), false);
+    assert.deepEqual(result.structuredContent, {
+      code: 'INTEGRITY_ERROR',
+      retryable: false,
+    });
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();
+  }
+});
+
+test('MCP generic tool errors expose the complete stable public classification', async () => {
+  const cases: Array<{ code: ErrorCode; message: string; retryable: boolean }> = [
+    { code: 'USAGE_ERROR', message: 'Request is invalid', retryable: false },
+    { code: 'VALIDATION_ERROR', message: 'Request is invalid', retryable: false },
+    { code: 'NOT_FOUND', message: 'Resource not found', retryable: false },
+    { code: 'CONFLICT', message: 'Request conflicts with current state', retryable: false },
+    { code: 'DATABASE_ERROR', message: 'Database unavailable', retryable: false },
+    { code: 'BACKPRESSURE', message: 'Service is busy', retryable: true },
+    { code: 'SERVICE_UNAVAILABLE', message: 'Service unavailable', retryable: true },
+    { code: 'SECURITY_REJECTION', message: 'Request rejected', retryable: false },
+    { code: 'AUTHENTICATION_ERROR', message: 'Authorization is invalid', retryable: false },
+    { code: 'INTEGRITY_ERROR', message: 'Internal integrity error', retryable: false },
+    { code: 'PARTIAL_FAILURE', message: 'Operation partially failed', retryable: false },
+    { code: 'NOT_IMPLEMENTED', message: 'Operation is not implemented', retryable: false },
+  ];
+
+  for (const entry of cases) {
+    const data = await mkdtemp(path.join(tmpdir(), `kiokuko-mcp-${entry.code.toLowerCase()}-`));
+    const sentinel = `token=private-${entry.code.toLowerCase()}-sentinel`;
+    const server = createKiokukoMcpServer({
+      databasePath: path.join(data, 'kiokuko.sqlite3'),
+      cwd: () => { throw new KiokukoError(entry.code, sentinel, { retryAfterSeconds: 999, secret: sentinel }); },
+    });
+    const client = new Client({ name: `kiokuko-${entry.code.toLowerCase()}-test`, version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({
+        name: 'task_prepare',
+        arguments: { soulRead: true, requestId: `public-${entry.code.toLowerCase()}`, task: 'Classify failure', capabilities: [] },
+      });
+      assert.equal(result.isError, true, entry.code);
+      assert.deepEqual(result.content, [{ type: 'text', text: entry.message }], entry.code);
+      assert.deepEqual(result.structuredContent, {
+        code: entry.code,
+        retryable: entry.retryable,
+        ...(entry.code === 'BACKPRESSURE' ? { retryAfterSeconds: 60 } : {}),
+      }, entry.code);
+      assert.equal(JSON.stringify(result).includes(sentinel), false, entry.code);
+    } finally {
+      await client.close();
+      if (server.isConnected()) await server.close();
+    }
   }
 });
 
@@ -2011,6 +2104,10 @@ test('task_prepare reports a missing absolute cwd as not found instead of an int
     assert.equal(result.isError, true);
     assert.match(serialized, /Resource not found/u);
     assert.doesNotMatch(serialized, /Internal integrity error/u);
+    assert.deepEqual(result.structuredContent, {
+      code: 'NOT_FOUND',
+      retryable: false,
+    });
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();
@@ -2050,6 +2147,11 @@ test('task_prepare reports exhausted SQLite locking as service backpressure', as
     assert.equal(result.isError, true);
     assert.match(serialized, /Service is busy/u);
     assert.doesNotMatch(serialized, /Internal integrity error/u);
+    assert.deepEqual(result.structuredContent, {
+      code: 'BACKPRESSURE',
+      retryable: true,
+      retryAfterSeconds: 1,
+    });
     assert.equal(beginAttempts, 5);
   } finally {
     await client.close();
@@ -2104,6 +2206,10 @@ test('MCP preserves only typed database failures as DATABASE_ERROR', async () =>
     assert.equal(result.isError, true);
     assert.match(serialized, /Database unavailable/u);
     assert.equal(serialized.includes(sentinel), false);
+    assert.deepEqual(result.structuredContent, {
+      code: 'DATABASE_ERROR',
+      retryable: false,
+    });
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();
@@ -2130,6 +2236,10 @@ test('MCP tool failures sanitize typed Kiokuko errors instead of trusting their 
     assert.equal(result.isError, true);
     assert.match(serialized, /Internal integrity error/u);
     assert.equal(serialized.includes(sentinel), false);
+    assert.deepEqual(result.structuredContent, {
+      code: 'INTEGRITY_ERROR',
+      retryable: false,
+    });
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();
@@ -2169,7 +2279,10 @@ test('MCP checkpoint keeps unsupported eligibility details on the generic redact
     assert.equal(serialized.includes(sentinel), false);
     assert.equal(serialized.includes('unsupported_reason'), false);
     assert.equal(serialized.includes('leak_internal_action'), false);
-    assert.equal(result.structuredContent, undefined);
+    assert.deepEqual(result.structuredContent, {
+      code: 'CONFLICT',
+      retryable: false,
+    });
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();

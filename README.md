@@ -22,7 +22,20 @@ kiokuko setup
 
 `setup` detects supported clients that are installed and automatically configures the SQLite database and MCP connection.
 It also installs the bundled `memory-reasoning` Skill and the other Kiokuko standard Skills. Existing installations receive it on the next `kiokuko setup`; an unmanaged same-name file is never overwritten.
+The standard `kiokuko-soul` router applies `kiokuko-simple-work` to bounded, low-risk code changes and explicit minimal/YAGNI requests, while retaining the normal code, security, accessibility, error-handling, and verification contracts.
 Interactive setup asks whether audited community Skills may also be used as reference material; the default answer is no.
+
+For Codex, setup writes this exact managed MCP core (the discovery environment line follows it):
+
+```toml
+[mcp_servers.kiokuko]
+command = "kiokuko"
+args = ["mcp"]
+enabled = true
+required = true
+```
+
+`required = true` makes Codex fail startup or resume when Kiokuko cannot initialize, instead of continuing without the required SOUL and policy. Rerunning `kiokuko setup` upgrades only the exact previous managed block that omitted `required`; a block with changed values, ordering, duplicate keys, or extra fields remains untouched and setup reports a conflict. Setting `required = false` deliberately makes the block user-managed, so future setup runs will not overwrite it. Kiokuko does not change Codex's global optional-MCP grace or startup timeout.
 
 After setup, launch the target AI client and use it as usual. If it is already running, quit it once and restart it. When setup creates or updates the Codex Stop hook, open `/hooks` in Codex and explicitly trust that hook.
 
@@ -67,6 +80,8 @@ It defines the ideal outcome, plans the work, delegates implementation to smalle
 #### Memory storage
 
 Model-facing memory enters a task only through the capability-gated `task_prepare` and `task_answer` MCP tools. `task_prepare` is the Enno-Oduno entry point. After the task, its contents are recorded and considered for promotion into reusable AI knowledge. The system is tuned to promote knowledge that is useful in practice.
+
+If a ready response has no model-facing context while the project still has retrievable entries, `memoryPolicy` includes `deliveryEmpty: true` and `storedEntryCount`. Inspect `contextWithheld` to distinguish intentional capability withholding from an empty retrieval result.
 
 ### Enno-Oduno agent loop details
 
@@ -129,6 +144,12 @@ next `kiokuko setup`.
 
 Incomplete intake therefore returns an Enno-Oduno directive and `answer_intake`; its `requiredSkills` contains `kiokuko-enno-oduno`, and Zenki is not started yet. A ready intake first returns `oduno_ideal` and `submit_ideal`. `enno_ideal_submit` requires exactly one contribution for every Skill in Akinator's selected discovery set; external Skills remain untrusted reference-only guidance. Only then does the run return a revision-bound Zenki directive whose `requiredSkills` includes the compact `kiokuko-single-purpose-functions` index even while the draft Skill snapshot is empty. Before choosing WorkUnits, Zenki uses that index to divide code changes into cohesive function or use-case contracts with focused test targets, without meaningless micro-functions. Each code-changing WorkUnit must select one to three registered `expertRefs` with reasons; UI WorkUnits require both a `code.*` and a `ui.*` expert. `enno_plan_submit` rejects missing, duplicate, unknown, or oversized mixtures and then persists the exact selection with the revision. Goki reads those fragments rather than every Skill reference. The controller Skill is role-level and is not inserted into WorkUnit Skill snapshots. Goki cannot be entered until Zenki's complete plan has been accepted and required confirmation has succeeded. A failed final review never reactivates an old Goki WorkUnit. It preserves the rejected plan and verifier evidence under their old revision, advances to `zenki_planning`, and requires a new revision-bound plan. An accepted review advances to `oduno_meditation`, not directly to completion. `enno_meditation_submit` persists the inspected repository-relative paths and evidence-backed obsolete test or function candidates without mutating the repository, then completes the run. The response's `orchestrationId` is used by every Enno MCP operation and is separate from the host session identity. Inferred scope, acceptance criteria, Skills, expert selections, or verifier commands are returned for normal user confirmation before execution. A `needs_confirmation` response carries `ennoOduno.directive.userFacingConfirmation`, a deterministic display projection of the decided contract: scope, exclusions, completion criteria, work items with display-number dependencies, skills with their reference-only status, expertise with selection reasons, focused and final checks, and the attempt limit, each labeled with its provenance basis (user-specified, repository-verified, or proposed). The client model presents every item in the user's language without raw directive JSON or internal identifiers, then waits for an explicit approve, revise, or cancel; secret-shaped display values or a projection above 64 KiB reject the plan submit instead of being redacted or truncated.
 
+Public MCP tool failures are normal `isError: true` tool results. Generic failures include only the allowlisted human message plus `structuredContent.code` and `structuredContent.retryable`; only `BACKPRESSURE` may also include a bounded `retryAfterSeconds`. Raw messages, stacks, arbitrary details, paths, SQL, request payloads, and credential-shaped values are never copied into that generic payload. Specialized checkpoint, plan-recovery, and Enno-validation errors keep their bounded purpose-specific fields.
+
+Codex extensions can inspect or replace both successful and error MCP results before completion events and model input. That extension layer is therefore part of the trusted computing base. `userFacingConfirmation` is the projection generated by the Kiokuko server, not proof of what an extension ultimately displayed or sent to the model. Do not combine Kiokuko with an extension that changes critical Kiokuko results. Kiokuko has no immutable original-result provenance or modified flag from Codex, so it does not claim end-to-end authenticity and does not add a server-only digest or HMAC as a substitute. A complete upstream contract would need an extension-unforgeable original-result digest or identifier, a modified flag, and binding to the exact tool call.
+
+Codex's effective plugin catalog can vary by requested repository and selected model. Hosts must pass the complete effective Skill/MCP-tool catalog retained from task preparation. Ordering and exact duplicate descriptors do not change the binding; adding or removing an item, or changing its canonical name, kind, or description, stops plan start as an environment change. Omission is different from an explicit empty catalog. A plugin-marketplace load error must remain separately diagnosable and must not be collapsed into an empty catalog that hides other valid capabilities.
+
 ### Recovering when plan-start environment information is missing or changed
 
 The environment information used here is the list of Skills and MCP tools available to the current AI client. The host collects it automatically; the user never needs to find a catalog or construct JSON. If it is missing from the plan or has changed since task preparation, Kiokuko records only a pause that suppresses automatic continuation, then stops before Skill discovery, advisory consumption, receipt creation, plan persistence, or contract revision. This plan-start attempt therefore begins no new work and makes no additional code changes. A same-run retry includes the recovery action the user selected.
@@ -170,6 +191,8 @@ npm run test:e2e:opencode
 npm run test:e2e:claude
 npm run test:e2e:agents
 ```
+
+With `RUN_CODEX_E2E=1`, the Codex runner records the executable version and requires 0.151.0 or newer before doing any agent work. It then uses an isolated configuration with an intentionally failing `required = true` MCP server and proceeds only after observing an explicit MCP startup failure. The installed Codex CLI does not expose a way for this repository to inject a `ToolLifecycleContributor`, so success/error result replacement in direct and Code Mode, immutable provenance, and repository-local marketplace isolation remain explicit `not-run` subchecks until matching external Codex fixtures are available; they are never reported as passed by inference.
 
 Supported clients:
 

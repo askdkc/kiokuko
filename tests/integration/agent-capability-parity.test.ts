@@ -25,6 +25,8 @@ const requiredMemoryPolicy = {
   memoryReasoningRequired: true,
   contextWithheld: true,
   withheldReason: 'memory_reasoning_missing',
+  deliveryEmpty: true,
+  storedEntryCount: 1,
 } as const;
 
 test('prior cross-run helpful feedback withholds the same weak memory without stopping MCP or generic Agent tasks', async () => {
@@ -62,6 +64,7 @@ test('prior cross-run helpful feedback withholds the same weak memory without st
       'exact_signal_match',
       'word_match',
       'lexical_match',
+      'cjk_window_match',
       'applicability_match',
       'tag_match',
       'changed_path_match',

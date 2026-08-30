@@ -85,12 +85,20 @@ export interface MemoryPolicy {
   memoryReasoningRequired: boolean;
   contextWithheld: boolean;
   withheldReason: MemoryWithheldReason | null;
+  deliveryEmpty?: true;
+  storedEntryCount?: number;
+}
+
+export interface MemoryDeliveryObservation {
+  contextItemCount: number | null;
+  storedEntryCount: number;
 }
 
 const ACTIONABLE_MEMORY_SELECTION_REASONS = new Set([
   'exact_signal_match',
   'word_match',
   'lexical_match',
+  'cjk_window_match',
   'applicability_match',
   'tag_match',
   'changed_path_match',
@@ -123,14 +131,20 @@ export function deriveMemoryPolicy(
   profile: Pick<TaskProfile, 'taskType'>,
   memoryUse: MemoryUseSignal,
   capabilities: unknown,
+  delivery?: MemoryDeliveryObservation,
 ): MemoryPolicy {
+  const emptyDelivery = delivery !== undefined
+    && (delivery.contextItemCount === null || delivery.contextItemCount === 0)
+    && delivery.storedEntryCount > 0
+    ? { deliveryEmpty: true as const, storedEntryCount: delivery.storedEntryCount }
+    : {};
   const required = memoryReasoningRequired(profile, memoryUse);
   if (!required) {
-    return { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null };
+    return { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null, ...emptyDelivery };
   }
   const availability = memoryReasoningCapabilityAvailability(capabilities);
   if (availability === 'available') {
-    return { memoryReasoningRequired: true, contextWithheld: false, withheldReason: null };
+    return { memoryReasoningRequired: true, contextWithheld: false, withheldReason: null, ...emptyDelivery };
   }
   return {
     memoryReasoningRequired: true,
@@ -138,6 +152,7 @@ export function deriveMemoryPolicy(
     withheldReason: availability === 'missing'
       ? 'memory_reasoning_missing'
       : 'memory_reasoning_unknown',
+    ...emptyDelivery,
   };
 }
 

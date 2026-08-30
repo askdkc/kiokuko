@@ -3,7 +3,7 @@ import { KiokukoError } from '../errors.js';
 import { LedgerStore } from '../ledger/store.js';
 import type { RunRecord } from '../ledger/types.js';
 import { readEntry } from '../memory/entries.js';
-import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
+import { isRetrievableEntry, retrievableWorkspaceEntryCount } from '../memory/hybrid-retrieval.js';
 import { effectiveRetrievalScope, hasExplicitApplicability } from '../memory/structured-memory.js';
 import {
   GLOBAL_WORKSPACE,
@@ -446,6 +446,7 @@ async function requireRegisteredProjectReadOnly(
 }
 
 function buildPreparedTaskBase(
+  database: SqliteDatabase,
   project: ResolvedProjectWorkspace,
   executionContext: AgentTaskExecutionContext,
   context: AkinatorContext,
@@ -458,6 +459,14 @@ function buildPreparedTaskBase(
   const memoryUse = context.status === 'ready'
     ? memoryUseOverride ?? deriveMemoryUseSignal(scopedContext)
     : 'none';
+  const contextItemCount = scopedContext?.items.length ?? null;
+  const deliveryObservation = context.status === 'ready'
+    && (contextItemCount === null || contextItemCount === 0)
+    ? {
+      contextItemCount,
+      storedEntryCount: retrievableWorkspaceEntryCount(database, project.workspace),
+    }
+    : undefined;
   const capabilityResolution = resolveCapabilities({
     task: context.session.task,
     profile: context.session.profile,
@@ -481,7 +490,7 @@ function buildPreparedTaskBase(
     run,
     skillDiscovery,
     context: scopedContext,
-    memoryPolicy: deriveMemoryPolicy(context.session.profile, memoryUse, capabilities),
+    memoryPolicy: deriveMemoryPolicy(context.session.profile, memoryUse, capabilities, deliveryObservation),
     warnings: capabilityResolution.warnings,
     nextAction: hasBlockingRequiredCapability(capabilityResolution)
       ? 'required_capability_unavailable'
@@ -715,7 +724,7 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
   let context = currentAgentTaskContext(input.database, input.runId, input.context);
   let run = authoritativeTaskRun(input.database, input.runId, context.status);
   if (context.status === 'needs_answer') {
-    return withPreparedEnno(input.database, buildPreparedTaskBase(input.project, input.executionContext, context, input.capabilities, {
+    return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
       runId: input.runId,
       status: run.status,
     }, null, emptySkillDiscovery(input.discoveryMode), 'none'));
@@ -737,7 +746,7 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
       if (preview.candidate.taskProfileHash !== canonicalContentHash(context.session.profile)) {
         throw new KiokukoError('CONFLICT', 'Task profile changed while scoped context was being prepared');
       }
-      return withPreparedEnno(input.database, buildPreparedTaskBase(input.project, input.executionContext, context, input.capabilities, {
+      return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
         runId: input.runId,
         status: run.status,
       }, null, emptySkillDiscovery(input.discoveryMode), preview.memoryUse));
@@ -774,7 +783,7 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
   const selected = await selectFinalTaskContext({ input, prepared, context, missingMemoryCapability });
   context = selected.context;
   run = selected.run;
-  return withPreparedEnno(input.database, buildPreparedTaskBase(input.project, input.executionContext, context, input.capabilities, {
+  return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
     runId: input.runId,
     status: run.status,
   }, selected.scopedContext, skillDiscovery, selected.memoryUse));

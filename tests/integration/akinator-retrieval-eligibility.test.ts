@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { prepareAgentTask } from '../../src/akinator/agent-task.js';
+import type { SqliteDatabase } from '../../src/db/adapter.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { recordEntry } from '../../src/memory/entries.js';
+import { retrievableWorkspaceEntryCount } from '../../src/memory/hybrid-retrieval.js';
 import { GLOBAL_WORKSPACE, resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 
 test('Akinator retrieval ignores a released v2 curator memory with a legacy external tag without failing intake', async () => {
@@ -123,6 +125,49 @@ test('Akinator retrieval fails closed for an external marker without a managed i
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries WHERE id = ?').get<{ count: number }>(ordinary.id)?.count, 1);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM external_skill_entries').get<{ count: number }>()?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('empty-delivery diagnostics count 1,000 entries with one set-based statement', () => {
+  const database = openConnection(':memory:');
+  migrateDatabase(database);
+  const insertEntry = database.prepare(`
+    INSERT INTO entries (
+      id, workspace, status, trust_level, confidence, current_revision,
+      superseded_by, created_by, created_at, updated_at, verified_at
+    ) VALUES (?, 'project:count', 'verified', 'user_asserted', 1, 1,
+      NULL, 'test', '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z', NULL)
+  `);
+  const insertRevision = database.prepare(`
+    INSERT INTO entry_revisions (
+      entry_id, workspace, revision, kind, title, body, summary, scope_json,
+      provenance_json, content_hash, created_by, created_at
+    ) VALUES (?, 'project:count', 1, 'lesson', ?, 'body', NULL, '{}', '{}', ?,
+      'test', '2026-08-30T00:00:00.000Z')
+  `);
+  try {
+    database.exec('BEGIN');
+    for (let index = 0; index < 1_000; index += 1) {
+      const id = `count-entry-${index}`;
+      insertEntry.run(id);
+      insertRevision.run(id, id, index.toString(16).padStart(64, '0'));
+    }
+    database.exec('COMMIT');
+
+    let statements = 0;
+    const countedDatabase: SqliteDatabase = {
+      filePath: database.filePath,
+      exec: (sql) => database.exec(sql),
+      prepare: (sql) => {
+        statements += 1;
+        return database.prepare(sql);
+      },
+      close: () => undefined,
+    };
+    assert.equal(retrievableWorkspaceEntryCount(countedDatabase, 'project:count'), 1_000);
+    assert.equal(statements, 1);
   } finally {
     database.close();
   }

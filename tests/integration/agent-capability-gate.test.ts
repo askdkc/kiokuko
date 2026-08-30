@@ -29,6 +29,8 @@ function memoryPolicy(availability: 'available' | 'missing' | 'unknown' | null) 
         withheldReason: availability === 'missing'
           ? 'memory_reasoning_missing'
           : 'memory_reasoning_unknown',
+        deliveryEmpty: true,
+        storedEntryCount: 1,
       };
 }
 

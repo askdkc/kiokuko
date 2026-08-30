@@ -22,7 +22,20 @@ kiokuko setup
 
 `setup` 会检测已安装的受支持客户端，并自动配置 SQLite 数据库和 MCP 连接。
 它还会安装内置的 `memory-reasoning` Skill 和其他 Kiokuko 标准 Skill。现有环境会在下次运行 `kiokuko setup` 时收到该 Skill；同名的非 managed 文件绝不会被覆盖。
+标准 `kiokuko-soul` router 会对边界明确、低风险的 code 变更以及显式的 minimal/YAGNI 请求应用 `kiokuko-simple-work`，但不会省略通常的 code 契约、安全、无障碍、错误处理或验证要求。
 交互式setup会询问是否也将已审计的community技能用作参考资料，默认选择“否”。
+
+对于 Codex，setup 会生成以下精确的 managed MCP 核心配置（其后还有 Skill discovery 的 environment 行）：
+
+```toml
+[mcp_servers.kiokuko]
+command = "kiokuko"
+args = ["mcp"]
+enabled = true
+required = true
+```
+
+`required = true` 会让 Codex 在 Kiokuko 无法初始化时使 startup 或 resume 失败，而不是在缺少必需 SOUL 和 policy 的情况下继续。再次运行 `kiokuko setup` 只会升级恰好缺少 `required` 的旧 managed block；值、顺序、重复 key 或额外 field 被修改的 block 不会被覆盖，setup 会报告 conflict。若明确改为 `required = false`，该 block 将视为 user-managed，后续 setup 不会覆盖。Kiokuko 不会修改 Codex 的全局 optional MCP grace 或 startup timeout。
 
 设置完成后，启动目标 AI 客户端即可像平时一样使用。如果客户端已经启动，请先退出，再重新启动。如果 setup 创建或更新了 Codex Stop hook，请在 Codex 中打开 `/hooks` 并明确将该 hook 设为可信。
 
@@ -67,6 +80,8 @@ MCP 将 AI 客户端与 Kiokuko 连接起来，RAG 则检索所需记忆并传�
 #### 记忆保存
 
 面向模型的记忆只能通过带 capability gate 的 MCP 工具 `task_prepare` 和 `task_answer` 进入任务。`task_prepare` 是 Enno-Oduno 的入口。任务完成后，系统会记录内容，并判断是否可将其提升为 AI 可复用的知识。系统会自动调整，只提升具有实际用途的知识。
+
+如果 ready 响应没有面向模型的 context，但 project 中仍有可检索的 entry，`memoryPolicy` 会包含 `deliveryEmpty: true` 和 `storedEntryCount`。请同时检查 `contextWithheld`，以区分有意的 capability withholding 和空检索结果。
 
 ### Enno-Oduno 智能体循环详情
 
@@ -121,6 +136,12 @@ DSL。现有安装会在下次运行 `kiokuko setup` 时收到该 managed refere
 
 因此，未完成的 intake 会返回 Enno-Oduno directive 和 `answer_intake`；其 `requiredSkills` 包含 `kiokuko-enno-oduno`，此时不会启动 Zenki。准备完成的 intake 会先返回 `oduno_ideal` 和 `submit_ideal`。`enno_ideal_submit` 要求对 Akinator 选定 discovery set 中的每个 Skill 恰好提供一项贡献；外部 Skill 仍然是不可信的 reference-only 指导。只有完成这一步后，run 才会返回绑定 revision 的 Zenki directive；即使 draft Skill snapshot 为空，其 `requiredSkills` 也会包含 compact index `kiokuko-single-purpose-functions`。Zenki 在选择 WorkUnit 前使用该 index，把 code 变更拆分为内聚的函数或用例契约以及 focused test target，而不会创建无意义的 micro-function。每个会修改 code 的 WorkUnit 必须选择 1 至 3 个已注册的 `expertRefs` 并说明理由；UI WorkUnit 至少需要一个 `code.*` expert 和一个 `ui.*` expert。`enno_plan_submit` 会拒绝缺失、重复、未知或超出上限的组合，然后将准确选择与 revision 一起保存。Goki 只读取这些 fragment，而不是每个 Skill reference。controller Skill 属于 role 级别，不会插入 WorkUnit Skill snapshot。在 Zenki 的完整 plan 被接受且所需确认成功之前，不能进入 Goki。最终 review 失败时也绝不会直接恢复旧的 Goki WorkUnit；它会把被拒绝的 plan 和 verifier 证据保存在旧 revision 的历史记录中，进入 `zenki_planning` 并要求新的 revision-bound plan。接受 review 后不会直接完成，而是进入 `oduno_meditation`。`enno_meditation_submit` 不会修改 repository；它会保存已检查的 repository-relative path，以及有证据支持的过时 test 或函数候选项，然后完成 run。响应中的 `orchestrationId` 用于所有 Enno MCP 操作，并与 host session identity 分离。如果推导出了 scope、acceptance criteria、Skill、expert 选择或 verifier command，则会在实现前通过常规客户端 UI 请求确认。`needs_confirmation` 响应包含确定性的显示投影 `ennoOduno.directive.userFacingConfirmation`：scope、排除项、完成条件、带显示编号依赖的作业项、带 reference-only 状态的 Skill、带选择理由的专业视角、focused/final checks 以及尝试上限，每一项都带有 provenance basis（用户指定、仓库验证或提案）标记且只出现一次。客户端模型以用户的语言呈现全部条目，不输出原始 directive JSON 或内部标识符，然后等待明确的 approve、revise 或 cancel；疑似机密的显示值或超过 64 KiB 的投影会直接拒绝 plan 提交，而不是做遮蔽或截断。
 
+公开 MCP tool failure 是普通的 `isError: true` tool result。通用 failure 只包含 allowlist 中的人类可读消息、`structuredContent.code` 和 `structuredContent.retryable`；只有 `BACKPRESSURE` 还可以包含有上限的 `retryAfterSeconds`。原始 message、stack、任意 details、path、SQL、request payload 和类似 credential 的值绝不会复制到通用 payload。checkpoint、plan recovery 和 Enno validation 的专用 error 会保留各自有界的专用 field。
+
+Codex extension 可以在 completion event 和 model input 之前检查或替换成功及 error MCP result。因此 extension 层属于 trusted computing base。`userFacingConfirmation` 是 Kiokuko server 生成的 projection，并不能证明 extension 处理后实际显示或发送给 model 的内容。不要把 Kiokuko 与会修改关键 Kiokuko result 的 extension 一起使用。Kiokuko 无法从 Codex 获得不可伪造的 original-result provenance 或 modified flag，因此不声称具备 end-to-end authenticity，也不会用仅由 server 生成的 digest 或 HMAC 代替。完整的上游契约需要 extension 无法伪造的 original-result digest 或 identifier、modified flag，以及与准确 tool call 的绑定。
+
+Codex 的 effective plugin catalog 可能随 requested repository 和所选 model 而变化。host 必须传递从 task preparation 保留的完整 effective Skill/MCP tool catalog。顺序和完全相同 descriptor 的重复不会改变 binding；增加或删除项目，或更改 canonical name、kind、description，都会作为环境变化阻止 plan 启动。省略 catalog 与明确传入空 catalog 的含义不同。一个 plugin marketplace 的 load error 必须保持可单独诊断，不能被折叠为空 catalog 而隐藏其他有效 capability。
+
 ### 计划启动所需的环境信息缺失或发生变化时
 
 这里的环境信息是当前 AI 客户端可用的 Skill 和 MCP tool 列表。host 会自动收集它，用户无需查找 catalog 或编写 JSON。如果该信息没有传入计划，或在任务准备后发生变化，Kiokuko 会在 Skill discovery、消费 advisory、创建 receipt 或更新合同 revision 之前停止。因此，此次计划启动不会开始新工作，也不会产生额外 code 修改。
@@ -162,6 +183,8 @@ npm run test:e2e:opencode
 npm run test:e2e:claude
 npm run test:e2e:agents
 ```
+
+指定 `RUN_CODEX_E2E=1` 后，Codex runner 会记录可执行文件版本，并在进行任何 agent 工作前要求 0.151.0 或更高版本。随后它会使用隔离配置，其中包含一个故意失败的 `required = true` MCP server；只有观察到明确的 MCP startup failure 后才继续。已安装的 Codex CLI 没有允许本 repository 注入 `ToolLifecycleContributor` 的接口，因此 direct/Code Mode 下的 success/error result 替换、immutable provenance 和 repository-local marketplace 隔离，在获得对应的外部 Codex fixture 前都会保持为明确的 `not-run` subcheck，绝不会仅凭推断报告为 passed。
 
 支持的客户端：
 

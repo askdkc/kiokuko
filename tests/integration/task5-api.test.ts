@@ -15,11 +15,15 @@ const SOUL_CAPABILITIES = [{ kind: 'skill', name: 'kiokuko-soul' }] as const;
 const capabilities = [...SOUL_CAPABILITIES, { kind: 'skill', name: 'memory-reasoning' }] as const;
 const NO_MEMORY_POLICY = { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null } as const;
 const AVAILABLE_MEMORY_POLICY = { memoryReasoningRequired: true, contextWithheld: false, withheldReason: null } as const;
-const MISSING_MEMORY_POLICY = {
-  memoryReasoningRequired: true,
-  contextWithheld: true,
-  withheldReason: 'memory_reasoning_missing',
-} as const;
+function missingMemoryPolicy(storedEntryCount: number) {
+  return {
+    memoryReasoningRequired: true,
+    contextWithheld: true,
+    withheldReason: 'memory_reasoning_missing',
+    deliveryEmpty: true,
+    storedEntryCount,
+  } as const;
+}
 
 function openRequest(capabilityCatalog: unknown = capabilities) {
   return {
@@ -260,7 +264,7 @@ test('checkpoint withholds actionable memory and continues without persisting a 
     const openedData = dataOf(opened.value);
     runId = openedData.runId as string;
     assert.equal(openedData.nextAction, 'proceed');
-    assert.deepEqual(openedData.memoryPolicy, MISSING_MEMORY_POLICY);
+    assert.deepEqual(openedData.memoryPolicy, missingMemoryPolicy(20));
     assert.equal(openedData.context, null);
     assert.deepEqual(openedData.recommendations, []);
     const before = openConnection(databasePath);
@@ -293,7 +297,7 @@ test('checkpoint withholds actionable memory and continues without persisting a 
     assert.equal(checkpoint.response.status, 200);
     const checkpointData = dataOf(checkpoint.value);
     assert.equal(checkpointData.nextAction, 'proceed', JSON.stringify(checkpointData));
-    assert.deepEqual(checkpointData.memoryPolicy, MISSING_MEMORY_POLICY);
+    assert.deepEqual(checkpointData.memoryPolicy, missingMemoryPolicy(21));
     assert.equal(checkpointData.context, null);
     assert.deepEqual(checkpointData.recommendations, []);
     assert.ok(checkpointData.capabilities.recommendations.some((item: { name: string; required?: boolean; availability: string }) => item.name === 'memory-reasoning'
@@ -703,7 +707,7 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
     assert.equal(replay.response.status, 200);
     const replayData = dataOf(replay.value);
     assert.equal(replayData.nextAction, 'proceed');
-    assert.deepEqual(replayData.memoryPolicy, MISSING_MEMORY_POLICY);
+    assert.deepEqual(replayData.memoryPolicy, missingMemoryPolicy(21));
     assert.equal(replayData.context, null);
     assert.ok(replayData.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
       && item.required === true

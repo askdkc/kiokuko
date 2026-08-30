@@ -15,7 +15,7 @@ import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
 import { inspectLedger } from '../ledger/maintenance.js';
 import { findSecret } from '../memory/secrets.js';
 import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
-import { requireHybridSearchProjectionSchema } from '../memory/structured-memory.js';
+import { hybridSearchProjectionSchema } from '../memory/structured-memory.js';
 import { readEntryRevision } from '../memory/revisions.js';
 import { inspectMigrationSnapshot, loadMigrationSnapshot } from '../db/migrate.js';
 import { inspectLegacyContextDeliveries, type LegacyDeliveryInspectionReport } from '../context/delivery-migration.js';
@@ -267,7 +267,7 @@ async function collectDoctorResult(
   const hybridCheck = !currentMemoryFormatAvailable
     ? (() => {
       try {
-        requireHybridSearchProjectionSchema(database);
+        hybridSearchProjectionSchema(database);
         return { ok: true, count: 0, detail: 'current projection contents deferred until migration 009' };
       } catch (error) {
         if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {

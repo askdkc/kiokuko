@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parse } from 'jsonc-parser';
 import { KiokukoError } from '../../src/errors.js';
@@ -7,6 +8,7 @@ import { renderCodexMcpConfig } from '../../src/setup/render.js';
 
 test('Codex setup writes and preserves the external Skill discovery mode', () => {
   const official = renderCodexMcpConfig('', 'kiokuko');
+  assert.match(official.content, /^required = true$/mu);
   assert.match(official.content, /env = \{ KIOKUKO_SKILL_DISCOVERY = "official" \}/u);
 
   const community = renderCodexMcpConfig(official.content, 'kiokuko', 'community');
@@ -22,6 +24,53 @@ test('Codex setup writes and preserves the external Skill discovery mode', () =>
   assert.equal(renderCodexMcpConfig(relocated.content, '/opt/kiokuko').action, 'unchanged');
 });
 
+test('Codex setup upgrades only the exact previous managed block to required MCP', () => {
+  const legacy = [
+    'model = "keep"',
+    '# BEGIN KIOKUKO MCP',
+    '# Managed by `kiokuko setup`.',
+    '[mcp_servers.kiokuko]',
+    'command = "kiokuko"',
+    'args = ["mcp"]',
+    'enabled = true',
+    'env = { KIOKUKO_SKILL_DISCOVERY = "community" }',
+    '# END KIOKUKO MCP',
+    '',
+  ].join('\n');
+
+  const upgraded = renderCodexMcpConfig(legacy);
+  assert.equal(upgraded.action, 'updated');
+  assert.match(upgraded.content, /^model = "keep"$/mu);
+  assert.match(upgraded.content, /^required = true$/mu);
+  assert.match(upgraded.content, /KIOKUKO_SKILL_DISCOVERY = "community"/u);
+  assert.equal(renderCodexMcpConfig(upgraded.content).action, 'unchanged');
+});
+
+test('maintained READMEs match the required Codex core and public trust contracts', () => {
+  const requiredCore = [
+    '[mcp_servers.kiokuko]',
+    'command = "kiokuko"',
+    'args = ["mcp"]',
+    'enabled = true',
+    'required = true',
+  ].join('\n');
+  assert.ok(renderCodexMcpConfig('').content.includes(requiredCore));
+
+  for (const name of ['README.md', 'README.ja.md', 'README.zh-CN.md', 'README.ko.md']) {
+    const readme = readFileSync(new URL(`../../${name}`, import.meta.url), 'utf8');
+    assert.ok(readme.includes(requiredCore), name);
+    for (const contractTerm of [
+      'required = false',
+      'structuredContent.code',
+      'structuredContent.retryable',
+      'BACKPRESSURE',
+      'ToolLifecycleContributor',
+      '0.151.0',
+      'not-run',
+    ]) assert.ok(readme.includes(contractTerm), `${name}: ${contractTerm}`);
+  }
+});
+
 test('Codex setup rejects non-canonical marked blocks instead of migrating them', () => {
   const canonical = renderCodexMcpConfig('model = "keep"\n').content;
   const managedBlock = canonical.slice(canonical.indexOf('# BEGIN KIOKUKO MCP'));
@@ -29,6 +78,9 @@ test('Codex setup rejects non-canonical marked blocks instead of migrating them'
     canonical.replace('env = { KIOKUKO_SKILL_DISCOVERY = "official" }\n', ''),
     canonical.replace('args = ["mcp"]', 'args = ["serve"]'),
     canonical.replace('enabled = true', 'enabled = false'),
+    canonical.replace('required = true', 'required = false'),
+    canonical.replace('enabled = true\nrequired = true', 'required = true\nenabled = true'),
+    canonical.replace('required = true', 'required = true\nrequired = true'),
     canonical.replace('command = "kiokuko"', 'command = ""'),
     canonical.replace('env = { KIOKUKO_SKILL_DISCOVERY = "official" }', 'env = { KIOKUKO_SKILL_DISCOVERY = "official", PATH = "/custom" }'),
     canonical.replace('enabled = true', 'enabled = true\ncustom = true'),

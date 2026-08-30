@@ -21,6 +21,7 @@ import {
   STANDARD_ENNO_SKILL_FILES,
   STANDARD_FUNCTION_SKILL_FILES,
   STANDARD_MEMORY_SKILL_FILES,
+  STANDARD_SIMPLE_SKILL_FILES,
   STANDARD_SOUL_SKILL_FILES,
   STANDARD_UI_SKILL_FILES,
 } from '../../src/setup/standard-skills.js';
@@ -32,6 +33,9 @@ import {
 const STANDARD_SKILL_FIXTURES = [{
   name: 'kiokuko-ui-design-soul',
   files: STANDARD_UI_SKILL_FILES,
+}, {
+  name: 'kiokuko-simple-work',
+  files: STANDARD_SIMPLE_SKILL_FILES,
 }, {
   name: 'kiokuko-single-purpose-functions',
   files: STANDARD_FUNCTION_SKILL_FILES,
@@ -151,6 +155,7 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     assert.ok(dryRunFiles.every((file) => file.client === 'hermes'));
     await assert.rejects(access(String(dryRun.data.databasePath)));
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md')));
+    await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-simple-work', 'SKILL.md')));
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md')));
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-enno-oduno', 'SKILL.md')));
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-soul', 'SKILL.md')));
@@ -162,6 +167,7 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     await access(String(first.data.databasePath));
     await access(path.join(hermesHome, 'config.yaml'));
     await access(path.join(hermesHome, 'skills', 'kiokuko-ui-design-soul', 'SKILL.md'));
+    await access(path.join(hermesHome, 'skills', 'kiokuko-simple-work', 'SKILL.md'));
     await access(path.join(hermesHome, 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md'));
     await access(path.join(hermesHome, 'skills', 'kiokuko-enno-oduno', 'SKILL.md'));
     await access(path.join(hermesHome, 'skills', 'kiokuko-soul', 'SKILL.md'));
@@ -304,6 +310,12 @@ test('Windows OpenCode dry-run honors XDG_CONFIG_HOME before APPDATA', async () 
     xdgRoot,
     'skills',
     'kiokuko-ui-design-soul',
+    'SKILL.md',
+  )));
+  assert.ok(result.files.some((file) => file.path === path.win32.join(
+    xdgRoot,
+    'skills',
+    'kiokuko-simple-work',
     'SKILL.md',
   )));
   assert.ok(result.files.some((file) => file.path === path.win32.join(
@@ -462,6 +474,7 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /active planning attempt.*restart choice explicitly cancels it before starting a new `task_prepare`/iu);
     assert.match(instructions, /attempt already ended.*do not try to cancel it again/iu);
     assert.match(instructions, /Inspect `nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer` response/);
+    assert.match(instructions, /`memoryPolicy\.deliveryEmpty=true` with `storedEntryCount>0`.*inspect `contextWithheld`/u);
     assert.match(instructions, /`memory-reasoning` is missing or unknown.*`memoryPolicy\.contextWithheld=true`.*`nextAction=proceed`/u);
     assert.match(instructions, /`required_capability_unavailable` is a hard stop for missing or unknown `kiokuko-soul`/);
     assert.match(instructions, /created by `kiokuko-curator` and matching the current deterministic Curator projection is `system_verified`/);
@@ -869,7 +882,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
-    `human project rule\n${staleAgent.replace('kiokuko-template-version: 21', 'kiokuko-template-version: 14')}`,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 23', 'kiokuko-template-version: 14')}`,
   );
   await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 12 }, null, 2)}\n`);
 
@@ -958,11 +971,11 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.match(refreshedAgent, /kiokuko-template-version: 21/u);
+  assert.match(refreshedAgent, /kiokuko-template-version: 23/u);
   assert.equal(refreshedAgent.includes('kiokuko-template-version: 14'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
-  assert.equal(refreshedBinding.templateVersion, 21);
+  assert.equal(refreshedBinding.templateVersion, 23);
 
   const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
@@ -975,7 +988,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryId: 'repo_setup_refresh_location_only',
     workspace: 'project:setup-refresh-location-only',
     agentFile: 'AGENTS.md',
-    templateVersion: 21,
+    templateVersion: 23,
   });
   assert.equal(
     await readFile(locationOnlyGitignorePath, 'utf8'),
@@ -1057,16 +1070,19 @@ test('setup resolves a sticky named Hermes profile without crossing into another
 test('setup can skip new standard-skill installation without deleting an existing skill', async () => {
   const temporary = await temporaryEnvironment('no-standard-skills');
   const skillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-ui-design-soul', 'SKILL.md');
+  const simpleSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-simple-work', 'SKILL.md');
   const functionSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-single-purpose-functions', 'SKILL.md');
   const ennoSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-enno-oduno', 'SKILL.md');
   const memorySkillPath = path.join(temporary.home, '.agents', 'skills', 'memory-reasoning', 'SKILL.md');
   const soulSkillPath = path.join(temporary.home, '.agents', 'skills', 'kiokuko-soul', 'SKILL.md');
   await mkdir(path.dirname(skillPath), { recursive: true });
+  await mkdir(path.dirname(simpleSkillPath), { recursive: true });
   await mkdir(path.dirname(functionSkillPath), { recursive: true });
   await mkdir(path.dirname(ennoSkillPath), { recursive: true });
   await mkdir(path.dirname(memorySkillPath), { recursive: true });
   await mkdir(path.dirname(soulSkillPath), { recursive: true });
   await writeFile(skillPath, 'human-owned skill\n');
+  await writeFile(simpleSkillPath, 'human-owned simple skill\n');
   await writeFile(functionSkillPath, 'human-owned function skill\n');
   await writeFile(ennoSkillPath, 'human-owned Enno skill\n');
   await writeFile(memorySkillPath, 'human-owned memory skill\n');
@@ -1083,6 +1099,7 @@ test('setup can skip new standard-skill installation without deleting an existin
   assert.equal(result.standardSkills, false);
   assert.equal(result.files.some((file) => file.purpose === 'standard-skill'), false);
   assert.equal(await readFile(skillPath, 'utf8'), 'human-owned skill\n');
+  assert.equal(await readFile(simpleSkillPath, 'utf8'), 'human-owned simple skill\n');
   assert.equal(await readFile(functionSkillPath, 'utf8'), 'human-owned function skill\n');
   assert.equal(await readFile(ennoSkillPath, 'utf8'), 'human-owned Enno skill\n');
   assert.equal(await readFile(memorySkillPath, 'utf8'), 'human-owned memory skill\n');
@@ -1696,7 +1713,39 @@ test('setup refuses an unmanaged Codex kiokuko table before writing anything', a
   await assert.rejects(access(temporary.databasePath));
 });
 
-test('setup refuses legacy or tampered marked Codex blocks without rewriting them', async () => {
+test('setup upgrades the exact previous Codex block to required MCP', async () => {
+  const temporary = await temporaryEnvironment('codex-required-upgrade');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  await mkdir(path.dirname(configPath), { recursive: true });
+  const previous = [
+    'model = "human"',
+    '# BEGIN KIOKUKO MCP',
+    '# Managed by `kiokuko setup`.',
+    '[mcp_servers.kiokuko]',
+    'command = "kiokuko"',
+    'args = ["mcp"]',
+    'enabled = true',
+    'env = { KIOKUKO_SKILL_DISCOVERY = "official" }',
+    '# END KIOKUKO MCP',
+    '',
+  ].join('\n');
+  await writeFile(configPath, previous);
+
+  await setupGlobalClients({
+    clients: ['codex'],
+    platform: 'linux',
+    env: temporary.env,
+    databasePath: temporary.databasePath,
+    standardSkills: false,
+  });
+
+  const upgraded = await readFile(configPath, 'utf8');
+  assert.match(upgraded, /^model = "human"$/mu);
+  assert.match(upgraded, /^required = true$/mu);
+  assert.equal((upgraded.match(/# BEGIN KIOKUKO MCP/gu) ?? []).length, 1);
+});
+
+test('setup refuses incomplete or tampered marked Codex blocks without rewriting them', async () => {
   const variants = [
     [
       'model = "human"',

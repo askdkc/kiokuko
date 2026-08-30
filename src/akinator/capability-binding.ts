@@ -23,20 +23,36 @@ function compareDescriptor(left: CapabilityDescriptor, right: CapabilityDescript
   return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
 }
 
+function canonicalDescriptorSet(descriptors: CapabilityDescriptor[]): CapabilityDescriptor[] {
+  const sorted = [...descriptors].sort(compareDescriptor);
+  return sorted.filter((descriptor, index) => index === 0 || compareDescriptor(descriptor, sorted[index - 1]!) !== 0);
+}
+
 /**
  * Hash only the normalized effective catalog. Raw descriptions remain ephemeral,
  * while malformed/omitted catalogs retain distinct fail-closed identities.
  */
 export function capabilityCatalogDigest(capabilities: unknown): string {
   const normalized = normalizeCapabilityCatalog(capabilities);
+  const skills = canonicalDescriptorSet(normalized.skills);
+  const tools = canonicalDescriptorSet(normalized.tools);
+  const uniqueCount = skills.length + tools.length;
+  const diagnostics = normalized.availability === 'unknown'
+    ? normalized.diagnostics
+    : {
+        received: uniqueCount,
+        accepted: uniqueCount,
+        truncated: Math.min(normalized.diagnostics.truncated, uniqueCount),
+        dropped: 0,
+      };
   return canonicalContentHash({
     version: CAPABILITY_CATALOG_BINDING_VERSION,
     supplied: capabilities !== undefined,
     availability: normalized.availability,
-    diagnostics: normalized.diagnostics,
+    diagnostics,
     budgetExceeded: normalized.budgetExceeded,
-    skills: [...normalized.skills].sort(compareDescriptor),
-    tools: [...normalized.tools].sort(compareDescriptor),
+    skills,
+    tools,
   });
 }
 

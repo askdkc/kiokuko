@@ -30,11 +30,15 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 21 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 23 -->/);
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
-  assert.match(rendered, /canonical router.*`kiokuko-enno-oduno`.*`kiokuko-single-purpose-functions`.*`kiokuko-ui-design-soul`/u);
+  assert.match(rendered, /Akinator is the mandatory intake state machine before every planning or implementation route/u);
+  assert.match(rendered, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
+  assert.match(rendered, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
+  assert.match(rendered, /canonical router.*`kiokuko-enno-oduno`.*`kiokuko-simple-work`.*`kiokuko-single-purpose-functions`.*`kiokuko-ui-design-soul`/u);
+  assert.match(rendered, /simple-work route minimizes the solution but never replaces the code contract/u);
   assert.match(rendered, /Never substitute, install, or execute fetched external Skill content/u);
   assert.match(rendered, /task_prepare/);
   assert.match(rendered, /`task_prepare` is the Enno-Oduno orchestration entry point/u);
@@ -92,6 +96,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /created by `kiokuko-curator` and matching the current deterministic Curator projection is `system_verified`/);
   assert.match(rendered, /does not by itself require `memory-reasoning`/);
   assert.match(rendered, /Inspect `nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer` response/);
+  assert.match(rendered, /`memoryPolicy\.deliveryEmpty=true` with `storedEntryCount>0`.*inspect `contextWithheld`/u);
   assert.match(rendered, /`memory-reasoning` is missing or unknown.*`memoryPolicy\.contextWithheld=true`.*`nextAction=proceed`/u);
   assert.match(rendered, /`required_capability_unavailable` is a hard stop for missing or unknown `kiokuko-soul`/);
   assert.match(rendered, /continue from repository evidence/);

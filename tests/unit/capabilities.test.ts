@@ -42,6 +42,7 @@ test('classifies only strongly matched delivered context as actionable memory', 
     'exact_signal_match',
     'word_match',
     'lexical_match',
+    'cjk_window_match',
     'applicability_match',
     'tag_match',
     'changed_path_match',
@@ -481,6 +482,35 @@ test('derives an explicit memory withholding policy for available, missing, unkn
     withheldReason: 'memory_reasoning_unknown',
   });
   assert.deepEqual(deriveMemoryPolicy(buildProfile, 'none', []), {
+    memoryReasoningRequired: false,
+    contextWithheld: false,
+    withheldReason: null,
+  });
+
+  assert.deepEqual(deriveMemoryPolicy(buildProfile, 'none', [], {
+    contextItemCount: 0,
+    storedEntryCount: 3,
+  }), {
+    memoryReasoningRequired: false,
+    contextWithheld: false,
+    withheldReason: null,
+    deliveryEmpty: true,
+    storedEntryCount: 3,
+  });
+  assert.deepEqual(deriveMemoryPolicy(buildProfile, 'none', [], {
+    contextItemCount: null,
+    storedEntryCount: 2,
+  }), {
+    memoryReasoningRequired: false,
+    contextWithheld: false,
+    withheldReason: null,
+    deliveryEmpty: true,
+    storedEntryCount: 2,
+  });
+  assert.deepEqual(deriveMemoryPolicy(buildProfile, 'none', [], {
+    contextItemCount: 1,
+    storedEntryCount: 3,
+  }), {
     memoryReasoningRequired: false,
     contextWithheld: false,
     withheldReason: null,

@@ -105,7 +105,11 @@ test('checkpoint enrichment ignores stale acknowledgement profile fields and use
         return { title: 'Build the broker route', status: 'active', lastSequence: 1, metadata: bindCapabilityCatalog({}, SOUL_CAPABILITIES) };
       },
     },
-    database: {},
+    database: {
+      prepare() {
+        return { get: () => ({ count: 0 }) };
+      },
+    },
     enqueueWrite: async <T>(operation: () => T | PromiseLike<T>): Promise<T> => operation(),
   } as unknown as AgentRouteContext;
   const route = createTask5Route(context);

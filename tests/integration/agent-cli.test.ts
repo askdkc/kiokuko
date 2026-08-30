@@ -682,6 +682,56 @@ test('agent CLI accepts a soft memory-reasoning gate with withheld context', asy
   assert.equal(result.data.context, null);
 });
 
+test('agent CLI accepts a consistent machine-readable empty-delivery policy', async () => {
+  const base = syntheticIntakeResponse();
+  const context = { ...(base.context as Record<string, unknown>), items: [] };
+  const response = {
+    ...base,
+    context,
+    memoryPolicy: {
+      memoryReasoningRequired: false,
+      contextWithheld: false,
+      withheldReason: null,
+      deliveryEmpty: true,
+      storedEntryCount: 2,
+    },
+  };
+  const captured = await captureOutput(() => runCli([
+    'node', 'kiokuko', 'agent', 'open', '--workspace', 'w', '--client', 'generic', '--task', 'Research the gap', '--json',
+  ], {
+    agent: {
+      createClient: async () => clientReturning(response),
+      idempotencyKeyFactory: () => 'machine-readable-empty-delivery',
+    },
+  }));
+  assert.equal(captured.result, 0);
+  assert.equal(captured.stderr, '');
+  assert.deepEqual(parsed(captured.stdout).data.memoryPolicy, response.memoryPolicy);
+});
+
+test('agent CLI rejects incomplete or contradictory empty-delivery fields', async () => {
+  const base = syntheticIntakeResponse();
+  const invalidPolicies = [
+    { ...base.memoryPolicy, deliveryEmpty: true },
+    { ...base.memoryPolicy, storedEntryCount: 1 },
+    { ...base.memoryPolicy, deliveryEmpty: false, storedEntryCount: 1 },
+    { ...base.memoryPolicy, deliveryEmpty: true, storedEntryCount: 0 },
+  ];
+  for (const [index, memoryPolicy] of invalidPolicies.entries()) {
+    const response = { ...base, memoryPolicy };
+    const captured = await captureOutput(() => runCli([
+      'node', 'kiokuko', 'agent', 'open', '--workspace', 'w', '--client', 'generic', '--task', 'Research the gap', '--json',
+    ], {
+      agent: {
+        createClient: async () => clientReturning(response),
+        idempotencyKeyFactory: () => `invalid-empty-delivery-${index}`,
+      },
+    }));
+    assert.equal(captured.result, 8);
+    assert.equal(parsed(captured.stdout).error.code, 'INTEGRITY_ERROR');
+  }
+});
+
 test('agent CLI rejects memory policy fields that contradict the capability recommendation', async () => {
   const base = syntheticIntakeResponse({ memoryContextWithheld: true });
   const invalidPolicies = [

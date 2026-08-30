@@ -5,16 +5,16 @@ import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
-const configPath = path.join(repositoryRoot, '.codex', 'config.toml');
 const launcherPath = path.join(repositoryRoot, '.codex', 'kiokuko-dev-mcp.mjs');
+const testRulesPath = path.join(repositoryRoot, '.codex', 'rules', 'kiokuko-tests.rules');
 
-test('tracked Codex development config has no developer-specific clone path', async () => {
-  const config = await readFile(configPath, 'utf8');
-  assert.match(config, /^command = "node"$/mu);
-  assert.match(config, /^args = \["\.codex\/kiokuko-dev-mcp\.mjs"\]$/mu);
-  assert.match(config, /^cwd = "\."$/mu);
-  assert.doesNotMatch(config, /(?:\/Users\/|~[/\\]|[A-Za-z]:\\)/u);
-  assert.doesNotMatch(config, /KIOKUKO_DATA_DIR/u);
+test('tracked Codex test rules cover focused and full listener-dependent entry points', async () => {
+  const rules = await readFile(testRulesPath, 'utf8');
+  assert.match(rules, /pattern = \["node", "scripts\/run-tests\.mjs"\]/u);
+  assert.match(rules, /pattern = \["npm", "test"\]/u);
+  assert.match(rules, /pattern = \["npm", "run", "prepublishOnly"\]/u);
+  assert.doesNotMatch(rules, /pattern = \["node"\]/u);
+  assert.doesNotMatch(rules, /pattern = \["npm"\]/u);
 });
 
 test('Codex development launcher resolves the sample database from its clone', async () => {
