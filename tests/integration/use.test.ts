@@ -633,6 +633,7 @@ test('use waits for an identical concurrent atomic agent write to leave its quar
   const linkedTargetReached = deferred();
   const releaseLinkedTarget = deferred();
   let injected = false;
+  let observationRaceInjected = false;
   let concurrentWrite: ReturnType<typeof atomicWriteTextIfUnchanged> | undefined;
 
   const result = await useRepository({
@@ -660,14 +661,27 @@ test('use waits for an identical concurrent atomic agent write to leave its quar
         try {
           return await atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
         } finally {
-          setTimeout(releaseConcurrentWriter.resolve, 30);
+          if (!observationRaceInjected) setTimeout(releaseConcurrentWriter.resolve, 30);
         }
       }
       return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
     },
+    readAgentFileForConvergence: async (filePath, options) => {
+      const snapshot = await readRegularFile(filePath, options);
+      if (injected
+        && !observationRaceInjected
+        && path.basename(filePath) === 'AGENTS.md'
+        && snapshot === undefined) {
+        observationRaceInjected = true;
+        releaseConcurrentWriter.resolve();
+        await linkedTargetReached.promise;
+      }
+      return snapshot;
+    },
   });
 
   assert.equal(injected, true);
+  assert.equal(observationRaceInjected, true);
   if (concurrentWrite === undefined) assert.fail('concurrent writer did not start');
   await concurrentWrite;
   await linkedTargetReached.promise;

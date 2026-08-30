@@ -375,8 +375,14 @@ async function observeConcurrentTarget(
   mode: number,
   containmentRoot: string,
   parentIdentity: FileIdentity,
+  readFile: typeof readRegularFile = readRegularFile,
 ): Promise<ConcurrentTargetObservation> {
-  const observed = await readObservedTarget(filePath, containmentRoot, parentIdentity);
+  const observed = await readObservedTarget(
+    filePath,
+    containmentRoot,
+    parentIdentity,
+    readFile,
+  );
   if (observed === undefined) return { kind: 'absent' };
   if (observed.snapshot.content !== content || observed.snapshot.mode !== mode) {
     return { kind: 'different' };
@@ -392,18 +398,32 @@ async function readIdenticalTargetAfterConflict(
   containmentRoot: string,
   parentIdentity: FileIdentity,
   planned: RegularFileSnapshot | undefined,
+  readFile: typeof readRegularFile = readRegularFile,
 ): Promise<RegularFileSnapshot | undefined> {
   let settlingCandidate: RegularFileSnapshot | undefined;
   let lastObservation: ConcurrentTargetObservation | undefined;
   let lastHadPendingArtifact = false;
   for (let attempt = 0; attempt < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS; attempt += 1) {
-    const observation = await observeConcurrentTarget(
-      filePath,
-      content,
-      mode,
-      containmentRoot,
-      parentIdentity,
-    );
+    let observation: ConcurrentTargetObservation;
+    try {
+      observation = await observeConcurrentTarget(
+        filePath,
+        content,
+        mode,
+        containmentRoot,
+        parentIdentity,
+        readFile,
+      );
+    } catch (error) {
+      if (!isTargetConflict(error, filePath)) throw error;
+      if (attempt + 1 < CONCURRENT_IDENTICAL_OBSERVATION_ATTEMPTS) {
+        await delay(CONCURRENT_IDENTICAL_OBSERVATION_DELAY_MS);
+        continue;
+      }
+      throw new KiokukoError('CONFLICT', 'Concurrent target mutation did not settle', {
+        target: filePath,
+      });
+    }
     if (settlingCandidate !== undefined) {
       if (observation.kind === 'absent') return undefined;
       if (observation.kind === 'different'
@@ -477,6 +497,7 @@ async function writeOrConvergeIdentical(
   mode: number,
   containmentRoot: string,
   parentIdentity: FileIdentity,
+  readFile: typeof readRegularFile = readRegularFile,
 ): Promise<ResolvedWrite> {
   try {
     const outcome = await dependencies.atomicWriteTextIfUnchanged(
@@ -499,6 +520,7 @@ async function writeOrConvergeIdentical(
       containmentRoot,
       parentIdentity,
       planned,
+      readFile,
     );
     if (current === undefined) throw error;
     return { snapshot: current, owned: false, cleanupFailures: [] };
@@ -1178,6 +1200,7 @@ async function useRepositoryAttempt(
               0o644,
               repositoryRoot,
               bindingParentIdentity,
+              dependencies.readBindingFileForConvergence,
             )
           : await writeStrict(
               dependencies,
@@ -1299,6 +1322,7 @@ async function useRepositoryAttempt(
               existingAgent?.mode ?? 0o644,
               repositoryRoot,
               agentParentIdentity,
+              dependencies.readAgentFileForConvergence,
             )
           : await writeStrict(
               dependencies,
