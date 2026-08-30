@@ -279,7 +279,7 @@ test('does not replay a legacy delivery even when its query hash matches the cur
 
     const result = await queryScopedContext(database, query);
     assert.notEqual(result.deliveryId, legacyDeliveryId);
-    assert.equal(result.policyVersion, 'context-ranking-v5');
+     assert.equal(result.policyVersion, 'context-ranking-v6');
     assert.equal(result.items.length, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count, 2);
     assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(legacyDeliveryId)?.policy_version, 'context-ranking-v3');
@@ -865,7 +865,7 @@ test('does not replay a legacy scoped delivery as the current context', async ()
 
     const delivered = await queryScopedContext(database, query);
     assert.notEqual(delivered.deliveryId, deliveryId);
-    assert.equal(delivered.policyVersion, 'context-ranking-v5');
+     assert.equal(delivered.policyVersion, 'context-ranking-v6');
     assert.equal(delivered.items[0]?.entryId, currentEntry.id);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
       .get<{ count: number }>(runId)?.count, 2);

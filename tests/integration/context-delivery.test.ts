@@ -821,7 +821,7 @@ test('binds generic and scoped deliveries to the authoritative profile projectio
       intakeSessionId: 'session-delivery-1',
       taskProfileHash: forgedScopedProfile,
       queryHash: 'c'.repeat(64),
-      policyVersion: 'context-ranking-v5',
+       policyVersion: 'context-ranking-v6',
       charBudget: 8_000,
       charCount: 0,
       truncated: false,

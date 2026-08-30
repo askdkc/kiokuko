@@ -4,6 +4,10 @@ import { chmodSync, lstatSync, mkdirSync } from 'node:fs';
 import { NodeSqliteAdapter } from './adapter.js';
 import { withSqliteLockRetry } from './sqlite-retry.js';
 import { KiokukoError } from '../errors.js';
+import {
+  isSqliteVecLoader,
+  type SqliteVecLoader,
+} from '../embedding/sqlite-vec-loader.js';
 
 export interface DatabaseFileIdentity {
   readonly device: bigint;
@@ -13,6 +17,48 @@ export interface DatabaseFileIdentity {
 export interface ConnectionOptions {
   readonly readOnly?: boolean;
   readonly expectedFileIdentity?: DatabaseFileIdentity;
+  readonly sqliteVecLoader?: SqliteVecLoader;
+}
+
+function requireSqliteVecLoader(value: SqliteVecLoader | undefined): SqliteVecLoader | undefined {
+  if (value === undefined) return undefined;
+  if (!isSqliteVecLoader(value)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'The SQLite extension loader is not the known sqlite-vec loader');
+  }
+  return value;
+}
+
+function loadSqliteVec(database: DatabaseSync, loader: SqliteVecLoader): void {
+  let failure: unknown;
+  let failed = false;
+  let loadingDisabled = false;
+  try {
+    loader.load(database);
+    database.enableLoadExtension(false);
+    loadingDisabled = true;
+    const version = database.prepare('SELECT vec_version() AS version').get()?.version;
+    if (version !== loader.extensionVersion) {
+      throw new KiokukoError('SERVICE_UNAVAILABLE', 'The loaded sqlite-vec version is unsupported');
+    }
+  } catch (error) {
+    failure = error;
+    failed = true;
+  }
+  if (!loadingDisabled) {
+    try {
+      database.enableLoadExtension(false);
+    } catch (disableError) {
+      failure = failed
+        ? new AggregateError([failure, disableError], 'sqlite-vec loading failed and disabling extension loading also failed')
+        : disableError;
+      failed = true;
+    }
+  }
+  if (!failed) return;
+  if (failure instanceof KiokukoError) throw failure;
+  const unavailable = new KiokukoError('SERVICE_UNAVAILABLE', 'The sqlite-vec extension could not be loaded');
+  Object.defineProperty(unavailable, 'cause', { value: failure });
+  throw unavailable;
 }
 
 export function databaseFileIdentity(filePath: string): DatabaseFileIdentity {
@@ -52,12 +98,14 @@ function configureJournalMode(database: DatabaseSync): void {
 }
 
 export function openConnection(filePath: string, options: ConnectionOptions = {}): NodeSqliteAdapter {
+  const sqliteVecLoader = requireSqliteVecLoader(options.sqliteVecLoader);
   if (filePath !== ':memory:') {
     mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
   }
   const database = new DatabaseSync(filePath, {
     enableForeignKeyConstraints: true,
     timeout: 5000,
+    ...(sqliteVecLoader === undefined ? {} : { allowExtension: true }),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
   });
   try {
@@ -77,6 +125,7 @@ export function openConnection(filePath: string, options: ConnectionOptions = {}
       configureJournalMode(database);
       database.exec('PRAGMA synchronous = NORMAL;');
     }
+    if (sqliteVecLoader !== undefined) loadSqliteVec(database, sqliteVecLoader);
     return new NodeSqliteAdapter(filePath, database);
   } catch (error) {
     try {

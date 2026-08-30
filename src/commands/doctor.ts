@@ -19,6 +19,8 @@ import { hybridSearchProjectionSchema } from '../memory/structured-memory.js';
 import { readEntryRevision } from '../memory/revisions.js';
 import { inspectMigrationSnapshot, loadMigrationSnapshot } from '../db/migrate.js';
 import { inspectLegacyContextDeliveries, type LegacyDeliveryInspectionReport } from '../context/delivery-migration.js';
+import { inspectEmbeddingHealth } from '../embedding/diagnostics.js';
+import type { VectorSearchBackend } from '../embedding/types.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -54,6 +56,7 @@ export interface DoctorResult {
     legacyDeliveries: DoctorCheck;
     runtime: DoctorCheck;
     hybridSearch: DoctorCheck;
+    embeddings: DoctorCheck;
     ennoOperations: DoctorCheck;
   };
 }
@@ -62,6 +65,8 @@ export interface DoctorOptions {
   databasePath?: string;
   migrationsDirectory?: string;
   runtimeDescriptorPath?: string;
+  embeddingEnvironment?: NodeJS.ProcessEnv;
+  embeddingBackend?: VectorSearchBackend;
 }
 
 export interface DoctorDependencies {
@@ -169,6 +174,8 @@ interface DoctorCollectionOptions {
   currentVersion: number;
   capabilities: DoctorResult['capabilities'];
   runtimeDescriptorPath?: string;
+  embeddingEnvironment?: NodeJS.ProcessEnv;
+  embeddingBackend?: VectorSearchBackend;
   legacyDeliveries: LegacyDeliveryInspectionReport;
 }
 
@@ -354,6 +361,7 @@ async function collectDoctorResult(
     detail: `scanned=${options.legacyDeliveries.scanned}, valid=${options.legacyDeliveries.valid}, invalid=${options.legacyDeliveries.invalid}, findings=${options.legacyDeliveries.findings.length}, scanTruncated=${options.legacyDeliveries.scanTruncated}, findingsTruncated=${options.legacyDeliveries.findingsTruncated}`,
   };
   const runtime = await runtimeCheck(options.databasePath, options.runtimeDescriptorPath);
+  const embeddings = inspectEmbeddingHealth(database, options.embeddingEnvironment ?? process.env, options.embeddingBackend);
   const ennoLeaseSchemaPresent = ['enno_operation_receipts', 'enno_verifier_runs'].every((table) => (
     Boolean(database.prepare(`
       SELECT 1 AS present FROM sqlite_schema
@@ -408,6 +416,7 @@ async function collectDoctorResult(
     legacyDeliveries,
     runtime,
     hybridSearch: hybridCheck,
+    embeddings: embeddings.check,
     ennoOperations,
   };
   const ok = Object.values(checks).every((check) => check.ok);
@@ -447,8 +456,10 @@ async function legacyMigrationPreflight(options: DoctorOptions): Promise<DoctorR
           databaseVersion: plan.databaseVersion,
           currentVersion: plan.currentVersion,
           capabilities: null,
-          ...(options.runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: options.runtimeDescriptorPath }),
-          legacyDeliveries: report,
+           ...(options.runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: options.runtimeDescriptorPath }),
+           ...(options.embeddingEnvironment === undefined ? {} : { embeddingEnvironment: options.embeddingEnvironment }),
+           ...(options.embeddingBackend === undefined ? {} : { embeddingBackend: options.embeddingBackend }),
+           legacyDeliveries: report,
         });
       }
     }
@@ -494,6 +505,8 @@ export async function runDoctor(
       currentVersion: initialized.currentVersion,
       capabilities: initialized.capabilities,
       ...(options.runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: options.runtimeDescriptorPath }),
+      ...(options.embeddingEnvironment === undefined ? {} : { embeddingEnvironment: options.embeddingEnvironment }),
+      ...(options.embeddingBackend === undefined ? {} : { embeddingBackend: options.embeddingBackend }),
       legacyDeliveries,
     });
   } catch (error) {

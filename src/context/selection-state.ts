@@ -11,6 +11,7 @@ import { canonicalContentHash, compareCanonicalStrings } from '../serialization/
 import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
 import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { contextFeedbackSignals } from './feedback.js';
+import { readActiveEmbeddingProfile, readEmbeddingRuntimeState, readEntryEmbedding, type ActiveEmbeddingProfile } from '../embedding/store.js';
 
 export const CONTEXT_SELECTION_STATE_MAX_ENTRIES = 10_000;
 const MAX_SELECTION_WORKSPACES = 2;
@@ -122,7 +123,113 @@ function externalSkillSnapshot(database: SqliteDatabase, entryId: string): Recor
   return { skill: detail.skill, mappings };
 }
 
-function selectionEntrySnapshot(database: SqliteDatabase, entry: ReturnType<typeof readEntry>): Record<string, unknown> {
+interface SemanticProjectionState {
+  activeProfileId: string | null;
+  generation: number | null;
+  profile: {
+    dimensions: number;
+    distanceMetric: string;
+    documentTemplateVersion: number;
+    queryTemplateVersion: number;
+    distanceCeiling: number;
+  } | null;
+  activeProfile: ActiveEmbeddingProfile | null;
+}
+
+function embeddingProjectionInstalled(database: SqliteDatabase): boolean {
+  const row = database.prepare(`
+    SELECT COUNT(*) AS count
+      FROM sqlite_master
+     WHERE type = 'table'
+       AND name IN ('embedding_profiles', 'embedding_runtime', 'entry_embeddings', 'embedding_jobs', 'query_embeddings')
+  `).get<{ count: unknown }>();
+  if (row === undefined || typeof row.count !== 'number' || !Number.isSafeInteger(row.count) || row.count < 0 || row.count > 5) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored embedding projection schema is invalid');
+  }
+  return row.count > 0;
+}
+
+function semanticProjectionState(database: SqliteDatabase): SemanticProjectionState {
+  if (!embeddingProjectionInstalled(database)) {
+    return { activeProfileId: null, generation: null, profile: null, activeProfile: null };
+  }
+  const runtime = readEmbeddingRuntimeState(database);
+  const activeProfile = readActiveEmbeddingProfile(database);
+  return {
+    activeProfileId: activeProfile?.profile.profileId ?? null,
+    generation: runtime.generation,
+    profile: activeProfile === null ? null : {
+      dimensions: activeProfile.profile.identity.dimensions,
+      distanceMetric: activeProfile.profile.identity.distanceMetric,
+      documentTemplateVersion: activeProfile.profile.identity.documentTemplateVersion,
+      queryTemplateVersion: activeProfile.profile.identity.queryTemplateVersion,
+      distanceCeiling: activeProfile.profile.identity.distanceCeiling,
+    },
+    activeProfile,
+  };
+}
+
+function semanticProjectionSnapshotForState(
+  database: SqliteDatabase,
+  entry: ReturnType<typeof readEntry>,
+  state: SemanticProjectionState,
+): {
+  activeProfileId: string | null;
+  embedding: null | {
+    profileId: string;
+    revision: number;
+    contentHash: string;
+    documentHash: string;
+    vectorHash: string;
+    dimensions: number;
+  };
+} {
+  if (state.activeProfile === null) return { activeProfileId: null, embedding: null };
+  const stored = readEntryEmbedding(database, {
+    entryId: entry.id,
+    profileId: state.activeProfile.profile.profileId,
+  });
+  if (stored === undefined
+    || stored.revision !== entry.revision
+    || stored.contentHash !== entry.contentHash
+    || stored.dimensions !== state.activeProfile.profile.identity.dimensions) {
+    return { activeProfileId: state.activeProfile.profile.profileId, embedding: null };
+  }
+  return {
+    activeProfileId: state.activeProfile.profile.profileId,
+    embedding: {
+      profileId: stored.profileId,
+      revision: stored.revision,
+      contentHash: stored.contentHash,
+      documentHash: stored.documentHash,
+      vectorHash: stored.vectorHash,
+      dimensions: stored.dimensions,
+    },
+  };
+}
+
+export function semanticProjectionSnapshot(
+  database: SqliteDatabase,
+  entry: ReturnType<typeof readEntry>,
+): {
+  activeProfileId: string | null;
+  embedding: null | {
+    profileId: string;
+    revision: number;
+    contentHash: string;
+    documentHash: string;
+    vectorHash: string;
+    dimensions: number;
+  };
+} {
+  return semanticProjectionSnapshotForState(database, entry, semanticProjectionState(database));
+}
+
+function selectionEntrySnapshot(
+  database: SqliteDatabase,
+  entry: ReturnType<typeof readEntry>,
+  semanticState: SemanticProjectionState | null,
+): Record<string, unknown> {
   const external = isExternalSkillReference(entry) ? externalSkillSnapshot(database, entry.id) : null;
   return {
     id: entry.id,
@@ -147,6 +254,7 @@ function selectionEntrySnapshot(database: SqliteDatabase, entry: ReturnType<type
     searchSignals: searchSignalSnapshot(database, entry.id),
     ...(external === null ? {} : { external }),
     feedback: contextFeedbackSignals(database, entry.id),
+    ...(semanticState === null ? {} : { semantic: semanticProjectionSnapshotForState(database, entry, semanticState) }),
   };
 }
 
@@ -154,15 +262,24 @@ interface CandidateStateOptions {
   includeEcosystem: boolean;
   includeExternal: boolean;
   includeTrustedCurator: boolean;
+  includeSemantic: boolean;
 }
 
 function contextCandidateState(
   database: SqliteDatabase,
   relevantWorkspaces: readonly string[],
   options: CandidateStateOptions,
-): { workspaces: string[]; entries: Record<string, unknown>[] } {
+): { workspaces: string[]; entries: Record<string, unknown>[]; semantic: Omit<SemanticProjectionState, 'activeProfile'> } {
   const workspaces = normalizedWorkspaces(relevantWorkspaces);
-  if (workspaces.length === 0 && !options.includeEcosystem) return { workspaces, entries: [] };
+  const semanticState = options.includeSemantic ? semanticProjectionState(database) : null;
+  const emptySemantic = { activeProfileId: null, generation: null, profile: null } as const;
+  if (workspaces.length === 0 && !options.includeEcosystem) {
+    return { workspaces, entries: [], semantic: semanticState === null ? emptySemantic : {
+      activeProfileId: semanticState.activeProfileId,
+      generation: semanticState.generation,
+      profile: semanticState.profile,
+    } };
+  }
   const workspacePredicate = workspaces.map(() => '?').join(', ');
   const externalMarker = externalSkillReferenceCandidateSql();
   const activeExternal = activeExternalSkillReferenceCandidateSql();
@@ -202,12 +319,39 @@ function contextCandidateState(
     if (!options.includeEcosystem && workspaces.length > 0) parameters.push(...workspaces);
   }
   if (options.includeEcosystem) {
+    const semanticCandidate = semanticState?.activeProfileId === null || semanticState === null
+      ? ''
+      : `OR EXISTS (
+        SELECT 1
+          FROM entry_embeddings AS embedding
+          JOIN entry_revisions AS semantic_revision
+            ON semantic_revision.entry_id = e.id
+           AND semantic_revision.revision = e.current_revision
+         WHERE embedding.entry_id = e.id
+           AND embedding.profile_id = ?
+           AND embedding.revision = e.current_revision
+           AND embedding.content_hash = semantic_revision.content_hash
+      )`;
     clauses.push(`(NOT ${externalMarker}
       AND EXISTS (
         SELECT 1 FROM entry_search_signals AS signal WHERE signal.entry_id = e.id
       ))`);
+    if (semanticCandidate.length > 0) {
+      clauses[clauses.length - 1] = `(NOT ${externalMarker}
+        AND (
+          EXISTS (
+            SELECT 1 FROM entry_search_signals AS signal WHERE signal.entry_id = e.id
+          )
+          ${semanticCandidate}
+        ))`;
+      parameters.push(semanticState!.activeProfileId!);
+    }
   }
-  if (clauses.length === 0) return { workspaces, entries: [] };
+  if (clauses.length === 0) return { workspaces, entries: [], semantic: semanticState === null ? emptySemantic : {
+    activeProfileId: semanticState.activeProfileId,
+    generation: semanticState.generation,
+    profile: semanticState.profile,
+  } };
   const rows = database.prepare(`
     SELECT e.id, e.workspace, CASE WHEN ${externalMarker} THEN 1 ELSE 0 END AS isExternal
       FROM entries AS e
@@ -246,9 +390,17 @@ function contextCandidateState(
       ? isRetrievableEntry(database, entry)
       : options.includeEcosystem && isFederatedEcosystemCandidate(database, entry);
     if (!retrievable) return [];
-    return [selectionEntrySnapshot(database, entry)];
+     return [selectionEntrySnapshot(database, entry, semanticState)];
   });
-  return { workspaces, entries };
+  return {
+    workspaces,
+    entries,
+    semantic: semanticState === null ? emptySemantic : {
+      activeProfileId: semanticState.activeProfileId,
+      generation: semanticState.generation,
+      profile: semanticState.profile,
+    },
+  };
 }
 
 /**
@@ -265,6 +417,7 @@ export function ordinaryContextSelectionStateHash(
     includeEcosystem: options.includeEcosystem === true,
     includeExternal: false,
     includeTrustedCurator: false,
+    includeSemantic: false,
   });
   return canonicalContentHash({
     workspaces: state.workspaces,
@@ -289,6 +442,12 @@ export function contextRetrievalStateHash(
     includeEcosystem,
     includeExternal: true,
     includeTrustedCurator: true,
+    includeSemantic: true,
   });
-  return canonicalContentHash({ workspaces: state.workspaces, includeEcosystem, entries: state.entries });
+  return canonicalContentHash({
+    workspaces: state.workspaces,
+    includeEcosystem,
+    semantic: state.semantic,
+    entries: state.entries,
+  });
 }

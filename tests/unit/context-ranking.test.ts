@@ -309,6 +309,22 @@ test('preserves retrieval reasons as one canonical de-duplicated reason set', ()
   assert.equal(result[0]?.selectionReasons.filter((reason) => reason === 'word_match').length, 1);
 });
 
+test('places semantic retrieval after exact and word matches in the fixed reason order', () => {
+  const result = rankContextCandidates(input([
+    candidate({
+      id: 'semantic-reasons',
+      selectionReasons: ['lexical_match', 'semantic_match', 'word_match', 'exact_signal_match'],
+    }),
+  ]));
+  assert.deepEqual(result[0]?.selectionReasons.slice(0, 5), [
+    'exact_signal_match',
+    'word_match',
+    'semantic_match',
+    'lexical_match',
+    'candidate',
+  ]);
+});
+
 test('returns owned output snapshots when callers mutate their original input', () => {
   const original = candidate({ tags: ['stable'], scope: { paths: ['src/original.ts'] } });
   const result = rankContextCandidates(input([original]));

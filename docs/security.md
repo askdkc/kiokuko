@@ -24,6 +24,18 @@ Kiokuko does not claim to sandbox them.
 - Permissive CORS is disabled. Browser mutations require authenticated, CSRF-safe requests and explicit confirmation where destructive.
 - The bounded write queue returns `429` rather than consuming unbounded memory. Shutdown drains accepted work before owner-checked descriptor/lock cleanup.
 
+## Embedding boundary
+
+- Embeddings are disabled by default and remote HTTPS requires explicit `KIOKUKO_EMBEDDING_ALLOW_REMOTE=true`.
+- API keys are read from the environment only. They are used for an Authorization header and are never included in profile IDs, database rows, audit records, delivery identities, or public errors.
+- Endpoint userinfo, query, and fragment components are rejected. HTTP endpoints must be loopback-only; redirects are not followed automatically.
+- Entry documents are deterministic, bounded to 32 KiB, built from allowlisted memory fields, and scanned again for secrets before a remote request.
+- Query cache rows contain profile/query/vector hashes and encoded vectors, not raw query text. Vectors are never returned in model-facing context.
+- Provider responses, raw provider error bodies, and retry details are not persisted. Optional mode falls back to lexical retrieval; required mode reports a bounded service failure.
+- The JavaScript vector backend is the correctness fallback. The optional `sqlite-vec` extension is exact-versioned, loaded only through the known loader, and disabled immediately after probing; arbitrary extension paths are not supported.
+- `embeddings status` and `doctor` expose only profile identifiers, model metadata, backend identifiers, and bounded counts. They never expose API keys, endpoint URLs, query text, vector bytes, provider response bodies, or source memory text.
+- `embeddings activate` performs only an atomic profile/job transition. Provider calls occur only in bounded `sync` or explicit `rebuild --wait` work, and MCP retrieval drains at most eight workspace-scoped jobs for 1,500 ms.
+
 The stdio MCP path is local to the spawning AI client and does not open a
 network listener. It exposes no raw SQL or arbitrary-workspace parameter.
 `task_prepare` and `task_answer` resolve only the

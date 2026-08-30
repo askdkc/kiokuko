@@ -39,6 +39,31 @@ required = true
 
 After setup, launch the target AI client and use it as usual. If it is already running, quit it once and restart it. When setup creates or updates the Codex Stop hook, open `/hooks` in Codex and explicitly trust that hook.
 
+### Optional semantic retrieval
+
+Lexical retrieval is the default. To enable local or explicitly approved
+OpenAI-compatible embeddings, configure the provider in the environment and
+activate the profile:
+
+```bash
+export KIOKUKO_EMBEDDINGS=optional
+export KIOKUKO_EMBEDDING_BASE_URL=http://127.0.0.1:8080/v1
+export KIOKUKO_EMBEDDING_MODEL=your-model
+export KIOKUKO_EMBEDDING_DIMENSIONS=1536
+export KIOKUKO_EMBEDDING_DISTANCE_CEILING=0.8
+kiokuko embeddings activate
+kiokuko embeddings sync --limit 64
+```
+
+Use `KIOKUKO_EMBEDDINGS=required` only when startup and retrieval must fail
+closed if the provider is unavailable. Remote HTTPS endpoints additionally
+require `KIOKUKO_EMBEDDING_ALLOW_REMOTE=true`; API keys are read only from
+`KIOKUKO_EMBEDDING_API_KEY` and are never shown by status or doctor.
+`kiokuko embeddings status --json` reports profile and coverage metadata,
+`rebuild` requeues current entries, and `rebuild --wait` processes that queue
+before returning. MCP performs only a small workspace-scoped drain before
+task retrieval; it never performs an unbounded background rebuild.
+
 ## How it gets smarter with use
 
 ```text

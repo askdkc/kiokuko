@@ -12,6 +12,7 @@ import {
 import { canonicalJson, type EntryKind } from '../serialization/validate.js';
 import { buildStructuredScope, hasExplicitApplicability, type Applicability, type MemoryClass, type MemorySignals, type RetrievalScope } from './structured-memory.js';
 import { retrieveFederatedMemory, type FederatedScope, type FederatedRecallResult } from './federated-retrieval.js';
+import type { HybridSearchRuntime } from './hybrid-retrieval.js';
 import { analyzePortability } from './portability.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -417,7 +418,11 @@ function normalizeCheckpointInput(input: ScopedCheckpointInput): NormalizedCheck
   };
 }
 
-export async function recallScopedMemory(database: SqliteDatabase, input: ScopedRecallInput): Promise<ScopedRecallResult> {
+export async function recallScopedMemory(
+  database: SqliteDatabase,
+  input: ScopedRecallInput,
+  runtime: HybridSearchRuntime = {},
+): Promise<ScopedRecallResult> {
   return retrieveFederatedMemory(database, {
     query: input.query,
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
@@ -427,7 +432,7 @@ export async function recallScopedMemory(database: SqliteDatabase, input: Scoped
     ...(input.limit === undefined ? {} : { limit: input.limit }),
     ...(input.maxChars === undefined ? {} : { maxChars: input.maxChars }),
     ...(input.readOnly === undefined ? {} : { readOnly: input.readOnly }),
-  });
+  }, runtime);
 }
 
 export async function checkpointScopedMemory(database: SqliteDatabase, input: ScopedCheckpointInput): Promise<ScopedCheckpointResult> {

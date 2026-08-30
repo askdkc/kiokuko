@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError, storedMemoryIntegrityError } from '../errors.js';
+import { enqueueCurrentEntryEmbeddingInTransaction } from '../embedding/jobs.js';
 import { canonicalEntryRevisionContentHash, canonicalJson, type JsonObject, validateRecordInput, requireWorkspace, type EntryKind, type EntryStatus, type TrustLevel, type ValidatedRecordInput } from '../serialization/validate.js';
 import { recordAuditEvent } from './audit.js';
 import { findSecret } from './secrets.js';
@@ -317,6 +318,12 @@ export function recordEntryInTransaction(database: SqliteDatabase, input: Record
     tags: validated.tags,
     scope: validated.scope,
   });
+  enqueueCurrentEntryEmbeddingInTransaction(database, {
+    entryId: id,
+    revision: 1,
+    contentHash,
+    now,
+  });
 
   recordAuditEvent(database, {
     entryId: id,
@@ -436,6 +443,12 @@ function updateCandidateEntryInTransactionInternal(database: SqliteDatabase, inp
     summary: validated.summary,
     tags: validated.tags,
     scope: canonicalScope,
+  });
+  enqueueCurrentEntryEmbeddingInTransaction(database, {
+    entryId: input.entryId,
+    revision: nextRevision,
+    contentHash,
+    now,
   });
   recordAuditEvent(database, {
     entryId: input.entryId,

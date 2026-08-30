@@ -49,6 +49,8 @@ import { normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from './skills/confi
 import { PACKAGE_VERSION } from './package-version.js';
 import { parseStrictJson } from './setup/strict-json.js';
 import { validateRecordInput } from './serialization/validate.js';
+import { registerEmbeddingsCommands } from './commands/embeddings.js';
+import type { EmbeddingProvider, VectorSearchBackend } from './embedding/types.js';
 
 const MAX_CLI_JSON_INPUT_BYTES = 2 * 1024 * 1024;
 const MAX_CALL_PATH_BYTES = 4 * 1024;
@@ -258,6 +260,9 @@ export interface CliDependencies {
   readonly doctorOutput?: NodeJS.WritableStream;
   readonly doctorDatabasePath?: string;
   readonly doctorRuntimeDescriptorPath?: string;
+  readonly embeddingEnvironment?: NodeJS.ProcessEnv;
+  readonly embeddingProvider?: EmbeddingProvider;
+  readonly embeddingBackend?: VectorSearchBackend;
 }
 
 const CALL_OPERATIONS = [
@@ -975,6 +980,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     const doctorOptions: Parameters<typeof runDoctor>[0] = {
       ...(dependencies.doctorDatabasePath === undefined ? {} : { databasePath: dependencies.doctorDatabasePath }),
       ...(dependencies.doctorRuntimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: dependencies.doctorRuntimeDescriptorPath }),
+      ...(dependencies.embeddingEnvironment === undefined ? {} : { embeddingEnvironment: dependencies.embeddingEnvironment }),
+      ...(dependencies.embeddingBackend === undefined ? {} : { embeddingBackend: dependencies.embeddingBackend }),
     };
     const databaseOptions: Parameters<typeof initializeDatabase>[0] = dependencies.doctorDatabasePath === undefined
       ? {}
@@ -1014,6 +1021,13 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerLedgerCommands(cli, { withDatabase });
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });
   registerEnnoCommand(cli, { withDatabase });
+  registerEmbeddingsCommands(cli, {
+    withDatabase,
+    ...(dependencies.embeddingEnvironment === undefined ? {} : { environment: dependencies.embeddingEnvironment }),
+    ...(dependencies.embeddingProvider === undefined ? {} : { provider: dependencies.embeddingProvider }),
+    ...(dependencies.embeddingBackend === undefined ? {} : { backend: dependencies.embeddingBackend }),
+    output: humanOrJson,
+  });
 
   cli.command('web').description('Start the local Kiokuko web UI')
     .option('--host <host>', 'Loopback host', '127.0.0.1')
@@ -1060,7 +1074,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
 function operationFor(argv: string[]): string {
   const command = argv[2] ?? 'unknown';
-  if (['server', 'agent', 'skills'].includes(command) && argv[3] !== undefined && !argv[3].startsWith('-')) return `${command}.${argv[3]}`;
+  if (['server', 'agent', 'skills', 'embeddings'].includes(command) && argv[3] !== undefined && !argv[3].startsWith('-')) return `${command}.${argv[3]}`;
   return command;
 }
 

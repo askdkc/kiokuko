@@ -31,6 +31,7 @@
     "test": "node scripts/run-tests.mjs tests",
     "test:unit": "node scripts/run-tests.mjs tests/unit",
     "test:integration": "node scripts/run-tests.mjs tests/integration",
+    "test:sqlite-vec": "node --import tsx tests/ci/sqlite-vec-package-smoke.ts",
     "test:e2e:codex": "npm run build && node scripts/run-enno-agent-e2e.mjs codex",
     "test:e2e:opencode": "npm run build && node scripts/run-enno-agent-e2e.mjs opencode",
     "test:e2e:claude": "npm run build && node scripts/run-enno-agent-e2e.mjs claude",
@@ -48,6 +49,9 @@
     "semver": "^7.8.5",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "sqlite-vec": "0.1.9"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

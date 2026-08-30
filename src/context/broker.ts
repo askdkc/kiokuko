@@ -26,6 +26,8 @@ import { entryOriginMatchesWorkspace } from './origin.js';
 import { isExternalSkillReference } from '../skills/store.js';
 import { contextRetrievalStateHash } from './selection-state.js';
 import { readContextRunRetrievalState, type ContextRunRetrievalState } from './run-state.js';
+import { prepareEmbeddingSearchRuntime } from '../embedding/runtime.js';
+import type { EmbeddingRuntime } from '../embedding/types.js';
 import {
   captureProjectManifestSnapshot,
   resolveProjectFingerprint,
@@ -474,7 +476,11 @@ function projectForWorkspace(database: SqliteDatabase, workspace: string): Resol
   return { repositoryRoot, repositoryId, workspace: storedWorkspace, source: 'location' };
 }
 
-async function retrieveEntries(database: SqliteDatabase, query: PreparedQuery): Promise<RetrievedEntry[]> {
+async function retrieveEntries(
+  database: SqliteDatabase,
+  query: PreparedQuery,
+  runtime: import('../memory/hybrid-retrieval.js').HybridSearchRuntime,
+): Promise<RetrievedEntry[]> {
   const terms = [query.task, query.taskProfile.target, query.taskProfile.expected, ...query.recommendedTags]
     .filter((value): value is string => value !== null && value.length > 0)
     .map((value) => value.slice(0, 2_000));
@@ -482,16 +488,16 @@ async function retrieveEntries(database: SqliteDatabase, query: PreparedQuery): 
   const entries = new Map<string, RetrievedEntry>();
   for (const value of queries) {
     if (query.projectState !== null) {
-      for (const hit of await federatedEntries(database, {
+        for (const hit of await federatedEntries(database, {
         project: query.projectState.project,
         fingerprint: query.projectState.fingerprint,
         query: value,
         limit: 500,
-      })) {
+        }, runtime)) {
         addRetrievedEntry(entries, { entry: hit.entry, origin: hit.origin, selectionReasons: hit.selectionReasons });
       }
     } else {
-      for (const hit of rankedEntryHits(database, { workspace: query.workspace, query: value, limit: 500, includeSuperseded: false }).hits) {
+      for (const hit of rankedEntryHits(database, { workspace: query.workspace, query: value, limit: 500, includeSuperseded: false }, runtime).hits) {
         addRetrievedEntry(entries, {
           entry: readEntry(database, { workspace: query.workspace, entryId: hit.entryId }),
           origin: 'project',
@@ -530,8 +536,13 @@ function assertPreparedProjectState(database: SqliteDatabase, query: PreparedQue
   }
 }
 
-async function rank(database: SqliteDatabase, query: PreparedQuery, prior: ReturnType<typeof priorData>): Promise<RankedCandidate[]> {
-  const entries = await retrieveEntries(database, query);
+async function rank(
+  database: SqliteDatabase,
+  query: PreparedQuery,
+  prior: ReturnType<typeof priorData>,
+  runtime: import('../memory/hybrid-retrieval.js').HybridSearchRuntime,
+): Promise<RankedCandidate[]> {
+  const entries = await retrieveEntries(database, query, runtime);
   const feedback = entries.flatMap(({ entry }) => contextFeedbackSignals(database, entry.id).flatMap((signal) =>
     Array.from({ length: signal.boundedInfluence }, () => ({ entryId: entry.id, verdict: signal.verdict }))));
   return rankContextCandidates({
@@ -919,7 +930,10 @@ function replayableDelivery(database: SqliteDatabase, query: PreparedQuery): { d
 export class ContextBroker {
   private readonly inFlight = new Map<string, Promise<ContextBrokerResult>>();
 
-  constructor(private readonly database: SqliteDatabase) {}
+  constructor(
+    private readonly database: SqliteDatabase,
+    private readonly embeddingRuntime?: EmbeddingRuntime,
+  ) {}
 
   listDeliveries(input: { runId: string; cursor?: string; limit?: number }): ReturnType<typeof listContextDeliveries> & { untrusted: true } {
     const context = currentRunContext(this.database, input.runId);
@@ -1006,7 +1020,12 @@ export class ContextBroker {
       };
     }
 
-    const ranked = await rank(this.database, query, prior);
+    const retrievalRuntime = await prepareEmbeddingSearchRuntime(
+      this.embeddingRuntime,
+      this.database,
+      retrievalQuery(query),
+    );
+    const ranked = await rank(this.database, query, prior, retrievalRuntime);
     if (query.run !== null && prior.stateHash === null) {
       throw new KiokukoError('INTEGRITY_ERROR', 'Stored context delivery history is invalid');
     }

@@ -22,8 +22,10 @@ import type { RunStatus } from '../ledger/types.js';
 import { isExternalSkillReference } from '../skills/store.js';
 import { contextRetrievalStateHash, ordinaryContextSelectionStateHash } from './selection-state.js';
 import { readContextRunRetrievalState } from './run-state.js';
+import type { PreparedSemanticQuery } from '../embedding/types.js';
+import type { HybridSearchRuntime } from '../memory/hybrid-retrieval.js';
 
-export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v5' as const;
+export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v6' as const;
 export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
 
@@ -161,6 +163,41 @@ interface PreparedScopedContext {
   pendingDelivery: ScopedDeliveryRequest | null;
   run: ScopedRunContext | null;
   projectState: { project: ResolvedProjectWorkspace; fingerprint: ProjectFingerprint } | null;
+}
+
+function semanticQueryIdentity(runtime: HybridSearchRuntime): Record<string, unknown> | null {
+  const semantic = runtime.semantic;
+  if (semantic === undefined) return null;
+  const query = semantic.query;
+  if (typeof query.profileId !== 'string' || query.profileId.length === 0
+    || !Number.isSafeInteger(query.dimensions) || query.dimensions < 2 || query.dimensions > 8192
+    || !(query.vector instanceof Float32Array) || query.vector.length !== query.dimensions
+    || typeof query.vectorHash !== 'string' || query.vectorHash.length === 0
+    || !Number.isFinite(query.distanceCeiling) || query.distanceCeiling < 0 || query.distanceCeiling >= 2
+    || typeof query.backendId !== 'string' || query.backendId.length === 0
+    || query.backendId !== semantic.backend.id) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Prepared semantic query is invalid');
+  }
+  return {
+    profileId: query.profileId,
+    dimensions: query.dimensions,
+    vectorHash: query.vectorHash,
+    backendId: query.backendId,
+    distanceCeiling: query.distanceCeiling,
+  } satisfies Pick<PreparedSemanticQuery, 'profileId' | 'dimensions' | 'vectorHash' | 'backendId' | 'distanceCeiling'>;
+}
+
+function snapshotSemanticRuntime(runtime: HybridSearchRuntime): HybridSearchRuntime {
+  if (runtime.semantic === undefined) return {};
+  return {
+    semantic: {
+      backend: runtime.semantic.backend,
+      query: {
+        ...runtime.semantic.query,
+        vector: new Float32Array(runtime.semantic.query.vector),
+      },
+    },
+  };
 }
 
 function normalize(value: string): string {
@@ -571,7 +608,13 @@ function deliveryRequest(
   };
 }
 
-async function prepareScopedContext(database: SqliteDatabase, raw: ScopedContextQuery): Promise<PreparedScopedContext> {
+async function prepareScopedContext(
+  database: SqliteDatabase,
+  raw: ScopedContextQuery,
+  requestedRuntime: HybridSearchRuntime,
+): Promise<PreparedScopedContext> {
+  const runtime = snapshotSemanticRuntime(requestedRuntime);
+  const semanticIdentity = semanticQueryIdentity(runtime);
   const taskProfileHash = canonicalContentHash(raw.taskProfile);
   const run = scopedRunContext(database, raw.runId);
   if (run !== null && run.profileHash !== taskProfileHash) {
@@ -631,6 +674,7 @@ async function prepareScopedContext(database: SqliteDatabase, raw: ScopedContext
     policyVersion: SCOPED_CONTEXT_POLICY_VERSION,
     retrievalStateHash,
     runStateHash: run?.stateHash ?? null,
+    semanticQuery: semanticIdentity,
   });
   const replay = replayableDelivery(
     database,
@@ -667,7 +711,7 @@ async function prepareScopedContext(database: SqliteDatabase, raw: ScopedContext
     ...(fingerprint === undefined ? {} : { fingerprint }),
     query: queryText,
     limit: 200,
-  });
+  }, runtime);
   for (const hit of federated) {
     const entry = hit.entry;
     const item = entryScore(entry, hit.origin, hit.score, hit.selectionReasons.includes('exact_signal_match'), queryText);
@@ -784,16 +828,21 @@ function persistPreparedScopedContext(
   });
 }
 
-export async function queryScopedContext(database: SqliteDatabase, raw: ScopedContextQuery): Promise<ScopedContextResult> {
-  return persistPreparedScopedContext(database, await prepareScopedContext(database, raw));
+export async function queryScopedContext(
+  database: SqliteDatabase,
+  raw: ScopedContextQuery,
+  runtime: HybridSearchRuntime = {},
+): Promise<ScopedContextResult> {
+  return persistPreparedScopedContext(database, await prepareScopedContext(database, raw, runtime));
 }
 
 export async function queryScopedContextGated<T>(
   database: SqliteDatabase,
   raw: ScopedContextQuery,
   decide: (candidate: ScopedContextResult) => ScopedContextGateDecision<T>,
+  runtime: HybridSearchRuntime = {},
 ): Promise<ScopedContextGatedResult<T>> {
-  const prepared = await prepareScopedContext(database, raw);
+  const prepared = await prepareScopedContext(database, raw, runtime);
   const decision = normalizedScopedGateDecision<T>(decide(prepared.result));
   if (!decision.persist) {
     withImmediateTransaction(database, () => {
