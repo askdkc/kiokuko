@@ -780,6 +780,8 @@ interface ValidatedMemoryPolicy {
   readonly memoryReasoningRequired: boolean;
   readonly contextWithheld: boolean;
   readonly withheldReason: 'memory_reasoning_missing' | 'memory_reasoning_unknown' | null;
+  readonly deliveryEmpty?: true;
+  readonly storedEntryCount?: number;
 }
 
 function validateCapabilityGate(
@@ -844,7 +846,11 @@ function validateCapabilityGate(
 }
 
 function validateMemoryPolicy(value: unknown): ValidatedMemoryPolicy {
-  const policy = responseObject(value, ['memoryReasoningRequired', 'contextWithheld', 'withheldReason']);
+  const policy = responseObject(
+    value,
+    ['memoryReasoningRequired', 'contextWithheld', 'withheldReason'],
+    ['deliveryEmpty', 'storedEntryCount'],
+  );
   if (typeof policy.memoryReasoningRequired !== 'boolean') throw responseIntegrityError();
   if (typeof policy.contextWithheld !== 'boolean') throw responseIntegrityError();
   const withheldReason = policy.withheldReason === null
@@ -856,11 +862,31 @@ function validateMemoryPolicy(value: unknown): ValidatedMemoryPolicy {
     throw responseIntegrityError();
   }
   if (policy.contextWithheld !== (withheldReason !== null)) throw responseIntegrityError();
+  const hasDeliveryEmpty = Object.hasOwn(policy, 'deliveryEmpty');
+  const hasStoredEntryCount = Object.hasOwn(policy, 'storedEntryCount');
+  if (hasDeliveryEmpty !== hasStoredEntryCount || (hasDeliveryEmpty && policy.deliveryEmpty !== true)) {
+    throw responseIntegrityError();
+  }
+  let storedEntryCount: number | undefined;
+  if (hasStoredEntryCount) {
+    storedEntryCount = responseInteger(policy.storedEntryCount, 1);
+  }
   return {
     memoryReasoningRequired: policy.memoryReasoningRequired,
     contextWithheld: policy.contextWithheld,
     withheldReason,
+    ...(storedEntryCount === undefined ? {} : { deliveryEmpty: true, storedEntryCount }),
   };
+}
+
+function validateMemoryDeliveryObservation(
+  policy: ValidatedMemoryPolicy,
+  context: Record<string, JsonValue> | null,
+  intakeNeedsAnswer: boolean,
+): void {
+  if (policy.deliveryEmpty !== true) return;
+  if (intakeNeedsAnswer) throw responseIntegrityError();
+  if (context !== null && responseArray(context.items, 100).length > 0) throw responseIntegrityError();
 }
 
 function validateIntakeResponse(value: JsonValue, binding: AgentResponseBinding): Record<string, JsonValue> {
@@ -906,6 +932,7 @@ function validateIntakeResponse(value: JsonValue, binding: AgentResponseBinding)
     throw responseIntegrityError();
   }
   const memoryPolicy = validateMemoryPolicy(object.memoryPolicy);
+  validateMemoryDeliveryObservation(memoryPolicy, context, needsAnswer);
   const capabilityGate = validateCapabilityGate(object, needsAnswer, memoryPolicy);
   if (!needsAnswer) {
     if (capabilityGate.nextAction === 'proceed' && context === null && !capabilityGate.memoryContextWithheld) {
@@ -944,6 +971,7 @@ function validateCheckpointResponse(value: JsonValue, binding: AgentResponseBind
     throw responseIntegrityError();
   }
   const memoryPolicy = validateMemoryPolicy(object.memoryPolicy);
+  validateMemoryDeliveryObservation(memoryPolicy, context, false);
   const capabilityGate = validateCapabilityGate(object, false, memoryPolicy);
   if (capabilityGate.nextAction === 'proceed') {
     if (context === null && !capabilityGate.memoryContextWithheld) throw responseIntegrityError();

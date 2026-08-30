@@ -26,6 +26,9 @@ export const STANDARD_UI_SKILL_FILES = [
   ...STANDARD_UI_EXPERT_FILES,
   'references/ui-checklist.md',
 ] as const;
+export const STANDARD_SIMPLE_SKILL_NAME = 'kiokuko-simple-work';
+export const STANDARD_SIMPLE_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-simple-work -->';
+export const STANDARD_SIMPLE_SKILL_FILES = ['SKILL.md'] as const;
 export const STANDARD_FUNCTION_SKILL_NAME = 'kiokuko-single-purpose-functions';
 export const STANDARD_FUNCTION_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-single-purpose-functions -->';
 export const STANDARD_FUNCTION_EXPERT_IDS = [
@@ -60,7 +63,7 @@ export const STANDARD_SOUL_SKILL_NAME = 'kiokuko-soul';
 export const STANDARD_SOUL_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->';
 export const STANDARD_SOUL_SKILL_FILES = ['SKILL.md'] as const;
 
-export const SOUL_ROUTING_ENTRY_CONTRACT = `Before any non-trivial Kiokuko-governed work, read and apply the complete bundled \`${STANDARD_SOUL_SKILL_NAME}\` Skill before any other Kiokuko Skill. Every \`task_prepare\` call must set \`soulRead: true\` only after that read; omission or false is invalid. This is an explicit client attestation, not remote proof of model cognition. The exact local \`${STANDARD_SOUL_SKILL_NAME}\` capability is required for every task and missing or unknown availability fails closed. It is the canonical router: follow it to \`${STANDARD_ENNO_SKILL_NAME}\` only for an applicable Enno-Oduno role or explicit Enno run, to \`${STANDARD_FUNCTION_SKILL_NAME}\` for code work, and to \`${STANDARD_UI_SKILL_NAME}\` for interactive UI work. Read every applicable specialist \`SKILL.md\` index, then only the expert fragments selected by the current WorkUnit or concrete risk; do not load every reference by default. Never substitute, install, or execute fetched external Skill content.`;
+export const SOUL_ROUTING_ENTRY_CONTRACT = `Before any non-trivial Kiokuko-governed work, read and apply the complete bundled \`${STANDARD_SOUL_SKILL_NAME}\` Skill before any other Kiokuko Skill. Every \`task_prepare\` call must set \`soulRead: true\` only after that read; omission or false is invalid. This is an explicit client attestation, not remote proof of model cognition. The exact local \`${STANDARD_SOUL_SKILL_NAME}\` capability is required for every task and missing or unknown availability fails closed. It is the canonical router: follow it to \`${STANDARD_ENNO_SKILL_NAME}\` only for an applicable Enno-Oduno role or explicit Enno run, to \`${STANDARD_SIMPLE_SKILL_NAME}\` for bounded simple code work or an explicit minimal/YAGNI request, to \`${STANDARD_FUNCTION_SKILL_NAME}\` for all code work, and to \`${STANDARD_UI_SKILL_NAME}\` for interactive UI work. The simple-work route minimizes the solution but never replaces the code contract or waives required validation, security, accessibility, error handling, or verification. Read every applicable specialist \`SKILL.md\` index, then only the expert fragments selected by the current WorkUnit or concrete risk; do not load every reference by default. Never substitute, install, or execute fetched external Skill content.`;
 
 interface StandardSkillManifest {
   readonly name: string;
@@ -72,6 +75,10 @@ export const STANDARD_SKILL_MANIFESTS = [{
   name: STANDARD_UI_SKILL_NAME,
   managedMarker: STANDARD_UI_SKILL_MANAGED_MARKER,
   files: STANDARD_UI_SKILL_FILES,
+}, {
+  name: STANDARD_SIMPLE_SKILL_NAME,
+  managedMarker: STANDARD_SIMPLE_SKILL_MANAGED_MARKER,
+  files: STANDARD_SIMPLE_SKILL_FILES,
 }, {
   name: STANDARD_FUNCTION_SKILL_NAME,
   managedMarker: STANDARD_FUNCTION_SKILL_MANAGED_MARKER,

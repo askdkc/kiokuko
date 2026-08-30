@@ -32,10 +32,14 @@ const DELIVERY_CURSOR_VERSION = 1 as const;
 // The persisted score schema is the mode discriminant: v1 is the generic
 // broker contract and v2 is the scoped broker contract.
 const GENERIC_DELIVERY_POLICY_VERSION = `${CONTEXT_RANKING_VERSION}+${RECOMMENDATION_POLICY_VERSION}`;
-const SCOPED_DELIVERY_POLICY_VERSION = 'context-ranking-v4';
-// v3 deliveries were valid before the scoped broker added ecosystem origins.
-// Keep them readable without allowing new writes to use the retired policy.
+const SCOPED_DELIVERY_POLICY_VERSION = 'context-ranking-v5';
+// v2/v3 used the legacy identity and intake binding. Retired v4 deliveries
+// retain the strict full identity and profile binding used when they were written.
 const LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS = new Set(['context-ranking-v2', 'context-ranking-v3']);
+const READABLE_SCOPED_DELIVERY_POLICY_VERSIONS = new Set([
+  ...LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS,
+  'context-ranking-v4',
+]);
 
 const VALIDATION_MESSAGE = 'Context delivery input is invalid';
 const NOT_FOUND_MESSAGE = 'Context delivery target was not found';
@@ -320,7 +324,7 @@ function deliveryPolicyVersion(version: 1 | 2): string {
 
 function storedDeliveryPolicyMatches(version: 1 | 2, policyVersion: string): boolean {
   return policyVersion === deliveryPolicyVersion(version)
-    || version === 2 && LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(policyVersion);
+    || version === 2 && READABLE_SCOPED_DELIVERY_POLICY_VERSIONS.has(policyVersion);
 }
 
 function storedNonNegativeSafeInteger(value: unknown): number {

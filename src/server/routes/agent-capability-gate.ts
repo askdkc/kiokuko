@@ -5,7 +5,7 @@ import { entryOriginMatchesWorkspace } from '../../context/origin.js';
 import { KiokukoError } from '../../errors.js';
 import { LedgerStore } from '../../ledger/store.js';
 import { readEntry } from '../../memory/entries.js';
-import { isRetrievableEntry } from '../../memory/hybrid-retrieval.js';
+import { isRetrievableEntry, retrievableWorkspaceEntryCount } from '../../memory/hybrid-retrieval.js';
 import { effectiveRetrievalScope, hasExplicitApplicability } from '../../memory/structured-memory.js';
 import { isExternalSkillReference } from '../../skills/store.js';
 import { isCuratorManagedGlobalMemory } from '../../memory/curator-trust.js';
@@ -45,6 +45,7 @@ export interface AgentCapabilityGateInput {
   catalog: unknown;
   broker: Pick<ContextBrokerResult, 'context' | 'recommendations'>;
   memoryUseOverride?: 'none' | 'actionable';
+  storedEntryCount?: number;
 }
 
 export interface AgentCapabilityGateResult {
@@ -186,14 +187,41 @@ export function applyAgentCapabilityGate(input: AgentCapabilityGateInput): Agent
   const capabilities = resolution(input, memoryUse);
   const action = nextAction(input.intakeStatus, capabilities);
   const withholdMemory = input.intakeStatus === 'ready' && shouldWithholdMemoryContext(capabilities);
+  const deliveredContext = action === 'required_capability_unavailable' || withholdMemory ? null : input.broker.context;
   return {
-    context: action === 'required_capability_unavailable' || withholdMemory ? null : input.broker.context,
+    context: deliveredContext,
     recommendations: action === 'required_capability_unavailable' || withholdMemory ? [] : input.broker.recommendations,
     capabilities,
-    memoryPolicy: deriveMemoryPolicy(input.taskProfile, memoryUse, input.catalog),
+    memoryPolicy: deriveMemoryPolicy(
+      input.taskProfile,
+      memoryUse,
+      input.catalog,
+      input.intakeStatus !== 'ready' || input.storedEntryCount === undefined
+        ? undefined
+        : {
+          contextItemCount: deliveredContext?.items.length ?? null,
+          storedEntryCount: input.storedEntryCount,
+        },
+    ),
     warnings: capabilities.warnings,
     nextAction: action,
   };
+}
+
+/** Count stored entries only when the final model-facing context is empty. */
+export function applyAgentCapabilityGateWithDeliveryObservation(
+  input: Omit<AgentCapabilityGateInput, 'storedEntryCount'>,
+  countStoredEntries: () => number,
+): AgentCapabilityGateResult {
+  const initial = applyAgentCapabilityGate(input);
+  if (input.intakeStatus !== 'ready'
+    || (initial.context !== null && initial.context.items.length > 0)) {
+    return initial;
+  }
+  return applyAgentCapabilityGate({
+    ...input,
+    storedEntryCount: countStoredEntries(),
+  });
 }
 
 /** Rank once, decide against that immutable snapshot, and persist only the
@@ -209,7 +237,7 @@ export async function attachCapabilityGatedContext(
   const gated = await context.broker.queryGated({ workspace: 'run-bound', runId: value.runId }, (candidate) => {
     assertBrokerContextRun(candidate, value.runId);
     const memoryUse = deriveBrokerMemoryUseSignal(context, candidate);
-    const result = applyAgentCapabilityGate({
+    const result = applyAgentCapabilityGateWithDeliveryObservation({
       task,
       intakeStatus: brokerIntakeStatus(candidate.status),
       taskProfile: candidate.taskProfile,
@@ -217,7 +245,7 @@ export async function attachCapabilityGatedContext(
       catalog,
       broker: candidate,
       memoryUseOverride: memoryUse,
-    });
+    }, () => retrievableWorkspaceEntryCount(context.database, run.workspace));
     return {
       persist: result.context !== null || candidate.context === null,
       value: result,

@@ -821,7 +821,7 @@ test('binds generic and scoped deliveries to the authoritative profile projectio
       intakeSessionId: 'session-delivery-1',
       taskProfileHash: forgedScopedProfile,
       queryHash: 'c'.repeat(64),
-      policyVersion: 'context-ranking-v4',
+      policyVersion: 'context-ranking-v5',
       charBudget: 8_000,
       charCount: 0,
       truncated: false,
@@ -842,7 +842,7 @@ test('binds generic and scoped deliveries to the authoritative profile projectio
     );
     for (const input of [
       { ...deliveryInput('delivery-unknown-policy'), policyVersion: 'unknown-policy' },
-      { ...deliveryInput('delivery-crossed-policy'), policyVersion: 'context-ranking-v4' },
+      { ...deliveryInput('delivery-crossed-policy'), policyVersion: 'context-ranking-v5' },
       { ...deliveryInput('delivery-unknown-score-schema'), scoreSchemaVersion: 3 },
     ]) {
       assert.throws(

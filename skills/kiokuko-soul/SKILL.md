@@ -1,6 +1,6 @@
 ---
 name: kiokuko-soul
-description: Use before every non-trivial Kiokuko-governed task as the mandatory first-read SOUL router. Route applicable Enno-Oduno control, code work, and interactive UI work to the bundled specialist Skills without replacing their contracts.
+description: Use before every non-trivial Kiokuko-governed task as the mandatory first-read SOUL router. Route applicable Enno-Oduno control, simple code work, general code work, and interactive UI work to the bundled specialist Skills without replacing their contracts.
 ---
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->
@@ -40,6 +40,15 @@ Read and apply `kiokuko-enno-oduno` only when its activation boundary is satisfi
 
 Do not invent a run, role, revision, WorkUnit, or state transition merely because Kiokuko is present.
 
+### Simple code work
+
+Read and apply `kiokuko-simple-work` when either condition is true:
+
+- the request is a bounded code change with a clear target and expected result, and it introduces no new architecture, dependency, data migration, public protocol, security or authorization policy, or cross-system orchestration;
+- the user explicitly requests the simplest, shortest, minimal, YAGNI, dependency-free, or Ponytail approach.
+
+This route minimizes the solution; it does not replace the code contract below or waive required understanding, boundary validation, error handling, security, accessibility, or focused verification. If the task's simplicity is unclear and the user did not explicitly request this route, use the ordinary code route without it.
+
 ### Code work
 
 Read and apply the `kiokuko-single-purpose-functions` index before writing, modifying, debugging, refactoring, or reviewing code, and before decomposing a code-changing WorkPlan. Select one to three `code.*` expert fragments for each cohesive function or WorkUnit.
@@ -56,8 +65,9 @@ Use this order:
 
 1. `kiokuko-soul`;
 2. `kiokuko-enno-oduno` when the current role requires Enno-Oduno control;
-3. `kiokuko-single-purpose-functions` for code planning or code work;
-4. `kiokuko-ui-design-soul` for interactive UI work.
+3. `kiokuko-simple-work` when the simple-code activation boundary is satisfied;
+4. `kiokuko-single-purpose-functions` for code planning or code work;
+5. `kiokuko-ui-design-soul` for interactive UI work.
 
 The current revision-bound directive may narrow which routes the active role performs. Do not let a later route cross a role boundary or expand an approved WorkUnit.
 

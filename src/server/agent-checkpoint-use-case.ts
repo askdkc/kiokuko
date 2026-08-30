@@ -11,9 +11,10 @@ import { buildRecommendations } from '../context/recommendations.js';
 import { canonicalJson } from '../serialization/validate.js';
 import { successEnvelope } from '../serialization/envelope.js';
 import { assertCapabilityCatalogBinding } from '../akinator/capability-binding.js';
+import { retrievableWorkspaceEntryCount } from '../memory/hybrid-retrieval.js';
 import type { CapabilityGatedIntakeResponse } from './routes/agent-capability-gate.js';
 import {
-  applyAgentCapabilityGate,
+  applyAgentCapabilityGateWithDeliveryObservation,
   assertBrokerContextRun,
   brokerIntakeStatus,
   deriveBrokerMemoryUseSignal,
@@ -153,7 +154,7 @@ export class AgentCheckpointUseCase {
     }, (candidate) => {
       assertBrokerContextRun(candidate, input.runId);
       const memoryUse = deriveBrokerMemoryUseSignal(this.dependencies, candidate);
-      const value = applyAgentCapabilityGate({
+      const value = applyAgentCapabilityGateWithDeliveryObservation({
         task: initialRun.title ?? '',
         intakeStatus: brokerIntakeStatus(candidate.status),
         taskProfile: candidate.taskProfile,
@@ -161,7 +162,7 @@ export class AgentCheckpointUseCase {
         catalog,
         broker: candidate,
         memoryUseOverride: memoryUse,
-      });
+      }, () => retrievableWorkspaceEntryCount(this.dependencies.database, initialRun.workspace));
       return {
         persist: value.context !== null || candidate.context === null,
         value,

@@ -598,9 +598,17 @@ test('a changed environment waits for a choice and explicit planning cancellatio
       assert.deepEqual(error.details, { planStartRecoveryReason: 'environment_changed' });
       return true;
     });
-    assert.equal(readEnnoSnapshot(database, identity).status, 'zenki_planning');
+    const unchanged = readEnnoSnapshot(database, identity);
+    assert.equal(unchanged.status, 'zenki_planning');
+    assert.equal(unchanged.revision, 1);
+    assert.equal(unchanged.mutationRevision, 0);
+    assert.equal(unchanged.workUnits.length, 0);
     assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
       .get<{ status: string }>(identity.runId)?.status, 'active');
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE run_id = ? AND operation = 'plan_submit'")
+      .get<{ count: number }>(identity.runId)?.count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ? AND event_type = 'zenki.plan_created'")
+      .get<{ count: number }>(identity.runId)?.count, 0);
 
     assert.throws(() => answerEnno(database, {
       ...identity, expectedRevision: 1, idempotencyKey: 'planning-approve-forbidden', action: 'approve',

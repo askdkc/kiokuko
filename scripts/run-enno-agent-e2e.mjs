@@ -26,6 +26,7 @@ const definitions = {
 };
 const maxOutput = 64 * 1024;
 const timeoutMs = 5 * 60 * 1000;
+const minimumCodex0151Version = [0, 151, 0];
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -64,6 +65,70 @@ async function requireSuccess(command, args, options) {
   if (result.code !== 0) throw new Error(`fixture command failed: ${path.basename(command)} (${result.spawnCode ?? result.code ?? result.signal ?? 'unknown'})`);
 }
 
+function parseVersion(output) {
+  const match = /\b(\d+)\.(\d+)\.(\d+)\b/u.exec(output);
+  return match === null ? null : match.slice(1).map((value) => Number.parseInt(value, 10));
+}
+
+function versionAtLeast(actual, minimum) {
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] !== minimum[index]) return actual[index] > minimum[index];
+  }
+  return true;
+}
+
+async function codex0151Preflight(command, root, project, environment, args) {
+  const versionResult = await execute(command, ['--version'], {
+    cwd: project,
+    env: environment,
+    timeoutMs: 10_000,
+  });
+  const versionOutput = `${versionResult.stdout.toString('utf8')}\n${versionResult.stderr.toString('utf8')}`;
+  const parsedVersion = parseVersion(versionOutput);
+  if (versionResult.code !== 0 || parsedVersion === null) {
+    return { status: 'not-run', reason: 'codex_version_unavailable' };
+  }
+  const version = parsedVersion.join('.');
+  if (!versionAtLeast(parsedVersion, minimumCodex0151Version)) {
+    return { status: 'not-run', reason: 'codex_version_below_0.151.0', version };
+  }
+
+  const probeHome = path.join(root, 'required-mcp-probe-home');
+  await mkdir(path.join(probeHome, '.codex'), { recursive: true });
+  await writeFile(path.join(probeHome, '.codex', 'config.toml'), [
+    '[mcp_servers.kiokuko_required_failure_probe]',
+    `command = ${JSON.stringify(process.execPath)}`,
+    'args = ["-e", "process.exit(23)"]',
+    'enabled = true',
+    'required = true',
+    '',
+  ].join('\n'));
+  const probeEnvironment = {
+    ...environment,
+    HOME: probeHome,
+    CODEX_HOME: path.join(probeHome, '.codex'),
+  };
+  const startupResult = await execute(command, args('Return exactly: unreachable'), {
+    cwd: project,
+    env: probeEnvironment,
+    timeoutMs: 30_000,
+  });
+  const startupOutput = `${startupResult.stdout.toString('utf8')}\n${startupResult.stderr.toString('utf8')}`;
+  if (startupResult.code === 0
+    || !/kiokuko_required_failure_probe/u.test(startupOutput)
+    || !/mcp/iu.test(startupOutput)) {
+    return {
+      status: 'failed',
+      reason: startupResult.timedOut ? 'required_mcp_startup_probe_timeout' : 'required_mcp_startup_failure_not_observed',
+      version,
+      exitCode: startupResult.code,
+      stdoutDigest: digest(startupResult.stdout),
+      stderrDigest: digest(startupResult.stderr),
+    };
+  }
+  return { status: 'passed', version };
+}
+
 async function runClient(client) {
   const definition = definitions[client];
   if (definition === undefined) return { client, status: 'failed', reason: 'unsupported_client' };
@@ -92,13 +157,31 @@ async function runClient(client) {
     XDG_DATA_HOME: data,
     KIOKUKO_DATABASE: databasePath,
   };
+  const command = process.env[definition.commandEnvironment] || definition.command;
+  let codexChecks;
+  if (client === 'codex') {
+    const preflight = await codex0151Preflight(command, root, project, environment, definition.args);
+    if (preflight.status !== 'passed') return { client, ...preflight };
+    codexChecks = {
+      version: preflight.version,
+      requiredMcpStartup: { status: 'passed' },
+      extensionResultMutation: {
+        status: 'not-run',
+        reason: 'no_external_tool_lifecycle_extension_harness',
+        modes: ['direct', 'code-mode'],
+      },
+      repositoryPluginCatalogIsolation: {
+        status: 'not-run',
+        reason: 'no_repository_plugin_catalog_fixture',
+      },
+    };
+  }
   await requireSuccess(kiokuko, ['setup', '--clients', client, '--enno-oduno', 'on', '--skill-discovery', 'off', '--json'], {
     cwd: project, env: environment, timeoutMs: 60_000,
   });
   await requireSuccess(kiokuko, ['use', '--root', project, '--json'], { cwd: project, env: environment, timeoutMs: 60_000 });
 
   const task = 'Use Kiokuko Enno-Oduno. Fix the incorrect add function, keep the public API, and make node --test pass. Use at most three repair loops.';
-  const command = process.env[definition.commandEnvironment] || definition.command;
   const result = await execute(command, definition.args(task), { cwd: project, env: environment, timeoutMs });
   if (result.code !== 0) {
     return {
@@ -134,7 +217,7 @@ async function runClient(client) {
     if (!skillSnapshotPresent || !workCompleted || !freshEvidence) {
       return { client, status: 'failed', reason: 'required_run_evidence_missing' };
     }
-    return { client, status: 'passed', loops };
+    return { client, status: 'passed', loops, ...(codexChecks === undefined ? {} : { codexChecks }) };
   } finally {
     database.close();
   }

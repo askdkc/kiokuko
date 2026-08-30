@@ -118,7 +118,7 @@ function assertArchiveTablesEmpty(db: ReturnType<typeof openConnection>): void {
     'entry_links',
     'audit_events',
     'entries_fts',
-    'entries_trigram',
+    'entry_search_documents',
     'entry_search_signals',
   ]) {
     assert.equal(
@@ -138,7 +138,7 @@ function rowCounts(db: ReturnType<typeof openConnection>): Record<string, number
       'entry_links',
       'audit_events',
       'entries_fts',
-      'entries_trigram',
+      'entry_search_documents',
       'entry_search_signals',
     ].map((table) => [
       table,
@@ -155,10 +155,10 @@ function archiveReplayState(db: ReturnType<typeof openConnection>): Record<strin
         FROM entries_fts
        ORDER BY rowid ASC
     `).all(),
-    trigram: db.prepare(`
-      SELECT rowid, title, body, summary, tags_text
-        FROM entries_trigram
-       ORDER BY rowid ASC
+    documents: db.prepare(`
+      SELECT entry_rowid, entry_id, title, body, summary, tags_text
+        FROM entry_search_documents
+       ORDER BY entry_rowid ASC
     `).all(),
     signals: db.prepare(`
       SELECT entry_id, signal_type, normalized_value

@@ -28,6 +28,7 @@ export interface RetrievalCandidate {
 interface SearchRow extends SqliteRow {
   id: string;
   score?: number;
+  cjkWindow?: boolean;
 }
 
 const MAX_LANE_CANDIDATES = 120;
@@ -78,6 +79,24 @@ export function isRetrievableEntry(database: SqliteDatabase, entry: EntryRecord)
   return active.length === 1 && active[0]!.revision === entry.revision;
 }
 
+/** Count current entries in one workspace that are eligible for ordinary retrieval. */
+export function retrievableWorkspaceEntryCount(database: SqliteDatabase, workspace: string): number {
+  const rows = database.prepare(`
+    SELECT id FROM entries
+    WHERE workspace = ? AND status <> 'superseded'
+    ORDER BY id
+  `).all<{ id: unknown }>(workspace);
+  let count = 0;
+  for (const row of rows) {
+    if (typeof row.id !== 'string' || row.id.length === 0) {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Stored memory entry identity is invalid');
+    }
+    const entry = readEntry(database, { workspace, entryId: row.id });
+    if (isRetrievableEntry(database, entry)) count += 1;
+  }
+  return count;
+}
+
 function invalid(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Search query is invalid');
 }
@@ -88,6 +107,25 @@ function quotedFts(value: string): string {
 
 function escapedLike(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+}
+
+function wordTokens(value: string): string[] {
+  return value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().match(/[\p{L}\p{N}_$@]+/gu) ?? [];
+}
+
+function containsTokenSequence(source: readonly string[], expected: readonly string[]): boolean {
+  if (expected.length === 0 || expected.length > source.length) return false;
+  for (let start = 0; start <= source.length - expected.length; start += 1) {
+    if (expected.every((token, offset) => source[start + offset] === token)) return true;
+  }
+  return false;
+}
+
+function hasCanonicalWordMatch(database: SqliteDatabase, input: HybridSearchInput, row: SearchRow, value: string): boolean {
+  const entry = readEntry(database, { workspace: input.workspace, entryId: row.id });
+  const expected = wordTokens(value);
+  const source = wordTokens([entry.title, entry.body, entry.summary ?? '', ...entry.tags].join('\n'));
+  return containsTokenSequence(source, expected);
 }
 
 function filterSql(input: HybridSearchInput, parameters: Array<string | number>): string {
@@ -149,38 +187,67 @@ function wordFtsLane(database: SqliteDatabase, input: HybridSearchInput, parsed:
     .slice(0, 24);
   const rows: SearchRow[] = [];
   for (const value of values) {
+    let candidates: SearchRow[];
+    if (Array.from(value).length >= 3) {
+      const parameters: Array<string | number> = [quotedFts(value)];
+      const filters = filterSql(input, parameters);
+      parameters.push(MAX_LANE_CANDIDATES);
+      candidates = database.prepare(`
+        SELECT e.id, bm25(entries_fts) AS score
+        FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid
+        JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
+        WHERE entries_fts MATCH ? AND ${filters}
+        ORDER BY score ASC, ${rankSql()}
+        LIMIT ?
+      `).all<SearchRow>(...parameters);
+    } else {
+      const pattern = `%${escapedLike(value)}%`;
+      const parameters: Array<string | number> = [pattern, pattern, pattern, pattern];
+      const filters = filterSql(input, parameters);
+      parameters.push(MAX_LANE_CANDIDATES);
+      candidates = database.prepare(`
+        SELECT e.id, 0 AS score
+        FROM entry_search_documents AS d
+        JOIN entries AS e ON e.rowid = d.entry_rowid
+        JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
+        WHERE (d.title LIKE ? ESCAPE '\\' OR d.body LIKE ? ESCAPE '\\'
+          OR d.summary LIKE ? ESCAPE '\\' OR d.tags_text LIKE ? ESCAPE '\\')
+          AND ${filters}
+        ORDER BY ${rankSql()}
+        LIMIT ?
+      `).all<SearchRow>(...parameters);
+    }
+    rows.push(...candidates.filter((row) => hasCanonicalWordMatch(database, input, row, value)));
+  }
+  return rows;
+}
+
+function trigramLane(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): SearchRow[] {
+  const values = parsed.substringTerms.filter((value) => Array.from(value).length >= 3).slice(0, 24);
+  const rows = new Map<string, SearchRow>();
+  for (const value of values) {
     const parameters: Array<string | number> = [quotedFts(value)];
     const filters = filterSql(input, parameters);
     parameters.push(MAX_LANE_CANDIDATES);
-    rows.push(...database.prepare(`
+    const matches = database.prepare(`
       SELECT e.id, bm25(entries_fts) AS score
       FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid
       JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
       WHERE entries_fts MATCH ? AND ${filters}
       ORDER BY score ASC, ${rankSql()}
       LIMIT ?
-    `).all<SearchRow>(...parameters));
+    `).all<SearchRow>(...parameters);
+    const cjkWindow = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(value);
+    for (const match of matches) {
+      const existing = rows.get(match.id);
+      if (existing !== undefined) {
+        if (cjkWindow) existing.cjkWindow = true;
+      } else {
+        rows.set(match.id, { ...match, ...(cjkWindow ? { cjkWindow: true } : {}) });
+      }
+    }
   }
-  return rows;
-}
-
-function trigramLane(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): SearchRow[] {
-  const values = parsed.substringTerms.filter((value) => value.length >= 2).slice(0, 24);
-  const rows: SearchRow[] = [];
-  for (const value of values) {
-    const parameters: Array<string | number> = [quotedFts(value)];
-    const filters = filterSql(input, parameters);
-    parameters.push(MAX_LANE_CANDIDATES);
-    rows.push(...database.prepare(`
-      SELECT e.id, bm25(entries_trigram) AS score
-      FROM entries_trigram JOIN entries e ON e.rowid = entries_trigram.rowid
-      JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
-      WHERE entries_trigram MATCH ? AND ${filters}
-      ORDER BY score ASC, ${rankSql()}
-      LIMIT ?
-    `).all<SearchRow>(...parameters));
-  }
-  return rows;
+  return [...rows.values()];
 }
 
 function likeLane(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): SearchRow[] {
@@ -242,7 +309,10 @@ export function hybridSearch(database: SqliteDatabase, input: HybridSearchInput)
       existing.laneRanks[lane] = Math.min(existing.laneRanks[lane] ?? rank, rank);
       if (lane === 'exact-signal') existing.reasons.push('exact_signal_match');
       if (lane === 'word-fts') existing.reasons.push('word_match');
-      if (lane === 'trigram') existing.reasons.push('substring_match');
+      if (lane === 'trigram') {
+        existing.reasons.push('substring_match');
+        if (row.cjkWindow === true) existing.reasons.push('cjk_window_match');
+      }
       if (lane === 'like') existing.reasons.push('literal_fallback_match');
       if (lane === 'tag') existing.reasons.push('tag_match');
       existing.matchedSignals.push(...parsed.exactSignals.map((signal) => signal.value));

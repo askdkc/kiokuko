@@ -17,12 +17,12 @@ function isIntegrityError(error: unknown): boolean {
 
 function projectionSnapshot(database: ReturnType<typeof openConnection>): {
   fts: Array<Record<string, unknown>>;
-  trigram: Array<Record<string, unknown>>;
+  documents: Array<Record<string, unknown>>;
   signals: Array<Record<string, unknown>>;
 } {
   return {
     fts: database.prepare('SELECT rowid, title, body, summary, tags_text FROM entries_fts ORDER BY rowid').all(),
-    trigram: database.prepare('SELECT rowid, title, body, summary, tags_text FROM entries_trigram ORDER BY rowid').all(),
+    documents: database.prepare('SELECT entry_rowid, entry_id, title, body, summary, tags_text FROM entry_search_documents ORDER BY entry_rowid').all(),
     signals: database.prepare('SELECT entry_id, signal_type, normalized_value FROM entry_search_signals ORDER BY entry_id, signal_type, normalized_value').all(),
   };
 }
@@ -41,18 +41,42 @@ test('rejects a partial hybrid-search projection and rolls back entry writes', (
   const database = openConnection(':memory:');
   try {
     migrateDatabase(database, migrationsDirectory);
-    database.exec('DROP TABLE entries_trigram');
+    database.exec('DROP TABLE entry_search_documents');
 
     assert.throws(
       () => recordEntry(database, { workspace: 'project:partial-projection', kind: 'lesson', title: 'Missing projection', body: 'Must not be stored.' }),
       (error: unknown) => {
         const missing = error instanceof KiokukoError ? error.details.missing : undefined;
-        return isIntegrityError(error) && Array.isArray(missing) && missing.includes('entries_trigram');
+        return isIntegrityError(error) && Array.isArray(missing) && missing.includes('entry_search_documents');
       },
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
     assert.throws(() => rebuildHybridSearch(database), isIntegrityError);
     assert.throws(() => hybridSearchProjectionStatus(database), isIntegrityError);
+  } finally {
+    database.close();
+  }
+});
+
+test('rejects an external-content FTS projection without its maintenance triggers', () => {
+  const database = openConnection(':memory:');
+  try {
+    migrateDatabase(database, migrationsDirectory);
+    database.exec('DROP TRIGGER entry_search_documents_ai');
+
+    assert.throws(
+      () => recordEntry(database, {
+        workspace: 'project:missing-search-trigger',
+        kind: 'lesson',
+        title: 'Missing search trigger',
+        body: 'The entry must not be stored without a complete FTS projection contract.',
+      }),
+      (error: unknown) => {
+        const missing = error instanceof KiokukoError ? error.details.missing : undefined;
+        return isIntegrityError(error) && Array.isArray(missing) && missing.includes('entry_search_documents_ai');
+      },
+    );
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
   } finally {
     database.close();
   }
@@ -71,11 +95,11 @@ test('uses the canonical code-unit tag order for incremental and rebuilt search 
     });
     const rowid = database.prepare('SELECT rowid FROM entries WHERE id = ?').get<{ rowid: number }>(entry.id)?.rowid;
     assert.ok(rowid);
-    assert.equal(database.prepare('SELECT tags_text FROM entries_trigram WHERE rowid = ?').get<{ tags_text: string }>(rowid)?.tags_text, 'a 😀 \uE000');
+    assert.equal(database.prepare('SELECT tags_text FROM entry_search_documents WHERE entry_rowid = ?').get<{ tags_text: string }>(rowid)?.tags_text, 'a 😀 \uE000');
 
     rebuildHybridSearch(database);
 
-    assert.equal(database.prepare('SELECT tags_text FROM entries_trigram WHERE rowid = ?').get<{ tags_text: string }>(rowid)?.tags_text, 'a 😀 \uE000');
+    assert.equal(database.prepare('SELECT tags_text FROM entry_search_documents WHERE entry_rowid = ?').get<{ tags_text: string }>(rowid)?.tags_text, 'a 😀 \uE000');
     assert.equal(hybridSearchProjectionStatus(database).staleTrigram, 0);
   } finally {
     database.close();
@@ -340,8 +364,7 @@ test('rolls back every projection when a late signal write fails', () => {
     });
     const row = database.prepare('SELECT rowid FROM entries WHERE id = ?').get<{ rowid: number }>(entry.id);
     assert.ok(row);
-    database.prepare('UPDATE entries_fts SET title = ? WHERE rowid = ?').run('Pre-existing FTS sentinel', row.rowid);
-    database.prepare('UPDATE entries_trigram SET title = ? WHERE rowid = ?').run('Pre-existing trigram sentinel', row.rowid);
+    database.prepare('UPDATE entry_search_documents SET title = ? WHERE entry_rowid = ?').run('Pre-existing FTS sentinel', row.rowid);
     database.prepare(`
       INSERT INTO entry_search_signals (entry_id, signal_type, normalized_value)
       VALUES (?, 'symbol', 'pre-existing-signal-sentinel')

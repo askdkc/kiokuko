@@ -8,6 +8,9 @@ node_modules
 .codex/*
 !.codex/config.toml
 !.codex/kiokuko-dev-mcp.mjs
+!.codex/rules/
+.codex/rules/*
+!.codex/rules/kiokuko-tests.rules
 .claude/
 .opencode/
 .hermes/

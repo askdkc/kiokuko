@@ -24,6 +24,11 @@ const MISSING_MEMORY_POLICY = {
   contextWithheld: true,
   withheldReason: 'memory_reasoning_missing',
 } as const;
+const MISSING_MEMORY_POLICY_WITH_ONE_STORED_ENTRY = {
+  ...MISSING_MEMORY_POLICY,
+  deliveryEmpty: true,
+  storedEntryCount: 1,
+} as const;
 
 async function repository(prefix: string): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), `kiokuko-memory-policy-${prefix}-`));
@@ -157,7 +162,7 @@ test('withholds actionable memory but continues the repair task when memory-reas
     const missingRecommendation = missing.capabilities.recommendations.find((item) => item.name === 'memory-reasoning');
     assert.equal(missingRecommendation?.name, 'memory-reasoning');
     assert.equal(missingRecommendation?.availability, 'missing');
-    assert.deepEqual(missing.memoryPolicy, MISSING_MEMORY_POLICY);
+    assert.deepEqual(missing.memoryPolicy, MISSING_MEMORY_POLICY_WITH_ONE_STORED_ENTRY);
     assert.equal(missing.nextAction, 'proceed');
     assert.equal(missing.context, null);
     assert.equal('memory' in missing, false);
@@ -240,7 +245,11 @@ test('fresh default setup supplies the exact memory capability that unlocks buil
         skillDiscoveryMode: 'off',
       });
       assert.equal(missing.context, null);
-      assert.deepEqual(missing.memoryPolicy, MISSING_MEMORY_POLICY);
+      assert.deepEqual(missing.memoryPolicy, {
+        ...MISSING_MEMORY_POLICY,
+        deliveryEmpty: true,
+        storedEntryCount: taskType === 'build' ? 1 : 2,
+      });
       assert.equal(missing.nextAction, 'proceed');
       assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
         .get<{ count: number }>(missing.run.runId)?.count, 0);
@@ -947,6 +956,84 @@ test('does not require memory-reasoning for a ready repair task without actionab
     assert.equal(prepared.nextAction, 'proceed');
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
       .get<{ count: number }>(prepared.run.runId)?.count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('reports a machine-readable empty delivery when retrievable project memory exists', async () => {
+  const root = await repository('empty-delivery');
+  const database = await createDatabase('empty-delivery');
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+    recordEntry(database, {
+      workspace: project.workspace,
+      kind: 'fact',
+      title: '陶磁器の焼成記録',
+      body: '釉薬の発色条件を保存する。',
+    });
+
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'memory-policy-empty-delivery',
+      cwd: root,
+      task: '量子暗号通信の研究計画を整理する',
+      profileHints: { taskType: 'research', target: '量子暗号通信', expected: '研究計画', constraints: null },
+      capabilities: [SOUL_CAPABILITY],
+      client: { kind: 'test', sessionId: 'empty-delivery' },
+      skillDiscoveryMode: 'off',
+    });
+
+    assert.equal(prepared.context?.items.length, 0);
+    assert.deepEqual(prepared.memoryPolicy, {
+      ...NO_MEMORY_POLICY,
+      deliveryEmpty: true,
+      storedEntryCount: 1,
+    });
+  } finally {
+    database.close();
+  }
+});
+
+test('delivers a Japanese checkpoint policy to a Japanese-only migration task', async () => {
+  const root = await repository('cjk-delivery');
+  const database = await createDatabase('cjk-delivery');
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+    const entry = recordEntry(database, {
+      workspace: project.workspace,
+      kind: 'decision',
+      status: 'verified',
+      title: 'マイグレーション履歴の保全方針',
+      body: '過去のマイグレーションファイルは直接編集しない。変更は新しいファイルを追加して前方移行する。',
+      tags: ['agent-checkpoint'],
+    });
+
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'memory-policy-cjk-delivery',
+      cwd: root,
+      task: '開発環境に既存データがなく、過去のマイグレーションファイルを直接編集することを明示的に承認しているため、テーブルにカラムを追加する。',
+      profileHints: {
+        taskType: 'build',
+        target: 'データベースのマイグレーション',
+        expected: '履歴を壊さずにカラムを追加する',
+        constraints: null,
+      },
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
+      client: { kind: 'test', sessionId: 'cjk-delivery' },
+      skillDiscoveryMode: 'off',
+    });
+
+    assert.equal(prepared.context?.items.some((item) => item.entryId === entry.id), true);
+    assert.ok(prepared.context?.deliveryId);
+    assert.deepEqual(prepared.memoryPolicy, AVAILABLE_MEMORY_POLICY);
+    const delivery = database.prepare(`
+      SELECT char_count AS charCount
+      FROM context_deliveries
+      WHERE delivery_id = ?
+    `).get<{ charCount: number }>(prepared.context.deliveryId);
+    assert.ok((delivery?.charCount ?? 0) > 0);
   } finally {
     database.close();
   }

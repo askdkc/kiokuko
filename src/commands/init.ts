@@ -26,7 +26,10 @@ import {
   type PreMigrationBackup,
 } from '../db/upgrade-backup.js';
 import { KiokukoError } from '../errors.js';
-import { rebuildHybridSearchInTransaction } from '../memory/rebuild-search.js';
+import {
+  rebuildHybridSearchInTransaction,
+  rebuildLegacyHybridSearchInTransaction,
+} from '../memory/rebuild-search.js';
 
 export interface InitOptions {
   databasePath?: string;
@@ -673,6 +676,9 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
         beforeMarkApplied(database, pending) {
           if ((pending.version === 5 && pending.name === '005_hybrid_search.sql')
             || (pending.version === 9 && pending.name === '009_external_skill_discovery.sql')) {
+            rebuildLegacyHybridSearchInTransaction(database);
+          }
+          if (pending.version === 20 && pending.name === '020_cjk_fts.sql') {
             rebuildHybridSearchInTransaction(database);
           }
         },

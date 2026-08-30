@@ -22,7 +22,20 @@ kiokuko setup
 
 `setup`은 설치된 지원 클라이언트를 감지하고 SQLite 데이터베이스와 MCP 연결을 자동으로 설정합니다.
 또한 번들된 `memory-reasoning` Skill과 다른 Kiokuko 표준 Skill을 설치합니다. 기존 환경에는 다음 `kiokuko setup` 실행 시 추가되며, 같은 이름의 비-managed 파일은 덮어쓰지 않습니다.
+표준 `kiokuko-soul` router는 범위가 명확하고 위험이 낮은 code 변경과 명시적인 minimal/YAGNI 요청에 `kiokuko-simple-work`를 적용하며, 일반 code 계약·보안·접근성·오류 처리·검증 요구 사항은 생략하지 않습니다.
 대화형 setup은 감사된 community Skill도 참고 자료로 사용할지 묻고, 기본 응답은 아니요입니다.
+
+Codex용 setup은 다음과 같은 정확한 managed MCP 핵심 설정을 생성합니다(Skill discovery용 environment 행이 뒤에 이어집니다).
+
+```toml
+[mcp_servers.kiokuko]
+command = "kiokuko"
+args = ["mcp"]
+enabled = true
+required = true
+```
+
+`required = true`이므로 Kiokuko를 초기화할 수 없으면 필수 SOUL과 policy 없이 계속하지 않고 Codex startup 또는 resume이 실패합니다. `kiokuko setup`을 다시 실행하면 `required`만 없는 정확한 이전 managed block을 업그레이드합니다. 값, 순서, 중복 key 또는 추가 field가 변경된 block은 덮어쓰지 않고 conflict를 보고합니다. 명시적으로 `required = false`로 바꾸면 해당 block은 user-managed가 되어 이후 setup에서 덮어쓰지 않습니다. Kiokuko는 Codex 전체의 optional MCP grace나 startup timeout을 변경하지 않습니다.
 
 설정 후 대상 AI 클라이언트를 실행하고 평소처럼 사용하면 됩니다. 이미 실행 중이라면 한 번 종료한 후 다시 시작하십시오. setup이 Codex Stop hook을 생성하거나 업데이트했다면 Codex에서 `/hooks`를 열고 해당 hook을 명시적으로 신뢰하십시오.
 
@@ -67,6 +80,8 @@ AI 에이전트의 요청을 처리하는 Enno-Oduno 루프가 활성화됩니�
 #### 메모리 저장
 
 모델용 메모리는 capability gate를 거치는 MCP 도구 `task_prepare`와 `task_answer`를 통해서만 작업에 전달됩니다. `task_prepare`는 Enno-Oduno의 진입점입니다. 작업이 끝나면 내용을 기록하고 AI가 재사용할 지식으로 승격할 수 있는지 검토합니다. 실제로 유용한 지식이 승격되도록 자동 조정됩니다.
+
+ready 응답에 모델용 context가 없지만 project에 검색 가능한 entry가 남아 있으면 `memoryPolicy`에 `deliveryEmpty: true`와 `storedEntryCount`가 포함됩니다. 의도적인 capability withholding과 빈 검색 결과를 구분하려면 `contextWithheld`도 확인하십시오.
 
 ### Enno-Oduno 에이전트 루프 상세
 
@@ -124,6 +139,12 @@ narrative와 증거는 hash 및 저장 전에 sanitize되고 secret이 포함된
 
 따라서 intake가 완료되지 않으면 Enno-Oduno directive와 `answer_intake`를 반환하며, `requiredSkills`에는 `kiokuko-enno-oduno`가 포함되고 Zenki는 아직 시작되지 않습니다. 준비된 intake는 먼저 `oduno_ideal`과 `submit_ideal`을 반환합니다. `enno_ideal_submit`은 Akinator가 선택한 discovery set의 모든 Skill에 대해 정확히 하나의 기여를 요구하며, 외부 Skill은 신뢰할 수 없는 reference-only 지침으로 유지됩니다. 그 후에만 run은 revision-bound Zenki directive를 반환합니다. 이 directive의 `requiredSkills`에는 draft Skill snapshot이 비어 있어도 compact index인 `kiokuko-single-purpose-functions`가 포함됩니다. Zenki는 WorkUnit을 선택하기 전에 이 index를 사용해 의미 없는 micro-function을 만들지 않고 code 변경을 응집된 함수 또는 유스케이스 계약과 focused test target으로 나눕니다. code를 변경하는 각 WorkUnit은 이유와 함께 등록된 `expertRefs`를 1~3개 선택해야 하며, UI WorkUnit은 `code.*`와 `ui.*` expert를 각각 하나 이상 요구합니다. `enno_plan_submit`은 누락, 중복, 알 수 없음 또는 제한을 초과한 조합을 거부하고 정확한 선택을 revision과 함께 저장합니다. Goki는 모든 Skill reference가 아니라 해당 fragment만 읽습니다. controller Skill은 role 수준이며 WorkUnit Skill snapshot에 삽입되지 않습니다. Zenki의 전체 plan이 승인되고 필요한 확인이 성공하기 전에는 Goki로 전환할 수 없습니다. 최종 review가 실패해도 이전 Goki WorkUnit을 직접 재개하지 않습니다. 거부된 plan과 verifier 증거를 이전 revision의 기록으로 보존하고 `zenki_planning`으로 이동해 새로운 revision-bound plan을 요구합니다. 승인된 review는 직접 완료되지 않고 `oduno_meditation`으로 이동합니다. `enno_meditation_submit`은 repository를 변경하지 않고 검사한 repository-relative path와 근거가 있는 오래된 test 또는 함수 후보를 저장한 뒤 run을 완료합니다. 응답의 `orchestrationId`는 모든 Enno MCP 작업에서 사용되며 host session identity와 분리됩니다. 추론한 scope, acceptance criteria, Skill, expert 선택 또는 verifier command가 있으면 구현 전에 일반 클라이언트 UI로 확인을 반환합니다. `needs_confirmation` 응답에는 확정된 계약의 결정적 표시 projection인 `ennoOduno.directive.userFacingConfirmation`이 포함됩니다. scope, 제외 항목, 완료 조건, 표시 번호 의존성을 가진 작업 항목, reference-only 상태를 포함한 Skill, 선택 이유가 있는 전문 관점, focused/final checks, 시도 상한이 각각 provenance basis(사용자 지정, 저장소 검증, 제안) 라벨과 함께 한 번씩 나타납니다. 클라이언트 모델은 raw directive JSON이나 내부 식별자를 노출하지 않고 모든 항목을 사용자 언어로 제시한 뒤 명시적인 approve, revise, cancel을 기다립니다. 기밀처럼 보이는 표시 값이나 64 KiB를 초과하는 projection은 가리거나 잘라내는 대신 plan 제출을 거부합니다.
 
+공개 MCP tool failure는 일반 `isError: true` tool result입니다. 일반 failure에는 allowlist된 사용자용 문구와 `structuredContent.code`, `structuredContent.retryable`만 포함되며, `BACKPRESSURE`만 제한된 `retryAfterSeconds`도 포함할 수 있습니다. 원본 message, stack, 임의 details, path, SQL, request payload, credential 형태의 값은 일반 payload에 복사하지 않습니다. checkpoint, plan recovery, Enno validation 전용 error는 목적별로 제한된 field를 유지합니다.
+
+Codex extension은 completion event와 model input보다 먼저 성공 및 error MCP result를 검사하거나 교체할 수 있습니다. 따라서 extension 계층은 trusted computing base의 일부입니다. `userFacingConfirmation`은 Kiokuko server가 생성한 projection이며 extension 처리 후 실제로 표시되거나 model에 전달된 내용을 증명하지 않습니다. 중요한 Kiokuko result를 변경하는 extension과 함께 사용하지 마십시오. Kiokuko는 Codex에서 위조 불가능한 original-result provenance나 modified flag를 받지 못하므로 end-to-end authenticity를 주장하지 않으며 server-only digest나 HMAC으로 대체하지 않습니다. 완전한 upstream 계약에는 extension이 위조할 수 없는 original-result digest 또는 identifier, modified flag, 정확한 tool call과의 binding이 필요합니다.
+
+Codex의 effective plugin catalog는 requested repository와 선택한 model에 따라 달라질 수 있습니다. host는 task preparation에서 유지한 완전한 effective Skill/MCP tool catalog를 전달해야 합니다. 순서와 완전히 같은 descriptor의 중복은 binding을 바꾸지 않지만 항목 추가·삭제 또는 canonical name, kind, description 변경은 환경 변경으로 plan 시작을 중지합니다. catalog 생략과 명시적인 빈 catalog는 의미가 다릅니다. 한 plugin marketplace의 load error를 빈 catalog로 축약하여 다른 유효한 capability까지 숨기면 안 되며, load error는 별도로 진단 가능해야 합니다.
+
 ### 계획 시작 환경 정보가 누락되거나 변경된 경우
 
 여기서 환경 정보는 현재 AI 클라이언트에서 사용할 수 있는 Skill과 MCP tool 목록입니다. host가 자동으로 수집하므로 사용자가 catalog 위치를 찾거나 JSON을 만들 필요가 없습니다. 이 정보가 계획에 전달되지 않았거나 작업 준비 후 변경되면 Kiokuko는 자동 continuation을 중지하는 marker만 저장하고 Skill discovery, advisory 소비, receipt 생성, plan 저장 또는 계약 revision 변경 전에 중지합니다. 따라서 이번 계획 시작으로 새 작업이나 추가 code 변경은 발생하지 않습니다. 같은 run을 다시 제출할 때는 사용자가 선택한 recovery action도 함께 전달합니다.
@@ -165,6 +186,8 @@ npm run test:e2e:opencode
 npm run test:e2e:claude
 npm run test:e2e:agents
 ```
+
+`RUN_CODEX_E2E=1`을 지정하면 Codex runner가 실행 파일 version을 기록하고 agent 작업을 시작하기 전에 0.151.0 이상인지 확인합니다. 이어서 의도적으로 실패하는 `required = true` MCP server가 있는 격리 config를 사용하며, 명시적인 MCP startup failure를 관찰한 경우에만 계속합니다. 설치된 Codex CLI에는 이 repository에서 `ToolLifecycleContributor`를 주입하는 경로가 없습니다. 따라서 direct/Code Mode의 success/error result 교체, immutable provenance, repository-local marketplace 격리는 대응하는 외부 Codex fixture가 준비될 때까지 명시적인 `not-run` subcheck로 남으며 추론만으로 passed라고 보고하지 않습니다.
 
 지원 클라이언트:
 

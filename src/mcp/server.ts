@@ -119,6 +119,11 @@ const PUBLIC_TOOL_ERROR_MESSAGES: Record<ErrorCode, string> = {
   NOT_IMPLEMENTED: 'Operation is not implemented',
 };
 
+const RETRYABLE_TOOL_ERROR_CODES: ReadonlySet<ErrorCode> = new Set([
+  'BACKPRESSURE',
+  'SERVICE_UNAVAILABLE',
+]);
+
 function publicToolError(error: unknown): KiokukoError {
   if (!(error instanceof KiokukoError)) {
     return new KiokukoError('INTEGRITY_ERROR', PUBLIC_TOOL_ERROR_MESSAGES.INTEGRITY_ERROR);
@@ -134,6 +139,21 @@ type McpToolErrorResult = {
   content: [{ type: 'text'; text: string }];
   structuredContent: Record<string, unknown>;
 };
+
+function publicToolErrorResult(error: unknown): McpToolErrorResult {
+  const publicError = publicToolError(error);
+  return {
+    isError: true,
+    content: [{ type: 'text', text: publicError.message }],
+    structuredContent: {
+      code: publicError.code,
+      retryable: RETRYABLE_TOOL_ERROR_CODES.has(publicError.code),
+      ...(publicError.code === 'BACKPRESSURE'
+        ? { retryAfterSeconds: boundedRetryAfterSeconds(publicError.details.retryAfterSeconds) }
+        : {}),
+    },
+  };
+}
 
 function safeOwnRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value) || isProxy(value)) return undefined;
@@ -216,11 +236,11 @@ function boundedRetryAfterSeconds(value: unknown): number {
   return Math.min(60, Math.max(1, Math.trunc(value)));
 }
 
-async function withPublicToolError<T>(operation: () => Promise<T>): Promise<T> {
+async function withPublicToolError<T>(operation: () => Promise<T>): Promise<T | McpToolErrorResult> {
   try {
     return await operation();
   } catch (error) {
-    throw publicToolError(error);
+    return publicToolErrorResult(error);
   }
 }
 
@@ -230,7 +250,7 @@ async function withPublicCheckpointToolError<T>(operation: () => Promise<T>): Pr
   } catch (error) {
     const result = checkpointEligibilityToolError(error);
     if (result !== undefined) return result;
-    throw publicToolError(error);
+    return publicToolErrorResult(error);
   }
 }
 
@@ -242,7 +262,7 @@ async function withPublicPlanStartRecovery<T>(operation: () => Promise<T>): Prom
     if (result !== undefined) return result;
     const validation = ennoValidationToolError(error);
     if (validation !== undefined) return validation;
-    throw publicToolError(error);
+    return publicToolErrorResult(error);
   }
 }
 
@@ -253,7 +273,7 @@ async function withPublicEnnoToolError<T>(operation: () => Promise<T>): Promise<
   } catch (error) {
     const result = ennoValidationToolError(error);
     if (result !== undefined) return result;
-    throw publicToolError(error);
+    return publicToolErrorResult(error);
   }
 }
 

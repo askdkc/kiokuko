@@ -23,7 +23,7 @@ import { isExternalSkillReference } from '../skills/store.js';
 import { contextRetrievalStateHash, ordinaryContextSelectionStateHash } from './selection-state.js';
 import { readContextRunRetrievalState } from './run-state.js';
 
-export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v4' as const;
+export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v5' as const;
 export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
 

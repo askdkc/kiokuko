@@ -3,7 +3,11 @@ import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry } from './entries.js';
 import { decodeStoredStructuredScope } from './revisions.js';
-import { extractEntrySearchSignals, requireHybridSearchProjectionSchema } from './structured-memory.js';
+import {
+  extractEntrySearchSignals,
+  hybridSearchProjectionSchema,
+  requireHybridSearchProjectionSchema,
+} from './structured-memory.js';
 
 interface EntryOwnerRow extends SqliteRow {
   rowid: unknown;
@@ -62,9 +66,8 @@ function preparedProjections(database: SqliteDatabase): PreparedEntryProjection[
   });
 }
 
-/** Rebuild while participating in a transaction already owned by the caller. */
-export function rebuildHybridSearchInTransaction(database: SqliteDatabase): { entries: number; signals: number } {
-  requireHybridSearchProjectionSchema(database);
+/** Rebuild the projection shape used only while migrations 005 through 019 are being applied. */
+export function rebuildLegacyHybridSearchInTransaction(database: SqliteDatabase): { entries: number; signals: number } {
   const projections = preparedProjections(database);
   const expectedSignals = projections.reduce((count, projection) => count + projection.signals.length, 0);
 
@@ -86,6 +89,38 @@ export function rebuildHybridSearchInTransaction(database: SqliteDatabase): { en
   const trigramCount = database.prepare('SELECT COUNT(*) AS count FROM entries_trigram').get<{ count: unknown }>()?.count;
   const signalCount = database.prepare('SELECT COUNT(*) AS count FROM entry_search_signals').get<{ count: unknown }>()?.count;
   if (ftsCount !== projections.length || trigramCount !== projections.length || signalCount !== expectedSignals) {
+    integrity('Legacy hybrid search projection rebuild produced an incomplete result');
+  }
+  return { entries: projections.length, signals: expectedSignals };
+}
+
+/** Rebuild while participating in a transaction already owned by the caller. */
+export function rebuildHybridSearchInTransaction(database: SqliteDatabase): { entries: number; signals: number } {
+  requireHybridSearchProjectionSchema(database);
+  const projections = preparedProjections(database);
+  const expectedSignals = projections.reduce((count, projection) => count + projection.signals.length, 0);
+
+  database.exec('DELETE FROM entry_search_documents');
+  database.exec('DELETE FROM entry_search_signals');
+
+  const insertDocument = database.prepare('INSERT INTO entry_search_documents (entry_rowid, entry_id, title, body, summary, tags_text) VALUES (?, ?, ?, ?, ?, ?)');
+  const insertSignal = database.prepare('INSERT INTO entry_search_signals (entry_id, signal_type, normalized_value) VALUES (?, ?, ?)');
+  for (const projection of projections) {
+    insertDocument.run(
+      projection.rowid,
+      projection.entryId,
+      projection.title,
+      projection.body,
+      projection.summary,
+      projection.tagsText,
+    );
+    for (const signal of projection.signals) insertSignal.run(projection.entryId, signal.type, signal.value);
+  }
+
+  const ftsCount = database.prepare('SELECT COUNT(*) AS count FROM entries_fts').get<{ count: unknown }>()?.count;
+  const documentCount = database.prepare('SELECT COUNT(*) AS count FROM entry_search_documents').get<{ count: unknown }>()?.count;
+  const signalCount = database.prepare('SELECT COUNT(*) AS count FROM entry_search_signals').get<{ count: unknown }>()?.count;
+  if (ftsCount !== projections.length || documentCount !== projections.length || signalCount !== expectedSignals) {
     integrity('Hybrid search projection rebuild produced an incomplete result');
   }
   return { entries: projections.length, signals: expectedSignals };
@@ -103,15 +138,16 @@ export function hybridSearchProjectionStatus(database: SqliteDatabase): {
   extraSignals: number;
   staleTrigram: number;
 } {
-  requireHybridSearchProjectionSchema(database);
+  const projectionSchema = hybridSearchProjectionSchema(database);
   const projections = preparedProjections(database);
-  const storedCount = (table: 'entries_trigram' | 'entry_search_signals'): number => {
+  const storedCount = (table: 'entry_search_documents' | 'entries_trigram' | 'entry_search_signals'): number => {
     const count = database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get<{ count: unknown }>()?.count;
     if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) integrity();
     return count;
   };
   const entries = projections.length;
-  const trigram = storedCount('entries_trigram');
+  const trigramTable = projectionSchema === 'unified' ? 'entry_search_documents' : 'entries_trigram';
+  const trigram = storedCount(trigramTable);
   const signals = storedCount('entry_search_signals');
   let missingSignals = 0;
   let extraSignals = 0;
@@ -121,8 +157,13 @@ export function hybridSearchProjectionStatus(database: SqliteDatabase): {
     const actual = new Set(database.prepare('SELECT signal_type, normalized_value FROM entry_search_signals WHERE entry_id = ?').all<{ signal_type: string; normalized_value: string }>(projection.entryId).map((signal) => `${signal.signal_type}\u0000${signal.normalized_value}`));
     for (const signal of expected) if (!actual.has(signal)) missingSignals += 1;
     for (const signal of actual) if (!expected.has(signal)) extraSignals += 1;
-    const projected = database.prepare('SELECT title, body, summary, tags_text FROM entries_trigram WHERE rowid = ?').get<{ title: unknown; body: unknown; summary: unknown; tags_text: unknown }>(projection.rowid);
+    const projected = projectionSchema === 'unified'
+      ? database.prepare('SELECT entry_id, title, body, summary, tags_text FROM entry_search_documents WHERE entry_rowid = ?')
+        .get<{ entry_id?: unknown; title: unknown; body: unknown; summary: unknown; tags_text: unknown }>(projection.rowid)
+      : database.prepare('SELECT title, body, summary, tags_text FROM entries_trigram WHERE rowid = ?')
+        .get<{ entry_id?: unknown; title: unknown; body: unknown; summary: unknown; tags_text: unknown }>(projection.rowid);
     if (!projected
+      || (projectionSchema === 'unified' && projected.entry_id !== projection.entryId)
       || projected.title !== projection.title
       || projected.body !== projection.body
       || projected.summary !== projection.summary

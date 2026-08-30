@@ -4,3 +4,4 @@ command = "node"
 args = [".codex/kiokuko-dev-mcp.mjs"]
 cwd = "."
 enabled = true
+required = true
