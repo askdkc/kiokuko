@@ -209,6 +209,7 @@ export function extractEntrySearchSignals(input: {
 
 const REQUIRED_PROJECTION_COLUMNS = {
   entries_fts: ['title', 'body', 'summary', 'tags_text'],
+  entries_trigram: ['title', 'body', 'summary', 'tags_text'],
   entry_search_documents: ['entry_rowid', 'entry_id', 'title', 'body', 'summary', 'tags_text'],
   entry_search_signals: ['entry_id', 'signal_type', 'normalized_value'],
 } as const;
@@ -282,19 +283,23 @@ export function requireHybridSearchProjectionSchema(database: SqliteDatabase): v
     }
     const columns = projectionColumns(database, table);
     for (const column of expectedColumns) if (!columns.has(column)) missing.push(`${table}.${column}`);
-    if (table === 'entries_fts') {
+    if (table === 'entries_fts' || table === 'entries_trigram') {
       const sql = definition.sql ?? '';
       if (!/CREATE\s+VIRTUAL\s+TABLE[\s\S]+USING\s+fts5\s*\(/iu.test(sql)
         || !/content\s*=\s*'entry_search_documents'/iu.test(sql)
         || !/content_rowid\s*=\s*'entry_rowid'/iu.test(sql)
-        || !/tokenize\s*=\s*'trigram'/iu.test(sql)) {
-        missing.push('entries_fts.fts5_external_trigram');
+        || (table === 'entries_fts'
+          ? !/tokenize\s*=\s*'unicode61 remove_diacritics 2'/iu.test(sql)
+          : !/tokenize\s*=\s*'trigram'/iu.test(sql))) {
+        missing.push(`${table}.fts5_external_${table === 'entries_fts' ? 'unicode61' : 'trigram'}`);
       }
     }
   }
   for (const trigger of REQUIRED_SEARCH_DOCUMENT_TRIGGERS) {
     const definition = projectionDefinition(database, trigger);
-    if (definition?.type !== 'trigger' || !/entries_fts/iu.test(definition.sql ?? '')) missing.push(trigger);
+    if (definition?.type !== 'trigger'
+      || !/entries_fts/iu.test(definition.sql ?? '')
+      || !/entries_trigram/iu.test(definition.sql ?? '')) missing.push(trigger);
   }
   if (missing.length > 0) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Hybrid search projection schema is incomplete', { missing });

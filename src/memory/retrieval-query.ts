@@ -5,7 +5,8 @@ const MAX_TERMS = 64;
 const MAX_TERM_LENGTH = 512;
 const MAX_CJK_SUBSTRING_TERMS = 24;
 const MAX_CJK_BIGRAM_TERMS = 6;
-const CJK_RUN = /(?:[\p{Script=Han}\u3005\u303B]{2,}|[\p{Script=Hiragana}\u309D\u309E]{2,}|[\p{Script=Katakana}\u30FC\u30FD\u30FE]{2,})/gu;
+const JAPANESE_RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\u3005\u303B\u309D\u309E\u30FC\u30FD\u30FE]{2,}/gu;
+const SAME_SCRIPT_JAPANESE_RUN = /(?:[\p{Script=Han}\u3005\u303B]{2,}|[\p{Script=Hiragana}\u309D\u309E]{2,}|[\p{Script=Katakana}\u30FC\u30FD\u30FE]{2,})/gu;
 const STRUCTURED_SIGNAL = /(?:sqlstate\[[^\]]+\]|(?:[a-z_$][\w$]*)(?:::|->)[\w$:.()\\-]+|(?:[a-z_$][\w$]*\\)+[\w$.-]+|(?:^|\s)\/[\w./-]+|@[A-Za-z][\w.-]*|\$[A-Za-z_][\w$]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+)/gu;
 
 export interface ParsedExactSignal {
@@ -48,6 +49,12 @@ function unique(values: string[]): string[] {
   return [...new Set(values)].filter((value) => value.length > 0).slice(0, MAX_TERMS);
 }
 
+function japaneseScript(value: string): 'han' | 'hiragana' | 'katakana' {
+  if (/[\p{Script=Han}\u3005\u303B]/u.test(value)) return 'han';
+  if (/[\p{Script=Hiragana}\u309D\u309E]/u.test(value)) return 'hiragana';
+  return 'katakana';
+}
+
 function windows(value: string, lengths: readonly number[]): string[] {
   const points = Array.from(value);
   const pools = lengths.map((length) => {
@@ -59,10 +66,15 @@ function windows(value: string, lengths: readonly number[]): string[] {
         { length: MAX_CJK_SUBSTRING_TERMS },
         (_, index) => Math.round(index * lastStart / (MAX_CJK_SUBSTRING_TERMS - 1)),
       );
+    const boundaryStarts = points.flatMap((point, index) => index > 0
+      && japaneseScript(points[index - 1]!) !== japaneseScript(point)
+      ? [Math.max(0, Math.min(lastStart, index - Math.floor(length / 2)))]
+      : []);
     const starts = [...new Set([
       0,
       Math.ceil(lastStart / 2),
       lastStart,
+      ...boundaryStarts,
       ...candidateStarts,
     ])].slice(0, MAX_CJK_SUBSTRING_TERMS);
     return starts.map((start) => points.slice(start, start + length).join(''));
@@ -96,8 +108,24 @@ function takeRoundRobin(pools: readonly string[][], limit: number, seen: Set<str
   return result;
 }
 
+function mixedScriptBoundaryTerms(runs: readonly string[]): string[] {
+  const result: string[] = [];
+  for (const run of runs) {
+    const points = Array.from(run);
+    for (let index = 1; index < points.length; index += 1) {
+      if (japaneseScript(points[index - 1]!) === japaneseScript(points[index]!)) continue;
+      for (const length of [3, 4]) {
+        if (points.length < length) continue;
+        const start = Math.max(0, Math.min(points.length - length, index - Math.floor(length / 2)));
+        result.push(points.slice(start, start + length).join(''));
+      }
+    }
+  }
+  return result;
+}
+
 /** Allocate bounded overlapping CJK windows without allowing one long run to starve later runs. */
-function cjkSubstringTerms(runs: readonly string[]): string[] {
+function cjkSubstringTerms(runs: readonly string[], mixedRuns: readonly string[]): string[] {
   const normalizedRuns = [...new Set(runs)].filter((run) => Array.from(run).length >= 2);
   const seen = new Set<string>();
   const primaryLimit = MAX_CJK_SUBSTRING_TERMS - MAX_CJK_BIGRAM_TERMS;
@@ -106,12 +134,16 @@ function cjkSubstringTerms(runs: readonly string[]): string[] {
     primaryLimit,
     seen,
   );
+  const mixed = unique(mixedScriptBoundaryTerms(mixedRuns))
+    .filter((term) => !seen.has(term))
+    .slice(0, MAX_CJK_SUBSTRING_TERMS - primary.length);
+  for (const term of mixed) seen.add(term);
   const auxiliary = takeRoundRobin(
     normalizedRuns.map((run) => windows(run, [2])),
-    MAX_CJK_SUBSTRING_TERMS - primary.length,
+    MAX_CJK_SUBSTRING_TERMS - primary.length - mixed.length,
     seen,
   );
-  return [...primary, ...auxiliary];
+  return [...primary, ...mixed, ...auxiliary];
 }
 
 export function parseRetrievalQuery(input: unknown): ParsedRetrievalQuery {
@@ -136,10 +168,12 @@ export function parseRetrievalQuery(input: unknown): ParsedRetrievalQuery {
     .map((term) => term.slice(0, MAX_TERM_LENGTH));
   const phraseTerms = unique(normalized.split(/\s+/u).filter((term) => term.length > 1))
     .map((term) => term.slice(0, MAX_TERM_LENGTH));
-  const cjkRuns = normalized.match(CJK_RUN) ?? [];
+  const cjkRuns = normalized.match(SAME_SCRIPT_JAPANESE_RUN) ?? [];
+  const mixedRuns = (normalized.match(JAPANESE_RUN) ?? [])
+    .filter((run) => new Set(Array.from(run).map(japaneseScript)).size > 1);
   const substringTerms = unique([
     ...exactSignals.map((signal) => signal.value),
-    ...cjkSubstringTerms(cjkRuns),
+    ...cjkSubstringTerms(cjkRuns, mixedRuns),
     ...lexicalTerms.filter((term) => term.length >= 2),
   ]).map((term) => term.slice(0, MAX_TERM_LENGTH));
 

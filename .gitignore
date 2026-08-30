@@ -6,7 +6,6 @@ node_modules
 
 # AI assistant local state and configuration
 .codex/*
-!.codex/config.toml
 !.codex/kiokuko-dev-mcp.mjs
 !.codex/rules/
 .codex/rules/*

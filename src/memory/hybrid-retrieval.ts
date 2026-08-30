@@ -36,7 +36,7 @@ const MAX_MERGED_CANDIDATES = 1_000;
 const RRF_K = 60;
 const LANE_WEIGHTS: Record<RetrievalLane, number> = {
   'exact-signal': 5,
-  'word-fts': 1,
+  'word-fts': 3,
   trigram: 1.5,
   like: 0.75,
   tag: 3,
@@ -81,18 +81,45 @@ export function isRetrievableEntry(database: SqliteDatabase, entry: EntryRecord)
 
 /** Count current entries in one workspace that are eligible for ordinary retrieval. */
 export function retrievableWorkspaceEntryCount(database: SqliteDatabase, workspace: string): number {
-  const rows = database.prepare(`
-    SELECT id FROM entries
-    WHERE workspace = ? AND status <> 'superseded'
-    ORDER BY id
-  `).all<{ id: unknown }>(workspace);
-  let count = 0;
-  for (const row of rows) {
-    if (typeof row.id !== 'string' || row.id.length === 0) {
-      throw new KiokukoError('INTEGRITY_ERROR', 'Stored memory entry identity is invalid');
-    }
-    const entry = readEntry(database, { workspace, entryId: row.id });
-    if (isRetrievableEntry(database, entry)) count += 1;
+  const count = database.prepare(`
+    WITH current_entries AS (
+      SELECT e.id, e.current_revision,
+             CASE WHEN e.created_by IN ('kiokuko-skill-discovery', 'kiokuko-source-sync')
+                    OR CASE WHEN json_valid(r.provenance_json)
+                         THEN json_extract(r.provenance_json, '$.type') END
+                       IN ('external_skill', 'source_sync')
+                  THEN 1 ELSE 0 END AS external_marker
+        FROM entries AS e
+        JOIN entry_revisions AS r
+          ON r.entry_id = e.id AND r.revision = e.current_revision
+       WHERE e.workspace = ? AND e.status <> 'superseded'
+    )
+    SELECT COUNT(*) AS count
+      FROM current_entries AS e
+     WHERE (
+       e.external_marker = 0
+       AND NOT EXISTS (
+         SELECT 1 FROM external_skill_entries AS m WHERE m.entry_id = e.id
+       )
+     ) OR (
+       e.external_marker = 1
+       AND (SELECT COUNT(DISTINCT m.skill_id)
+              FROM external_skill_entries AS m WHERE m.entry_id = e.id) = 1
+       AND (SELECT COUNT(*)
+              FROM external_skill_entries AS m
+             WHERE m.entry_id = e.id AND m.active = 1) = 1
+       AND EXISTS (
+         SELECT 1
+           FROM external_skill_entries AS m
+           JOIN external_skills AS s ON s.skill_id = m.skill_id
+          WHERE m.entry_id = e.id
+            AND m.entry_revision = e.current_revision
+            AND m.active = 1
+       )
+     )
+  `).get<{ count: unknown }>(workspace)?.count;
+  if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored entry count is invalid');
   }
   return count;
 }
@@ -230,10 +257,10 @@ function trigramLane(database: SqliteDatabase, input: HybridSearchInput, parsed:
     const filters = filterSql(input, parameters);
     parameters.push(MAX_LANE_CANDIDATES);
     const matches = database.prepare(`
-      SELECT e.id, bm25(entries_fts) AS score
-      FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid
+      SELECT e.id, bm25(entries_trigram) AS score
+      FROM entries_trigram JOIN entries e ON e.rowid = entries_trigram.rowid
       JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
-      WHERE entries_fts MATCH ? AND ${filters}
+      WHERE entries_trigram MATCH ? AND ${filters}
       ORDER BY score ASC, ${rankSql()}
       LIMIT ?
     `).all<SearchRow>(...parameters);

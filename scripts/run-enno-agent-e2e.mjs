@@ -86,11 +86,11 @@ async function codex0151Preflight(command, root, project, environment, args) {
   const versionOutput = `${versionResult.stdout.toString('utf8')}\n${versionResult.stderr.toString('utf8')}`;
   const parsedVersion = parseVersion(versionOutput);
   if (versionResult.code !== 0 || parsedVersion === null) {
-    return { status: 'not-run', reason: 'codex_version_unavailable' };
+    return { status: 'failed', reason: 'codex_version_unavailable' };
   }
   const version = parsedVersion.join('.');
   if (!versionAtLeast(parsedVersion, minimumCodex0151Version)) {
-    return { status: 'not-run', reason: 'codex_version_below_0.151.0', version };
+    return { status: 'failed', reason: 'codex_version_below_0.151.0', version };
   }
 
   const probeHome = path.join(root, 'required-mcp-probe-home');

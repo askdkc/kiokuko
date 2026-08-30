@@ -5,6 +5,7 @@ BEGIN IMMEDIATE;
 DROP TRIGGER entry_search_documents_au;
 DROP TRIGGER entry_search_documents_ad;
 DROP TRIGGER entry_search_documents_ai;
+DROP TABLE entries_trigram;
 DROP TABLE entries_fts;
 
 CREATE VIRTUAL TABLE entries_fts USING fts5(

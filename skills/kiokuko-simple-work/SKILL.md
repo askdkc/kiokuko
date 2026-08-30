@@ -17,9 +17,9 @@ code is the code never written.
 
 ## Persistence
 
-ACTIVE EVERY RESPONSE. No drift back to over-building. Still active if
-unsure. Off only: "stop ponytail" / "normal mode". Default: **full**.
-Switch: `/ponytail lite|full|ultra`.
+Active only for the current logical user request. Re-evaluate activation
+through `kiokuko-soul` for every new request. Default: **full**. Switch the
+current request with `/ponytail lite|full|ultra`.
 
 ## The ladder
 
@@ -106,7 +106,7 @@ test, YAGNI applies to tests too.
 ## Boundaries
 
 Ponytail governs what you build, not how you talk (pair with Caveman for
-terse prose). "stop ponytail" / "normal mode": revert. Level persists until
-changed or session end.
+terse prose). "stop ponytail" / "normal mode": revert for the current request.
+The level never carries into a new logical request without fresh SOUL routing.
 
 The shortest path to done is the right path.

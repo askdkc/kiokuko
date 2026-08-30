@@ -29,6 +29,29 @@ function integrity(message = 'Stored search projection source is invalid'): neve
   throw new KiokukoError('INTEGRITY_ERROR', message);
 }
 
+const UNIFIED_FTS_TABLES = ['entries_fts', 'entries_trigram'] as const;
+
+function assertUnifiedFtsIntegrity(database: SqliteDatabase): void {
+  try {
+    for (const table of UNIFIED_FTS_TABLES) {
+      database.prepare(`INSERT INTO ${table}(${table}, rank) VALUES ('integrity-check', 1)`).run();
+    }
+  } catch {
+    integrity('Hybrid search index is inconsistent with its content');
+  }
+}
+
+function rebuildUnifiedFtsIndexes(database: SqliteDatabase): void {
+  try {
+    for (const table of UNIFIED_FTS_TABLES) {
+      database.prepare(`INSERT INTO ${table}(${table}) VALUES ('rebuild')`).run();
+    }
+  } catch {
+    integrity('Hybrid search index rebuild failed');
+  }
+  assertUnifiedFtsIntegrity(database);
+}
+
 function preparedProjections(database: SqliteDatabase): PreparedEntryProjection[] {
   const entryCount = database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: unknown }>()?.count;
   if (typeof entryCount !== 'number' || !Number.isSafeInteger(entryCount) || entryCount < 0) integrity();
@@ -100,6 +123,9 @@ export function rebuildHybridSearchInTransaction(database: SqliteDatabase): { en
   const projections = preparedProjections(database);
   const expectedSignals = projections.reduce((count, projection) => count + projection.signals.length, 0);
 
+  // Repair the external indexes before content-table deletes fire FTS delete
+  // commands; an empty or inconsistent index cannot safely consume them.
+  rebuildUnifiedFtsIndexes(database);
   database.exec('DELETE FROM entry_search_documents');
   database.exec('DELETE FROM entry_search_signals');
 
@@ -117,10 +143,11 @@ export function rebuildHybridSearchInTransaction(database: SqliteDatabase): { en
     for (const signal of projection.signals) insertSignal.run(projection.entryId, signal.type, signal.value);
   }
 
-  const ftsCount = database.prepare('SELECT COUNT(*) AS count FROM entries_fts').get<{ count: unknown }>()?.count;
+  rebuildUnifiedFtsIndexes(database);
+
   const documentCount = database.prepare('SELECT COUNT(*) AS count FROM entry_search_documents').get<{ count: unknown }>()?.count;
   const signalCount = database.prepare('SELECT COUNT(*) AS count FROM entry_search_signals').get<{ count: unknown }>()?.count;
-  if (ftsCount !== projections.length || documentCount !== projections.length || signalCount !== expectedSignals) {
+  if (documentCount !== projections.length || signalCount !== expectedSignals) {
     integrity('Hybrid search projection rebuild produced an incomplete result');
   }
   return { entries: projections.length, signals: expectedSignals };
@@ -139,6 +166,7 @@ export function hybridSearchProjectionStatus(database: SqliteDatabase): {
   staleTrigram: number;
 } {
   const projectionSchema = hybridSearchProjectionSchema(database);
+  if (projectionSchema === 'unified') assertUnifiedFtsIntegrity(database);
   const projections = preparedProjections(database);
   const storedCount = (table: 'entry_search_documents' | 'entries_trigram' | 'entry_search_signals'): number => {
     const count = database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get<{ count: unknown }>()?.count;

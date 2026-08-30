@@ -28,3 +28,9 @@ test('allocates two, three, and four character windows for one Japanese run', ()
   assert.ok(parsed.substringTerms.includes('マイグ'));
   assert.ok(parsed.substringTerms.includes('マイグレ'));
 });
+
+test('keeps windows across Han and Hiragana boundaries', () => {
+  const parsed = parseRetrievalQuery('取り扱って');
+
+  assert.ok(parsed.substringTerms.includes('取り扱'));
+});

@@ -107,7 +107,7 @@ test('checkpoint enrichment ignores stale acknowledgement profile fields and use
     },
     database: {
       prepare() {
-        return { all: () => [] };
+        return { get: () => ({ count: 0 }) };
       },
     },
     enqueueWrite: async <T>(operation: () => T | PromiseLike<T>): Promise<T> => operation(),

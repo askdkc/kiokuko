@@ -251,7 +251,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       },
     });
     assert.equal(missingRequestId.isError, true);
-    assert.match(JSON.stringify(missingRequestId.content), /requestId/u);
+    assert.deepEqual(missingRequestId.structuredContent, { code: 'VALIDATION_ERROR', retryable: false });
+    assert.match(JSON.stringify(missingRequestId.content), /Request is invalid/u);
 
     const checkpoint = await client.callTool({
       name: 'memory_checkpoint',
@@ -462,7 +463,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       },
     });
     assert.equal(missingRunId.isError, true);
-    assert.match(JSON.stringify(missingRunId.content), /runId/);
+    assert.deepEqual(missingRunId.structuredContent, { code: 'VALIDATION_ERROR', retryable: false });
+    assert.match(JSON.stringify(missingRunId.content), /Request is invalid/u);
 
     const targetAnswered = await client.callTool({
       name: 'task_answer',
@@ -597,6 +599,34 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       assert.equal('externalSkillFallback' in stoppedContent.capabilities, false);
       assert.equal(stoppedContent.skillDiscovery.attempted, false);
       assert.deepEqual(stoppedContent.skillDiscovery.selected, []);
+    }
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('MCP transport projects non-Enno input validation failures to the stable public envelope', async () => {
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-validation-'));
+  const server = createKiokukoMcpServer({ databasePath: path.join(data, 'kiokuko.sqlite3') });
+  const client = new Client({ name: 'kiokuko-validation-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const calls = [
+      { name: 'task_prepare', arguments: { requestId: 'missing-soul', task: 'review' } },
+      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'relative-cwd', task: 'review', cwd: 'relative/path' } },
+      { name: 'task_answer', arguments: { sessionId: 'session', runId: 'run', questionId: 'wrong', value: 'answer' } },
+      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'extra-field', task: 'review', unexpected: true } },
+    ];
+    for (const call of calls) {
+      const result = await client.callTool(call);
+      assert.equal(result.isError, true);
+      assert.deepEqual(result.structuredContent, { code: 'VALIDATION_ERROR', retryable: false });
+      const serialized = JSON.stringify(result);
+      assert.match(serialized, /Request is invalid/u);
+      assert.doesNotMatch(serialized, /Input validation error|invalid_type|unrecognized_keys/iu);
     }
   } finally {
     await client.close();

@@ -6,7 +6,7 @@ import test from 'node:test';
 import { runDoctor } from '../../src/commands/doctor.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
-import { hybridSearchProjectionStatus } from '../../src/memory/rebuild-search.js';
+import { hybridSearchProjectionStatus, rebuildHybridSearch } from '../../src/memory/rebuild-search.js';
 import { canonicalEntryRevisionContentHash, canonicalJson } from '../../src/serialization/validate.js';
 
 const migrationsSource = path.resolve(import.meta.dirname, '../../migrations');
@@ -78,7 +78,7 @@ function seedJapaneseEntry(database: ReturnType<typeof openConnection>): void {
   `).run();
 }
 
-test('migration 020 preserves current rows and rebuilds one external-content trigram index', async () => {
+test('migration 020 preserves current rows and rebuilds separate external-content word and trigram indexes', async () => {
   const fixture = await migrationFixture();
   const database = openConnection(fixture.databasePath);
   try {
@@ -93,14 +93,18 @@ test('migration 020 preserves current rows and rebuilds one external-content tri
     );
     assert.deepEqual(migrateDatabase(database, fixture.migrationsDirectory).applied, [20]);
 
-    const definition = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'entries_fts'")
+    const wordDefinition = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'entries_fts'")
       .get<{ sql: string }>()?.sql ?? '';
-    assert.match(definition, /content='entry_search_documents'/u);
-    assert.match(definition, /content_rowid='entry_rowid'/u);
-    assert.match(definition, /tokenize='trigram'/u);
-    assert.equal(database.prepare("SELECT 1 AS present FROM sqlite_master WHERE name = 'entries_trigram'").get(), undefined);
+    const trigramDefinition = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'entries_trigram'")
+      .get<{ sql: string }>()?.sql ?? '';
+    assert.match(wordDefinition, /content='entry_search_documents'/u);
+    assert.match(wordDefinition, /content_rowid='entry_rowid'/u);
+    assert.match(wordDefinition, /unicode61 remove_diacritics 2/u);
+    assert.match(trigramDefinition, /content='entry_search_documents'/u);
+    assert.match(trigramDefinition, /content_rowid='entry_rowid'/u);
+    assert.match(trigramDefinition, /tokenize='trigram'/u);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entry_search_documents').get<{ count: number }>()?.count, 1);
-    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries_fts WHERE entries_fts MATCH ?')
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries_trigram WHERE entries_trigram MATCH ?')
       .get<{ count: number }>('"マイグレーション"')?.count, 1);
     assert.deepEqual(hybridSearchProjectionStatus(database), {
       entries: 1,
@@ -122,6 +126,40 @@ test('migration 020 preserves current rows and rebuilds one external-content tri
   assert.match(doctor.checks.fts.detail ?? '', /currentMismatches=0/u);
   assert.equal(doctor.checks.hybridSearch.ok, true, doctor.checks.hybridSearch.detail);
   assert.match(doctor.checks.hybridSearch.detail ?? '', /missingSignals=0.*staleTrigram=0/u);
+});
+
+test('doctor rejects an empty external FTS index and rebuild restores MATCH', async () => {
+  const fixture = await migrationFixture();
+  const database = openConnection(fixture.databasePath);
+  try {
+    assert.equal(migrateDatabase(database, fixture.migrationsDirectory).currentVersion, 19);
+    seedJapaneseEntry(database);
+    await copyFile(
+      path.join(migrationsSource, '020_cjk_fts.sql'),
+      path.join(fixture.migrationsDirectory, '020_cjk_fts.sql'),
+    );
+    assert.deepEqual(migrateDatabase(database, fixture.migrationsDirectory).applied, [20]);
+    database.prepare("INSERT INTO entries_trigram(entries_trigram) VALUES ('delete-all')").run();
+  } finally {
+    database.close();
+  }
+
+  const broken = await runDoctor({
+    databasePath: fixture.databasePath,
+    migrationsDirectory: fixture.migrationsDirectory,
+  });
+  assert.equal(broken.ok, false);
+  assert.equal(broken.checks.hybridSearch.ok, false);
+
+  const repaired = openConnection(fixture.databasePath);
+  try {
+    rebuildHybridSearch(repaired);
+    assert.equal(repaired.prepare('SELECT COUNT(*) AS count FROM entries_trigram WHERE entries_trigram MATCH ?')
+      .get<{ count: number }>('"マイグレーション"')?.count, 1);
+    assert.doesNotThrow(() => hybridSearchProjectionStatus(repaired));
+  } finally {
+    repaired.close();
+  }
 });
 
 test('the bundled migration 020 rollback restores both legacy indexes and the schema marker', async () => {

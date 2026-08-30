@@ -1,6 +1,5 @@
--- Replace the duplicate unicode61/trigram projections with one
--- external-content trigram index. The content table remains application-owned
--- and contains only each entry's current revision.
+-- Keep word and substring semantics in separate external-content indexes. The
+-- application-owned content table contains only each entry's current revision.
 DROP TABLE entries_fts;
 DROP TABLE entries_trigram;
 
@@ -20,6 +19,16 @@ CREATE VIRTUAL TABLE entries_fts USING fts5(
     tags_text,
     content='entry_search_documents',
     content_rowid='entry_rowid',
+    tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE VIRTUAL TABLE entries_trigram USING fts5(
+    title,
+    body,
+    summary,
+    tags_text,
+    content='entry_search_documents',
+    content_rowid='entry_rowid',
     tokenize='trigram'
 );
 
@@ -28,12 +37,16 @@ AFTER INSERT ON entry_search_documents
 BEGIN
     INSERT INTO entries_fts(rowid, title, body, summary, tags_text)
     VALUES (new.entry_rowid, new.title, new.body, new.summary, new.tags_text);
+    INSERT INTO entries_trigram(rowid, title, body, summary, tags_text)
+    VALUES (new.entry_rowid, new.title, new.body, new.summary, new.tags_text);
 END;
 
 CREATE TRIGGER entry_search_documents_ad
 AFTER DELETE ON entry_search_documents
 BEGIN
     INSERT INTO entries_fts(entries_fts, rowid, title, body, summary, tags_text)
+    VALUES ('delete', old.entry_rowid, old.title, old.body, old.summary, old.tags_text);
+    INSERT INTO entries_trigram(entries_trigram, rowid, title, body, summary, tags_text)
     VALUES ('delete', old.entry_rowid, old.title, old.body, old.summary, old.tags_text);
 END;
 
@@ -42,7 +55,11 @@ AFTER UPDATE ON entry_search_documents
 BEGIN
     INSERT INTO entries_fts(entries_fts, rowid, title, body, summary, tags_text)
     VALUES ('delete', old.entry_rowid, old.title, old.body, old.summary, old.tags_text);
+    INSERT INTO entries_trigram(entries_trigram, rowid, title, body, summary, tags_text)
+    VALUES ('delete', old.entry_rowid, old.title, old.body, old.summary, old.tags_text);
     INSERT INTO entries_fts(rowid, title, body, summary, tags_text)
+    VALUES (new.entry_rowid, new.title, new.body, new.summary, new.tags_text);
+    INSERT INTO entries_trigram(rowid, title, body, summary, tags_text)
     VALUES (new.entry_rowid, new.title, new.body, new.summary, new.tags_text);
 END;
 
@@ -58,3 +75,6 @@ SELECT e.rowid,
   FROM entries AS e
   JOIN entry_revisions AS r
     ON r.entry_id = e.id AND r.revision = e.current_revision;
+
+INSERT INTO entries_fts(entries_fts, rank) VALUES ('integrity-check', 1);
+INSERT INTO entries_trigram(entries_trigram, rank) VALUES ('integrity-check', 1);

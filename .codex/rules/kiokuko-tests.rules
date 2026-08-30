@@ -1,16 +1,17 @@
-# Kiokuko integration tests can start loopback HTTP servers. These fixed test
-# entry points must run outside Codex's sandbox from the first attempt.
+# Kiokuko integration tests can start loopback HTTP servers. These entry
+# points execute mutable repository code, so running them outside the sandbox
+# always requires explicit user approval.
 
 prefix_rule(
     pattern = ["node", "scripts/run-tests.mjs"],
-    decision = "allow",
+    decision = "prompt",
     justification = "Kiokuko's focused test runner can execute integration tests that start loopback HTTP listeners.",
     match = ["node scripts/run-tests.mjs"],
 )
 
 prefix_rule(
     pattern = ["npm", "test"],
-    decision = "allow",
+    decision = "prompt",
     justification = "Kiokuko's full test suite starts loopback HTTP listeners that the Codex sandbox blocks.",
     match = ["npm test"],
     not_match = ["npm run test:unit", "npm run test:integration"],
@@ -18,7 +19,7 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["npm", "run", "prepublishOnly"],
-    decision = "allow",
+    decision = "prompt",
     justification = "Kiokuko's release verification includes the full listener-dependent test suite.",
     match = ["npm run prepublishOnly"],
     not_match = ["npm run build", "npm run pack:check"],
