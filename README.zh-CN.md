@@ -73,6 +73,8 @@ MCP 将 AI 客户端与 Kiokuko 连接起来，RAG 则检索所需记忆并传�
 
 #### Enno-Oduno (役小角)
 
+<img  width="634" src="https://github.com/askdkc/kiokuko/blob/main/skills/kiokuko-enno-oduno/enno-oduno.png?raw=true">
+
 系统会启用 Enno-Oduno 循环来处理发送给 AI 智能体的请求。
 
 它会确定请求的理想结果、制定计划、通过 orchestration 将实现交给较小的智能体，并在最后自动检查结果是否符合该理想状态。

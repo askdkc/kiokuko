@@ -73,6 +73,8 @@ When a request is too vague for the AI to act on, Akinator asks internal questio
 
 #### Enno-Oduno (役小角)
 
+<img  width="634" src="https://github.com/askdkc/kiokuko/blob/main/skills/kiokuko-enno-oduno/enno-oduno.png?raw=true">
+
 Enno-Oduno enables a loop for processing requests sent to the AI agent.
 
 It defines the ideal outcome, plans the work, delegates implementation to smaller agents through orchestration, and finally checks whether the result matches that ideal.

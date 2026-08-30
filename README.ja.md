@@ -73,6 +73,8 @@ AIエージェントに渡された依頼が漠然としていてAIに具体性�
 
 #### 役小角 (Enno-oduno)
 
+<img  width="634" src="https://github.com/askdkc/kiokuko/blob/main/skills/kiokuko-enno-oduno/enno-oduno.png?raw=true">
+
 AIエージェントへの依頼を処理するLoop処理：役小角 が有効になります。
 
 依頼内容の理想系を決め、プランニングを行い、実装を小エージェントにオーケストレーションで処理させ、最後に理想に合致するかを自動でチェックしてくれます。

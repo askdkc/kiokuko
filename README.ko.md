@@ -73,6 +73,8 @@ AI 에이전트에게 전달된 요청이 너무 모호해 AI가 구체적인 �
 
 #### Enno-Oduno (役小角)
 
+<img  width="634" src="https://github.com/askdkc/kiokuko/blob/main/skills/kiokuko-enno-oduno/enno-oduno.png?raw=true">
+
 AI 에이전트의 요청을 처리하는 Enno-Oduno 루프가 활성화됩니다.
 
 요청의 이상적인 결과를 정하고, 작업을 계획하고, 작은 에이전트들에게 구현을 orchestration한 뒤, 마지막으로 결과가 이상적인 상태에 맞는지 자동으로 확인합니다.
