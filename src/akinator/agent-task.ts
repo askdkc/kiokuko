@@ -60,6 +60,8 @@ import type { SkillDiscoverySummary, SkillDiscoveryMode } from '../skills/types.
 import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { canonicalDirectory } from '../repository/detect-root.js';
 import { ennoStateForPreparedTask } from '../enno-oduno/service.js';
+import { prepareEmbeddingSearchRuntime } from '../embedding/runtime.js';
+import type { EmbeddingRuntime } from '../embedding/types.js';
 import {
   ENNO_MAX_EXTERNAL_SKILLS,
   ENNO_MAX_TOTAL_SKILL_QUERIES,
@@ -76,6 +78,7 @@ export interface PrepareAgentTaskInput {
   client?: { kind?: string; version?: string; sessionId?: string };
   skillDiscoveryMode?: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
+  embeddingRuntime?: EmbeddingRuntime;
 }
 
 export interface AnswerAgentTaskInput {
@@ -88,6 +91,7 @@ export interface AnswerAgentTaskInput {
   runId: string;
   skillDiscoveryMode?: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
+  embeddingRuntime?: EmbeddingRuntime;
 }
 
 export interface PreparedAgentTask {
@@ -512,6 +516,7 @@ interface FinalizeAgentTaskInput {
   maxContextChars: number;
   discoveryMode: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
+  embeddingRuntime?: EmbeddingRuntime;
 }
 
 interface PreparedTaskContextQuery {
@@ -532,6 +537,39 @@ interface PreparedTaskContextQuery {
     mode: SkillDiscoveryMode;
     requestDigest: string;
   };
+}
+
+type TaskContextQuery = ReturnType<PreparedTaskContextQuery['queryFor']>;
+
+function embeddingQueryText(query: TaskContextQuery): string {
+  return [
+    query.task,
+    query.taskProfile.taskType ?? '',
+    query.taskProfile.target ?? '',
+    query.taskProfile.expected ?? '',
+    query.taskProfile.constraints ?? '',
+    ...query.recommendedTags,
+  ].join('\n');
+}
+
+async function searchRuntime(
+  input: FinalizeAgentTaskInput,
+  query: TaskContextQuery,
+): Promise<import('../memory/hybrid-retrieval.js').HybridSearchRuntime> {
+  return prepareEmbeddingSearchRuntime(input.embeddingRuntime, input.database, embeddingQueryText(query));
+}
+
+async function drainEmbeddingsBeforeRetrieval(
+  runtime: EmbeddingRuntime | undefined,
+  workspace: string,
+): Promise<void> {
+  if (runtime === undefined || runtime.profileId === null) return;
+  try {
+    await runtime.drain({ workspace, maxJobs: 8, deadlineMs: 1_500 });
+  } catch (error) {
+    if (runtime.mode === 'optional' && error instanceof KiokukoError && error.code === 'SERVICE_UNAVAILABLE') return;
+    throw error;
+  }
 }
 
 function prepareTaskContextQuery(
@@ -582,7 +620,9 @@ async function previewMemoryBeforeDiscovery(
   run: NonTerminalTaskRun,
   context: AkinatorContext,
 ): Promise<MemoryPreviewResult> {
-  const preview = await queryScopedContextGated(input.database, prepared.queryFor(context), (candidate) => {
+  const query = prepared.queryFor(context);
+  const runtime = await searchRuntime(input, query);
+  const preview = await queryScopedContextGated(input.database, query, (candidate) => {
     const memoryUse = scopedMemoryUseSignal(input.database, input.project.workspace, candidate);
     return {
       persist: false,
@@ -598,7 +638,7 @@ async function previewMemoryBeforeDiscovery(
         );
       },
     };
-  });
+  }, runtime);
   return {
     selectionStateHash: preview.selectionStateHash,
     memoryUse: preview.value.memoryUse,
@@ -691,7 +731,9 @@ async function selectFinalTaskContext(
 ): Promise<FinalTaskContextResult> {
   const { input, prepared, missingMemoryCapability } = value;
   let approvedEmptyContext: ScopedContextResult | null = null;
-  const gated = await queryScopedContextGated(input.database, prepared.queryFor(value.context), (candidate) => {
+  const query = prepared.queryFor(value.context);
+  const runtime = await searchRuntime(input, query);
+  const gated = await queryScopedContextGated(input.database, query, (candidate) => {
     const memoryUse = scopedMemoryUseSignal(input.database, input.project.workspace, candidate);
     const closed = missingMemoryCapability && memoryUse === 'actionable';
     const returnEmptyWithoutDelivery = missingMemoryCapability && !closed && candidate.items.length === 0;
@@ -709,7 +751,7 @@ async function selectFinalTaskContext(
         );
       },
     };
-  });
+  }, runtime);
   assertCurrentProjectManifest(input.project, input.manifestSnapshot);
   const context = currentAgentTaskContext(input.database, input.runId, value.context);
   const run = authoritativeTaskRun(input.database, input.runId, context.status);
@@ -815,6 +857,7 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
   const requestId = taskRequestId(input.requestId);
   const maxContextChars = taskContextCharacterBudget(input.maxContextChars);
   const { project, executionContext } = await requireProject(database, input.cwd);
+  await drainEmbeddingsBeforeRetrieval(input.embeddingRuntime, project.workspace);
   const manifestSnapshot = captureProjectManifestSnapshot(project);
   const discoveryRequest = skillDiscoveryRequestIdentity(input.skillDiscoveryMode ?? readSkillDiscoveryConfig().mode, input.capabilities);
   const discoveryMode = discoveryRequest.mode;
@@ -869,6 +912,7 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
     capabilities: input.capabilities,
     maxContextChars,
     discoveryMode,
+    ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
     ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
   });
 }
@@ -876,6 +920,7 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
 export async function answerAgentTask(database: SqliteDatabase, input: AnswerAgentTaskInput): Promise<PreparedAgentTask> {
   const maxContextChars = taskContextCharacterBudget(input.maxContextChars);
   const { project, executionContext } = await requireRegisteredProjectReadOnly(database, input.cwd);
+  await drainEmbeddingsBeforeRetrieval(input.embeddingRuntime, project.workspace);
   const manifestSnapshot = captureProjectManifestSnapshot(project);
   const discoveryRequest = skillDiscoveryRequestIdentity(input.skillDiscoveryMode ?? readSkillDiscoveryConfig().mode, input.capabilities);
   const discoveryMode = discoveryRequest.mode;
@@ -914,6 +959,7 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
     capabilities: input.capabilities,
     maxContextChars,
     discoveryMode,
+    ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
     ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
   });
 }

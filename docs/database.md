@@ -35,6 +35,17 @@ are preserved; legacy evidence remains readable for audit but is deliberately
 unbound and cannot satisfy a new Final Review. Expired `started` ownership is
 changed to `abandoned` transactionally before a new owner claims the operation.
 
+Migration 021 adds the rebuildable semantic projection without changing
+canonical memory: immutable `embedding_profiles`, singleton
+`embedding_runtime`, current/stale `entry_embeddings`, durable leased
+`embedding_jobs`, and bounded `query_embeddings`. Entry revision transactions
+only enqueue or reset jobs. Provider calls and vector generation are never run
+inside a migration or entry transaction. Current retrieval joins vectors back
+to the active profile, current revision, and canonical content hash; stale rows
+remain reusable by document hash but are ineligible for search. Purging an entry
+removes its vectors and jobs through foreign-key cascades. Workspace JSONL
+export excludes this derived projection; a full SQLite backup includes it.
+
 `akinator_reasoning_paths` links one proposed entry revision to one run and its intake session. The unique `(run_id, entry_id, entry_revision)` key blocks same-run duplication. `qualified` is set only by the checkpoint service for completed actionable paths with fresh verification or a passing test. Concept aggregation uses a server-derived normalized hash; no user-supplied concept key or retrieval counter can increase it.
 
 Migration 009 adds the external-Skill tables and completes the revision-hash
@@ -75,7 +86,7 @@ older binary never attempts a downgrade or silently ignores unknown schema.
 
 ## Server ownership
 
-The foreground HTTP server keeps one primary connection for its lifetime and serializes ledger writes through a bounded FIFO. Generic execution-ledger clients never open SQLite. The stdio MCP process opens a short-lived connection per gated task or lifecycle tool call. Human/operator memory-management CLI operations also use short-lived connections; WAL and the busy timeout support concurrent same-user processes.
+The foreground HTTP server keeps one primary connection for its lifetime and serializes ledger writes through a bounded FIFO. Generic execution-ledger clients never open SQLite. The stdio MCP process owns one database, embedding runtime, worker, and bounded write queue for the transport lifetime; transport close stops the worker before closing the queue and database. Human/operator memory-management CLI operations use short-lived connections; WAL and the busy timeout support concurrent same-user processes.
 
 The `repositories` table includes a reserved `kiokuko_global`/`global` row.
 Project locations remain separate. Default scoped recall queries only the current

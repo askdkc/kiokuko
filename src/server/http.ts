@@ -27,6 +27,14 @@ import {
 } from './runtime-descriptor.js';
 import { WriteQueue, type WriteQueueState } from './write-queue.js';
 import type { V1RouteHandler } from './router.js';
+import {
+  createEmbeddingRuntime,
+  type EmbeddingRuntimeOptions,
+} from '../embedding/runtime.js';
+import { parseEmbeddingConfig } from '../embedding/config.js';
+import { openEmbeddingDatabase, type EmbeddingDatabaseOpener } from '../embedding/backend.js';
+import { createEmbeddingWorker, type EmbeddingWorker } from '../embedding/worker.js';
+import type { EmbeddingProvider, EmbeddingRuntime, EmbeddingConfig, VectorSearchBackend } from '../embedding/types.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 0;
@@ -36,7 +44,7 @@ interface RequestAdmission {
   active: boolean;
 }
 
-export type DatabaseOpener = (databasePath: string) => SqliteDatabase | PromiseLike<SqliteDatabase>;
+export type DatabaseOpener = EmbeddingDatabaseOpener;
 export type DatabaseInitializer = (options: InitOptions) => unknown | PromiseLike<unknown>;
 export type HttpServerFactory = (listener: RequestListener) => Server;
 export type InstanceLockAcquirer = (databasePath: string, options: InstanceLockOptions) => InstanceLock | PromiseLike<InstanceLock>;
@@ -47,11 +55,18 @@ export type RuntimeDescriptorRemover = (filePath: string, expectedInstanceId: st
 
 export interface HttpApplicationContext {
   readonly database: SqliteDatabase;
+  readonly embeddingRuntime: EmbeddingRuntime;
   enqueueWrite<T>(operation: () => T | PromiseLike<T>): Promise<T>;
   createAuthenticatedApp(v1?: V1RouteHandler): RequestListener;
 }
 
 export type HttpApplicationFactory = (context: HttpApplicationContext) => RequestListener;
+export type EmbeddingRuntimeFactory = (
+  database: SqliteDatabase,
+  config: EmbeddingConfig,
+  options: EmbeddingRuntimeOptions,
+) => EmbeddingRuntime | PromiseLike<EmbeddingRuntime>;
+export type EmbeddingWorkerFactory = (runtime: EmbeddingRuntime) => EmbeddingWorker;
 
 export interface HttpServerDependencies {
   readonly initializeDatabase?: DatabaseInitializer;
@@ -63,6 +78,10 @@ export interface HttpServerDependencies {
   readonly readRuntimeDescriptor?: RuntimeDescriptorReader;
   readonly writeRuntimeDescriptor?: RuntimeDescriptorWriter;
   readonly removeRuntimeDescriptor?: RuntimeDescriptorRemover;
+  readonly createEmbeddingRuntime?: EmbeddingRuntimeFactory;
+  readonly createEmbeddingWorker?: EmbeddingWorkerFactory;
+  readonly embeddingProvider?: EmbeddingProvider;
+  readonly embeddingBackend?: VectorSearchBackend;
 }
 
 export interface HttpServerOptions extends PathEnvironment {
@@ -90,6 +109,11 @@ export interface HttpServerOptions extends PathEnvironment {
   readonly readRuntimeDescriptor?: RuntimeDescriptorReader;
   readonly writeRuntimeDescriptor?: RuntimeDescriptorWriter;
   readonly removeRuntimeDescriptor?: RuntimeDescriptorRemover;
+  readonly embeddingConfig?: EmbeddingConfig;
+  readonly createEmbeddingRuntime?: EmbeddingRuntimeFactory;
+  readonly createEmbeddingWorker?: EmbeddingWorkerFactory;
+  readonly embeddingProvider?: EmbeddingProvider;
+  readonly embeddingBackend?: VectorSearchBackend;
 }
 
 export interface HttpServerHandle {
@@ -302,9 +326,27 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
   let databaseClosed = false;
   let lockReleased = false;
   let descriptorRemoved = false;
+  let embeddingRuntime: EmbeddingRuntime | undefined;
+  let embeddingWorker: EmbeddingWorker | undefined;
+  let queueClosePromise: Promise<void> | undefined;
 
   const rollback = async (originalError: unknown): Promise<never> => {
-    const cleanupErrors: unknown[] = [];
+           const cleanupErrors: unknown[] = [];
+    if (embeddingWorker !== undefined) {
+      try {
+        await embeddingWorker.close();
+        embeddingWorker = undefined;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    } else if (embeddingRuntime !== undefined) {
+      try {
+        await embeddingRuntime.close();
+        embeddingRuntime = undefined;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
     if (server !== undefined && !serverClosed) {
       try {
         await closeServer(server);
@@ -354,7 +396,14 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       databasePath,
       ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
     });
-    database = await openDatabase(databasePath);
+    const embeddingConfig = options.embeddingConfig ?? parseEmbeddingConfig(options.env ?? process.env);
+    const configuredEmbeddingBackend = options.dependencies?.embeddingBackend ?? options.embeddingBackend;
+    const opened = await openEmbeddingDatabase(databasePath, {
+      config: embeddingConfig,
+      openDatabase,
+      ...(configuredEmbeddingBackend === undefined ? {} : { backend: configuredEmbeddingBackend }),
+    });
+    database = opened.database;
 
     let closing = false;
     let ready = false;
@@ -373,6 +422,22 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       }
       return queue.enqueue(operation) as Promise<T>;
     };
+    const enqueueRuntimeWrite = <T>(operation: () => T | PromiseLike<T>): Promise<T> => queue.enqueue(operation) as Promise<T>;
+    const createRuntime = options.dependencies?.createEmbeddingRuntime
+      ?? options.createEmbeddingRuntime
+      ?? ((runtimeDatabase, config, runtimeOptions) => createEmbeddingRuntime(runtimeDatabase, config, runtimeOptions));
+    const runtime = await createRuntime(database, embeddingConfig, {
+      ...((options.dependencies?.embeddingProvider ?? options.embeddingProvider) === undefined
+        ? {}
+        : { provider: options.dependencies?.embeddingProvider ?? options.embeddingProvider }),
+      ...(opened.backend === undefined ? {} : { backend: opened.backend }),
+      enqueueWrite: enqueueRuntimeWrite,
+    });
+    embeddingRuntime = runtime;
+    const createWorker = options.dependencies?.createEmbeddingWorker
+      ?? options.createEmbeddingWorker
+      ?? ((runtime: EmbeddingRuntime) => createEmbeddingWorker({ runtime }));
+    if (runtime.profileId !== null) embeddingWorker = createWorker(runtime);
     const createAuthenticatedApp = (v1?: V1RouteHandler): RequestListener => createApp({
       expectedToken: capabilityToken,
       readiness: () => ready && !closing,
@@ -382,6 +447,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       ? options.app ?? createAuthenticatedApp(options.v1)
       : options.applicationFactory({
         database,
+        embeddingRuntime: runtime,
         enqueueWrite,
         createAuthenticatedApp,
       });
@@ -422,6 +488,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
     descriptorAttempted = true;
     await writeDescriptor(descriptorPath, descriptor);
     ready = true;
+    embeddingWorker?.start();
     const publicDescriptor = toPublicRuntimeDescriptor(descriptor);
     let closePromise: Promise<void> | undefined;
 
@@ -449,20 +516,29 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
             } catch (error) {
               cleanupErrors.push(error);
             }
-          };
-          const serverClose = serverClosed
-            ? Promise.resolve()
-            : capture(() => closeServer(server as Server), () => { serverClosed = true; });
-          const requestClose = capture(waitForAcceptedRequests, () => undefined);
-          const queueClose = activeRequests === 0 && !queueClosed
-            ? capture(() => queue.close(), () => { queueClosed = true; })
-            : undefined;
-          await Promise.all([serverClose, requestClose]);
-          if (queueClose !== undefined) {
-            await queueClose;
-          } else if (!queueClosed) {
-            await capture(() => queue.close(), () => { queueClosed = true; });
-          }
+           };
+           const closeQueue = async (): Promise<void> => {
+             if (queueClosed) return;
+             try {
+               queueClosePromise ??= queue.close();
+               await queueClosePromise;
+               queueClosed = true;
+             } catch (error) {
+               cleanupErrors.push(error);
+             }
+            };
+            embeddingWorker?.stop();
+            if (activeRequests === 0 && embeddingWorker === undefined) queueClosePromise = queue.close();
+            if (!serverClosed) {
+             await capture(() => closeServer(server as Server), () => { serverClosed = true; });
+           }
+            if (embeddingWorker !== undefined) {
+              await capture(() => embeddingWorker?.close(), () => { embeddingWorker = undefined; embeddingRuntime = undefined; });
+            } else if (embeddingRuntime !== undefined) {
+              await capture(() => embeddingRuntime?.close(), () => { embeddingRuntime = undefined; });
+            }
+            await capture(waitForAcceptedRequests, () => undefined);
+            await closeQueue();
           if (database !== undefined && !databaseClosed) {
             await capture(() => database?.close(), () => { databaseClosed = true; });
           }

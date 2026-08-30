@@ -1,11 +1,19 @@
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
+import type { PreparedSemanticQuery, VectorSearchBackend } from '../embedding/types.js';
 import { KiokukoError } from '../errors.js';
 import { parseRetrievalQuery, normalizeSearchSignal, type ParsedRetrievalQuery } from './retrieval-query.js';
 import { compareCanonicalStrings, ENTRY_KINDS, ENTRY_STATUSES, type EntryKind, type EntryStatus } from '../serialization/validate.js';
 import { readEntry, type EntryRecord } from './entries.js';
 import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
 
-export type RetrievalLane = 'exact-signal' | 'word-fts' | 'trigram' | 'like' | 'tag';
+export type RetrievalLane = 'exact-signal' | 'word-fts' | 'trigram' | 'like' | 'tag' | 'semantic';
+
+export interface HybridSearchRuntime {
+  readonly semantic?: {
+    readonly query: PreparedSemanticQuery;
+    readonly backend: VectorSearchBackend;
+  };
+}
 
 export interface HybridSearchInput {
   workspace: string;
@@ -40,6 +48,7 @@ const LANE_WEIGHTS: Record<RetrievalLane, number> = {
   trigram: 1.5,
   like: 0.75,
   tag: 3,
+  semantic: 2.5,
 };
 
 interface ExternalMappingRow extends SqliteRow {
@@ -168,7 +177,10 @@ function rankSql(): string {
 }
 
 function exactSignalLane(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): SearchRow[] {
-  const values = parsed.exactSignals.map((signal) => signal.normalizedValue).filter(Boolean).slice(0, 32);
+  const values = [...new Set([
+    parsed.normalized.length <= 512 ? normalizeSearchSignal(parsed.normalized) : '',
+    ...parsed.exactSignals.map((signal) => signal.normalizedValue),
+  ])].filter(Boolean).slice(0, 32);
   if (values.length === 0) return [];
   const parameters: Array<string | number> = [input.workspace, ...values];
   const filters = filterSql(input, parameters);
@@ -302,17 +314,70 @@ function likeLane(database: SqliteDatabase, input: HybridSearchInput, parsed: Pa
   return [...result.values()];
 }
 
-function laneRows(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): Array<[RetrievalLane, SearchRow[]]> {
-  return [
-    ['exact-signal', exactSignalLane(database, input, parsed)],
-    ['word-fts', wordFtsLane(database, input, parsed)],
-    ['trigram', trigramLane(database, input, parsed)],
-    ['like', likeLane(database, input, parsed)],
-    ['tag', tagLane(database, input, parsed)],
-  ];
+function semanticLane(database: SqliteDatabase, input: HybridSearchInput, runtime: HybridSearchRuntime): SearchRow[] {
+  const semantic = runtime.semantic;
+  if (semantic === undefined) return [];
+  const { query, backend } = semantic;
+  if (typeof query.profileId !== 'string' || query.profileId.length === 0
+    || !Number.isSafeInteger(query.dimensions) || query.dimensions < 2 || query.dimensions > 8192
+    || !(query.vector instanceof Float32Array) || query.vector.length !== query.dimensions
+    || !Number.isFinite(query.distanceCeiling) || query.distanceCeiling < 0 || query.distanceCeiling >= 2
+    || typeof query.backendId !== 'string' || query.backendId.length === 0
+    || query.backendId !== backend.id) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Prepared semantic query is invalid');
+  }
+  const hits = backend.search(database, {
+    profileId: query.profileId,
+    dimensions: query.dimensions,
+    queryVector: query.vector,
+    distanceCeiling: query.distanceCeiling,
+    workspace: input.workspace,
+    limit: MAX_LANE_CANDIDATES,
+  });
+  if (!Array.isArray(hits) || hits.length > MAX_LANE_CANDIDATES) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Semantic backend returned too many candidates');
+  }
+  const canonical = new Map<string, number>();
+  for (const hit of hits) {
+    if (typeof hit !== 'object' || hit === null
+      || typeof hit.entryId !== 'string' || hit.entryId.length === 0
+      || !Number.isFinite(hit.distance) || hit.distance < 0) {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Semantic backend returned an invalid candidate');
+    }
+    if (hit.distance > query.distanceCeiling) continue;
+    const previous = canonical.get(hit.entryId);
+    if (previous === undefined || hit.distance < previous) canonical.set(hit.entryId, hit.distance);
+  }
+  return [...canonical.entries()]
+    .sort((left, right) => left[1] - right[1] || compareCanonicalStrings(left[0], right[0]))
+    .map(([id]) => ({ id }));
 }
 
-export function hybridSearch(database: SqliteDatabase, input: HybridSearchInput): RetrievalCandidate[] {
+function laneRows(
+  database: SqliteDatabase,
+  input: HybridSearchInput,
+  parsed: ParsedRetrievalQuery,
+  runtime: HybridSearchRuntime,
+  lexicalAllowed: boolean,
+): Array<[RetrievalLane, SearchRow[]]> {
+  const rows: Array<[RetrievalLane, SearchRow[]]> = [['exact-signal', exactSignalLane(database, input, parsed)]];
+  if (lexicalAllowed) {
+    rows.push(
+      ['word-fts', wordFtsLane(database, input, parsed)],
+      ['trigram', trigramLane(database, input, parsed)],
+      ['like', likeLane(database, input, parsed)],
+      ['tag', tagLane(database, input, parsed)],
+    );
+  }
+  if (runtime.semantic !== undefined) rows.push(['semantic', semanticLane(database, input, runtime)]);
+  return rows;
+}
+
+export function hybridSearch(
+  database: SqliteDatabase,
+  input: HybridSearchInput,
+  runtime: HybridSearchRuntime = {},
+): RetrievalCandidate[] {
   if (typeof input.workspace !== 'string' || input.workspace.trim().length === 0) invalid();
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 1_000) invalid();
   if (input.kind !== undefined && !ENTRY_KINDS.includes(input.kind)) invalid();
@@ -322,9 +387,10 @@ export function hybridSearch(database: SqliteDatabase, input: HybridSearchInput)
   if (parsed.normalized.length === 0) return [];
   // Treat SQL/FTS-looking operator soup as data, not as a broad OR query. A
   // punctuation-heavy request must never turn into a full-table lexical scan.
-  if (/(?:--|\/\*|\*\/|["']\s*(?:OR|AND)\b|\b(?:OR|AND)\s+\d+\s*[=<>])/iu.test(parsed.normalized) && parsed.exactSignals.length === 0) return [];
+  const lexicalAllowed = !/(?:--|\/\*|\*\/|["']\s*(?:OR|AND)\b|\b(?:OR|AND)\s+\d+\s*[=<>])/iu.test(parsed.normalized)
+    || parsed.exactSignals.length > 0;
   const merged = new Map<string, RetrievalCandidate>();
-  for (const [lane, rows] of laneRows(database, input, parsed)) {
+  for (const [lane, rows] of laneRows(database, input, parsed, runtime, lexicalAllowed)) {
     const seen = new Set<string>();
     let rank = 0;
     for (const row of rows) {
@@ -342,6 +408,7 @@ export function hybridSearch(database: SqliteDatabase, input: HybridSearchInput)
       }
       if (lane === 'like') existing.reasons.push('literal_fallback_match');
       if (lane === 'tag') existing.reasons.push('tag_match');
+      if (lane === 'semantic') existing.reasons.push('semantic_match');
       existing.matchedSignals.push(...parsed.exactSignals.map((signal) => signal.value));
       merged.set(row.id, existing);
       if (merged.size >= MAX_MERGED_CANDIDATES) break;

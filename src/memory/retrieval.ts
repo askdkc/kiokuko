@@ -2,7 +2,7 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry, type EntryRecord } from './entries.js';
 import { requireWorkspace, type EntryKind, type EntryStatus } from '../serialization/validate.js';
-import { hybridSearch } from './hybrid-retrieval.js';
+import { hybridSearch, type HybridSearchRuntime } from './hybrid-retrieval.js';
 
 export interface SearchEntriesInput {
   workspace: string;
@@ -89,13 +89,17 @@ function normalizedMaxChars(value: number | undefined): number {
   return value;
 }
 
-export function rankedEntryHits(database: SqliteDatabase, input: SearchEntriesInput): RankedRecallResult {
+export function rankedEntryHits(
+  database: SqliteDatabase,
+  input: SearchEntriesInput,
+  runtime: HybridSearchRuntime = {},
+): RankedRecallResult {
   const limit = normalizedLimit(input.limit, DEFAULT_SEARCH_LIMIT);
   const workspace = requireWorkspace(input.workspace);
   const normalizedInput = { ...input, workspace };
   if (normalizedInput.query.trim().length === 0) return { hits: [], truncated: false };
 
-  const candidates = hybridSearch(database, { ...normalizedInput, limit });
+  const candidates = hybridSearch(database, { ...normalizedInput, limit }, runtime);
   return {
     hits: candidates.slice(0, limit).map((candidate, index) => ({
       entryId: candidate.entryId,
@@ -107,9 +111,13 @@ export function rankedEntryHits(database: SqliteDatabase, input: SearchEntriesIn
   };
 }
 
-export function searchEntries(database: SqliteDatabase, input: SearchEntriesInput): SearchResult {
+export function searchEntries(
+  database: SqliteDatabase,
+  input: SearchEntriesInput,
+  runtime: HybridSearchRuntime = {},
+): SearchResult {
   const limit = normalizedLimit(input.limit, DEFAULT_SEARCH_LIMIT);
-  const selected = rankedEntryHits(database, { ...input, limit });
+  const selected = rankedEntryHits(database, { ...input, limit }, runtime);
   const items = selected.hits.map((hit) => readEntry(database, { workspace: input.workspace, entryId: hit.entryId }));
   return { items, count: items.length, truncated: selected.truncated };
 }
@@ -120,10 +128,14 @@ function recallSnippet(entry: EntryRecord, remaining: number): string {
   return takeCharacters(source, remaining);
 }
 
-export function recallEntries(database: SqliteDatabase, input: RecallEntriesInput): RecallResult {
+export function recallEntries(
+  database: SqliteDatabase,
+  input: RecallEntriesInput,
+  runtime: HybridSearchRuntime = {},
+): RecallResult {
   const limit = normalizedLimit(input.limit, DEFAULT_RECALL_LIMIT);
   const maxChars = normalizedMaxChars(input.maxChars);
-  const selected = rankedEntryHits(database, { ...input, limit });
+  const selected = rankedEntryHits(database, { ...input, limit }, runtime);
   const rows = selected.hits;
   const items: RecallItem[] = [];
   let characters = 0;

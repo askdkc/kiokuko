@@ -3,6 +3,7 @@ import { constants, type BigIntStats } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { TextDecoder } from 'node:util';
 import type { SqliteDatabase } from '../db/adapter.js';
+import { enqueueCurrentEntryEmbeddingInTransaction } from '../embedding/jobs.js';
 import { withDeferredReadTransaction, withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { findSecretInValue } from '../memory/secrets.js';
@@ -874,6 +875,12 @@ export async function importWorkspace(
         summary: entry.summary,
         tags: entry.tags,
         scope: entry.scope,
+      });
+      enqueueCurrentEntryEmbeddingInTransaction(db, {
+        entryId: entry.id,
+        revision: 1,
+        contentHash: entry.contentHash,
+        now: entry.updatedAt,
       });
     }
 

@@ -39,6 +39,33 @@ required = true
 
 设置完成后，启动目标 AI 客户端即可像平时一样使用。如果客户端已经启动，请先退出，再重新启动。如果 setup 创建或更新了 Codex Stop hook，请在 Codex 中打开 `/hooks` 并明确将该 hook 设为可信。
 
+### 可选的语义检索
+
+词法检索仍为默认方式。若要启用本地或明确允许的 OpenAI-compatible
+embedding provider，请通过环境变量配置并激活 profile：
+
+```bash
+export KIOKUKO_EMBEDDINGS=optional
+export KIOKUKO_EMBEDDING_BASE_URL=http://127.0.0.1:8080/v1
+export KIOKUKO_EMBEDDING_MODEL=your-model
+export KIOKUKO_EMBEDDING_DIMENSIONS=1536
+export KIOKUKO_EMBEDDING_DISTANCE_CEILING=0.8
+kiokuko embeddings activate
+kiokuko embeddings sync --limit 64
+```
+
+只有在 provider 不可用时也必须停止检索，才使用
+`KIOKUKO_EMBEDDINGS=required`。远程 HTTPS endpoint 还需要
+`KIOKUKO_EMBEDDING_ALLOW_REMOTE=true`。API key 只从
+`KIOKUKO_EMBEDDING_API_KEY` 读取，不会出现在 status 或 doctor 中。
+`kiokuko embeddings status --json` 显示 profile 与覆盖率；`rebuild`
+重新排队当前 entry，`rebuild --wait` 会在返回前处理该队列。MCP 只会在
+task retrieval 前执行小规模、workspace 限定的 drain，不会隐式执行无限 rebuild。
+`KIOKUKO_VECTOR_BACKEND=auto` 只会在能够安全加载时使用 package 自带且
+精确锁定版本的 `sqlite-vec` extension，否则回退到 JavaScript exact-cosine
+backend。设置为 `javascript` 可禁止 extension loading；强制指定 `sqlite-vec` 时，
+无法加载会 fail closed。所有命令都不接受自定义 extension path。
+
 ## 越用越聪明的机制
 
 ```text

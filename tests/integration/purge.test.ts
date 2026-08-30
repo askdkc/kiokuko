@@ -6,6 +6,9 @@ import test from 'node:test';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { purgeEntry } from '../../src/commands/purge.js';
+import { parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
+import { createEmbeddingProfile } from '../../src/embedding/profile.js';
+import { activateEmbeddingProfile, upsertEntryEmbedding } from '../../src/embedding/store.js';
 import { recordEntry, readEntry } from '../../src/memory/entries.js';
 import { documentsFromSkillSnapshot } from '../../src/skills/import-preparation.js';
 import { requirementForOfficialSkill } from '../../src/skills/official-catalog.js';
@@ -39,9 +42,30 @@ test('continues to purge ordinary memory entries', async () => {
   const database = openConnection(path.join(directory, 'data.sqlite3'));
   migrateDatabase(database);
   try {
+    const profile = createEmbeddingProfile(requireEnabledEmbeddingConfig(parseEmbeddingConfig({
+      KIOKUKO_EMBEDDINGS: 'optional',
+      KIOKUKO_EMBEDDING_BASE_URL: 'http://127.0.0.1:8080/v1',
+      KIOKUKO_EMBEDDING_MODEL: 'purge-model',
+      KIOKUKO_EMBEDDING_DIMENSIONS: '3',
+      KIOKUKO_EMBEDDING_DISTANCE_CEILING: '0.8',
+    })));
+    activateEmbeddingProfile(database, profile, { replace: false, now: '2026-08-31T00:00:00.000Z' });
     const entry = recordEntry(database, { workspace: 'project:purge', kind: 'lesson', title: 'Ordinary', body: 'ordinary content' });
+    upsertEntryEmbedding(database, {
+      entryId: entry.id,
+      profileId: profile.profileId,
+      revision: entry.revision,
+      contentHash: entry.contentHash,
+      documentHash: 'a'.repeat(64),
+      vector: [1, 0, 0],
+      createdAt: '2026-08-31T00:00:00.000Z',
+    });
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM embedding_jobs WHERE entry_id = ?').get<{ count: number }>(entry.id)?.count, 1);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entry_embeddings WHERE entry_id = ?').get<{ count: number }>(entry.id)?.count, 1);
     purgeEntry(database, { workspace: 'project:purge', entryId: entry.id, confirm: true });
     assert.throws(() => readEntry(database, { workspace: 'project:purge', entryId: entry.id }), /not found/i);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM embedding_jobs WHERE entry_id = ?').get<{ count: number }>(entry.id)?.count, 0);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entry_embeddings WHERE entry_id = ?').get<{ count: number }>(entry.id)?.count, 0);
   } finally {
     database.close();
   }

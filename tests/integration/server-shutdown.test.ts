@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { SqliteDatabase } from '../../src/db/adapter.js';
+import type { EmbeddingRuntime } from '../../src/embedding/types.js';
+import type { EmbeddingWorker } from '../../src/embedding/worker.js';
 import { startHttpServer } from '../../src/server/http.js';
 
 function deferred<T>() {
@@ -248,6 +250,55 @@ test('close stops accepting new HTTP connections after accepted work has drained
   assert.equal(response.status, 200);
   await handle.close();
   await assert.rejects(() => fetch(`${handle.url}/health/live`));
+});
+
+test('close keeps the write queue open while the embedding worker finalizes an aborted job', async () => {
+  const directory = await temp('http-shutdown-embedding-worker');
+  const databasePath = path.join(directory, 'data.sqlite3');
+  const runtimeDirectory = path.join(directory, 'runtime');
+  const events: string[] = [];
+  let enqueueWrite: ((operation: () => unknown | PromiseLike<unknown>) => Promise<unknown>) | undefined;
+  const runtime: EmbeddingRuntime = {
+    mode: 'optional',
+    profileId: 'a'.repeat(64),
+    backendId: null,
+    backend: null,
+    prepareQuery: async () => null,
+    drain: async () => ({ claimed: 1, completed: 0, failed: 0, blocked: 0, remaining: 1 }),
+    close: async () => { events.push('runtime-close'); },
+  };
+  const worker: EmbeddingWorker = {
+    get running() {
+      return true;
+    },
+    start: () => { events.push('worker-start'); },
+    stop: () => { events.push('worker-stop'); },
+    close: async () => {
+      events.push('worker-close');
+      await runtime.close();
+      if (enqueueWrite === undefined) throw new Error('enqueueWrite was not initialized');
+      await enqueueWrite(() => { events.push('job-finalize'); });
+    },
+  };
+  const handle = await startHttpServer({
+    databasePath,
+    runtimeDirectory,
+    descriptorPath: path.join(runtimeDirectory, 'server.json'),
+    instanceId: '123e4567-e89b-12d3-a456-426614174103',
+    capabilityToken: 'b'.repeat(64),
+    initializeDatabase: () => undefined,
+    openDatabase: () => fakeDatabase(databasePath, () => undefined),
+    dependencies: {
+      createEmbeddingRuntime: (_database, _config, options) => {
+        enqueueWrite = options.enqueueWrite;
+        return runtime;
+      },
+      createEmbeddingWorker: () => worker,
+    },
+  });
+
+  await handle.close();
+  assert.deepEqual(events, ['worker-start', 'worker-stop', 'worker-close', 'runtime-close', 'job-finalize']);
 });
 
 test('close aggregates independent cleanup failures and retries only resources that did not close', async () => {

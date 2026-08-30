@@ -27,7 +27,7 @@ export function createAgentV1Handler(context: HttpApplicationContext): V1RouteHa
   const service = new AgentGatewayService(context.database);
   const checkpointMutation = new CheckpointMutationService(context.database);
   const nudgeDelivery = new NudgeDeliveryService(context.database);
-  const broker = new ContextBroker(context.database);
+  const broker = new ContextBroker(context.database, context.embeddingRuntime);
   const routeContext: AgentRouteContext = {
     database: context.database,
     service,

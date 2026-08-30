@@ -111,6 +111,12 @@ export function loadMigrationSnapshot(directory = defaultMigrationsDirectory()):
         Object.defineProperty(failure, 'cause', { value: error });
         throw failure;
       }
+      if (sql.includes('\r')) {
+        throw new KiokukoError(
+          'INTEGRITY_ERROR',
+          `Migration file ${name} has non-canonical line endings; use LF only`,
+        );
+      }
       return {
         version,
         name,

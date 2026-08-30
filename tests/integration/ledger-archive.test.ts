@@ -509,7 +509,7 @@ test('round-trips ecosystem delivery feedback without rewriting the source works
       intakeSessionId: sessionId,
       taskProfileHash,
       queryHash: 'b'.repeat(64),
-      policyVersion: 'context-ranking-v5',
+       policyVersion: 'context-ranking-v6',
       scoreSchemaVersion: 2,
       charBudget: 1000,
       charCount: 100,

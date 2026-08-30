@@ -9,6 +9,14 @@ Kiokuko uses Node.js's built-in `node:sqlite` behind `src/db/adapter.ts`. The ru
 
 The package requires Node `>=24.16.0` and its development types track the Node 24 API. This support floor is both a lifecycle policy and an API requirement: all SQLite backups use `DatabaseSync.serialize()`/`deserialize()`, added in Node 24.16.0, so they can snapshot the exact already-open connection without reopening its pathname. See the [official Node.js release schedule](https://github.com/nodejs/Release#release-schedule).
 
+Semantic retrieval keeps this same adapter boundary. Embedding vectors are
+stored as ordinary table BLOBs encoded by Kiokuko's TypeScript codec, so the
+JavaScript exact-cosine backend remains available on every supported runtime.
+`sqlite-vec` is an optional, exact-versioned accelerator that may be loaded only
+by the connection layer through the known package loader. User-provided
+extension paths are never accepted, and extension loading is disabled again
+immediately after the capability probe.
+
 The original foundation slice was verified on Node v22.23.1. The Node 24.16 support-floor update was verified using Node v26.5.0, which is inside the supported range; an exact Node 24.16 runtime was not available on that host.
 
 ## Evidence captured
@@ -30,6 +38,12 @@ Backup, initialization, migration, and capability tests were also run on 2026-08
 - Node: v26.5.0
 - SQLite runtime: 3.53.3
 
+The semantic package smoke was run on 2026-08-31 on macOS arm64 with Node
+v26.5.0, SQLite 3.53.3, `sqlite-vec` package 0.1.9, and extension `v0.1.9`.
+It exercised the production backend composition, `vec_version()`, disabling
+extension loading, three-vector cosine ordering, and parity with the JavaScript
+backend.
+
 The capability fixture and tests exercised:
 
 - file-backed database creation
@@ -46,7 +60,7 @@ The focused capability test passed with FTS5, WAL, integrity check, and serializ
 
 | Candidate | Decision | Evidence/limitation |
 |---|---|---|
-| `node:sqlite` | Selected | Built into the verified Node runtime; no native npm addon or runtime dependency; the required foundation contract passed. |
+| `node:sqlite` | Selected | Built into the verified Node runtime; the required foundation contract passed. Semantic retrieval may add the exact-version optional `sqlite-vec` accelerator, but correctness does not depend on it. |
 | `better-sqlite3` | Not selected | A clean install and the complete cross-platform contract were not rerun in this worktree; adding it would introduce native ABI/prebuild risk without a demonstrated need. |
 | Pure JS/WASM SQLite | Not selected | Durable WAL/locking and the complete multi-process contract were not established here; it would also add a larger runtime path than the built-in driver. |
 
@@ -60,3 +74,8 @@ This is a runtime decision, not a claim that every OS/client combination has bee
 - Migrations are ordered, SHA-256 checked, forward-only, and applied one transaction at a time with `BEGIN IMMEDIATE`.
 - Only bounded retries for SQLite lock/busy errors are allowed. SQL, validation, and checksum errors are not retried.
 - `node:sqlite` is a release-candidate API in current Node 24 documentation, so this ADR must be revisited when its stability level or behavior changes.
+
+Embedding provider calls, vector generation, and extension loading are never
+performed by a migration or an entry transaction. The embedding projection is
+rebuildable and can be disabled with `KIOKUKO_EMBEDDINGS=off` without changing
+the canonical or lexical memory tables.

@@ -166,6 +166,22 @@ test('rejects a UTF-8 BOM in migration SQL before touching the database', async 
   assert.deepEqual(statements, []);
 });
 
+test('rejects CRLF migration SQL before checksum or database effects', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-crlf-migration-'));
+  const directory = path.join(root, 'migrations');
+  await mkdir(directory);
+  await writeFile(path.join(directory, '001_crlf.sql'), MIGRATION_SQL.replaceAll('\n', '\r\n'));
+  const { database, statements } = migrationDatabase(() => {});
+
+  assert.throws(
+    () => migrateDatabase(database, directory),
+    (error: unknown) => error instanceof KiokukoError
+      && error.code === 'INTEGRITY_ERROR'
+      && /non-canonical line endings; use LF only/u.test(error.message),
+  );
+  assert.deepEqual(statements, []);
+});
+
 test('rejects every non-canonical SQL migration basename before touching the database', async () => {
   for (const name of [
     '1_short.sql',
