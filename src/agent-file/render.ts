@@ -9,7 +9,7 @@ import {
 } from '../enno-oduno/instructions.js';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../setup/standard-skills.js';
 
-export const AGENT_TEMPLATE_VERSION = 22;
+export const AGENT_TEMPLATE_VERSION = 23;
 
 export interface AgentTemplateValues {
   repositoryId: string;

@@ -30,10 +30,13 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 22 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 23 -->/);
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
+  assert.match(rendered, /Akinator is the mandatory intake state machine before every planning or implementation route/u);
+  assert.match(rendered, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
+  assert.match(rendered, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
   assert.match(rendered, /canonical router.*`kiokuko-enno-oduno`.*`kiokuko-simple-work`.*`kiokuko-single-purpose-functions`.*`kiokuko-ui-design-soul`/u);
   assert.match(rendered, /simple-work route minimizes the solution but never replaces the code contract/u);
   assert.match(rendered, /Never substitute, install, or execute fetched external Skill content/u);

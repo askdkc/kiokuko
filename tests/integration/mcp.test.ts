@@ -51,6 +51,10 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/iu);
     assert.match(instructions, /Every `task_prepare` call must set `soulRead: true` only after that read/iu);
     assert.match(instructions, /exact local `kiokuko-soul` capability is required for every task/iu);
+    assert.match(instructions, /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
+    assert.match(instructions, /whether or not Enno-Oduno applies/iu);
+    assert.match(instructions, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
+    assert.match(instructions, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
     assert.match(instructions, /`task_prepare` is the Enno-Oduno orchestration entry point/u);
     assert.match(instructions, /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
     assert.match(instructions, /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
@@ -105,6 +109,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
     assert.match(taskPrepareTool?.description ?? '', /Reusing an ID with changed bound input is a conflict/);
     assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction and memoryPolicy before proceeding/);
+    assert.match(taskPrepareTool?.description ?? '', /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
+    assert.match(taskPrepareTool?.description ?? '', /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
     assert.match(taskPrepareTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
