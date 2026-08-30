@@ -12,8 +12,12 @@ Kiokuko is a model-agnostic local control plane with three deliberately separate
 - A user-global SQLite database is the source of truth and uses checksum-recorded forward-only migrations.
 - A reserved `global` workspace stores only explicitly global cross-project memory. Default recall combines that workspace with the current project and excludes every unrelated project.
 - Existing memory services own record/read/search/recall/lifecycle behavior.
-  Hybrid retrieval adds exact-signal, word-FTS, trigram, literal, and tag lanes
-  without replacing the existing word FTS index.
+  Hybrid retrieval adds exact-signal, word-FTS, trigram, literal, tag, and
+  optional semantic lanes without replacing the existing word FTS index.
+  Semantic candidates come from a rebuildable current-revision projection and
+  rejoin the same canonical entry, scope, lifecycle, and external-Skill checks.
+  Lane scores are fused by weighted reciprocal rank; cosine distance is never
+  added directly to BM25 or trust/ranking components.
 - Akinator intake owns task-profile inference, at most three high-value discriminating questions, and `ready`/`exhausted` transitions. Its reasoning projection starts with competing action families and narrows them through intent, target, observable success, selected action, verification, and stop conditions. It is not a retrieval-hit counter.
 - The Agent Event Gateway owns authenticated HTTP/JSON lifecycle, idempotency, event collection, projection, context delivery, deterministic recommendations, and advisory nudge selection.
 - Codex/OpenCode/Claude Code task preparation uses the stdio MCP
@@ -98,6 +102,16 @@ Routes contain no ad-hoc SQLite statements. Gateway run-open and intake-answer u
 ## Runtime
 
 A foreground `kiokuko serve --port 0` process keeps one primary SQLite connection, a bounded FIFO write queue, a same-user runtime descriptor, and a same-database instance lock. Only loopback hosts are accepted. `/api/v1/*` uses bearer capability authentication; legacy/UI access is composed separately and does not enable permissive CORS.
+
+When embeddings are enabled, HTTP and MCP process owners select the vector
+backend before declaring readiness. `off` and `javascript` never enable SQLite
+extension loading. `auto` attempts only the exact package-owned `sqlite-vec`
+loader and otherwise uses the JavaScript exact-cosine backend. A successfully
+loaded extension is probed and extension loading is immediately disabled.
+Embedding jobs use durable leases; provider I/O runs outside entry and migration
+transactions. HTTP owns a periodic bounded worker, MCP owns the runtime for the
+stdio transport lifetime, and one-shot CLI search/recall performs only a bounded
+drain before preparing one query vector shared by the requested scopes.
 
 ## Context loop
 

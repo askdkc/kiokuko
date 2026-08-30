@@ -406,6 +406,37 @@ deletion by the confirmed snapshot.
 `--json`, MCP `call` requests, and non-interactive execution never prompt or
 perform cleanup. They report the existing health result unchanged.
 
+## Semantic embedding commands
+
+Semantic retrieval is disabled unless `KIOKUKO_EMBEDDINGS` is `optional` or
+`required`. An enabled configuration requires an OpenAI-compatible base URL,
+model, dimensions, and cosine distance ceiling. Plain HTTP is accepted only for
+loopback hosts; remote HTTPS also requires
+`KIOKUKO_EMBEDDING_ALLOW_REMOTE=true`. Credentials are read only from
+`KIOKUKO_EMBEDDING_API_KEY` and are excluded from JSON, errors, hashes, and the
+database.
+
+```text
+kiokuko embeddings status [--json]
+kiokuko embeddings activate [--replace] [--json]
+kiokuko embeddings sync [--workspace <workspace>] [--limit 1..64] [--json]
+kiokuko embeddings rebuild [--workspace <workspace>] [--wait] [--json]
+```
+
+`status` is provider-free. `activate` atomically binds the environment-derived
+profile and enqueues current entries without provider I/O; replacing a different
+profile requires `--replace`. `sync` processes one bounded batch. `rebuild`
+only requeues unless `--wait` is explicit. `search`, `recall`, and
+`memory recall` prepare at most one query embedding per command and close the
+runtime before exit. With `optional`, provider failure falls back to the
+existing lexical lanes. With `required`, it returns `SERVICE_UNAVAILABLE`.
+
+`KIOKUKO_VECTOR_BACKEND=javascript` never loads an extension. `auto` uses the
+known exact-version `sqlite-vec` package when it can be loaded safely and falls
+back to JavaScript. Forced `sqlite-vec` fails closed in either embedding mode
+when the package or extension is unavailable. No command accepts an extension
+path.
+
 ## Server commands
 
 ```bash

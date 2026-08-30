@@ -309,6 +309,7 @@ function createEnabledRuntime(
     });
     const deadline = Date.now() + options.deadlineMs;
     const controller = new AbortController();
+    const deadlineTimer = setTimeout(() => controller.abort(), options.deadlineMs);
     inFlight.add(controller);
     const pending: PendingEmbeddingJob[] = [];
     let completed = 0;
@@ -369,6 +370,7 @@ function createEnabledRuntime(
       failed += processed.failed;
       blocked += processed.blocked;
     } finally {
+      clearTimeout(deadlineTimer);
       inFlight.delete(controller);
     }
     const remaining = listEmbeddingJobs(database, {

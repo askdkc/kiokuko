@@ -63,6 +63,11 @@ require `KIOKUKO_EMBEDDING_ALLOW_REMOTE=true`; API keys are read only from
 `rebuild` requeues current entries, and `rebuild --wait` processes that queue
 before returning. MCP performs only a small workspace-scoped drain before
 task retrieval; it never performs an unbounded background rebuild.
+`KIOKUKO_VECTOR_BACKEND=auto` uses only the package-owned, exact-version
+`sqlite-vec` extension when it loads safely and otherwise falls back to the
+JavaScript exact-cosine backend. Set `javascript` to prohibit extension loading;
+forcing `sqlite-vec` fails closed if it cannot load. No command accepts an
+extension path.
 
 ## How it gets smarter with use
 

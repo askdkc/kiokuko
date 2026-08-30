@@ -155,6 +155,60 @@ test('semantic retrieval is optional and preserves exact-signal precedence', () 
   }
 });
 
+test('operator-soup protection preserves exact command signals and the semantic lane', () => {
+  const database = openConnection(':memory:');
+  try {
+    migrateDatabase(database);
+    const active = profile();
+    activateEmbeddingProfile(database, active, { replace: false, now: timestamp });
+    const command = recordEntry(database, {
+      workspace: 'project:command-signal',
+      kind: 'lesson',
+      title: 'Runtime command',
+      body: 'Inspect the current runtime version.',
+      scope: buildStructuredScope({ visibility: 'project', signals: { commands: ['node --version'] } }),
+    }, { idFactory: () => 'entry-command', now: timestamp });
+    const semantic = recordEntry(database, {
+      workspace: 'project:command-signal',
+      kind: 'lesson',
+      title: 'Semantic fallback',
+      body: 'A punctuation-heavy query can still have a prepared semantic vector.',
+    }, { idFactory: () => 'entry-command-semantic', now: timestamp });
+    upsertEntryEmbedding(database, {
+      entryId: command.id,
+      profileId: active.profileId,
+      revision: command.revision,
+      contentHash: command.contentHash,
+      documentHash: '1'.repeat(64),
+      vector: [-1, 0, 0],
+      createdAt: timestamp,
+    });
+    upsertEntryEmbedding(database, {
+      entryId: semantic.id,
+      profileId: active.profileId,
+      revision: semantic.revision,
+      contentHash: semantic.contentHash,
+      documentHash: '2'.repeat(64),
+      vector: [1, 0, 0],
+      createdAt: timestamp,
+    });
+
+    const exact = hybridSearch(database, { workspace: 'project:command-signal', query: 'node --version', limit: 2 });
+    assert.deepEqual(exact.map((candidate) => candidate.entryId), [command.id]);
+    assert.ok(exact[0]?.reasons.includes('exact_signal_match'));
+
+    const fallback = hybridSearch(
+      database,
+      { workspace: 'project:command-signal', query: 'unknown --flag', limit: 2 },
+      runtime(active),
+    );
+    assert.deepEqual(fallback.map((candidate) => candidate.entryId), [semantic.id]);
+    assert.ok(fallback[0]?.reasons.includes('semantic_match'));
+  } finally {
+    database.close();
+  }
+});
+
 test('semantic retrieval fuses with lexical results and supports CJK paraphrases', () => {
   const database = openConnection(':memory:');
   try {

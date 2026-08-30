@@ -62,6 +62,11 @@ provider停止時もstartupと検索をfail closedにしたい場合だけ、
 `rebuild`はcurrent entryを再enqueueし、`rebuild --wait`は完了まで処理します。
 MCPはtask retrieval前にworkspace限定の小さなdrainだけを行い、無制限のbackground
 rebuildは実行しません。
+`KIOKUKO_VECTOR_BACKEND=auto`はpackage所有・exact versionの
+`sqlite-vec` extensionを安全にloadできる場合だけ使用し、それ以外は
+JavaScript exact-cosine backendへfallbackします。extension loadingを禁止する
+場合は`javascript`を指定します。`sqlite-vec`を強制するとload不能時にfail closedします。
+任意のextension pathを受け取るcommandはありません。
 
 ## 使うほど賢くなる仕組み
 

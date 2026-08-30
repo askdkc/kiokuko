@@ -51,6 +51,10 @@ import { parseStrictJson } from './setup/strict-json.js';
 import { validateRecordInput } from './serialization/validate.js';
 import { registerEmbeddingsCommands } from './commands/embeddings.js';
 import type { EmbeddingProvider, VectorSearchBackend } from './embedding/types.js';
+import { openEmbeddingDatabase } from './embedding/backend.js';
+import { parseEmbeddingConfig } from './embedding/config.js';
+import { createEmbeddingRuntime, prepareEmbeddingSearchRuntime } from './embedding/runtime.js';
+import type { HybridSearchRuntime } from './memory/hybrid-retrieval.js';
 
 const MAX_CLI_JSON_INPUT_BYTES = 2 * 1024 * 1024;
 const MAX_CALL_PATH_BYTES = 4 * 1024;
@@ -204,6 +208,47 @@ async function withDatabase<T>(
   return operationResult.value;
 }
 
+async function withEmbeddingDatabase<T>(
+  dependencies: Pick<CliDependencies, 'embeddingEnvironment' | 'embeddingBackend'>,
+  operation: (database: SqliteDatabase, backend?: VectorSearchBackend) => T | Promise<T>,
+  options: Parameters<typeof initializeDatabase>[0] = {},
+): Promise<T> {
+  const initialized = await initializeDatabase(options);
+  const config = parseEmbeddingConfig(dependencies.embeddingEnvironment ?? process.env);
+  const opened = await openEmbeddingDatabase(initialized.databasePath, {
+    config,
+    ...(dependencies.embeddingBackend === undefined ? {} : { backend: dependencies.embeddingBackend }),
+  });
+  let operationResult: { value: T } | undefined;
+  let operationFailed = false;
+  let operationError: unknown;
+  try {
+    operationResult = { value: await operation(opened.database, opened.backend) };
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  try {
+    opened.database.close();
+  } catch (closeError) {
+    if (operationFailed) {
+      throw new AggregateError(
+        [operationError, closeError],
+        'Embedding database operation failed and closing its connection also failed',
+      );
+    }
+    throw new AggregateError(
+      [closeError],
+      'Embedding database operation completed, but closing its connection failed',
+    );
+  }
+  if (operationFailed) throw operationError;
+  if (operationResult === undefined) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Embedding database operation produced no result');
+  }
+  return operationResult.value;
+}
+
 function emit(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
@@ -224,22 +269,72 @@ function addWorkspaceOptions(command: Command): Command {
   return command.option('--workspace <name>', 'Workspace name').option('--json', 'Emit a JSON response');
 }
 
-function configureRecallCommand(command: Command): Command {
+async function withPreparedSemanticRuntime<T>(
+  dependencies: Pick<CliDependencies, 'embeddingEnvironment' | 'embeddingProvider' | 'embeddingBackend'>,
+  database: SqliteDatabase,
+  selectedBackend: VectorSearchBackend | undefined,
+  query: string,
+  operation: (runtime: HybridSearchRuntime) => T | Promise<T>,
+): Promise<T> {
+  const config = parseEmbeddingConfig(dependencies.embeddingEnvironment ?? process.env);
+  const runtime = createEmbeddingRuntime(database, config, {
+    ...(dependencies.embeddingProvider === undefined ? {} : { provider: dependencies.embeddingProvider }),
+    ...((selectedBackend ?? dependencies.embeddingBackend) === undefined
+      ? {}
+      : { backend: selectedBackend ?? dependencies.embeddingBackend }),
+  });
+  let operationResult: { value: T } | undefined;
+  let operationError: unknown;
+  try {
+    if (runtime.profileId !== null) {
+      await runtime.drain({ maxJobs: 8, deadlineMs: 1_500 });
+    }
+    const searchRuntime = await prepareEmbeddingSearchRuntime(runtime, database, query);
+    operationResult = { value: await operation(searchRuntime) };
+  } catch (error) {
+    operationError = error;
+  }
+  try {
+    await runtime.close();
+  } catch (closeError) {
+    if (operationError !== undefined) {
+      throw new AggregateError([operationError, closeError], 'Semantic search failed and its runtime could not be closed');
+    }
+    throw closeError;
+  }
+  if (operationError !== undefined) throw operationError;
+  if (operationResult === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Semantic search produced no result');
+  return operationResult.value;
+}
+
+function configureRecallCommand(command: Command, dependencies: CliDependencies): Command {
   const recall = addWorkspaceOptions(command.description('Human/operator management: recall relevant memory entries').argument('<query>'))
     .option('--limit <number>', 'Maximum entries', '5').option('--max-chars <number>', 'Context character budget', '8000')
     .option('--scope <scope>', 'auto, project, ecosystem, or global', 'auto').option('--cwd <path>', 'Repository path used for scoped recall');
   recall.action(async (query: string, options: Record<string, unknown>) => {
     let data: RecallResult | ScopedRecallResult;
     if (options.workspace !== undefined) {
-      data = await withDatabase((database) => recallEntries(database, { workspace: String(options.workspace), query, limit: Number(options.limit), maxChars: Number(options.maxChars) }));
-    } else {
-      data = await withDatabase((database) => recallScopedMemory(database, {
+      data = await withEmbeddingDatabase(dependencies, (database, backend) => withPreparedSemanticRuntime(
+        dependencies,
+        database,
+        backend,
         query,
-        scope: String(options.scope ?? 'auto') as never,
-        limit: Number(options.limit),
-        maxChars: Number(options.maxChars),
-        ...(typeof options.cwd === 'string' ? { cwd: options.cwd } : {}),
-      }));
+        (runtime) => recallEntries(database, { workspace: String(options.workspace), query, limit: Number(options.limit), maxChars: Number(options.maxChars) }, runtime),
+      ));
+    } else {
+      data = await withEmbeddingDatabase(dependencies, (database, backend) => withPreparedSemanticRuntime(
+        dependencies,
+        database,
+        backend,
+        query,
+        (runtime) => recallScopedMemory(database, {
+          query,
+          scope: String(options.scope ?? 'auto') as never,
+          limit: Number(options.limit),
+          maxChars: Number(options.maxChars),
+          ...(typeof options.cwd === 'string' ? { cwd: options.cwd } : {}),
+        }, runtime),
+      ));
     }
     const items = 'items' in data ? data.items : data.combined?.items ?? data.ecosystem?.items ?? data.global?.items ?? data.project?.memory.items ?? [];
     const count = 'count' in data ? data.count : items.length;
@@ -880,9 +975,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       humanOrJson(options.json === true, 'use', result, `Kiokuko enabled for ${result.repositoryRoot}`);
     });
 
-  configureRecallCommand(cli.command('recall'));
+  configureRecallCommand(cli.command('recall'), dependencies);
   const memory = cli.command('memory').description('Human/operator memory management');
-  configureRecallCommand(memory.command('recall'));
+  configureRecallCommand(memory.command('recall'), dependencies);
 
   const guide = cli.command('guide').description('Run the Akinator-style knowledge and skill intake');
   guide.command('start').description('Start an intake session').argument('<task>').requiredOption('--workspace <name>').option('--json').action(async (task: string, options: { workspace: string; json?: boolean }) => {
@@ -905,7 +1000,13 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     if (typeof options.kind === 'string') searchOptions.kind = options.kind as never;
     if (typeof options.status === 'string') searchOptions.status = options.status as never;
     if (typeof options.tag === 'string') searchOptions.tag = options.tag;
-    const data = await withDatabase((database) => searchEntries(database, searchOptions));
+    const data = await withEmbeddingDatabase(dependencies, (database, backend) => withPreparedSemanticRuntime(
+      dependencies,
+      database,
+      backend,
+      query,
+      (runtime) => searchEntries(database, searchOptions, runtime),
+    ));
     humanOrJson(options.json === true, 'search', data, `${data.items.length} memory entries found`, { count: data.count });
   });
 
@@ -1022,7 +1123,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });
   registerEnnoCommand(cli, { withDatabase });
   registerEmbeddingsCommands(cli, {
-    withDatabase,
+    withDatabase: (operation) => withEmbeddingDatabase(dependencies, operation),
     ...(dependencies.embeddingEnvironment === undefined ? {} : { environment: dependencies.embeddingEnvironment }),
     ...(dependencies.embeddingProvider === undefined ? {} : { provider: dependencies.embeddingProvider }),
     ...(dependencies.embeddingBackend === undefined ? {} : { backend: dependencies.embeddingBackend }),

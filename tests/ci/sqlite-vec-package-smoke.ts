@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { detectSqliteVecCapability } from '../../src/db/capabilities.js';
-import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
+import { openEmbeddingDatabase } from '../../src/embedding/backend.js';
 import {
   createSqliteVecLoader,
   SQLITE_VEC_EXTENSION_VERSION,
@@ -25,15 +25,33 @@ function profile() {
   })));
 }
 
+function config() {
+  return requireEnabledEmbeddingConfig(parseEmbeddingConfig({
+    KIOKUKO_EMBEDDINGS: 'optional',
+    KIOKUKO_EMBEDDING_BASE_URL: 'http://127.0.0.1:8080/v1',
+    KIOKUKO_EMBEDDING_MODEL: 'sqlite-vec-smoke',
+    KIOKUKO_EMBEDDING_DIMENSIONS: '3',
+    KIOKUKO_EMBEDDING_DISTANCE_CEILING: '1.1',
+  }));
+}
+
 async function main(): Promise<void> {
   const loader = await createSqliteVecLoader();
   if (loader === null) {
+    if (process.env.KIOKUKO_REQUIRE_SQLITE_VEC_SMOKE === '1') {
+      throw new Error('sqlite-vec package or native extension is required for this smoke job');
+    }
     process.stdout.write('sqlite-vec package or native extension is unavailable; smoke skipped.\n');
     return;
   }
 
-  const database = openConnection(':memory:', { sqliteVecLoader: loader });
+  const opened = await openEmbeddingDatabase(':memory:', {
+    config: config(),
+    createLoader: async () => loader,
+  });
+  const database = opened.database;
   try {
+    assert.equal(opened.backend?.id, 'sqlite-vec');
     assert.deepEqual(detectSqliteVecCapability(database), {
       id: 'sqlite-vec',
       available: true,

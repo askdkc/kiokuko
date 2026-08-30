@@ -32,6 +32,7 @@ import {
   type EmbeddingRuntimeOptions,
 } from '../embedding/runtime.js';
 import { parseEmbeddingConfig } from '../embedding/config.js';
+import { openEmbeddingDatabase, type EmbeddingDatabaseOpener } from '../embedding/backend.js';
 import { createEmbeddingWorker, type EmbeddingWorker } from '../embedding/worker.js';
 import type { EmbeddingProvider, EmbeddingRuntime, EmbeddingConfig, VectorSearchBackend } from '../embedding/types.js';
 
@@ -43,7 +44,7 @@ interface RequestAdmission {
   active: boolean;
 }
 
-export type DatabaseOpener = (databasePath: string) => SqliteDatabase | PromiseLike<SqliteDatabase>;
+export type DatabaseOpener = EmbeddingDatabaseOpener;
 export type DatabaseInitializer = (options: InitOptions) => unknown | PromiseLike<unknown>;
 export type HttpServerFactory = (listener: RequestListener) => Server;
 export type InstanceLockAcquirer = (databasePath: string, options: InstanceLockOptions) => InstanceLock | PromiseLike<InstanceLock>;
@@ -395,7 +396,14 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       databasePath,
       ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
     });
-    database = await openDatabase(databasePath);
+    const embeddingConfig = options.embeddingConfig ?? parseEmbeddingConfig(options.env ?? process.env);
+    const configuredEmbeddingBackend = options.dependencies?.embeddingBackend ?? options.embeddingBackend;
+    const opened = await openEmbeddingDatabase(databasePath, {
+      config: embeddingConfig,
+      openDatabase,
+      ...(configuredEmbeddingBackend === undefined ? {} : { backend: configuredEmbeddingBackend }),
+    });
+    database = opened.database;
 
     let closing = false;
     let ready = false;
@@ -415,7 +423,6 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       return queue.enqueue(operation) as Promise<T>;
     };
     const enqueueRuntimeWrite = <T>(operation: () => T | PromiseLike<T>): Promise<T> => queue.enqueue(operation) as Promise<T>;
-    const embeddingConfig = options.embeddingConfig ?? parseEmbeddingConfig(options.env ?? process.env);
     const createRuntime = options.dependencies?.createEmbeddingRuntime
       ?? options.createEmbeddingRuntime
       ?? ((runtimeDatabase, config, runtimeOptions) => createEmbeddingRuntime(runtimeDatabase, config, runtimeOptions));
@@ -423,9 +430,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       ...((options.dependencies?.embeddingProvider ?? options.embeddingProvider) === undefined
         ? {}
         : { provider: options.dependencies?.embeddingProvider ?? options.embeddingProvider }),
-      ...((options.dependencies?.embeddingBackend ?? options.embeddingBackend) === undefined
-        ? {}
-        : { backend: options.dependencies?.embeddingBackend ?? options.embeddingBackend }),
+      ...(opened.backend === undefined ? {} : { backend: opened.backend }),
       enqueueWrite: enqueueRuntimeWrite,
     });
     embeddingRuntime = runtime;

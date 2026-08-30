@@ -4,6 +4,7 @@ import { openConnection } from '../db/connection.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { parseEmbeddingConfig } from '../embedding/config.js';
+import { openEmbeddingDatabase, type EmbeddingDatabaseOpener } from '../embedding/backend.js';
 import { createEmbeddingRuntime } from '../embedding/runtime.js';
 import type { EmbeddingConfig, EmbeddingProvider, EmbeddingRuntime, VectorSearchBackend } from '../embedding/types.js';
 import { createEmbeddingWorker, type EmbeddingWorker } from '../embedding/worker.js';
@@ -13,7 +14,7 @@ export interface McpRuntimeOwnerOptions extends PathEnvironment {
   readonly databasePath?: string;
   readonly migrationsDirectory?: string;
   readonly initializeDatabase?: (options: InitOptions) => unknown | PromiseLike<unknown>;
-  readonly openDatabase?: (databasePath: string) => SqliteDatabase | PromiseLike<SqliteDatabase>;
+  readonly openDatabase?: EmbeddingDatabaseOpener;
   readonly embeddingConfig?: EmbeddingConfig;
   readonly embeddingProvider?: EmbeddingProvider;
   readonly embeddingBackend?: VectorSearchBackend;
@@ -56,13 +57,18 @@ export class McpRuntimeOwner implements McpDatabaseOwner {
       databasePath,
       ...(this.#options.migrationsDirectory === undefined ? {} : { migrationsDirectory: this.#options.migrationsDirectory }),
     });
-    const database = await (this.#options.openDatabase ?? openConnection)(databasePath);
+    const config = this.#options.embeddingConfig ?? parseEmbeddingConfig(this.#options.env ?? process.env);
+    const opened = await openEmbeddingDatabase(databasePath, {
+      config,
+      openDatabase: this.#options.openDatabase ?? openConnection,
+      ...(this.#options.embeddingBackend === undefined ? {} : { backend: this.#options.embeddingBackend }),
+    });
+    const database = opened.database;
     const queue = new WriteQueue<unknown>(64);
     try {
-      const config = this.#options.embeddingConfig ?? parseEmbeddingConfig(this.#options.env ?? process.env);
       const runtime = createEmbeddingRuntime(database, config, {
         ...(this.#options.embeddingProvider === undefined ? {} : { provider: this.#options.embeddingProvider }),
-        ...(this.#options.embeddingBackend === undefined ? {} : { backend: this.#options.embeddingBackend }),
+        ...(opened.backend === undefined ? {} : { backend: opened.backend }),
         enqueueWrite: <T>(operation: () => T | PromiseLike<T>) => queue.enqueue(operation) as Promise<T>,
       });
       const worker = runtime.profileId === null ? undefined : createEmbeddingWorker({ runtime });

@@ -20,7 +20,10 @@ import { readEntryRevision } from '../memory/revisions.js';
 import { inspectMigrationSnapshot, loadMigrationSnapshot } from '../db/migrate.js';
 import { inspectLegacyContextDeliveries, type LegacyDeliveryInspectionReport } from '../context/delivery-migration.js';
 import { inspectEmbeddingHealth } from '../embedding/diagnostics.js';
+import { EmbeddingBackendUnavailableError, openEmbeddingDatabase } from '../embedding/backend.js';
+import { parseEmbeddingConfig } from '../embedding/config.js';
 import type { VectorSearchBackend } from '../embedding/types.js';
+import type { SqliteDatabase } from '../db/adapter.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -111,15 +114,15 @@ export async function promptRemoveMissingRepositoryLocations(
   }
 }
 
-function count(database: ReturnType<typeof openConnection>, sql: string, ...parameters: Array<string | number>): number {
+function count(database: SqliteDatabase, sql: string, ...parameters: Array<string | number>): number {
   return Number(database.prepare(sql).get<{ count: number }>(...parameters)?.count ?? 0);
 }
 
-function hasColumn(database: ReturnType<typeof openConnection>, table: string, column: string): boolean {
+function hasColumn(database: SqliteDatabase, table: string, column: string): boolean {
   return Boolean(database.prepare('SELECT 1 AS present FROM pragma_table_info(?) WHERE name = ?').get(table, column));
 }
 
-function legacyDeliverySchemaIsInspectable(database: ReturnType<typeof openConnection>): boolean {
+function legacyDeliverySchemaIsInspectable(database: SqliteDatabase): boolean {
   return hasColumn(database, 'context_deliveries', 'score_schema_version')
     && hasColumn(database, 'context_delivery_entries', 'origin_scope');
 }
@@ -180,7 +183,7 @@ interface DoctorCollectionOptions {
 }
 
 async function collectDoctorResult(
-  database: ReturnType<typeof openConnection>,
+  database: SqliteDatabase,
   options: DoctorCollectionOptions,
 ): Promise<DoctorResult> {
   const integrity = database.prepare('PRAGMA integrity_check').get<{ integrity_check: string }>()?.integrity_check ?? 'unknown';
@@ -493,7 +496,34 @@ export async function runDoctor(
     ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
   };
   const initialized = await initializeDatabase(initOptions);
-  const database = (dependencies.openConnection ?? openConnection)(initialized.databasePath);
+  let embeddingConfig;
+  try {
+    embeddingConfig = parseEmbeddingConfig(options.embeddingEnvironment ?? process.env);
+  } catch {
+    embeddingConfig = undefined;
+  }
+  let opened: { database: SqliteDatabase; backend: VectorSearchBackend | undefined };
+  if (embeddingConfig === undefined) {
+    opened = {
+      database: (dependencies.openConnection ?? openConnection)(initialized.databasePath),
+      backend: options.embeddingBackend,
+    };
+  } else {
+    try {
+      opened = await openEmbeddingDatabase(initialized.databasePath, {
+        config: embeddingConfig,
+        openDatabase: dependencies.openConnection ?? openConnection,
+        ...(options.embeddingBackend === undefined ? {} : { backend: options.embeddingBackend }),
+      });
+    } catch (error) {
+      if (!(error instanceof EmbeddingBackendUnavailableError)) throw error;
+      opened = {
+        database: (dependencies.openConnection ?? openConnection)(initialized.databasePath),
+        backend: undefined,
+      };
+    }
+  }
+  const database = opened.database;
   let doctorResult: DoctorResult | undefined;
   let operationFailed = false;
   let operationError: unknown;
@@ -506,7 +536,9 @@ export async function runDoctor(
       capabilities: initialized.capabilities,
       ...(options.runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: options.runtimeDescriptorPath }),
       ...(options.embeddingEnvironment === undefined ? {} : { embeddingEnvironment: options.embeddingEnvironment }),
-      ...(options.embeddingBackend === undefined ? {} : { embeddingBackend: options.embeddingBackend }),
+      ...((opened.backend ?? options.embeddingBackend) === undefined
+        ? {}
+        : { embeddingBackend: opened.backend ?? options.embeddingBackend }),
       legacyDeliveries,
     });
   } catch (error) {

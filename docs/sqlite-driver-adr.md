@@ -38,6 +38,12 @@ Backup, initialization, migration, and capability tests were also run on 2026-08
 - Node: v26.5.0
 - SQLite runtime: 3.53.3
 
+The semantic package smoke was run on 2026-08-31 on macOS arm64 with Node
+v26.5.0, SQLite 3.53.3, `sqlite-vec` package 0.1.9, and extension `v0.1.9`.
+It exercised the production backend composition, `vec_version()`, disabling
+extension loading, three-vector cosine ordering, and parity with the JavaScript
+backend.
+
 The capability fixture and tests exercised:
 
 - file-backed database creation
@@ -54,7 +60,7 @@ The focused capability test passed with FTS5, WAL, integrity check, and serializ
 
 | Candidate | Decision | Evidence/limitation |
 |---|---|---|
-| `node:sqlite` | Selected | Built into the verified Node runtime; no native npm addon or runtime dependency; the required foundation contract passed. |
+| `node:sqlite` | Selected | Built into the verified Node runtime; the required foundation contract passed. Semantic retrieval may add the exact-version optional `sqlite-vec` accelerator, but correctness does not depend on it. |
 | `better-sqlite3` | Not selected | A clean install and the complete cross-platform contract were not rerun in this worktree; adding it would introduce native ABI/prebuild risk without a demonstrated need. |
 | Pure JS/WASM SQLite | Not selected | Durable WAL/locking and the complete multi-process contract were not established here; it would also add a larger runtime path than the built-in driver. |
 

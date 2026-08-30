@@ -14,6 +14,7 @@ import {
 import { claimEmbeddingJobs, listEmbeddingJobs } from '../../src/embedding/jobs.js';
 import { createEmbeddingProfile } from '../../src/embedding/profile.js';
 import { createEmbeddingRuntime } from '../../src/embedding/runtime.js';
+import { EmbeddingProviderError } from '../../src/embedding/provider.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { updateCandidateEntry } from '../../src/memory/entries.js';
 import type { EmbeddingProvider } from '../../src/embedding/types.js';
@@ -216,6 +217,48 @@ test('runtime drains jobs with a fake provider and reuses the query vector cache
     assert.equal(calls, 2);
     assert.equal(first?.vectorHash, second?.vectorHash);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM query_embeddings').get<{ count: number }>()?.count, 1);
+    await runtime.close();
+  } finally {
+    database.close();
+  }
+});
+
+test('runtime aborts an in-flight provider batch at the caller drain deadline', async () => {
+  const database = await temporaryDatabase('embedding-deadline');
+  try {
+    const active = profile('model-deadline');
+    const config = requireEnabledEmbeddingConfig(parseEmbeddingConfig({
+      KIOKUKO_EMBEDDINGS: 'optional',
+      KIOKUKO_EMBEDDING_BASE_URL: 'http://127.0.0.1:8080/v1',
+      KIOKUKO_EMBEDDING_MODEL: 'model-deadline',
+      KIOKUKO_EMBEDDING_DIMENSIONS: '3',
+      KIOKUKO_EMBEDDING_DISTANCE_CEILING: '0.8',
+    }));
+    activateEmbeddingProfile(database, active, { replace: false, now: timestamp });
+    recordEntry(database, {
+      workspace: 'project:deadline',
+      kind: 'lesson',
+      title: 'Bound the provider call',
+      body: 'The drain deadline must abort a provider that does not finish.',
+      createdBy: 'test',
+    }, { idFactory: () => 'entry-deadline', now: timestamp });
+    const provider: EmbeddingProvider = {
+      profile: active.identity,
+      embed(_inputs, options) {
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(new EmbeddingProviderError('timeout', true));
+          }, { once: true });
+        });
+      },
+    };
+    const runtime = createEmbeddingRuntime(database, config, { provider, now: () => timestamp });
+    const startedAt = Date.now();
+    const result = await runtime.drain({ workspace: 'project:deadline', maxJobs: 1, deadlineMs: 20 });
+
+    assert.ok(Date.now() - startedAt < 1_000);
+    assert.deepEqual(result, { claimed: 1, completed: 0, failed: 1, blocked: 0, remaining: 1 });
+    assert.equal(listEmbeddingJobs(database)[0]?.errorCode, 'timeout');
     await runtime.close();
   } finally {
     database.close();

@@ -32,6 +32,8 @@
     "test:unit": "node scripts/run-tests.mjs tests/unit",
     "test:integration": "node scripts/run-tests.mjs tests/integration",
     "test:sqlite-vec": "node --import tsx tests/ci/sqlite-vec-package-smoke.ts",
+    "test:evaluation": "npm run build && node scripts/run-retrieval-evaluation.mjs",
+    "test:benchmark": "npm run build && node scripts/run-retrieval-benchmark.mjs",
     "test:e2e:codex": "npm run build && node scripts/run-enno-agent-e2e.mjs codex",
     "test:e2e:opencode": "npm run build && node scripts/run-enno-agent-e2e.mjs opencode",
     "test:e2e:claude": "npm run build && node scripts/run-enno-agent-e2e.mjs claude",

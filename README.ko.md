@@ -39,6 +39,35 @@ required = true
 
 설정 후 대상 AI 클라이언트를 실행하고 평소처럼 사용하면 됩니다. 이미 실행 중이라면 한 번 종료한 후 다시 시작하십시오. setup이 Codex Stop hook을 생성하거나 업데이트했다면 Codex에서 `/hooks`를 열고 해당 hook을 명시적으로 신뢰하십시오.
 
+### 선택적 시맨틱 검색
+
+기본값은 어휘 검색입니다. 로컬 또는 명시적으로 허용한 OpenAI-compatible
+embedding provider를 사용하려면 환경 변수를 설정하고 profile을 활성화합니다.
+
+```bash
+export KIOKUKO_EMBEDDINGS=optional
+export KIOKUKO_EMBEDDING_BASE_URL=http://127.0.0.1:8080/v1
+export KIOKUKO_EMBEDDING_MODEL=your-model
+export KIOKUKO_EMBEDDING_DIMENSIONS=1536
+export KIOKUKO_EMBEDDING_DISTANCE_CEILING=0.8
+kiokuko embeddings activate
+kiokuko embeddings sync --limit 64
+```
+
+provider를 사용할 수 없을 때 검색도 반드시 중단해야 하는 경우에만
+`KIOKUKO_EMBEDDINGS=required`를 사용하십시오. 원격 HTTPS endpoint에는
+`KIOKUKO_EMBEDDING_ALLOW_REMOTE=true`도 필요합니다. API key는
+`KIOKUKO_EMBEDDING_API_KEY`에서만 읽으며 status나 doctor에 표시되지 않습니다.
+`kiokuko embeddings status --json`은 profile과 coverage를 보고하고,
+`rebuild`는 현재 entry를 다시 queue에 넣으며, `rebuild --wait`는 반환 전에
+queue를 처리합니다. MCP는 task retrieval 전에 workspace 범위의 작은 drain만
+실행하며 무제한 background rebuild를 수행하지 않습니다.
+`KIOKUKO_VECTOR_BACKEND=auto`는 안전하게 load할 수 있을 때만 package 소유의
+exact-version `sqlite-vec` extension을 사용하고, 그렇지 않으면 JavaScript
+exact-cosine backend로 fallback합니다. extension loading을 금지하려면
+`javascript`를 사용하십시오. `sqlite-vec`를 강제하면 load할 수 없을 때 fail closed합니다.
+어떤 command도 임의 extension path를 받지 않습니다.
+
 ## 사용할수록 똑똑해지는 구조
 
 ```text

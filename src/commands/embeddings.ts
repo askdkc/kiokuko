@@ -22,7 +22,10 @@ import { successEnvelope } from '../serialization/envelope.js';
 const MAX_SYNC_JOBS = 64;
 const DRAIN_DEADLINE_MS = 120_000;
 
-export type EmbeddingsDatabaseRunner = <T>(operation: (database: SqliteDatabase) => T | Promise<T>) => Promise<T>;
+export type EmbeddingsDatabaseRunner = <T>(operation: (
+  database: SqliteDatabase,
+  backend?: VectorSearchBackend,
+) => T | Promise<T>) => Promise<T>;
 export type EmbeddingsOutput = (
   json: boolean | undefined,
   operation: string,
@@ -81,6 +84,14 @@ function runtimeOptions(dependencies: EmbeddingsCommandDependencies): {
     ...(dependencies.provider === undefined ? {} : { provider: dependencies.provider }),
     ...(dependencies.backend === undefined ? {} : { backend: dependencies.backend }),
   };
+}
+
+function runtimeDependencies(
+  dependencies: EmbeddingsCommandDependencies,
+  backend: VectorSearchBackend | undefined,
+): EmbeddingsCommandDependencies {
+  if (backend === undefined || dependencies.backend === backend) return dependencies;
+  return { ...dependencies, backend };
 }
 
 async function withRuntime<T>(
@@ -157,10 +168,10 @@ async function sync(
   limit: number,
 ): Promise<DrainSummary> {
   const config = embeddingConfig(dependencies.environment);
-  return dependencies.withDatabase((database) => withRuntime(
+  return dependencies.withDatabase((database, backend) => withRuntime(
     database,
     config,
-    dependencies,
+    runtimeDependencies(dependencies, backend),
     (runtime) => drainOnce(runtime, workspace, limit),
   ));
 }
@@ -178,10 +189,10 @@ async function rebuild(
   });
   if (!wait) return { enqueued };
   const config = embeddingConfig(dependencies.environment);
-  const drain = await dependencies.withDatabase((database) => withRuntime(
+  const drain = await dependencies.withDatabase((database, backend) => withRuntime(
     database,
     config,
-    dependencies,
+    runtimeDependencies(dependencies, backend),
     (runtime) => drainAll(runtime, workspace),
   ));
   return { enqueued, drain };
@@ -210,7 +221,7 @@ export function registerEmbeddingsCommands(cli: Command, dependencies: Embedding
     .option('--json', 'Emit a JSON response')
     .action(async (options: { json?: boolean }) => {
       const config = embeddingConfig(dependencies.environment);
-      const data = await dependencies.withDatabase((database) => readEmbeddingStatus(database, config, dependencies.backend));
+      const data = await dependencies.withDatabase((database, backend) => readEmbeddingStatus(database, config, backend ?? dependencies.backend));
       output(options.json, 'embeddings.status', data, `Embedding coverage: ${data.readyVectors}/${data.eligibleEntries} (${(data.coverageRatio * 100).toFixed(1)}%)`);
     });
 

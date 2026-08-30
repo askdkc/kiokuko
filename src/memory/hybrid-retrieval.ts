@@ -177,7 +177,10 @@ function rankSql(): string {
 }
 
 function exactSignalLane(database: SqliteDatabase, input: HybridSearchInput, parsed: ParsedRetrievalQuery): SearchRow[] {
-  const values = parsed.exactSignals.map((signal) => signal.normalizedValue).filter(Boolean).slice(0, 32);
+  const values = [...new Set([
+    parsed.normalized.length <= 512 ? normalizeSearchSignal(parsed.normalized) : '',
+    ...parsed.exactSignals.map((signal) => signal.normalizedValue),
+  ])].filter(Boolean).slice(0, 32);
   if (values.length === 0) return [];
   const parameters: Array<string | number> = [input.workspace, ...values];
   const filters = filterSql(input, parameters);
@@ -355,14 +358,17 @@ function laneRows(
   input: HybridSearchInput,
   parsed: ParsedRetrievalQuery,
   runtime: HybridSearchRuntime,
+  lexicalAllowed: boolean,
 ): Array<[RetrievalLane, SearchRow[]]> {
-  const rows: Array<[RetrievalLane, SearchRow[]]> = [
-    ['exact-signal', exactSignalLane(database, input, parsed)],
-    ['word-fts', wordFtsLane(database, input, parsed)],
-    ['trigram', trigramLane(database, input, parsed)],
-    ['like', likeLane(database, input, parsed)],
-    ['tag', tagLane(database, input, parsed)],
-  ];
+  const rows: Array<[RetrievalLane, SearchRow[]]> = [['exact-signal', exactSignalLane(database, input, parsed)]];
+  if (lexicalAllowed) {
+    rows.push(
+      ['word-fts', wordFtsLane(database, input, parsed)],
+      ['trigram', trigramLane(database, input, parsed)],
+      ['like', likeLane(database, input, parsed)],
+      ['tag', tagLane(database, input, parsed)],
+    );
+  }
   if (runtime.semantic !== undefined) rows.push(['semantic', semanticLane(database, input, runtime)]);
   return rows;
 }
@@ -381,9 +387,10 @@ export function hybridSearch(
   if (parsed.normalized.length === 0) return [];
   // Treat SQL/FTS-looking operator soup as data, not as a broad OR query. A
   // punctuation-heavy request must never turn into a full-table lexical scan.
-  if (/(?:--|\/\*|\*\/|["']\s*(?:OR|AND)\b|\b(?:OR|AND)\s+\d+\s*[=<>])/iu.test(parsed.normalized) && parsed.exactSignals.length === 0) return [];
+  const lexicalAllowed = !/(?:--|\/\*|\*\/|["']\s*(?:OR|AND)\b|\b(?:OR|AND)\s+\d+\s*[=<>])/iu.test(parsed.normalized)
+    || parsed.exactSignals.length > 0;
   const merged = new Map<string, RetrievalCandidate>();
-  for (const [lane, rows] of laneRows(database, input, parsed, runtime)) {
+  for (const [lane, rows] of laneRows(database, input, parsed, runtime, lexicalAllowed)) {
     const seen = new Set<string>();
     let rank = 0;
     for (const row of rows) {

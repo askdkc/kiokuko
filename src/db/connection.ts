@@ -20,6 +20,15 @@ export interface ConnectionOptions {
   readonly sqliteVecLoader?: SqliteVecLoader;
 }
 
+/** Internal discriminator for failures caused specifically by sqlite-vec loading. */
+export class SqliteVecLoadError extends KiokukoError {
+  constructor(message: string, cause?: unknown) {
+    super('SERVICE_UNAVAILABLE', message);
+    this.name = 'SqliteVecLoadError';
+    if (cause !== undefined) Object.defineProperty(this, 'cause', { value: cause });
+  }
+}
+
 function requireSqliteVecLoader(value: SqliteVecLoader | undefined): SqliteVecLoader | undefined {
   if (value === undefined) return undefined;
   if (!isSqliteVecLoader(value)) {
@@ -38,7 +47,7 @@ function loadSqliteVec(database: DatabaseSync, loader: SqliteVecLoader): void {
     loadingDisabled = true;
     const version = database.prepare('SELECT vec_version() AS version').get()?.version;
     if (version !== loader.extensionVersion) {
-      throw new KiokukoError('SERVICE_UNAVAILABLE', 'The loaded sqlite-vec version is unsupported');
+      throw new SqliteVecLoadError('The loaded sqlite-vec version is unsupported');
     }
   } catch (error) {
     failure = error;
@@ -55,10 +64,8 @@ function loadSqliteVec(database: DatabaseSync, loader: SqliteVecLoader): void {
     }
   }
   if (!failed) return;
-  if (failure instanceof KiokukoError) throw failure;
-  const unavailable = new KiokukoError('SERVICE_UNAVAILABLE', 'The sqlite-vec extension could not be loaded');
-  Object.defineProperty(unavailable, 'cause', { value: failure });
-  throw unavailable;
+  if (failure instanceof SqliteVecLoadError) throw failure;
+  throw new SqliteVecLoadError('The sqlite-vec extension could not be loaded', failure);
 }
 
 export function databaseFileIdentity(filePath: string): DatabaseFileIdentity {
