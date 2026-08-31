@@ -31,7 +31,7 @@ kiokuko setup
 
 - RAG 기억（기본 lexical, 선택적 로컬 semantic 검색）
 - 모호한 요청을 구체화하는 Akinator
-- 계획·확인·검증·복구를 담당하는 Enno-Oduno
+- 계획·확인·검증·복구를 담당하는 役小角(enno-oduno)
 - 기억을 검토하는 로컬 Web UI
 - 자동 실행하지 않는 검증된 참조 전용 External Skill
 

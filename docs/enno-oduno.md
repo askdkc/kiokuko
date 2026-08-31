@@ -1,4 +1,6 @@
-# Enno-Oduno
+# 役小角(enno-oduno)
+
+![役小角(enno-oduno)](../skills/kiokuko-enno-oduno/enno-oduno.png)
 
 For build, debug, review, and devops work, Enno-Oduno keeps a run-bound loop:
 

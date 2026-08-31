@@ -31,7 +31,7 @@ kiokuko setup
 
 - RAG 记忆（默认 lexical，可选本地 semantic 检索）
 - Akinator 让模糊请求先变得具体
-- Enno-Oduno 负责计划、确认、验证和恢复
+- 役小角(enno-oduno) 负责计划、确认、验证和恢复
 - 本地 Web UI 用于检查和整理记忆
 - 外部 Skill 仅作为经过验证的参考，绝不自动执行
 

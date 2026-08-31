@@ -34,7 +34,7 @@ kiokuko setup
 
 - **RAGメモリ**: 標準はlexical検索、任意でローカルsemantic検索。
 - **Akinator**: 曖昧な依頼を作業前に具体化。
-- **Enno-Oduno**: 複数手順の計画、確認、検証、回復。
+- **役小角(enno-oduno)**: 複数手順の計画、確認、検証、回復。
 - **ローカルWeb UI**: 保存した記憶の確認と整理。
 - **参照専用Skill**: 外部Skillは検証して保存するが、自動実行しない。
 
@@ -66,7 +66,7 @@ MCPの利用はclientとモデルが決めるため、**毎回必ずKiokukoが�
 - [ドキュメント目次](docs/README.ja.md)
 - [導入ガイド](docs/getting-started.ja.md)
 - [基本概念](docs/concepts.ja.md)
-- [Enno-Oduno](docs/enno-oduno.ja.md)
+- [役小角(enno-oduno)](docs/enno-oduno.ja.md)
 - [Semantic retrieval](docs/semantic-retrieval.ja.md)
 - [Security and trust](docs/security-and-trust.ja.md)
 - [CLI contract](docs/cli-contract.md)

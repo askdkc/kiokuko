@@ -1,4 +1,6 @@
-# Enno-Oduno
+# 役小角(enno-oduno)
+
+![役小角(enno-oduno)](../skills/kiokuko-enno-oduno/enno-oduno.png)
 
 build、debug、review、devopsでは、Enno-Odunoがrun-bound loopを管理します。
 

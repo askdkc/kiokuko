@@ -37,7 +37,7 @@ are in the [Getting started guide](docs/getting-started.md).
 
 - **RAG memory**: lexical retrieval by default, with optional local semantic retrieval.
 - **Akinator**: clarifies vague requests before work begins.
-- **Enno-Oduno**: plans, confirms, verifies, and recovers multi-step agent work.
+- **役小角(enno-oduno)**: plans, confirms, verifies, and recovers multi-step agent work.
 - **Local Web UI**: review and curate saved memories.
 - **Reference-only Skills**: discovered external Skills are verified and never executed automatically.
 
@@ -80,7 +80,7 @@ error behavior are documented in [Security and trust](docs/security-and-trust.md
 - [Documentation index](docs/README.md)
 - [Getting started](docs/getting-started.md)
 - [Concepts](docs/concepts.md)
-- [Enno-Oduno](docs/enno-oduno.md)
+- [役小角(enno-oduno)](docs/enno-oduno.md)
 - [Semantic retrieval](docs/semantic-retrieval.md)
 - [Security and trust](docs/security-and-trust.md)
 - [CLI contract](docs/cli-contract.md)
