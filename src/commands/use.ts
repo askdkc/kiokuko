@@ -1313,7 +1313,7 @@ async function useRepositoryAttempt(
     let resolvedAgent = existingAgent;
     if (rendered && rendered.action !== 'unchanged') {
       try {
-        const resolution = existingBinding === undefined
+        const resolution = !options.forceRebind
           || allowConcurrentAgentConvergence
           || bindingObservation.observedConcurrentChange
           ? await writeOrConvergeIdentical(
