@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
+import { runDoctor } from '../../src/commands/doctor.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import {
@@ -187,4 +188,72 @@ test('JSON doctor never prompts or cleans missing locations', async () => {
   } finally {
     database.close();
   }
+});
+
+async function withDoctorEnvironment<T>(
+  dataDirectory: string,
+  codexHome: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previousDataDirectory = process.env.KIOKUKO_DATA_DIR;
+  const previousCodexHome = process.env.CODEX_HOME;
+  process.env.KIOKUKO_DATA_DIR = dataDirectory;
+  process.env.CODEX_HOME = codexHome;
+  try {
+    return await operation();
+  } finally {
+    if (previousDataDirectory === undefined) delete process.env.KIOKUKO_DATA_DIR;
+    else process.env.KIOKUKO_DATA_DIR = previousDataDirectory;
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+  }
+}
+
+test('doctor reports an unmanaged Codex Kiokuko MCP identity', async () => {
+  const value = await temporaryDatabase('codex-mcp-conflict');
+  value.database.close();
+  const codexHome = path.join(value.directory, 'codex-home');
+  await mkdir(codexHome);
+  await writeFile(
+    path.join(codexHome, 'config.toml'),
+    '[mcp_servers.kiokuko]\ncommand = "custom"\n',
+  );
+
+  const result = await withDoctorEnvironment(value.directory, codexHome, () => runDoctor());
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.checks.codexMcp, {
+    ok: false,
+    count: 1,
+    detail: 'config=conflict',
+  });
+});
+
+test('doctor accepts the canonical Codex Kiokuko MCP identity', async () => {
+  const value = await temporaryDatabase('codex-mcp-canonical');
+  value.database.close();
+  const codexHome = path.join(value.directory, 'codex-home');
+  await mkdir(codexHome);
+  await writeFile(
+    path.join(codexHome, 'config.toml'),
+    [
+      '# BEGIN KIOKUKO MCP',
+      '# Managed by `kiokuko setup`.',
+      '[mcp_servers.kiokuko]',
+      'command = "kiokuko"',
+      'args = ["mcp"]',
+      'enabled = true',
+      'required = true',
+      'env = { KIOKUKO_SKILL_DISCOVERY = "official" }',
+      '# END KIOKUKO MCP',
+      '',
+    ].join('\n'),
+  );
+
+  const result = await withDoctorEnvironment(value.directory, codexHome, () => runDoctor());
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.checks.codexMcp, {
+    ok: true,
+    count: 0,
+    detail: 'config=canonical-or-not-configured',
+  });
 });

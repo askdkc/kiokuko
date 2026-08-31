@@ -30,22 +30,14 @@ import {
   parseSetupClients,
   parseEnnoSetupMode,
   parseSetupSkillDiscoveryMode,
-  promptCommunitySkillDiscovery,
-  promptReplaceConflictingMcp,
-  promptSetupClients,
-  promptSetupConfiguration,
-  setupGlobalClients,
-  type SetupClient,
+  runSetupFlow,
 } from './commands/setup.js';
-import { setupMcpIdentityConflictClient } from './setup/mcp-conflict.js';
 import { runMcpServer } from './mcp/server.js';
 import { runCuratorCommand } from './commands/curator.js';
 import { globalizeCuratorCandidate } from './memory/curator.js';
-import { detectInstalledClients } from './setup/client-detection.js';
 import type { PathEnvironment } from './config/paths.js';
 import { registerSkillsCommands, type SkillsCommandDependencies } from './commands/skills.js';
 import { registerEnnoCommand } from './commands/enno.js';
-import { normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from './skills/config.js';
 import { PACKAGE_VERSION } from './package-version.js';
 import { parseStrictJson } from './setup/strict-json.js';
 import { validateRecordInput } from './serialization/validate.js';
@@ -882,66 +874,21 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         ? undefined
         : parseSetupSkillDiscoveryMode(options.skillDiscovery);
       const setupEnvironment = dependencies.setupEnvironment ?? {};
-      const setupProcessEnvironment = setupEnvironment.env ?? process.env;
-      const environmentSkillDiscoveryMode = optionSkillDiscoveryMode === undefined
-        && Object.prototype.hasOwnProperty.call(setupProcessEnvironment, SKILL_DISCOVERY_ENV)
-        ? normalizeSkillDiscoveryMode(setupProcessEnvironment[SKILL_DISCOVERY_ENV])
-        : undefined;
-      const requestedSkillDiscoveryMode = optionSkillDiscoveryMode ?? environmentSkillDiscoveryMode;
-      const detectedClients = options.clients === undefined ? await detectInstalledClients(setupEnvironment) : [];
       const setupInput = dependencies.setupInput ?? process.stdin;
       const setupOutput = dependencies.setupOutput ?? process.stdout;
-      const interactive = options.json !== true
-        && (setupInput as { isTTY?: boolean }).isTTY === true
-        && (setupOutput as { isTTY?: boolean }).isTTY === true;
-      let clients: ReturnType<typeof parseSetupClients>;
-      let skillDiscoveryMode = requestedSkillDiscoveryMode;
-      if (interactive && options.clients === undefined && requestedSkillDiscoveryMode === undefined) {
-        const prompted = await promptSetupConfiguration(detectedClients, { input: setupInput, output: setupOutput });
-        clients = prompted.clients;
-        skillDiscoveryMode = prompted.skillDiscoveryMode;
-      } else {
-        clients = options.clients !== undefined
-          ? parseSetupClients(options.clients)
-          : interactive
-            ? await promptSetupClients(detectedClients, { input: setupInput, output: setupOutput })
-            : detectedClients;
-        if (interactive && clients.length > 0 && skillDiscoveryMode === undefined) {
-          skillDiscoveryMode = await promptCommunitySkillDiscovery({ input: setupInput, output: setupOutput });
-        }
-      }
-      const setupOptions = {
-        ...setupEnvironment,
-        clients,
+      const clients = options.clients === undefined ? undefined : parseSetupClients(options.clients);
+      const data = await runSetupFlow({
+        environment: setupEnvironment,
+        ...(clients === undefined ? {} : { clients }),
         command: options.command,
         dryRun: options.dryRun === true,
         standardSkills: options.standardSkills,
-        ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
+        ...(optionSkillDiscoveryMode === undefined ? {} : { skillDiscoveryMode: optionSkillDiscoveryMode }),
         ...(options.ennoOduno === undefined ? {} : { ennoOduno: parseEnnoSetupMode(options.ennoOduno) }),
-      };
-      let data: Awaited<ReturnType<typeof setupGlobalClients>>;
-      const replacementClients = new Set<SetupClient>();
-      for (;;) {
-        try {
-          data = await setupGlobalClients({
-            ...setupOptions,
-            replaceConflictingMcpServers: [...replacementClients],
-          });
-          break;
-        } catch (error) {
-          const conflictClient = setupMcpIdentityConflictClient(error);
-          if (!interactive
-            || conflictClient === undefined
-            || !clients.includes(conflictClient)
-            || replacementClients.has(conflictClient)) throw error;
-          const replace = await promptReplaceConflictingMcp(
-            conflictClient,
-            { input: setupInput, output: setupOutput },
-          );
-          if (!replace) throw error;
-          replacementClients.add(conflictClient);
-        }
-      }
+        json: options.json === true,
+        input: setupInput,
+        output: setupOutput,
+      });
       const changed = data.files.filter((file) => file.action !== 'unchanged').length;
       const projectChanged = data.projectAgentFiles.filter((file) => file.status === 'created' || file.status === 'updated').length;
       const projectUnchanged = data.projectAgentFiles.filter((file) => file.status === 'unchanged').length;
@@ -1081,7 +1028,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'backup', result, `Backup written to ${options.output}`);
   });
 
-  cli.command('doctor').description('Check runtime and database health; interactively clean missing repository locations').option('--json').action(async (options: { json?: boolean }) => {
+  cli.command('doctor').description('Check runtime, database, and Codex MCP configuration health; interactively clean missing repository locations').option('--json').action(async (options: { json?: boolean }) => {
     const doctorOptions: Parameters<typeof runDoctor>[0] = {
       ...(dependencies.doctorDatabasePath === undefined ? {} : { databasePath: dependencies.doctorDatabasePath }),
       ...(dependencies.doctorRuntimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: dependencies.doctorRuntimeDescriptorPath }),
@@ -1132,6 +1079,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     ...(dependencies.embeddingProvider === undefined ? {} : { provider: dependencies.embeddingProvider }),
     ...(dependencies.embeddingBackend === undefined ? {} : { backend: dependencies.embeddingBackend }),
     ...(dependencies.setupEnvironment === undefined ? {} : { pathEnvironment: dependencies.setupEnvironment }),
+    ...(dependencies.setupInput === undefined ? {} : { setupInput: dependencies.setupInput }),
+    ...(dependencies.setupOutput === undefined ? {} : { setupOutput: dependencies.setupOutput }),
     output: humanOrJson,
   });
 

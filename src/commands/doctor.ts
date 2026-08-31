@@ -6,9 +6,10 @@ import { createInterface } from 'node:readline/promises';
 import { initializeDatabase } from './init.js';
 import { databaseFileIdentity, openConnection } from '../db/connection.js';
 import { KiokukoError } from '../errors.js';
+import { readRegularFile } from '../agent-file/atomic-write.js';
 import { BEGIN_MARKER, END_MARKER } from '../agent-file/managed-block.js';
 import { readProjectConfig } from '../config/project-config.js';
-import { getDatabaseLockPath, getGlobalDatabasePath, getRuntimeDescriptorPath } from '../config/paths.js';
+import { getCodexConfigPath, getDatabaseLockPath, getGlobalDatabasePath, getRuntimeDescriptorPath } from '../config/paths.js';
 import { listRepositoryLocations, type RepositoryLocation } from '../repository/binding.js';
 import { isPidAlive } from '../server/instance-lock.js';
 import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
@@ -25,6 +26,8 @@ import { parseEmbeddingConfig } from '../embedding/config.js';
 import { readPersistedEmbeddingSettings } from '../embedding/settings.js';
 import type { VectorSearchBackend } from '../embedding/types.js';
 import type { SqliteDatabase } from '../db/adapter.js';
+import { renderCodexMcpConfig } from '../setup/render.js';
+import { setupMcpIdentityConflictClient } from '../setup/mcp-conflict.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -62,6 +65,7 @@ export interface DoctorResult {
     hybridSearch: DoctorCheck;
     embeddings: DoctorCheck;
     ennoOperations: DoctorCheck;
+    codexMcp: DoctorCheck;
   };
 }
 
@@ -132,6 +136,32 @@ function balancedMarkers(content: string): boolean {
   return content.split(BEGIN_MARKER).length - 1 === 1 && content.split(END_MARKER).length - 1 === 1;
 }
 
+/** Inspect the Codex MCP identity using the same canonical parser as setup. */
+async function codexMcpCheck(): Promise<DoctorCheck> {
+  let config;
+  try {
+    config = await readRegularFile(getCodexConfigPath());
+  } catch {
+    return { ok: false, count: 1, detail: 'config=unavailable' };
+  }
+  if (config === undefined) return { ok: true, count: 0, detail: 'config=absent' };
+  try {
+    // Rendering is intentionally discarded: it validates the existing identity
+    // without writing, and accepts configs that simply have not been configured.
+    renderCodexMcpConfig(config.content);
+    return { ok: true, count: 0, detail: 'config=canonical-or-not-configured' };
+  } catch (error) {
+    if (setupMcpIdentityConflictClient(error) === 'codex') {
+      return { ok: false, count: 1, detail: 'config=conflict' };
+    }
+    return { ok: false, count: 1, detail: 'config=invalid' };
+  }
+}
+
+function skippedCodexMcpCheck(): DoctorCheck {
+  return { ok: true, count: 0, detail: 'config=skipped-for-explicit-database' };
+}
+
 async function runtimeCheck(databasePath: string, descriptorPath = getRuntimeDescriptorPath()): Promise<DoctorCheck> {
   let findings = 0;
   let descriptor: Awaited<ReturnType<typeof readRuntimeDescriptor>>;
@@ -181,6 +211,7 @@ interface DoctorCollectionOptions {
   embeddingEnvironment?: NodeJS.ProcessEnv;
   embeddingBackend?: VectorSearchBackend;
   legacyDeliveries: LegacyDeliveryInspectionReport;
+  codexMcp: DoctorCheck;
 }
 
 async function collectDoctorResult(
@@ -426,6 +457,7 @@ async function collectDoctorResult(
     hybridSearch: hybridCheck,
     embeddings: embeddings.check,
     ennoOperations,
+    codexMcp: options.codexMcp,
   };
   const ok = Object.values(checks).every((check) => check.ok);
   return {
@@ -468,6 +500,7 @@ async function legacyMigrationPreflight(options: DoctorOptions): Promise<DoctorR
            ...(options.embeddingEnvironment === undefined ? {} : { embeddingEnvironment: options.embeddingEnvironment }),
            ...(options.embeddingBackend === undefined ? {} : { embeddingBackend: options.embeddingBackend }),
            legacyDeliveries: report,
+           codexMcp: options.databasePath === undefined ? await codexMcpCheck() : skippedCodexMcpCheck(),
         });
       }
     }
@@ -501,6 +534,7 @@ export async function runDoctor(
     ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
   };
   const initialized = await initializeDatabase(initOptions);
+  const codexMcp = options.databasePath === undefined ? await codexMcpCheck() : skippedCodexMcpCheck();
   let embeddingConfig;
   try {
     embeddingConfig = options.embeddingEnvironment === undefined
@@ -547,6 +581,7 @@ export async function runDoctor(
         ? {}
         : { embeddingBackend: opened.backend ?? options.embeddingBackend }),
       legacyDeliveries,
+      codexMcp,
     });
   } catch (error) {
     operationFailed = true;

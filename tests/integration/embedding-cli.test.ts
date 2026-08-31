@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { Command } from 'commander';
 import { openConnection } from '../../src/db/connection.js';
@@ -14,6 +15,7 @@ import { createEmbeddingProfile } from '../../src/embedding/profile.js';
 import { activateEmbeddingProfile } from '../../src/embedding/store.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import type { EmbeddingProvider } from '../../src/embedding/types.js';
+import { setupMcpIdentityConflict } from '../../src/setup/mcp-conflict.js';
 
 const timestamp = '2026-08-31T00:00:00.000Z';
 
@@ -31,6 +33,8 @@ function command(database: ReturnType<typeof openConnection>, output: string[], 
   readonly optionalRuntimeInstaller?: () => Promise<void>;
   readonly modelInstaller?: NonNullable<EmbeddingsCommandDependencies['modelInstaller']>;
   readonly pathEnvironment?: { env?: NodeJS.ProcessEnv };
+  readonly setupInput?: NodeJS.ReadableStream;
+  readonly setupOutput?: NodeJS.WritableStream;
   readonly setupGlobalClients?: (options: SetupOptions) => Promise<Pick<SetupResult, 'clients' | 'projectAgentFiles'>>;
 } = {}): Command {
   const cli = new Command();
@@ -44,6 +48,8 @@ function command(database: ReturnType<typeof openConnection>, output: string[], 
     ...(options.optionalRuntimeInstaller === undefined ? {} : { optionalRuntimeInstaller: options.optionalRuntimeInstaller }),
     ...(options.modelInstaller === undefined ? {} : { modelInstaller: options.modelInstaller }),
     ...(options.pathEnvironment === undefined ? {} : { pathEnvironment: options.pathEnvironment }),
+    ...(options.setupInput === undefined ? {} : { setupInput: options.setupInput }),
+    ...(options.setupOutput === undefined ? {} : { setupOutput: options.setupOutput }),
     setupGlobalClients: setup,
     output: (json, operation, data, message) => {
       output.push(json ? JSON.stringify({ operation, data }) : message);
@@ -108,7 +114,7 @@ test('embedding setup skips optional runtime checks during dry-run', async () =>
   }
 });
 
-test('embedding setup refreshes project instructions without reconfiguring global clients', async () => {
+test('embedding setup configures clients and refreshes project instructions', async () => {
   const database = await temporaryDatabase('embedding-cli-project-setup');
   try {
     const output: string[] = [];
@@ -118,15 +124,81 @@ test('embedding setup refreshes project instructions without reconfiguring globa
         setupCalls.push(options);
         return { clients: ['codex'], projectAgentFiles: [] };
       },
-    }).parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--dry-run', '--json']);
+  }).parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--clients', 'codex', '--dry-run', '--json']);
     const response = JSON.parse(output[0]!) as {
       data: {
         semanticEnabled: boolean;
         projectSetup: { clients: string[]; projectAgentFiles: unknown[] };
       };
     };
-    assert.deepEqual(setupCalls, [{ clients: [], dryRun: true }]);
+    assert.deepEqual(setupCalls, [{
+      clients: ['codex'],
+      command: 'kiokuko',
+      dryRun: true,
+      standardSkills: true,
+      replaceConflictingMcpServers: [],
+    }]);
     assert.deepEqual(response.data.projectSetup, { clients: ['codex'], projectAgentFiles: [] });
+  } finally {
+    database.close();
+  }
+});
+
+test('embedding setup confirms and replaces a conflicting client MCP identity', async () => {
+  const database = await temporaryDatabase('embedding-cli-mcp-replacement');
+  try {
+    const output: string[] = [];
+    const setupCalls: SetupOptions[] = [];
+    let attempts = 0;
+    const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+    input.isTTY = true;
+    let answeredCommunity = false;
+    let answeredReplacement = false;
+    const setupOutput = new Writable({
+      write(chunk, _encoding, callback) {
+        const text = chunk.toString();
+        if (!answeredCommunity && text.includes('Enable community Skill discovery?')) {
+          answeredCommunity = true;
+          setImmediate(() => input.write('\n'));
+        }
+        if (!answeredReplacement && text.includes('Replace the existing Codex Kiokuko MCP identity')) {
+          answeredReplacement = true;
+          setImmediate(() => {
+            input.write('\n');
+            input.end();
+          });
+        }
+        callback();
+      },
+    }) as Writable & { isTTY?: boolean };
+    setupOutput.isTTY = true;
+    await command(database, output, {
+      setupInput: input,
+      setupOutput,
+      setupGlobalClients: async (options) => {
+        setupCalls.push(options);
+        if (attempts++ === 0) setupMcpIdentityConflict('codex', 'conflict');
+        return { clients: ['codex'], projectAgentFiles: [] };
+      },
+    }).parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--clients', 'codex', '--dry-run']);
+    assert.deepEqual(setupCalls, [
+      {
+        clients: ['codex'],
+        command: 'kiokuko',
+        dryRun: true,
+        standardSkills: true,
+        skillDiscoveryMode: 'official',
+        replaceConflictingMcpServers: [],
+      },
+      {
+        clients: ['codex'],
+        command: 'kiokuko',
+        dryRun: true,
+        standardSkills: true,
+        skillDiscoveryMode: 'official',
+        replaceConflictingMcpServers: ['codex'],
+      },
+    ]);
   } finally {
     database.close();
   }
