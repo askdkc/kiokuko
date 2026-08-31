@@ -16,7 +16,7 @@ Node.js 24.16.0 or newer is required; Node.js 26.1.0 or newer is also supported.
 Get started easily with these two commands 💕
 
 ```bash
-npm install --global @askdkc/kiokuko
+npm install --global @askdkc/kiokuko --omit=optional
 kiokuko setup
 ```
 
@@ -41,12 +41,21 @@ After setup, launch the target AI client and use it as usual. If it is already r
 
 ### Optional semantic retrieval
 
-Lexical retrieval is the default. Install the pinned multilingual local model
-only through an explicit setup command:
+Lexical retrieval and the normal `kiokuko setup` work with the lightweight
+default install above. The pinned multilingual local model is an opt-in path.
+Reinstall once with the required install scripts, then run the setup command:
 
 ```bash
+npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
+
+The lightweight install omits the optional Transformers.js runtime. The
+`boolean@3.2.0` package is an upstream transitive dependency of that runtime,
+not a Kiokuko dependency, so it is not included in the lightweight install.
+The `--allow-scripts` option above is a one-time install choice; Kiokuko does
+not require or recommend a persistent user/global npm setting or
+`--dangerously-allow-all-scripts`.
 
 For automation, use `--preset local-small --yes --json`. Setup downloads only
 the allowlisted revision, verifies every file before loading it, stores runtime

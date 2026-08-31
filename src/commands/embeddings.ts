@@ -25,6 +25,7 @@ import type { PathEnvironment } from '../config/paths.js';
 
 const MAX_SYNC_JOBS = 64;
 const DRAIN_DEADLINE_MS = 120_000;
+const LOCAL_SEMANTIC_INSTALL_COMMAND = 'npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs';
 
 export type EmbeddingsDatabaseRunner = <T>(operation: (
   database: SqliteDatabase,
@@ -38,6 +39,8 @@ export type EmbeddingsOutput = (
   meta?: Record<string, unknown>,
 ) => void;
 
+export type EmbeddingsOptionalRuntimeChecker = () => Promise<void>;
+
 export interface EmbeddingsSignalSource {
   once(signal: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
   off(signal: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
@@ -46,6 +49,7 @@ export interface EmbeddingsSignalSource {
 export interface EmbeddingsCommandDependencies {
   readonly withDatabase: EmbeddingsDatabaseRunner;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly optionalRuntimeChecker?: EmbeddingsOptionalRuntimeChecker;
   readonly provider?: EmbeddingProvider;
   readonly backend?: VectorSearchBackend;
   readonly output?: EmbeddingsOutput;
@@ -53,6 +57,35 @@ export interface EmbeddingsCommandDependencies {
   readonly modelDownloader?: ModelDownloader;
   readonly modelInstaller?: (preset: typeof import('../embedding/presets/local-small.js').LOCAL_SMALL_PRESET, options: Parameters<typeof runEmbeddingSetup>[2]) => Promise<InstalledModel>;
   readonly pathEnvironment?: PathEnvironment;
+}
+
+async function checkOptionalRuntime(): Promise<void> {
+  try {
+    await Promise.all([
+      import('@huggingface/hub'),
+      import('@huggingface/transformers'),
+    ]);
+  } catch (error) {
+    const cause = error instanceof Error ? `: ${error.message}` : '';
+    throw new KiokukoError(
+      'SERVICE_UNAVAILABLE',
+      `Local semantic retrieval dependencies are unavailable${cause}. Run once:\n${LOCAL_SEMANTIC_INSTALL_COMMAND}`,
+    );
+  }
+}
+
+async function ensureOptionalRuntime(dependencies: EmbeddingsCommandDependencies): Promise<void> {
+  try {
+    await (dependencies.optionalRuntimeChecker ?? checkOptionalRuntime)();
+  } catch (error) {
+    if (error instanceof KiokukoError && error.code === 'SERVICE_UNAVAILABLE' && error.message.includes(LOCAL_SEMANTIC_INSTALL_COMMAND)) {
+      throw error;
+    }
+    throw new KiokukoError(
+      'SERVICE_UNAVAILABLE',
+      `Local semantic retrieval dependencies are unavailable. Run once:\n${LOCAL_SEMANTIC_INSTALL_COMMAND}`,
+    );
+  }
 }
 
 interface DrainSummary {
@@ -236,6 +269,7 @@ export function registerEmbeddingsCommands(cli: Command, dependencies: Embedding
       const dryRun = options.dryRun === true;
       const confirmed = options.yes === true;
       if (!dryRun && !confirmed) throw new KiokukoError('USAGE_ERROR', 'Embedding setup requires --yes in non-interactive mode');
+      if (!dryRun) await ensureOptionalRuntime(dependencies);
       const data = await dependencies.withDatabase((database, backend) => runEmbeddingSetup(database, {
         presetId: options.preset,
         confirmed,

@@ -41,13 +41,22 @@ test('asks only missing required fields in taskType, target, expected order', ()
   const empty = { taskType: null, target: null, expected: null, constraints: null } as const;
   const taskType = evaluateProfile(empty, 0);
   assert.equal(taskType.question?.id, 'taskType');
+  assert.equal(taskType.question?.prompt, 'この作業の主目的はどれですか？');
+  assert.deepEqual(taskType.question?.options, ['build', 'debug', 'research', 'review', 'devops', 'writing', 'analysis']);
+  assert.equal(taskType.question?.required, true);
   assert.deepEqual(taskType.missingFields, ['taskType', 'target', 'expected']);
 
   const target = evaluateProfile({ ...empty, taskType: 'build' }, 1);
   assert.equal(target.question?.id, 'target');
+  assert.equal(target.question?.prompt, '対象のリポジトリ、ファイル、機能、またはサービスは何ですか？');
+  assert.equal(target.question?.options, null);
+  assert.equal(target.question?.required, true);
 
   const expected = evaluateProfile({ ...empty, taskType: 'build', target: 'src/index.ts' }, 2);
   assert.equal(expected.question?.id, 'expected');
+  assert.equal(expected.question?.prompt, '完了と判断する成功条件は何ですか？');
+  assert.equal(expected.question?.options, null);
+  assert.equal(expected.question?.required, true);
 
   const readyWithoutConstraints = evaluateProfile({
     ...empty,
@@ -58,6 +67,27 @@ test('asks only missing required fields in taskType, target, expected order', ()
   assert.equal(readyWithoutConstraints.status, 'ready');
   assert.equal(readyWithoutConstraints.question, null);
   assert.deepEqual(readyWithoutConstraints.missingFields, []);
+});
+
+test('fixes the current domain state machine boundaries before policy refactoring', () => {
+  const empty = { taskType: null, target: null, expected: null, constraints: null } as const;
+  const cases = [
+    { name: 'no taskType', profile: empty, questionCount: 0, status: 'needs_answer', questionId: 'taskType' },
+    { name: 'taskType only', profile: { ...empty, taskType: 'build' as const }, questionCount: 1, status: 'needs_answer', questionId: 'target' },
+    { name: 'taskType and target', profile: { ...empty, taskType: 'build' as const, target: 'src/index.ts' }, questionCount: 2, status: 'needs_answer', questionId: 'expected' },
+    { name: 'all required fields', profile: { ...empty, taskType: 'build' as const, target: 'src/index.ts', expected: 'tests pass' }, questionCount: 0, status: 'ready', questionId: null },
+    { name: 'missing fields at count 3', profile: empty, questionCount: 3, status: 'exhausted', questionId: null },
+  ] as const;
+
+  for (const current of cases) {
+    const evaluation = evaluateProfile(current.profile, current.questionCount);
+    assert.equal(evaluation.status, current.status, current.name);
+    assert.equal(evaluation.question?.id ?? null, current.questionId, current.name);
+    if (evaluation.status === 'needs_answer') assert.notEqual(evaluation.question, null, current.name);
+    if (evaluation.status === 'ready') assert.deepEqual(evaluation.missingFields, [], current.name);
+    if (evaluation.status === 'exhausted') assert.notDeepEqual(evaluation.missingFields, [], current.name);
+    assert.deepEqual(evaluateProfile(current.profile, current.questionCount), evaluation, `${current.name} is deterministic`);
+  }
 });
 
 test('rejects answers for fields other than the current question without mutating state or echoing values', () => {

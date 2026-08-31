@@ -31,6 +31,45 @@ const STATE_FIELDS = [
 const ANSWER_FIELDS = ['questionId', 'value'] as const;
 const REQUIRED_FIELDS: Array<keyof TaskProfile> = ['taskType', 'target', 'expected'];
 
+type RequiredQuestionId = 'taskType' | 'target' | 'expected';
+
+type QuestionPolicy = {
+  readonly id: RequiredQuestionId;
+  readonly prompt: string;
+  readonly options: readonly string[] | null;
+  readonly required: true;
+  readonly isMissing: (profile: TaskProfile) => boolean;
+};
+
+/**
+ * Akinator derives intake state from the profile and question count.
+ * Required questions are ordered by this policy; ready and exhausted are
+ * terminal intake states and therefore do not produce another question.
+ */
+const REQUIRED_QUESTION_POLICY = [
+  {
+    id: 'taskType',
+    prompt: 'この作業の主目的はどれですか？',
+    options: TASK_TYPES,
+    required: true,
+    isMissing: (profile) => profile.taskType === null,
+  },
+  {
+    id: 'target',
+    prompt: '対象のリポジトリ、ファイル、機能、またはサービスは何ですか？',
+    options: null,
+    required: true,
+    isMissing: (profile) => profile.target === null,
+  },
+  {
+    id: 'expected',
+    prompt: '完了と判断する成功条件は何ですか？',
+    options: null,
+    required: true,
+    isMissing: (profile) => profile.expected === null,
+  },
+] as const satisfies readonly QuestionPolicy[];
+
 function validation(message: string): never {
   throw new KiokukoError('VALIDATION_ERROR', message);
 }
@@ -136,24 +175,15 @@ function missingFields(profile: TaskProfile): Array<keyof TaskProfile> {
 
 function nextQuestion(profile: TaskProfile, questionCount: number): AkinatorQuestion | null {
   if (questionCount >= 3) return null;
-  if (!profile.taskType) return {
-    id: 'taskType',
-    prompt: 'この作業の主目的はどれですか？',
-    options: [...TASK_TYPES],
-    required: true,
-  };
-  if (!profile.target) return {
-    id: 'target',
-    prompt: '対象のリポジトリ、ファイル、機能、またはサービスは何ですか？',
-    options: null,
-    required: true,
-  };
-  if (!profile.expected) return {
-    id: 'expected',
-    prompt: '完了と判断する成功条件は何ですか？',
-    options: null,
-    required: true,
-  };
+  for (const policy of REQUIRED_QUESTION_POLICY) {
+    if (!policy.isMissing(profile)) continue;
+    return {
+      id: policy.id,
+      prompt: policy.prompt,
+      options: policy.options === null ? null : [...policy.options],
+      required: policy.required,
+    };
+  }
   return null;
 }
 

@@ -7,6 +7,7 @@ import { Command } from 'commander';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { registerEmbeddingsCommands } from '../../src/commands/embeddings.js';
+import { KiokukoError } from '../../src/errors.js';
 import { parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
 import { createEmbeddingProfile } from '../../src/embedding/profile.js';
 import { activateEmbeddingProfile } from '../../src/embedding/store.js';
@@ -25,6 +26,7 @@ async function temporaryDatabase(prefix: string) {
 function command(database: ReturnType<typeof openConnection>, output: string[], options: {
   readonly environment?: NodeJS.ProcessEnv;
   readonly provider?: EmbeddingProvider;
+  readonly optionalRuntimeChecker?: () => Promise<void>;
 } = {}): Command {
   const cli = new Command();
   cli.exitOverride();
@@ -32,12 +34,66 @@ function command(database: ReturnType<typeof openConnection>, output: string[], 
     withDatabase: async (operation) => operation(database),
     ...(options.environment === undefined ? {} : { environment: options.environment }),
     ...(options.provider === undefined ? {} : { provider: options.provider }),
+    ...(options.optionalRuntimeChecker === undefined ? {} : { optionalRuntimeChecker: options.optionalRuntimeChecker }),
     output: (json, operation, data, message) => {
       output.push(json ? JSON.stringify({ operation, data }) : message);
     },
   });
   return cli;
 }
+
+test('embedding setup checks optional runtime before opening the database', async () => {
+  const database = await temporaryDatabase('embedding-cli-runtime');
+  try {
+    const output: string[] = [];
+    let databaseCalls = 0;
+    const checker = async () => {
+      throw new Error('optional runtime is missing');
+    };
+    const cli = new Command();
+    cli.exitOverride();
+    registerEmbeddingsCommands(cli, {
+      withDatabase: async () => {
+        databaseCalls += 1;
+        throw new Error('database must not be opened');
+      },
+      optionalRuntimeChecker: checker,
+      output: (json, operation, data, message) => {
+        output.push(json ? JSON.stringify({ operation, data }) : message);
+      },
+    });
+
+    await assert.rejects(
+      () => cli.parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--yes']),
+      (error: unknown) => error instanceof KiokukoError
+        && error.code === 'SERVICE_UNAVAILABLE'
+        && error.message.includes('npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs'),
+    );
+    assert.equal(databaseCalls, 0);
+    assert.deepEqual(output, []);
+  } finally {
+    database.close();
+  }
+});
+
+test('embedding setup skips optional runtime checks during dry-run', async () => {
+  const database = await temporaryDatabase('embedding-cli-dry-run');
+  try {
+    const output: string[] = [];
+    let checks = 0;
+    await command(database, output, {
+      optionalRuntimeChecker: async () => {
+        checks += 1;
+      },
+    }).parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--dry-run', '--json']);
+    const response = JSON.parse(output[0]!) as { operation: string; data: { semanticEnabled: boolean } };
+    assert.equal(response.operation, 'embeddings.setup');
+    assert.equal(response.data.semanticEnabled, false);
+    assert.equal(checks, 0);
+  } finally {
+    database.close();
+  }
+});
 
 function environment(model: string): NodeJS.ProcessEnv {
   return {

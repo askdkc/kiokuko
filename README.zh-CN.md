@@ -16,7 +16,7 @@ Kiokuko 是面向 AI 编程智能体的外部记忆。
 使用以下两条命令即可轻松开始 💕
 
 ```bash
-npm install --global @askdkc/kiokuko
+npm install --global @askdkc/kiokuko --omit=optional
 kiokuko setup
 ```
 
@@ -41,11 +41,18 @@ required = true
 
 ### 可选的语义检索
 
-词法检索仍为默认方式。本地多语言模型只能通过明确的 setup 命令安装：
+上面的轻量安装仍可使用词法检索和普通的 `kiokuko setup`。本地多语言模型是可选功能。
+如需使用，请先使用所需的 install scripts 重新安装一次，再运行 setup 命令：
 
 ```bash
+npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
+
+轻量安装会省略 Transformers.js 的 optional runtime。`boolean@3.2.0` 是该 runtime
+上游引入的 transitive dependency，并不是 Kiokuko 的直接依赖，因此不会包含在轻量安装中。
+上面的 `--allow-scripts` 只用于这一次安装；不需要也不建议设置持久的 user/global npm 配置，
+也不使用 `--dangerously-allow-all-scripts`。
 
 自动化使用 `--preset local-small --yes --json`。setup 只下载固定 revision，
 在加载前验证全部文件，并将配置写入 SQLite 后离线生成向量。`--dry-run` 不下载也不修改，

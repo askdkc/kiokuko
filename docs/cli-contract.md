@@ -1,5 +1,27 @@
 # Embedding CLI contract
 
+The default global installation is intentionally lightweight:
+
+```bash
+npm install --global @askdkc/kiokuko --omit=optional
+kiokuko setup
+```
+
+This keeps lexical retrieval and the normal setup flow available without the
+optional local semantic runtime. To opt into local semantic retrieval, make a
+one-time reinstall that explicitly allows only the required install scripts,
+then run setup:
+
+```bash
+npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs
+kiokuko embeddings setup
+```
+
+`boolean@3.2.0` is an upstream transitive dependency of the Transformers.js
+runtime. It is not a Kiokuko dependency and is not present in the lightweight
+install. Do not persist `allow-scripts` in user/global npm configuration or
+use `--dangerously-allow-all-scripts`.
+
 `kiokuko embeddings setup` installs the pinned `local-small` preset after
 explicit confirmation. Automation uses:
 

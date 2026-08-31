@@ -5,6 +5,7 @@ import type { Readable } from 'node:stream';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { canonicalDirectory } from '../repository/detect-root.js';
+import { captureRepositoryState } from './repository-state.js';
 import { assertVerifierCwd, parseVerifierSpec } from './schemas.js';
 import type { VerifierRunResult, VerifierSpec } from './types.js';
 
@@ -19,22 +20,41 @@ export interface VerifierDependencies {
 
 function repositoryMutationAudit(repositoryRoot: string): { close: () => void; observed: () => boolean } {
   let changed = false;
+  let baselineDigest: string | undefined;
   const watched: Array<{ target: string; listener: (current: Stats, previous: Stats) => void }> = [];
+  try {
+    baselineDigest = captureRepositoryState(repositoryRoot).digest;
+  } catch {
+    changed = true;
+  }
+  const observeRepositoryState = (): void => {
+    if (changed || baselineDigest === undefined) return;
+    try {
+      if (captureRepositoryState(repositoryRoot).digest !== baselineDigest) changed = true;
+    } catch {
+      changed = true;
+    }
+  };
   try {
     const paths = execFileSync('git', [
       '-C', repositoryRoot, 'ls-files', '--cached', '--others', '--exclude-standard', '-z',
     ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).split('\0').filter(Boolean);
     const targets = new Set([repositoryRoot]);
+    const trackedFiles = new Set<string>();
     for (const candidate of paths) {
       const target = path.resolve(repositoryRoot, candidate);
       if (target !== repositoryRoot && !target.startsWith(`${repositoryRoot}${path.sep}`)) throw new Error('invalid Git path');
       targets.add(target);
+      trackedFiles.add(target);
       targets.add(path.dirname(target));
     }
     for (const target of targets) {
       const listener = (current: Stats, previous: Stats): void => {
         if (current.mtimeMs !== previous.mtimeMs || current.ctimeMs !== previous.ctimeMs
-          || current.size !== previous.size || current.ino !== previous.ino) changed = true;
+          || current.size !== previous.size || current.ino !== previous.ino) {
+          if (trackedFiles.has(target)) changed = true;
+          else observeRepositoryState();
+        }
       };
       watchFile(target, { persistent: false, interval: 20 }, listener);
       watched.push({ target, listener });
