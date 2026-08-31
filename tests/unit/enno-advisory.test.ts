@@ -308,6 +308,11 @@ test('final_review directive is withheld until evidence is prepared', () => {
   assert.equal(advisoryDirectiveForSnapshot(unready), undefined);
   const ready = snapshot({ status: 'enno_verifying', finalEvidenceReady: true, finalEvidence: [verifierResult('final-check')] });
   assert.ok(advisoryDirectiveForSnapshot(ready));
+  const directive = directiveForRun(ready);
+  assert.ok(directive);
+  assert.match(directive.objective, /evidence-backed contract blocker/iu);
+  assert.match(directive.objective, /disagreement.*non-blocking/iu);
+  assert.match(directive.objective, /do not ask the user to adjudicate advisors solely for disagreement/iu);
 });
 
 test('phase report schemas advertise advisory consumption only while an aggregate is pending', () => {

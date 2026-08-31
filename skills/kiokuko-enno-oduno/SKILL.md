@@ -34,6 +34,20 @@ phase report require the stored digest plus a complete disposition for every
 slot; other phase schemas omit those fields. Submitting advice does not advance
 the main Enno status.
 
+### Recovery-only advisory restoration
+
+After a successful `enno_advice_submit`, use its complete `advisoryRound` from
+the current context whenever it is still available. Call `enno_advice_read` at
+most once only when the current state is `aggregated` but the contribution
+bodies are missing after session termination or client reroute. The read restores
+a stored current round; it is not advisor fanout, state advancement, or
+confirmation.
+
+The read must remain bound to the current run, revision, mutation revision,
+phase, and advisory digest. If it fails, do not infer contributions or invent
+dispositions. Never restore provider/model identity or raw advisor output;
+preserve existing failure codes such as `unsafe_output`.
+
 ## Activation boundary
 
 Apply this Skill only when one of these is true:
@@ -118,6 +132,36 @@ action together with the host-retained capability catalog.
 ## Final review
 
 Review the approved contract rather than the quality of the final prose response.
+
+Final Review advisory input is evidence for judgment, not a vote. Evaluate each
+slot by its role, concrete evidence, and correspondence to an acceptance
+criterion; never treat agreement count as correctness evidence. Advisor
+disagreement alone is non-blocking and must not trigger replan or user
+confirmation.
+
+For each slot, `adopted` means that at least part of its contribution
+concretely affected the current judgment or output. `not_adopted` means its
+content was considered but not used. `unavailable` is reserved for the existing
+failure, timeout, or isolation-unavailable outcomes. Adoption does not approve
+every recommendation; record a short rationale for what evidence was used or
+why it was not used.
+
+Only evidence-backed contract blockers may produce replan feedback. Keep at most
+eight blockers, each tied to a violated acceptance criterion or approved
+contract invariant, a repository-relative path, concrete observed evidence,
+impact or regression risk, a bounded Zenki change, and an existing or focused
+verifier that proves the fix. Merge duplicate findings with the same criterion,
+path, observed behavior, and requested change.
+
+Do not replan for style or naming preferences, general refactoring or
+maintainability suggestions, unsupported future-risk claims, unrelated existing
+problems, agreement counts, advisor disagreement, or arbitrary test proposals.
+Keep `review.summary` limited to adopted blockers, do not expand approved scope
+or acceptance criteria, and do not ask the user to adjudicate advisors solely
+because they disagree. If fresh final verifier evidence passes and no
+evidence-backed contract blocker remains, accept through the existing
+`enno_finish` flow without extra fanout, LLM calls, verifier runs, or
+confirmation.
 
 Confirm all of the following before acceptance:
 

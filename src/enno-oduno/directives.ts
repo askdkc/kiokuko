@@ -256,7 +256,7 @@ export function directiveForRun(snapshot: EnnoRunSnapshot): RoleDirective | null
         ? CONFIRMATION_OBJECTIVE
       : snapshot.status === 'enno_verifying'
         ? snapshot.finalEvidenceReady
-          ? 'Review the evidence-ready completed Goki work against the approved final verifiers. Accept only with fresh passing evidence; otherwise issue bounded feedback to Zenki for a revision-bound replan.'
+          ? 'Review the evidence-ready completed Goki work against the approved final verifiers. Accept only with fresh passing evidence and no evidence-backed contract blocker; deduplicate blockers, treat disagreement or non-contract suggestions as non-blocking, and do not ask the user to adjudicate advisors solely for disagreement. Otherwise issue bounded feedback to Zenki for a revision-bound replan.'
           : 'Run the approved final verifiers by calling enno_verify_prepare so fresh evidence is stored before the Final Review advisory fanout.'
           : snapshot.status === 'oduno_meditation'
             ? `Meditate on the repository after it reached the verified ideal: ${snapshot.ideal?.objective ?? snapshot.handoff.objective}. Inspect relevant changed and approved paths (${changedPaths(snapshot).join(', ') || snapshot.contract.scope.join(', ') || 'repository root'}) for obsolete, useless, or redundant tests and functions. Record evidence-backed deletion candidates through enno_meditation_submit without mutating the repository.`

@@ -27,6 +27,7 @@ import { absoluteCwdSchema } from '../repository/cwd-schema.js';
 import {
   answerEnno,
   finishEnno,
+  readPendingEnnoAdvice,
   prepareEnnoVerification,
   reportEnnoWork,
   submitEnnoAdvice,
@@ -37,6 +38,7 @@ import {
 import {
   ennoAnswerSchema,
   adviceSubmissionSchema,
+  adviceReadSchema,
   finishSchema,
   idealSubmissionSchema,
   meditationSubmissionSchema,
@@ -397,6 +399,7 @@ const EXECUTION_PATH_CONTRACT = 'Each successful task_prepare or task_answer res
 const ENNO_TOOL_IDENTITY_CONTRACT = 'Use the exact runId and contract revision returned in ennoOduno, plus either the current adapter resumeToken or the complete legacy workspace and orchestrationId pair. Never combine both identity forms. A resumeToken is bound to the current repository and route epoch; orchestrationId is the run-bound intake identity, not a host client session ID.';
 const HANDLER_VALIDATED_ENNO_TOOLS = new Set([
   'enno_advice_submit',
+  'enno_advice_read',
   'enno_ideal_submit',
   'enno_plan_submit',
   'enno_work_report',
@@ -409,7 +412,7 @@ function enablePublicToolInputErrors(server: McpServer): void {
   // The MCP SDK normally rejects Zod-invalid tool arguments before invoking a
   // handler, which would expose its raw validation message and bypass the
   // bounded PublicEnnoValidationError projection. Keep the advertised schema,
-  // but route these seven Enno inputs to their first-line strict handler parser.
+  // but route these Enno inputs to their first-line strict handler parser.
   const internal = server as unknown as Record<string, unknown>;
   const validator = internal.validateToolInput;
   const createToolError = internal.createToolError;
@@ -499,6 +502,13 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     inputSchema: adviceSubmissionSchema.shape,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input, extra) => withMcpToolDeadline('enno_advice_submit', deadlinePolicy, extra.signal, () => withPublicEnnoToolError(() => withDatabase(dependencies, async (database) => toolResult(submitEnnoAdvice(database, input))))));
+
+  server.registerTool('enno_advice_read', {
+    title: 'Read the pending Enno advisory round',
+    description: `Read the current aggregated Enno advisory round for recovery only. This operation is read-only, does not run advisors, does not advance Enno state, and does not select an ambiguous historical round. ${ENNO_TOOL_IDENTITY_CONTRACT}`,
+    inputSchema: adviceReadSchema.shape,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input, extra) => withMcpToolDeadline('enno_advice_read', deadlinePolicy, extra.signal, () => withPublicEnnoToolError(() => withDatabase(dependencies, async (database) => toolResult(readPendingEnnoAdvice(database, input))))));
 
   server.registerTool('enno_answer', {
     title: 'Answer an Enno-Oduno contract confirmation',

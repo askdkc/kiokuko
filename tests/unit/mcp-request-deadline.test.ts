@@ -6,6 +6,7 @@ import {
   McpRequestCancelledError,
   McpRequestTimeoutError,
   createMcpDeadlinePolicy,
+  operationDeadlineClass,
   runWithMcpDeadline,
 } from '../../src/mcp/request-deadline.js';
 
@@ -29,6 +30,10 @@ test('deadline utility validates policy and bounds child operations by the paren
   assert.deepEqual(policy, { readMs: 20, externalMs: 15, mutationMs: 25, hardMaxMs: 30 });
   assert.throws(() => createMcpDeadlinePolicy({ readMs: 9 }), /between/u);
   assert.throws(() => createMcpDeadlinePolicy({ hardMaxMs: 20, mutationMs: 21 }), /hard maximum/u);
+});
+
+test('enno_advice_read uses the read deadline class', () => {
+  assert.equal(operationDeadlineClass('enno_advice_read'), 'read');
 });
 
 test('deadline utility aborts the operation and rejects with a stable timeout error', async () => {

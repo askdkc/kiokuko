@@ -35,6 +35,7 @@ import { buildEnnoRequestHandoff } from './handoff.js';
 import { identifyEnnoClientKind } from './harness.js';
 import {
   ennoAnswerSchema,
+  adviceReadSchema,
   finishSchema,
   idealSubmissionSchema,
   meditationSubmissionSchema,
@@ -42,6 +43,7 @@ import {
   workReportSchema,
   assertContractVerifierCwds,
   parseEnnoAnswer,
+  parseAdviceRead,
   parseAdviceSubmission,
   parseFinishRequest,
   parseIdealSubmission,
@@ -137,6 +139,12 @@ export interface EnnoOperationResponse {
   verifierResults?: VerifierRunResult[];
   advisoryRound?: StoredAdvisoryRound;
   executionLease?: EnnoExecutionLease;
+}
+
+export interface EnnoAdviceReadResponse {
+  protocolVersion: 1;
+  advisoryRound: StoredAdvisoryRound;
+  allowlistedContext: AdvisoryContext;
 }
 
 export interface EnnoServiceDependencies extends VerifierDependencies {
@@ -550,6 +558,61 @@ export function submitEnnoAdvice(
     completeOperationInTransaction(database, input.runId, operation, operationOwner, response);
     return response;
   });
+}
+
+export function readPendingEnnoAdvice(
+  database: SqliteDatabase,
+  rawInput: unknown,
+): EnnoAdviceReadResponse {
+  const input = parseAdviceRead(rawInput);
+  const snapshot = readEnnoSnapshot(database, identity(database, input));
+  if (snapshot.revision !== input.expectedRevision) {
+    throw new KiokukoError('CONFLICT', 'Enno contract revision changed');
+  }
+  const phase = advisoryPhaseForStatus(snapshot.status);
+  if (phase === null || (phase === 'final_review' && !snapshot.finalEvidenceReady)) {
+    throw new KiokukoError('CONFLICT', 'Advisory round is not valid for the current Enno phase');
+  }
+  if (snapshot.advisoryPhaseState?.state !== 'aggregated') {
+    throw new KiokukoError('CONFLICT', 'Required advisory round is not aggregated');
+  }
+  if (snapshot.advisoryPhaseState.inputDigest !== input.advisoryRoundDigest) {
+    throw ennoValidationError('advice_read', [{
+      path: ['advisoryRoundDigest'],
+      reasonCode: 'advisory_digest_stale',
+    }], 'refresh_state');
+  }
+  const allowlistedContext = advisoryContextForSnapshot(snapshot, phase);
+  const expectedDigest = advisoryInputDigest({
+    phase,
+    contractRevision: snapshot.revision,
+    mutationRevision: snapshot.mutationRevision,
+    allowlistedContext,
+  });
+  if (expectedDigest !== input.advisoryRoundDigest) {
+    throw ennoValidationError('advice_read', [{
+      path: ['advisoryRoundDigest'],
+      reasonCode: 'advisory_digest_stale',
+    }], 'refresh_state');
+  }
+  const advisoryRound = readAdvisoryRound(database, {
+    runId: snapshot.runId,
+    contractRevision: snapshot.revision,
+    mutationRevision: snapshot.mutationRevision,
+    phase,
+    inputDigest: input.advisoryRoundDigest,
+  });
+  if (advisoryRound === undefined) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Stored pending advisory round is missing');
+  }
+  if (advisoryRound.state !== 'aggregated') {
+    throw new KiokukoError('CONFLICT', 'Advisory round is no longer pending');
+  }
+  return {
+    protocolVersion: 1,
+    advisoryRound,
+    allowlistedContext,
+  };
 }
 
 function identity(database: SqliteDatabase, input: {

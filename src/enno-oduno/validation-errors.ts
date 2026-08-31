@@ -9,6 +9,7 @@ export const ENNO_VALIDATION_OPERATIONS = [
   'ideal_submit',
   'plan_submit',
   'advice_submit',
+  'advice_read',
   'work_report',
   'verify_prepare',
   'finish',

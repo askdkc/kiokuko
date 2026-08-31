@@ -8,7 +8,7 @@ import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { advisoryInputDigest } from '../../src/enno-oduno/advisory.js';
-import { submitEnnoAdvice, submitOdunoIdeal } from '../../src/enno-oduno/service.js';
+import { readPendingEnnoAdvice, submitEnnoAdvice, submitOdunoIdeal } from '../../src/enno-oduno/service.js';
 import { readEnnoSnapshot } from '../../src/enno-oduno/store.js';
 import { ADVISORY_SLOT_DEFINITIONS } from '../../src/enno-oduno/types.js';
 
@@ -33,7 +33,7 @@ async function fixture() {
     client: { kind: 'codex', sessionId: 'codex-advisory' },
     skillDiscoveryMode: 'off',
   });
-  return { root, database, prepared };
+  return { root, database, databasePath, prepared };
 }
 
 function identity(prepared: Awaited<ReturnType<typeof prepareAgentTask>>) {
@@ -99,6 +99,77 @@ test('advice submission sorts fixed slots, persists mutation revision zero, and 
     const replay = submitEnnoAdvice(database, input);
     assert.deepEqual(replay, first);
     assert.throws(() => submitEnnoAdvice(database, { ...input, contributions: [completed('constraint_guardian', 'changed'), completed('skill_trust_analyst'), completed('success_signal_critic')] }), /idempotency/u);
+  } finally {
+    database.close();
+  }
+});
+
+test('pending advisory read restores the exact aggregate after reopen without writes', async () => {
+  const { database, databasePath, prepared } = await fixture();
+  try {
+    const id = identity(prepared);
+    const context = prepared.ennoOduno.directive!.advisoryRound!.context;
+    const submitted = submitEnnoAdvice(database, {
+      ...id,
+      expectedRevision: 1,
+      mutationRevision: 0,
+      idempotencyKey: 'advice-read-source',
+      phase: 'ideal',
+      allowlistedContext: context,
+      contributions: [completed('constraint_guardian'), completed('skill_trust_analyst'), completed('success_signal_critic')],
+    });
+    const digest = submitted.advisoryRound!.inputDigest;
+    const counts = () => ({
+      contracts: database.prepare('SELECT COUNT(*) AS count FROM enno_contracts').get<{ count: number }>()?.count,
+      rounds: database.prepare('SELECT COUNT(*) AS count FROM enno_advisory_rounds').get<{ count: number }>()?.count,
+      contributions: database.prepare('SELECT COUNT(*) AS count FROM enno_advisory_contributions').get<{ count: number }>()?.count,
+      receipts: database.prepare('SELECT COUNT(*) AS count FROM enno_operation_receipts').get<{ count: number }>()?.count,
+      events: database.prepare('SELECT COUNT(*) AS count FROM ledger_events').get<{ count: number }>()?.count,
+      verifiers: database.prepare('SELECT COUNT(*) AS count FROM enno_verifier_runs').get<{ count: number }>()?.count,
+    });
+    const before = counts();
+    const first = readPendingEnnoAdvice(database, { ...id, expectedRevision: 1, advisoryRoundDigest: digest });
+    assert.equal(first.protocolVersion, 1);
+    assert.deepEqual(first.advisoryRound, submitted.advisoryRound);
+    assert.deepEqual(first.allowlistedContext, context);
+    assert.deepEqual(counts(), before);
+
+    database.close();
+    const reopened = openConnection(databasePath);
+    try {
+      const restored = readPendingEnnoAdvice(reopened, { ...id, expectedRevision: 1, advisoryRoundDigest: digest });
+      assert.deepEqual(restored, first);
+      assert.equal(JSON.stringify(restored).includes('provider'), false);
+      assert.equal(JSON.stringify(restored).includes('model'), false);
+    } finally {
+      reopened.close();
+    }
+  } catch (error) {
+    try { database.close(); } catch { /* already closed after reopen check */ }
+    throw error;
+  }
+});
+
+test('pending advisory read rejects stale identity, revision, digest, and non-advisory phase', async () => {
+  const { database, prepared } = await fixture();
+  try {
+    const id = identity(prepared);
+    const context = prepared.ennoOduno.directive!.advisoryRound!.context;
+    const submitted = submitEnnoAdvice(database, {
+      ...id,
+      expectedRevision: 1,
+      mutationRevision: 0,
+      idempotencyKey: 'advice-read-boundary',
+      phase: 'ideal',
+      allowlistedContext: context,
+      contributions: [completed('constraint_guardian'), completed('skill_trust_analyst'), completed('success_signal_critic')],
+    });
+    const digest = submitted.advisoryRound!.inputDigest;
+    assert.throws(() => readPendingEnnoAdvice(database, { ...id, expectedRevision: 2, advisoryRoundDigest: digest }), /contract revision changed/iu);
+    assert.throws(() => readPendingEnnoAdvice(database, { ...id, expectedRevision: 1, advisoryRoundDigest: '0'.repeat(64) }), /Enno input is invalid/iu);
+    assert.throws(() => readPendingEnnoAdvice(database, { ...id, runId: 'other-run', expectedRevision: 1, advisoryRoundDigest: digest }), /run was not found|CONFLICT|invalid/iu);
+    assert.throws(() => readPendingEnnoAdvice(database, { ...id, expectedRevision: 1, workspace: 'other-workspace', advisoryRoundDigest: digest }), /run was not found|CONFLICT|invalid/iu);
+    assert.throws(() => readPendingEnnoAdvice(database, { ...id, expectedRevision: 1, orchestrationId: 'other-session', advisoryRoundDigest: digest }), /run was not found|session does not own|CONFLICT|invalid/iu);
   } finally {
     database.close();
   }

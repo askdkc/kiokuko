@@ -76,6 +76,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'curator_check',
       'curator_globalize',
+      'enno_advice_read',
       'enno_advice_submit',
       'enno_answer',
       'enno_finish',
@@ -99,6 +100,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(planDescription, /Never display the machine action.*reason code.*raw JSON/isu);
     assert.match(planDescription, /without retrying, cancelling, or starting a replacement automatically/iu);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, false);
+    const adviceReadTool = tools.tools.find((tool) => tool.name === 'enno_advice_read');
+    assert.equal(adviceReadTool?.annotations?.readOnlyHint, true);
+    assert.equal(adviceReadTool?.annotations?.destructiveHint, false);
+    assert.equal(adviceReadTool?.annotations?.idempotentHint, true);
+    assert.equal(adviceReadTool?.annotations?.openWorldHint, false);
+    assert.match(adviceReadTool?.description ?? '', /recovery only/iu);
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
     const ennoFinishTool = tools.tools.find((tool) => tool.name === 'enno_finish');
@@ -183,6 +190,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(ennoPlanSchema.properties?.capabilities?.description ?? '', /transport-optional.*user-facing recovery choice/iu);
     for (const toolName of [
       'enno_advice_submit',
+      'enno_advice_read',
       'enno_ideal_submit',
       'enno_plan_submit',
       'enno_answer',
@@ -937,6 +945,24 @@ test('MCP transports advisory submission and final verification preparation with
     const adviceContent = advice.structuredContent as { ennoOduno: { status: string }; advisoryRound: { inputDigest: string } };
     assert.equal(adviceContent.ennoOduno.status, 'oduno_ideal');
     assert.match(adviceContent.advisoryRound.inputDigest, /^[0-9a-f]{64}$/u);
+    const adviceRead = await client.callTool({
+      name: 'enno_advice_read',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        advisoryRoundDigest: adviceContent.advisoryRound.inputDigest,
+      },
+    });
+    assert.equal(adviceRead.isError, undefined);
+    const adviceReadContent = adviceRead.structuredContent as {
+      protocolVersion: number;
+      advisoryRound: { inputDigest: string; contributions: unknown[] };
+      allowlistedContext: Record<string, unknown>;
+    };
+    assert.equal(adviceReadContent.protocolVersion, 1);
+    assert.equal(adviceReadContent.advisoryRound.inputDigest, adviceContent.advisoryRound.inputDigest);
+    assert.equal(adviceReadContent.advisoryRound.contributions.length, 3);
+    assert.deepEqual(adviceReadContent.allowlistedContext, idealRound.context);
     const adviceReplay = await client.callTool({ name: 'enno_advice_submit', arguments: adviceArguments });
     assert.deepEqual(adviceReplay.structuredContent, advice.structuredContent);
     const adviceConflict = await client.callTool({

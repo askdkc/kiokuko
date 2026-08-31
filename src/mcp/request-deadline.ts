@@ -15,6 +15,7 @@ export type McpToolOperation =
   | 'curator_check'
   | 'curator_globalize'
   | 'enno_advice_submit'
+  | 'enno_advice_read'
   | 'enno_ideal_submit'
   | 'enno_plan_submit'
   | 'enno_answer'

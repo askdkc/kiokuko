@@ -380,6 +380,15 @@ export const adviceSubmissionSchema = z.object({
 
 const advisoryRoundDigestSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 
+export const adviceReadSchema = z.object({
+  runId: identifier,
+  workspace: canonicalText(256).optional(),
+  orchestrationId: orchestrationIdSchema.optional(),
+  resumeToken: resumeTokenSchema.optional(),
+  expectedRevision: z.number().int().min(1),
+  advisoryRoundDigest: advisoryRoundDigestSchema,
+}).strict().superRefine(requireExplicitIdentityOrResumeToken);
+
 const advisoryDispositionSchema = z.object({
   slotId: advisorySlotIdSchema,
   disposition: z.enum(['adopted', 'not_adopted', 'unavailable']),
@@ -658,6 +667,10 @@ export function parsePlanSubmission(input: unknown): z.infer<typeof planSubmissi
 
 export function parseAdviceSubmission(input: unknown): z.infer<typeof adviceSubmissionSchema> {
   return parseInputBoundary('advice_submit', adviceSubmissionSchema, input);
+}
+
+export function parseAdviceRead(input: unknown): z.infer<typeof adviceReadSchema> {
+  return parseInputBoundary('advice_read', adviceReadSchema, input);
 }
 
 export function parseIdealSubmission(input: unknown): z.infer<typeof idealSubmissionSchema> {
