@@ -100,6 +100,13 @@ test('full SQLite backup preserves vectors and restored doctor detects later cor
     assert.equal(healthy.check.ok, true);
     assert.equal(healthy.status.readyVectors, 1);
 
+    const mismatched = inspectEmbeddingHealth(restored, {
+      ...environment,
+      KIOKUKO_EMBEDDING_MODEL: 'different-model',
+    }, backend);
+    assert.equal(mismatched.check.ok, false);
+    assert.ok(mismatched.check.count > 0);
+
     updateCandidateEntry(restored, {
       workspace: entry.workspace,
       entryId: entry.id,

@@ -544,25 +544,18 @@ export async function runDoctor(
     embeddingConfig = undefined;
   }
   let opened: { database: SqliteDatabase; backend: VectorSearchBackend | undefined };
-  if (embeddingConfig === undefined) {
+  try {
+    opened = await openEmbeddingDatabase(initialized.databasePath, {
+      ...(embeddingConfig === undefined ? {} : { config: embeddingConfig }),
+      openDatabase: dependencies.openConnection ?? openConnection,
+      ...(options.embeddingBackend === undefined ? {} : { backend: options.embeddingBackend }),
+    });
+  } catch (error) {
+    if (!(error instanceof EmbeddingBackendUnavailableError)) throw error;
     opened = {
       database: (dependencies.openConnection ?? openConnection)(initialized.databasePath),
-      backend: options.embeddingBackend,
+      backend: undefined,
     };
-  } else {
-    try {
-      opened = await openEmbeddingDatabase(initialized.databasePath, {
-        ...(embeddingConfig === undefined ? {} : { config: embeddingConfig }),
-        openDatabase: dependencies.openConnection ?? openConnection,
-        ...(options.embeddingBackend === undefined ? {} : { backend: options.embeddingBackend }),
-      });
-    } catch (error) {
-      if (!(error instanceof EmbeddingBackendUnavailableError)) throw error;
-      opened = {
-        database: (dependencies.openConnection ?? openConnection)(initialized.databasePath),
-        backend: undefined,
-      };
-    }
   }
   const database = opened.database;
   let doctorResult: DoctorResult | undefined;

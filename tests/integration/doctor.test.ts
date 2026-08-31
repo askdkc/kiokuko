@@ -6,8 +6,12 @@ import { Readable, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
 import { runDoctor } from '../../src/commands/doctor.js';
-import { openConnection } from '../../src/db/connection.js';
+import { openConnection, SqliteVecLoadError } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
+import { parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
+import { LOCAL_SMALL_PRESET } from '../../src/embedding/presets/local-small.js';
+import { createEmbeddingProfile, createLocalEmbeddingProfile } from '../../src/embedding/profile.js';
+import { activateEmbeddingProfile, activateLocalEmbeddingProfile } from '../../src/embedding/store.js';
 import {
   findMissingRepositoryLocations,
   registerRepositoryAndLocation,
@@ -188,6 +192,80 @@ test('JSON doctor never prompts or cleans missing locations', async () => {
   } finally {
     database.close();
   }
+});
+
+test('doctor uses persisted local embedding settings and reports the selected backend', async () => {
+  const value = await temporaryDatabase('local-embeddings');
+  const profile = createLocalEmbeddingProfile(LOCAL_SMALL_PRESET);
+  try {
+    activateLocalEmbeddingProfile(value.database, profile, {
+      replace: false,
+      now: '2026-08-31T00:00:00.000Z',
+    });
+    value.database.prepare(`
+      UPDATE embedding_settings
+         SET mode = 'optional', provider_kind = 'local-transformers',
+             preset_id = 'local-small', vector_backend = 'auto',
+             setup_state = 'ready', updated_at = ?
+       WHERE singleton = 1
+    `).run('2026-08-31T00:00:00.000Z');
+  } finally {
+    value.database.close();
+  }
+
+  const result = await runDoctor({
+    databasePath: value.databasePath,
+    runtimeDescriptorPath: path.join(value.directory, 'runtime', 'server.json'),
+  });
+
+  assert.deepEqual(result.checks.embeddings, {
+    ok: true,
+    count: 0,
+    detail: 'findings=0, mode=optional, backend=sqlite-vec',
+  });
+});
+
+test('doctor reports a forced sqlite-vec backend that cannot be loaded', async () => {
+  const value = await temporaryDatabase('forced-sqlite-vec');
+  const embeddingEnvironment = {
+    KIOKUKO_EMBEDDINGS: 'optional',
+    KIOKUKO_EMBEDDING_BASE_URL: 'http://127.0.0.1:8080/v1',
+    KIOKUKO_EMBEDDING_MODEL: 'doctor-test',
+    KIOKUKO_EMBEDDING_DIMENSIONS: '3',
+    KIOKUKO_EMBEDDING_DISTANCE_CEILING: '0.8',
+    KIOKUKO_VECTOR_BACKEND: 'sqlite-vec',
+  } satisfies NodeJS.ProcessEnv;
+  try {
+    const config = requireEnabledEmbeddingConfig(parseEmbeddingConfig(embeddingEnvironment));
+    activateEmbeddingProfile(value.database, createEmbeddingProfile(config), {
+      replace: false,
+      now: '2026-08-31T00:00:00.000Z',
+    });
+  } finally {
+    value.database.close();
+  }
+
+  let extensionOpenAttempts = 0;
+  const result = await runDoctor({
+    databasePath: value.databasePath,
+    runtimeDescriptorPath: path.join(value.directory, 'runtime', 'server.json'),
+    embeddingEnvironment,
+  }, {
+    openConnection: (databasePath, options) => {
+      if (options?.sqliteVecLoader !== undefined) {
+        extensionOpenAttempts += 1;
+        throw new SqliteVecLoadError('sqlite-vec unavailable in doctor test');
+      }
+      return openConnection(databasePath, options);
+    },
+  });
+
+  assert.equal(extensionOpenAttempts, 1);
+  assert.deepEqual(result.checks.embeddings, {
+    ok: false,
+    count: 1,
+    detail: 'findings=1, mode=optional, backend=sqlite-vec',
+  });
 });
 
 async function withDoctorEnvironment<T>(
