@@ -255,3 +255,20 @@ export function executeIdempotentInTransaction<T extends JsonValue>(
   const validated = validateInput(input);
   return executeValidated(database, validated, operation);
 }
+
+/**
+ * Returns whether an idempotency receipt already exists for an internal key.
+ * Callers still submit the operation through executeIdempotent* so request
+ * hashes are checked before any replay is returned.
+ */
+export function hasIdempotencyReceipt(
+  database: SqliteDatabase,
+  input: { scope: string; key: string },
+): boolean {
+  const scope = boundedString(input.scope);
+  const key = boundedString(input.key);
+  const row = database.prepare(
+    'SELECT 1 AS present FROM gateway_idempotency WHERE scope = ? AND key_hash = ? LIMIT 1',
+  ).get<{ present: number }>(scope, sha256(key));
+  return row !== undefined;
+}

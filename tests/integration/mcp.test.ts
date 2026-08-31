@@ -114,7 +114,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     const ennoIdealTool = tools.tools.find((tool) => tool.name === 'enno_ideal_submit');
     const ennoMeditationTool = tools.tools.find((tool) => tool.name === 'enno_meditation_submit');
     assert.match(taskPrepareTool?.description ?? '', /Run Akinator once for one logical request/);
-    assert.match(taskPrepareTool?.description ?? '', /New Codex runs require kiokukoSkills/);
+    assert.match(taskPrepareTool?.description ?? '', /New Codex, Claude Code, and OpenCode runs require kiokukoSkills/);
     assert.match(taskPrepareTool?.description ?? '', /Optional clientInventory is recommendation-only, capped at 200, never stored or run-bound/);
     assert.match(taskPrepareTool?.description ?? '', /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
     assert.match(taskPrepareTool?.description ?? '', /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
@@ -658,18 +658,16 @@ test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno deri
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     try {
-      if (clientFixture.expectedKind === 'codex') {
-        const legacyNewRun = await client.callTool({
-          name: 'task_prepare',
-          arguments: {
-            soulRead: true,
-            requestId: 'codex-legacy-new-run-rejected',
-            task: 'Review',
-            capabilities: [SOUL_CAPABILITY],
-          },
-        });
-        assert.equal(legacyNewRun.isError, true);
-      }
+      const legacyNewRun = await client.callTool({
+        name: 'task_prepare',
+        arguments: {
+          soulRead: true,
+          requestId: `${clientFixture.expectedKind}-legacy-new-run-rejected`,
+          task: 'Review',
+          capabilities: [SOUL_CAPABILITY],
+        },
+      });
+      assert.equal(legacyNewRun.isError, true);
       const prepared = await client.callTool({
         name: 'task_prepare',
         arguments: {

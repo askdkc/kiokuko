@@ -63,7 +63,8 @@ import {
   type PlanStartRecovery,
   type PlanStartRecoveryReason,
 } from '../enno-oduno/plan-recovery.js';
-import { canonicalJson } from '../serialization/validate.js';
+import { canonicalContentHash, canonicalJson } from '../serialization/validate.js';
+import { hasIdempotencyReceipt } from '../server/idempotency.js';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../setup/standard-skills.js';
 import {
   ENNO_INPUT_INVALID_DETAIL_KEY,
@@ -497,6 +498,14 @@ const HANDLER_VALIDATED_ENNO_TOOLS = new Set([
   'enno_finish',
   'enno_meditation_submit',
 ]);
+const OWNERSHIP_BOUND_CLIENT_KINDS = new Set(['codex', 'claude', 'opencode']);
+
+function hasTaskPrepareReceipt(database: SqliteDatabase, requestId: string): boolean {
+  return hasIdempotencyReceipt(database, {
+    scope: 'agent.run.open',
+    key: `mcp-task-prepare-${canonicalContentHash({ version: 1, requestId })}`,
+  });
+}
 
 function enablePublicToolInputErrors(server: McpServer): void {
   // The MCP SDK normally rejects Zod-invalid tool arguments before invoking a
@@ -528,13 +537,16 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
 
   server.registerTool('task_prepare', {
     title: 'Prepare a Kiokuko-guided task',
-    description: `${SOUL_ROUTING_ENTRY_CONTRACT} Run Akinator once for one logical request. New Codex runs require kiokukoSkills containing only exact available names from Kiokuko's managed six-Skill manifest; the exact local kiokuko-soul is required. Kiokuko MCP tools are server-owned and omitted. Optional clientInventory is recommendation-only, capped at 200, never stored or run-bound, and must not relabel Codex built-in tools as MCP tools. ${ENNO_ORCHESTRATION_ENTRY_CONTRACT} Inspect nextAction, memoryPolicy, and ennoOduno.nextAction before proceeding. ${EXECUTION_PATH_CONTRACT} Reuse a successful result instead of calling task_prepare again.`,
+    description: `${SOUL_ROUTING_ENTRY_CONTRACT} Run Akinator once for one logical request. New Codex, Claude Code, and OpenCode runs require kiokukoSkills containing only exact available names from Kiokuko's managed six-Skill manifest; the exact local kiokuko-soul is required. Kiokuko MCP tools are server-owned and omitted. Optional clientInventory is recommendation-only, capped at 200, never stored or run-bound, and must not relabel Codex built-in tools as MCP tools. ${ENNO_ORCHESTRATION_ENTRY_CONTRACT} Inspect nextAction, memoryPolicy, and ennoOduno.nextAction before proceeding. ${EXECUTION_PATH_CONTRACT} Reuse a successful result instead of calling task_prepare again.`,
     inputSchema: taskPrepareInputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async ({ requestId: logicalRequestId, task, cwd, profileHints: hints, kiokukoSkills, clientInventory, capabilities, client, maxContextChars }, extra) => withMcpToolDeadline('task_prepare', deadlinePolicy, extra.signal, async () => withPublicToolError(() => withDatabase(dependencies, async (database, embeddingRuntime) => {
     const resolvedClient = resolveTaskPrepareClient(client, server.server.getClientVersion());
-    if (resolvedClient?.kind === 'codex' && kiokukoSkills === undefined) {
-      throw new KiokukoError('VALIDATION_ERROR', 'New Codex tasks require kiokukoSkills');
+    if (resolvedClient?.kind !== undefined
+      && OWNERSHIP_BOUND_CLIENT_KINDS.has(resolvedClient.kind)
+      && kiokukoSkills === undefined
+      && !hasTaskPrepareReceipt(database, logicalRequestId)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'New supported-client tasks require kiokukoSkills');
     }
     return agentTaskToolResult(await prepareAgentTask(database, {
       requestId: logicalRequestId,
