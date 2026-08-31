@@ -120,22 +120,98 @@ function removeStandaloneCodexManagedBlock(existing: string): string {
   return `${existing.slice(0, begin)}${existing.slice(endExclusive)}`;
 }
 
+function splitInlineTableEntries(value: string): string[] | undefined {
+  const entries: string[] = [];
+  let start = 0;
+  let quote: '"' | "'" | '"""' | "'''" | undefined;
+  let escaped = false;
+  let square = 0;
+  let curly = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (quote !== undefined) {
+      if (quote === '"' && escaped) escaped = false;
+      else if (quote === '"' && character === '\\') escaped = true;
+      else if ((quote === '"""' || quote === "'''") && value.startsWith(quote, index)) {
+        index += quote.length - 1;
+        quote = undefined;
+      } else if ((quote === '"' || quote === "'") && character === quote) quote = undefined;
+      continue;
+    }
+    if (value.startsWith('"""', index) || value.startsWith("'''", index)) {
+      quote = value.slice(index, index + 3) as '"""' | "'''";
+      index += 2;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '[') square += 1;
+    else if (character === ']') square -= 1;
+    else if (character === '{') curly += 1;
+    else if (character === '}') curly -= 1;
+    else if (character === ',' && square === 0 && curly === 0) {
+      entries.push(value.slice(start, index));
+      start = index + 1;
+    }
+    if (square < 0 || curly < 0) return undefined;
+  }
+  if (quote !== undefined || square !== 0 || curly !== 0) return undefined;
+  entries.push(value.slice(start));
+  return entries;
+}
+
+function inlineEntryKey(entry: string): string | undefined {
+  const equals = entry.indexOf('=');
+  if (equals < 0) return undefined;
+  const key = entry.slice(0, equals).trim();
+  if (key.length === 0) return undefined;
+  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+    return key.slice(1, -1);
+  }
+  return key;
+}
+
+/** Remove only the kiokuko member from a shared `mcp_servers = { ... }` statement. */
+function removeInlineCodexMcpIdentity(source: string, statement: ReturnType<typeof parseStrictTomlDocument>['statements'][number]): string | undefined {
+  const raw = source.slice(statement.startOffset, statement.endOffset);
+  const newline = raw.endsWith('\r\n') ? '\r\n' : raw.endsWith('\n') ? '\n' : '';
+  const body = newline.length === 0 ? raw : raw.slice(0, -newline.length);
+  const equals = body.indexOf('=');
+  if (equals < 0 || body.slice(0, equals).trim() !== 'mcp_servers') return undefined;
+  const open = body.indexOf('{', equals + 1);
+  const close = body.lastIndexOf('}');
+  if (open < 0 || close <= open || body.slice(close + 1).trim().length > 0) return undefined;
+  const entries = splitInlineTableEntries(body.slice(open + 1, close));
+  if (entries === undefined) return undefined;
+  const kept = entries.filter((entry) => inlineEntryKey(entry) !== 'kiokuko');
+  if (kept.length === entries.length) return undefined;
+  const replacement = kept.length === 0 ? '{}' : `{${kept.join(',')}}`;
+  return `${body.slice(0, open)}${replacement}${body.slice(close + 1)}${newline}`;
+}
+
 function removeUnmanagedCodexMcpIdentity(existing: string): string {
   const withoutMarkedBlock = removeStandaloneCodexManagedBlock(existing);
   const target = ['mcp_servers', 'kiokuko'] as const;
   const document = parseStrictTomlDocument(withoutMarkedBlock);
-  const removable = document.statements.filter((statement) => {
+  const operations: Array<{ startOffset: number; endOffset: number; replacement: string }> = [];
+  for (const statement of document.statements) {
     const containsTarget = statement.definitions.some((definition) => startsWithPath(definition.path, target));
-    if (!containsTarget) return false;
-    if (!statement.definitions.every((definition) => (
+    if (!containsTarget) continue;
+    if (statement.definitions.every((definition) => (
       startsWithPath(definition.path, target) || isPathPrefix(definition.path, target)
-    ))) codexConflict();
-    return true;
-  });
-
+    ))) {
+      operations.push({ startOffset: statement.startOffset, endOffset: statement.endOffset, replacement: '' });
+      continue;
+    }
+    const inlineContent = removeInlineCodexMcpIdentity(withoutMarkedBlock, statement);
+    if (inlineContent === undefined) codexConflict();
+    operations.push({ startOffset: statement.startOffset, endOffset: statement.endOffset, replacement: inlineContent });
+  }
   let content = withoutMarkedBlock;
-  for (const statement of [...removable].reverse()) {
-    content = `${content.slice(0, statement.startOffset)}${content.slice(statement.endOffset)}`;
+  for (const operation of operations.sort((left, right) => right.startOffset - left.startOffset)) {
+    content = `${content.slice(0, operation.startOffset)}${operation.replacement}${content.slice(operation.endOffset)}`;
   }
   if (parseStrictTomlDefinitions(content).some((definition) => startsWithPath(definition.path, target))) {
     codexConflict();

@@ -196,17 +196,12 @@ test('Codex setup replaces a legacy marked block and preserves unrelated TOML', 
   assert.equal((replaced.content.match(/# BEGIN KIOKUKO MCP/gu) ?? []).length, 1);
 });
 
-test('Codex setup refuses automatic replacement when Kiokuko shares an inline table with unrelated config', () => {
+test('Codex setup replaces only Kiokuko from a shared inline MCP table', () => {
   const sharedStatement = 'mcp_servers = { kiokuko = { command = "custom" }, other = { command = "keep" } }\n';
-  assert.throws(
-    () => renderCodexMcpConfig(
-      sharedStatement,
-      'kiokuko',
-      'official',
-      { replaceConflictingIdentity: true },
-    ),
-    (error: unknown) => error instanceof KiokukoError && error.code === 'CONFLICT',
-  );
+  const replaced = renderCodexMcpConfig(sharedStatement, 'kiokuko', 'official', { replaceConflictingIdentity: true });
+  assert.match(replaced.content, /other = \{ command = "keep" \}/u);
+  assert.doesNotMatch(replaced.content, /command = "custom"/u);
+  assert.match(replaced.content, /# BEGIN KIOKUKO MCP/u);
 });
 
 test('Codex setup refuses to delete unrelated TOML copied inside Kiokuko markers', () => {
