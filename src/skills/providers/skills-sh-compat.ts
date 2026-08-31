@@ -47,8 +47,8 @@ export class SkillsShCompatibilityProvider implements SkillRegistryProvider {
     url.searchParams.set('limit', String(input.limit));
     if (owner) url.searchParams.set('owner', owner);
     const controller = new AbortController();
-    const onAbort = () => controller.abort();
-    if (input.signal?.aborted) controller.abort();
+    const onAbort = () => controller.abort(input.signal?.reason);
+    if (input.signal?.aborted) controller.abort(input.signal.reason);
     else input.signal?.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -59,6 +59,7 @@ export class SkillsShCompatibilityProvider implements SkillRegistryProvider {
       return { provider: this.id, experimental: true, candidates: parseSkillsShCompatibilityResponse(body, this.id, { query, limit: input.limit }, this.officialRepositories) };
     } catch (error) {
       if (error instanceof SkillProviderError) throw error;
+      if (input.signal?.aborted) throw input.signal.reason;
       if (isExternalFetchFailure(error)) throw new SkillProviderError('registry_unavailable');
       throw error;
     } finally {

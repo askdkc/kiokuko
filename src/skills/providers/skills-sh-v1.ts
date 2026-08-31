@@ -49,8 +49,8 @@ export class SkillsShV1Provider implements SkillRegistryProvider {
     const { query, owner } = validateSkillSearchScope(input.query, input.owner);
     if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 20) throw new SkillProviderError('registry_invalid_response');
     const controller = new AbortController();
-    const onAbort = () => controller.abort();
-    if (input.signal?.aborted) controller.abort();
+    const onAbort = () => controller.abort(input.signal?.reason);
+    if (input.signal?.aborted) controller.abort(input.signal.reason);
     else input.signal?.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const url = new URL('/api/v1/skills/search', this.apiUrl);
@@ -62,6 +62,7 @@ export class SkillsShV1Provider implements SkillRegistryProvider {
       return { provider: this.id, experimental: false, candidates: parseSkillsShV1SearchResponse(body, this.id, { query, limit: input.limit }, this.officialRepositories) };
     } catch (error) {
       if (error instanceof SkillProviderError) throw error;
+      if (input.signal?.aborted) throw input.signal.reason;
       if (isExternalFetchFailure(error)) throw new SkillProviderError('registry_unavailable');
       throw error;
     } finally {
@@ -69,19 +70,24 @@ export class SkillsShV1Provider implements SkillRegistryProvider {
       input.signal?.removeEventListener('abort', onAbort);
     }
   }
-  async curated(): Promise<import('../types.js').SkillCandidate[] | null> {
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs); const url = new URL('/api/v1/skills/curated', this.apiUrl);
+  async curated(signal?: AbortSignal): Promise<import('../types.js').SkillCandidate[] | null> {
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) controller.abort(signal.reason);
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs); const url = new URL('/api/v1/skills/curated', this.apiUrl);
     try {
       const response = await this.fetchImpl(url, { redirect: 'manual', headers: { accept: 'application/json', authorization: `Bearer ${this.#token}`, 'user-agent': 'kiokuko-skill-discovery' }, signal: controller.signal });
       if (response.status !== 200) throw responseFailure(response);
       return parseSkillsShV1CuratedResponse(await readSkillProviderJson(response), this.id, this.officialRepositories);
     } catch (error) {
       if (error instanceof SkillProviderError) throw error;
+      if (signal?.aborted) throw signal.reason;
       if (isExternalFetchFailure(error)) throw new SkillProviderError('registry_unavailable');
       throw error;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); }
   }
-  async audit(candidate: SkillCandidate): Promise<SkillAuditResult | null> {
+  async audit(candidate: SkillCandidate, signal?: AbortSignal): Promise<SkillAuditResult | null> {
     let validatedCandidate: SkillCandidate;
     try { validatedCandidate = validateSkillCandidate(candidate); }
     catch (error) {
@@ -90,7 +96,11 @@ export class SkillsShV1Provider implements SkillRegistryProvider {
     }
     const source = validatedCandidate.source;
     const path = `/api/v1/skills/audit/${[source, validatedCandidate.slug].join('/').split('/').map(encodeURIComponent).join('/')}`;
-    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs); const url = new URL(path, this.apiUrl);
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) controller.abort(signal.reason);
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs); const url = new URL(path, this.apiUrl);
     try {
       const response = await this.fetchImpl(url, { redirect: 'manual', headers: { accept: 'application/json', authorization: `Bearer ${this.#token}`, 'user-agent': 'kiokuko-skill-discovery' }, signal: controller.signal });
       if (response.status !== 200) throw responseFailure(response);
@@ -98,8 +108,9 @@ export class SkillsShV1Provider implements SkillRegistryProvider {
       return parseSkillsShV1AuditResponse(body, { source, slug: validatedCandidate.slug });
     } catch (error) {
       if (error instanceof SkillProviderError) throw error;
+      if (signal?.aborted) throw signal.reason;
       if (isExternalFetchFailure(error)) throw new SkillProviderError('registry_unavailable');
       throw error;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); }
   }
 }

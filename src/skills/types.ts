@@ -116,8 +116,8 @@ export interface SkillRegistryProvider {
   readonly id: string;
   readonly authenticationFallback?: SkillRegistryProvider;
   search(input: SkillSearchInput): Promise<SkillSearchResult>;
-  curated?(): Promise<SkillCandidate[] | null>;
-  audit?(candidate: SkillCandidate): Promise<SkillAuditResult | null>;
+  curated?(signal?: AbortSignal): Promise<SkillCandidate[] | null>;
+  audit?(candidate: SkillCandidate, signal?: AbortSignal): Promise<SkillAuditResult | null>;
 }
 
 export interface SkillSourceFetcher {
@@ -140,6 +140,7 @@ export interface DiscoverSkillsInput {
   maxQueries?: 1 | 2 | 3;
   fetchImpl?: typeof fetch;
   now?: string;
+  signal?: AbortSignal;
 }
 
 export interface SkillDiscoverySummary {

@@ -14,6 +14,7 @@ export interface FindSkillsInput {
   owner?: string;
   officialOnly?: boolean;
   limit?: number;
+  signal?: AbortSignal;
 }
 
 export interface FindSkillsDependencies {
@@ -55,6 +56,7 @@ export async function findSkills(
     query,
     limit,
     ...(owner === undefined ? {} : { owner }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
   let result: SkillSearchResult;
   try {
