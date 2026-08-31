@@ -65,7 +65,12 @@ function repositoryMutationAudit(repositoryRoot: string): { close: () => void; o
   }
   return {
     close: () => watched.forEach(({ target, listener }) => unwatchFile(target, listener)),
-    observed: () => changed,
+    observed: () => {
+      // File notifications are an optimization, not the completeness boundary:
+      // a detached descendant can finish between polling callbacks.
+      observeRepositoryState();
+      return changed;
+    },
   };
 }
 

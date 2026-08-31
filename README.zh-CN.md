@@ -42,19 +42,20 @@ required = true
 ### 可选的语义检索
 
 上面的轻量安装仍可使用词法检索和普通的 `kiokuko setup`。本地多语言模型是可选功能。
-如需使用，请先使用所需的 install scripts 重新安装一次，再运行 setup 命令：
+运行下面的命令即可；如果 optional runtime 尚未安装，Kiokuko 会自动安装固定版本的依赖，
+然后执行普通 setup，并刷新已登记项目中的 managed instructions：
 
 ```bash
-npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
 
 轻量安装会省略 Transformers.js 的 optional runtime。`boolean@3.2.0` 是该 runtime
 上游引入的 transitive dependency，并不是 Kiokuko 的直接依赖，因此不会包含在轻量安装中。
-上面的 `--allow-scripts` 只用于这一次安装；不需要也不建议设置持久的 user/global npm 配置，
-也不使用 `--dangerously-allow-all-scripts`。
+在 Unix 类系统上，optional runtime 缺失时，首次自动安装会通过 `sudo` 调用 npm。
+请在可以完成 sudo 认证的终端中运行。Kiokuko 不会持久化 npm script 权限，也不会使用
+`--dangerously-allow-all-scripts`。
 
-自动化使用 `--preset local-small --yes --json`。setup 只下载固定 revision，
+自动化使用 `--preset local-small --json`。setup 只下载固定 revision，
 在加载前验证全部文件，并将配置写入 SQLite 后离线生成向量。`--dry-run` 不下载也不修改，
 `--offline` 要求已有验证安装，`--replace` 允许替换活动 profile。用
 `kiokuko embeddings status --json` 或 `kiokuko doctor --json` 查看状态，损坏时使用
