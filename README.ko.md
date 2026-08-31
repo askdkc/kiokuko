@@ -42,20 +42,20 @@ required = true
 ### 선택적 시맨틱 검색
 
 위의 경량 설치로 어휘 검색과 일반 `kiokuko setup`을 사용할 수 있습니다. 다국어 로컬 모델은
-선택 기능입니다. 사용하려면 필요한 install scripts를 한 번만 명시해 다시 설치한 후 setup 명령을
-실행하십시오.
+선택 기능입니다. 아래 명령만 실행하면 optional runtime이 없을 때 고정된 의존성을 자동 설치한
+뒤 일반 setup과 등록된 프로젝트의 managed instructions 갱신까지 수행합니다.
 
 ```bash
-npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
 
 경량 설치에서는 Transformers.js optional runtime을 생략합니다. `boolean@3.2.0`은 해당 runtime이
 상위 패키지에서 가져오는 transitive dependency이며 Kiokuko의 직접 의존성이 아니므로 경량 설치에
-포함되지 않습니다. 위의 `--allow-scripts`는 한 번의 설치에만 적용합니다. user/global npm 설정을
-영구적으로 저장하거나 `--dangerously-allow-all-scripts`를 사용할 필요가 없습니다.
+포함되지 않습니다. Unix 계열에서는 optional runtime이 없을 때 최초 자동 설치가 `sudo`를
+통해 npm을 호출합니다. sudo 인증이 가능한 터미널에서 실행하십시오. Kiokuko는 npm script
+권한을 영구화하지 않으며 `--dangerously-allow-all-scripts`를 사용하지 않습니다.
 
-자동화에서는 `--preset local-small --yes --json`을 사용하십시오. setup은 고정 revision의
+자동화에서는 `--preset local-small --json`을 사용하십시오. setup은 고정 revision의
 모든 파일을 검증한 뒤 로드하고 SQLite에 설정을 저장한 다음 offline으로 vector를 생성합니다.
 `--dry-run`은 다운로드와 변경을 하지 않고, `--offline`은 검증된 설치를 요구하며,
 `--replace`는 다른 profile 교체를 허용합니다. 상태는 `kiokuko embeddings status --json`과

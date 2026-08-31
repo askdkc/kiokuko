@@ -42,21 +42,22 @@ required = true
 ### Semantic検索（任意）
 
 上記の軽量インストールでlexical検索と通常の`kiokuko setup`を利用できます。
-固定された多言語local modelは任意機能です。必要なinstall scriptだけを一度
-明示して再インストールしてから、setup commandを実行します。
+固定された多言語local modelは任意機能です。次のコマンドを実行すると、optional
+runtimeがない場合は固定依存関係を自動インストールし、その後に通常のsetupと
+登録済みプロジェクトのmanaged instructions更新まで実行します。
 
 ```bash
-npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
 
 軽量インストールではTransformers.jsのoptional runtimeを省略します。
 `boolean@3.2.0`はそのruntimeが上流で引き込むtransitive dependencyであり、Kiokuko
-自身の依存ではないため、軽量インストールには含まれません。上記の`--allow-scripts`は
-一回限りのinstall指定です。user/global npm設定への永続化や
-`--dangerously-allow-all-scripts`は必要ありません。
+自身の依存ではないため、軽量インストールには含まれません。Unix系ではoptional
+runtimeがない場合、初回の依存関係インストールに`sudo`を使います。sudoを認証できる
+terminalから実行してください。npm設定への永続化や`--dangerously-allow-all-scripts`は
+使用しません。
 
-自動化では`--preset local-small --yes --json`を使います。setupはallowlist済み
+自動化では`--preset local-small --json`を使います。setupはallowlist済み
 revisionの全fileを検証してからloadし、設定をSQLiteへ保存し、offlineでvectorを生成します。
 `--dry-run`はdownloadと変更を行わず、`--offline`は検証済みinstallを要求し、
 `--replace`は別profileからの切替を許可します。状態は`kiokuko embeddings status --json`、

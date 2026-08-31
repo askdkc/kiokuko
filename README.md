@@ -43,21 +43,23 @@ After setup, launch the target AI client and use it as usual. If it is already r
 
 Lexical retrieval and the normal `kiokuko setup` work with the lightweight
 default install above. The pinned multilingual local model is an opt-in path.
-Reinstall once with the required install scripts, then run the setup command:
+Run the following command. If the optional runtime is missing, Kiokuko
+automatically installs the pinned dependencies and then runs the normal setup,
+including managed instructions in registered projects:
 
 ```bash
-npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
 
 The lightweight install omits the optional Transformers.js runtime. The
 `boolean@3.2.0` package is an upstream transitive dependency of that runtime,
 not a Kiokuko dependency, so it is not included in the lightweight install.
-The `--allow-scripts` option above is a one-time install choice; Kiokuko does
-not require or recommend a persistent user/global npm setting or
-`--dangerously-allow-all-scripts`.
+On Unix-like systems, the first automatic dependency installation uses npm
+through `sudo` when the optional runtime is missing. Run it from a terminal
+that can authorize sudo. Kiokuko does not persist npm script permissions or
+use `--dangerously-allow-all-scripts`.
 
-For automation, use `--preset local-small --yes --json`. Setup downloads only
+For automation, use `--preset local-small --json`. Setup downloads only
 the allowlisted revision, verifies every file before loading it, stores runtime
 configuration in SQLite, and builds vectors offline. `--dry-run` performs no
 download or mutation; `--offline` requires an existing verified installation;

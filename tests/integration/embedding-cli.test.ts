@@ -6,7 +6,8 @@ import test from 'node:test';
 import { Command } from 'commander';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
-import { registerEmbeddingsCommands } from '../../src/commands/embeddings.js';
+import { registerEmbeddingsCommands, type EmbeddingsCommandDependencies } from '../../src/commands/embeddings.js';
+import type { SetupOptions, SetupResult } from '../../src/commands/setup.js';
 import { KiokukoError } from '../../src/errors.js';
 import { parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
 import { createEmbeddingProfile } from '../../src/embedding/profile.js';
@@ -27,14 +28,23 @@ function command(database: ReturnType<typeof openConnection>, output: string[], 
   readonly environment?: NodeJS.ProcessEnv;
   readonly provider?: EmbeddingProvider;
   readonly optionalRuntimeChecker?: () => Promise<void>;
+  readonly optionalRuntimeInstaller?: () => Promise<void>;
+  readonly modelInstaller?: NonNullable<EmbeddingsCommandDependencies['modelInstaller']>;
+  readonly pathEnvironment?: { env?: NodeJS.ProcessEnv };
+  readonly setupGlobalClients?: (options: SetupOptions) => Promise<Pick<SetupResult, 'clients' | 'projectAgentFiles'>>;
 } = {}): Command {
   const cli = new Command();
   cli.exitOverride();
+  const setup = options.setupGlobalClients ?? (async () => ({ clients: [], projectAgentFiles: [] }));
   registerEmbeddingsCommands(cli, {
     withDatabase: async (operation) => operation(database),
     ...(options.environment === undefined ? {} : { environment: options.environment }),
     ...(options.provider === undefined ? {} : { provider: options.provider }),
     ...(options.optionalRuntimeChecker === undefined ? {} : { optionalRuntimeChecker: options.optionalRuntimeChecker }),
+    ...(options.optionalRuntimeInstaller === undefined ? {} : { optionalRuntimeInstaller: options.optionalRuntimeInstaller }),
+    ...(options.modelInstaller === undefined ? {} : { modelInstaller: options.modelInstaller }),
+    ...(options.pathEnvironment === undefined ? {} : { pathEnvironment: options.pathEnvironment }),
+    setupGlobalClients: setup,
     output: (json, operation, data, message) => {
       output.push(json ? JSON.stringify({ operation, data }) : message);
     },
@@ -58,16 +68,19 @@ test('embedding setup checks optional runtime before opening the database', asyn
         throw new Error('database must not be opened');
       },
       optionalRuntimeChecker: checker,
+      optionalRuntimeInstaller: async () => {
+        throw new Error('installer failed');
+      },
       output: (json, operation, data, message) => {
         output.push(json ? JSON.stringify({ operation, data }) : message);
       },
     });
 
     await assert.rejects(
-      () => cli.parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--yes']),
+      () => cli.parseAsync(['node', 'kiokuko', 'embeddings', 'setup']),
       (error: unknown) => error instanceof KiokukoError
         && error.code === 'SERVICE_UNAVAILABLE'
-        && error.message.includes('npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs'),
+        && error.message.includes('Automatic installation of the local semantic retrieval dependencies failed'),
     );
     assert.equal(databaseCalls, 0);
     assert.deepEqual(output, []);
@@ -90,6 +103,59 @@ test('embedding setup skips optional runtime checks during dry-run', async () =>
     assert.equal(response.operation, 'embeddings.setup');
     assert.equal(response.data.semanticEnabled, false);
     assert.equal(checks, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test('embedding setup also refreshes registered project instructions', async () => {
+  const database = await temporaryDatabase('embedding-cli-project-setup');
+  try {
+    const output: string[] = [];
+    const setupCalls: SetupOptions[] = [];
+    await command(database, output, {
+      setupGlobalClients: async (options) => {
+        setupCalls.push(options);
+        return { clients: ['codex'], projectAgentFiles: [] };
+      },
+    }).parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--dry-run', '--json']);
+    const response = JSON.parse(output[0]!) as {
+      data: {
+        semanticEnabled: boolean;
+        projectSetup: { clients: string[]; projectAgentFiles: unknown[] };
+      };
+    };
+    assert.deepEqual(setupCalls, [{ dryRun: true }]);
+    assert.deepEqual(response.data.projectSetup, { clients: ['codex'], projectAgentFiles: [] });
+  } finally {
+    database.close();
+  }
+});
+
+test('embedding setup does not require a confirmation flag', async () => {
+  const database = await temporaryDatabase('embedding-cli-no-confirmation-flag');
+  const dataDirectory = await mkdtemp(path.join(tmpdir(), 'kiokuko-embedding-cli-data-'));
+  try {
+    const output: string[] = [];
+    await command(database, output, {
+      optionalRuntimeChecker: async () => undefined,
+      modelInstaller: async () => ({
+        installation: 'installed',
+        directory: '/tmp/kiokuko-test-model',
+        relativePath: 'models/embeddings/local-small/test',
+        totalBytes: 0,
+        manifestHash: 'a'.repeat(64),
+      }),
+      provider: {
+        profile: { providerKind: 'local-transformers' } as never,
+        async embed(inputs) {
+          return inputs.map(() => new Float32Array(384));
+        },
+      },
+      pathEnvironment: { env: { KIOKUKO_DATA_DIR: dataDirectory } },
+    }).parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--json']);
+    const response = JSON.parse(output[0]!) as { data: { semanticEnabled: boolean } };
+    assert.equal(response.data.semanticEnabled, true);
   } finally {
     database.close();
   }
