@@ -44,8 +44,9 @@ After setup, launch the target AI client and use it as usual. If it is already r
 Lexical retrieval and the normal `kiokuko setup` work with the lightweight
 default install above. The pinned multilingual local model is an opt-in path.
 Run the following command. If the optional runtime is missing, Kiokuko
-automatically installs the pinned dependencies and then runs the normal setup,
-including managed instructions in registered projects:
+automatically installs the pinned dependencies, then refreshes managed
+instructions in registered projects. It does not rewrite global client MCP
+configuration; use `kiokuko setup` for that:
 
 ```bash
 kiokuko embeddings setup
@@ -54,10 +55,10 @@ kiokuko embeddings setup
 The lightweight install omits the optional Transformers.js runtime. The
 `boolean@3.2.0` package is an upstream transitive dependency of that runtime,
 not a Kiokuko dependency, so it is not included in the lightweight install.
-On Unix-like systems, the first automatic dependency installation uses npm
-through `sudo` when the optional runtime is missing. Run it from a terminal
-that can authorize sudo. Kiokuko does not persist npm script permissions or
-use `--dangerously-allow-all-scripts`.
+On Linux, the first automatic dependency installation uses npm through `sudo`
+when the optional runtime is missing. On macOS and other platforms it invokes
+npm directly, preserving the package manager's configured ownership. Kiokuko
+does not persist npm script permissions or use `--dangerously-allow-all-scripts`.
 
 For automation, use `--preset local-small --json`. Setup downloads only
 the allowlisted revision, verifies every file before loading it, stores runtime

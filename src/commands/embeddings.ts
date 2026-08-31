@@ -30,12 +30,26 @@ const DRAIN_DEADLINE_MS = 120_000;
 const OPTIONAL_RUNTIME_INSTALL_ARGS = [
   'install',
   '--global',
-  '@askdkc/kiokuko',
   '@huggingface/hub@2.16.1',
   '@huggingface/transformers@4.2.0',
   'sqlite-vec@0.1.9',
   '--allow-scripts=onnxruntime-node,sharp,protobufjs',
 ] as const;
+
+export interface OptionalRuntimeInstallInvocation {
+  readonly command: 'npm' | 'sudo';
+  readonly args: readonly string[];
+}
+
+/** Select the npm invocation without assuming that every Unix prefix needs root. */
+export function optionalRuntimeInstallInvocation(
+  platform: NodeJS.Platform = process.platform,
+): OptionalRuntimeInstallInvocation {
+  const args = [...OPTIONAL_RUNTIME_INSTALL_ARGS];
+  return platform === 'linux'
+    ? { command: 'sudo', args: ['npm', ...args] }
+    : { command: 'npm', args };
+}
 
 export type EmbeddingsDatabaseRunner = <T>(operation: (
   database: SqliteDatabase,
@@ -87,10 +101,7 @@ async function checkOptionalRuntime(): Promise<void> {
 }
 
 async function installOptionalRuntime(): Promise<void> {
-  const command = process.platform === 'win32' ? 'npm' : 'sudo';
-  const args = process.platform === 'win32'
-    ? [...OPTIONAL_RUNTIME_INSTALL_ARGS]
-    : ['npm', ...OPTIONAL_RUNTIME_INSTALL_ARGS];
+  const { command, args } = optionalRuntimeInstallInvocation();
   try {
     await new Promise<void>((resolve, reject) => {
       const child = spawn(command, args, { stdio: 'inherit' });
@@ -334,6 +345,10 @@ export function registerEmbeddingsCommands(cli: Command, dependencies: Embedding
         ...(backend === undefined ? {} : { backendId: backend.id }),
       }));
       const projectSetup = await (dependencies.setupGlobalClients ?? setupGlobalClients)({
+        // Embedding setup refreshes registered project instructions, but does
+        // not rewrite global client MCP configuration. Use `kiokuko setup`
+        // for explicit client configuration and conflict replacement.
+        clients: [],
         ...(dependencies.pathEnvironment === undefined ? {} : dependencies.pathEnvironment),
         dryRun,
       });

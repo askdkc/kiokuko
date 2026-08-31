@@ -43,7 +43,8 @@ required = true
 
 上面的轻量安装仍可使用词法检索和普通的 `kiokuko setup`。本地多语言模型是可选功能。
 运行下面的命令即可；如果 optional runtime 尚未安装，Kiokuko 会自动安装固定版本的依赖，
-然后执行普通 setup，并刷新已登记项目中的 managed instructions：
+然后刷新已登记项目中的 managed instructions。它不会改写全局客户端 MCP 配置；如需配置请使用
+`kiokuko setup`：
 
 ```bash
 kiokuko embeddings setup
@@ -51,9 +52,9 @@ kiokuko embeddings setup
 
 轻量安装会省略 Transformers.js 的 optional runtime。`boolean@3.2.0` 是该 runtime
 上游引入的 transitive dependency，并不是 Kiokuko 的直接依赖，因此不会包含在轻量安装中。
-在 Unix 类系统上，optional runtime 缺失时，首次自动安装会通过 `sudo` 调用 npm。
-请在可以完成 sudo 认证的终端中运行。Kiokuko 不会持久化 npm script 权限，也不会使用
-`--dangerously-allow-all-scripts`。
+在 Linux 上，optional runtime 缺失时，首次自动安装会通过 `sudo` 调用 npm。在 macOS
+等平台上会直接调用 npm，以保留包管理器配置的所有权。Kiokuko 不会持久化 npm script
+权限，也不会使用 `--dangerously-allow-all-scripts`。
 
 自动化使用 `--preset local-small --json`。setup 只下载固定 revision，
 在加载前验证全部文件，并将配置写入 SQLite 后离线生成向量。`--dry-run` 不下载也不修改，

@@ -43,8 +43,9 @@ required = true
 
 上記の軽量インストールでlexical検索と通常の`kiokuko setup`を利用できます。
 固定された多言語local modelは任意機能です。次のコマンドを実行すると、optional
-runtimeがない場合は固定依存関係を自動インストールし、その後に通常のsetupと
-登録済みプロジェクトのmanaged instructions更新まで実行します。
+runtimeがない場合は固定依存関係を自動インストールし、その後に登録済みプロジェクトの
+managed instructionsを更新します。グローバルclientのMCP設定は書き換えないため、設定には
+`kiokuko setup`を使ってください。
 
 ```bash
 kiokuko embeddings setup
@@ -52,10 +53,10 @@ kiokuko embeddings setup
 
 軽量インストールではTransformers.jsのoptional runtimeを省略します。
 `boolean@3.2.0`はそのruntimeが上流で引き込むtransitive dependencyであり、Kiokuko
-自身の依存ではないため、軽量インストールには含まれません。Unix系ではoptional
-runtimeがない場合、初回の依存関係インストールに`sudo`を使います。sudoを認証できる
-terminalから実行してください。npm設定への永続化や`--dangerously-allow-all-scripts`は
-使用しません。
+自身の依存ではないため、軽量インストールには含まれません。Linuxではoptional
+runtimeがない場合、初回の依存関係インストールに`sudo`を使います。macOSなどでは
+npmを直接呼び出し、パッケージマネージャーの所有権設定を維持します。npm設定への
+永続化や`--dangerously-allow-all-scripts`は使用しません。
 
 自動化では`--preset local-small --json`を使います。setupはallowlist済み
 revisionの全fileを検証してからloadし、設定をSQLiteへ保存し、offlineでvectorを生成します。

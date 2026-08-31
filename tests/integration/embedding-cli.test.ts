@@ -108,7 +108,7 @@ test('embedding setup skips optional runtime checks during dry-run', async () =>
   }
 });
 
-test('embedding setup also refreshes registered project instructions', async () => {
+test('embedding setup refreshes project instructions without reconfiguring global clients', async () => {
   const database = await temporaryDatabase('embedding-cli-project-setup');
   try {
     const output: string[] = [];
@@ -125,7 +125,7 @@ test('embedding setup also refreshes registered project instructions', async () 
         projectSetup: { clients: string[]; projectAgentFiles: unknown[] };
       };
     };
-    assert.deepEqual(setupCalls, [{ dryRun: true }]);
+    assert.deepEqual(setupCalls, [{ clients: [], dryRun: true }]);
     assert.deepEqual(response.data.projectSetup, { clients: ['codex'], projectAgentFiles: [] });
   } finally {
     database.close();
