@@ -1701,7 +1701,10 @@ test('doctor preserves both check and database-close failures', async () => {
   const checkFailure = new Error('doctor-check-failure-sentinel');
   const closeFailure = new Error('doctor-close-failure-sentinel');
   try {
-    await assert.rejects(runDoctor({ databasePath: data.databasePath }, {
+    await assert.rejects(runDoctor({
+      databasePath: data.databasePath,
+      embeddingEnvironment: { KIOKUKO_EMBEDDINGS: 'off' },
+    }, {
       openConnection: openDoctorConnectionWithFailures(checkFailure, closeFailure),
     }), (error: unknown) => {
       assert.ok(error instanceof AggregateError);

@@ -242,12 +242,21 @@ function inspectConfiguration(
   if (config.mode === 'off') return 0;
   let findings = 0;
   if (active === null || !isEnabledEmbeddingConfig(config)) findings += 1;
-  else {
+  else if (active.profile.identity.schemaVersion === 1) {
     try {
       if (embeddingProfileId(createEmbeddingProfile(config).identity) !== active.profile.profileId) findings += 1;
     } catch {
       findings += 1;
     }
+  } else {
+    const settings = database.prepare(`
+      SELECT provider_kind, preset_id, setup_state
+        FROM embedding_settings
+       WHERE singleton = 1
+    `).get<{ provider_kind: unknown; preset_id: unknown; setup_state: unknown }>();
+    if (settings?.provider_kind !== active.profile.identity.providerKind
+      || settings.preset_id !== active.profile.identity.presetId
+      || settings.setup_state !== 'ready') findings += 1;
   }
   if (config.vectorBackend === 'sqlite-vec' && backend?.id !== 'sqlite-vec') findings += 1;
   return findings;
