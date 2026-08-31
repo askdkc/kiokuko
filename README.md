@@ -56,9 +56,10 @@ The lightweight install omits the optional Transformers.js runtime. The
 `boolean@3.2.0` package is an upstream transitive dependency of that runtime,
 not a Kiokuko dependency, so it is not included in the lightweight install.
 On Linux, the first automatic dependency installation uses npm through `sudo`
-when the optional runtime is missing. On macOS and other platforms it invokes
-npm directly, preserving the package manager's configured ownership. Kiokuko
-does not persist npm script permissions or use `--dangerously-allow-all-scripts`.
+when the optional runtime is missing. On macOS it installs into Kiokuko's own
+package-local `node_modules` instead of the shared npm global prefix; other
+platforms invoke npm directly. Kiokuko does not persist npm script permissions
+or use `--dangerously-allow-all-scripts`.
 
 For automation, use `--preset local-small --json`. Setup downloads only
 the allowlisted revision, verifies every file before loading it, stores runtime

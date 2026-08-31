@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
 import { KiokukoError } from '../errors.js';
 import type { SqliteDatabase } from '../db/adapter.js';
@@ -27,24 +29,49 @@ import { setupGlobalClients, type SetupOptions, type SetupResult } from './setup
 
 const MAX_SYNC_JOBS = 64;
 const DRAIN_DEADLINE_MS = 120_000;
-const OPTIONAL_RUNTIME_INSTALL_ARGS = [
-  'install',
-  '--global',
+const OPTIONAL_RUNTIME_PACKAGES = [
   '@huggingface/hub@2.16.1',
   '@huggingface/transformers@4.2.0',
   'sqlite-vec@0.1.9',
-  '--allow-scripts=onnxruntime-node,sharp,protobufjs',
 ] as const;
+const OPTIONAL_RUNTIME_SCRIPT_ARGS = ['--allow-scripts=onnxruntime-node,sharp,protobufjs'] as const;
+const OPTIONAL_RUNTIME_INSTALL_ARGS = [
+  'install',
+  '--global',
+  ...OPTIONAL_RUNTIME_PACKAGES,
+  ...OPTIONAL_RUNTIME_SCRIPT_ARGS,
+] as const;
+
+function runningPackageRoot(): string {
+  return dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+}
 
 export interface OptionalRuntimeInstallInvocation {
   readonly command: 'npm' | 'sudo';
   readonly args: readonly string[];
+  readonly cwd?: string;
 }
 
 /** Select the npm invocation without assuming that every Unix prefix needs root. */
 export function optionalRuntimeInstallInvocation(
   platform: NodeJS.Platform = process.platform,
+  packageRoot = runningPackageRoot(),
 ): OptionalRuntimeInstallInvocation {
+  if (platform === 'darwin') {
+    return {
+      command: 'npm',
+      args: [
+        'install',
+        '--no-save',
+        '--package-lock=false',
+        '--prefix',
+        packageRoot,
+        ...OPTIONAL_RUNTIME_PACKAGES,
+        ...OPTIONAL_RUNTIME_SCRIPT_ARGS,
+      ],
+      cwd: packageRoot,
+    };
+  }
   const args = [...OPTIONAL_RUNTIME_INSTALL_ARGS];
   return platform === 'linux'
     ? { command: 'sudo', args: ['npm', ...args] }
@@ -101,10 +128,10 @@ async function checkOptionalRuntime(): Promise<void> {
 }
 
 async function installOptionalRuntime(): Promise<void> {
-  const { command, args } = optionalRuntimeInstallInvocation();
+  const { command, args, cwd } = optionalRuntimeInstallInvocation();
   try {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(command, args, { stdio: 'inherit' });
+      const child = spawn(command, args, { stdio: 'inherit', ...(cwd === undefined ? {} : { cwd }) });
       child.once('error', reject);
       child.once('exit', (code, signal) => {
         if (code === 0) {

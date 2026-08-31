@@ -53,8 +53,9 @@ kiokuko embeddings setup
 轻量安装会省略 Transformers.js 的 optional runtime。`boolean@3.2.0` 是该 runtime
 上游引入的 transitive dependency，并不是 Kiokuko 的直接依赖，因此不会包含在轻量安装中。
 在 Linux 上，optional runtime 缺失时，首次自动安装会通过 `sudo` 调用 npm。在 macOS
-等平台上会直接调用 npm，以保留包管理器配置的所有权。Kiokuko 不会持久化 npm script
-权限，也不会使用 `--dangerously-allow-all-scripts`。
+上会安装到 Kiokuko 自己包内的 `node_modules`，而不是共享的 npm 全局 prefix；其他平台
+会直接调用 npm。Kiokuko 不会持久化 npm script 权限，也不会使用
+`--dangerously-allow-all-scripts`。
 
 自动化使用 `--preset local-small --json`。setup 只下载固定 revision，
 在加载前验证全部文件，并将配置写入 SQLite 后离线生成向量。`--dry-run` 不下载也不修改，

@@ -20,9 +20,9 @@ kiokuko embeddings setup
 `boolean@3.2.0` is an upstream transitive dependency of the Transformers.js
 runtime. It is not a Kiokuko dependency and is not present in the lightweight
 install. On Linux, the first automatic dependency installation uses sudo
-through npm. On macOS and other platforms it invokes npm directly, preserving
-the package manager's configured ownership. Do not persist npm script
-permissions or use `--dangerously-allow-all-scripts`.
+through npm. On macOS it installs into Kiokuko's package-local `node_modules`
+instead of the shared npm global prefix; other platforms invoke npm directly.
+Do not persist npm script permissions or use `--dangerously-allow-all-scripts`.
 
 `kiokuko embeddings setup` installs the pinned `local-small` preset without a
 separate confirmation flag. Automation uses:

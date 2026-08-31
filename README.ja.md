@@ -54,9 +54,10 @@ kiokuko embeddings setup
 軽量インストールではTransformers.jsのoptional runtimeを省略します。
 `boolean@3.2.0`はそのruntimeが上流で引き込むtransitive dependencyであり、Kiokuko
 自身の依存ではないため、軽量インストールには含まれません。Linuxではoptional
-runtimeがない場合、初回の依存関係インストールに`sudo`を使います。macOSなどでは
-npmを直接呼び出し、パッケージマネージャーの所有権設定を維持します。npm設定への
-永続化や`--dangerously-allow-all-scripts`は使用しません。
+runtimeがない場合、初回の依存関係インストールに`sudo`を使います。macOSでは共有
+グローバルprefixを変更せず、Kiokuko自身のパッケージ内`node_modules`へインストールします。
+その他の環境ではnpmを直接呼び出します。npm設定への永続化や`--dangerously-allow-all-scripts`は
+使用しません。
 
 自動化では`--preset local-small --json`を使います。setupはallowlist済み
 revisionの全fileを検証してからloadし、設定をSQLiteへ保存し、offlineでvectorを生成します。

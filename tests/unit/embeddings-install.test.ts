@@ -3,10 +3,15 @@ import test from 'node:test';
 import { optionalRuntimeInstallInvocation } from '../../src/commands/embeddings.js';
 
 test('optional runtime installation uses npm directly on macOS', () => {
-  const invocation = optionalRuntimeInstallInvocation('darwin');
+  const packageRoot = '/tmp/kiokuko-package';
+  const invocation = optionalRuntimeInstallInvocation('darwin', packageRoot);
   assert.equal(invocation.command, 'npm');
   assert.equal(invocation.args[0], 'install');
-  assert.equal(invocation.args.includes('--global'), true);
+  assert.equal(invocation.args.includes('--global'), false);
+  assert.equal(invocation.args.includes('--no-save'), true);
+  assert.equal(invocation.args.includes('--package-lock=false'), true);
+  assert.deepEqual(invocation.args.slice(3, 5), ['--prefix', packageRoot]);
+  assert.equal(invocation.cwd, packageRoot);
   assert.equal(invocation.args.includes('@askdkc/kiokuko'), false);
   assert.equal(invocation.args.includes('sudo'), false);
 });
