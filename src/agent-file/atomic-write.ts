@@ -910,7 +910,12 @@ async function conditionalInstall(
       'Conditional update hook created its quarantine path',
       expectation.containmentRoot,
     );
-    await rename(filePath, quarantinePath);
+    try {
+      await rename(filePath, quarantinePath);
+    } catch (error) {
+      if (isMissingFile(error)) throw changedAfterPlanning(filePath);
+      throw error;
+    }
 
     // Built-in rename fulfillment is the commit boundary. Retain the exact
     // pre-rename binding before any post-rename hook or pathname observation.
