@@ -45,6 +45,9 @@ jobs:
       - name: Verify package contents
         run: npm run pack:check
 
+      - name: Verify minimal global install
+        run: npm run test:global-install
+
       - name: Verify pinned local embedding manifest
         run: node scripts/run-local-embedding-smoke.mjs --offline
 

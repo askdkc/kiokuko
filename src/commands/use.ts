@@ -728,14 +728,16 @@ async function readSettledAgentPlan(
     }
     if (observedFinalCandidate !== undefined
       && (observedFinalCandidate.content !== intended.content
-        || observedFinalCandidate.mode !== intended.mode
-        || sameFileIdentity(observedFinalCandidate.identity, pending.snapshot.identity))) {
+        || observedFinalCandidate.mode !== intended.mode)) {
       throw new KiokukoError(
         'CONFLICT',
         'Observed agent target is not the intended atomic result',
         { target: filePath },
       );
     }
+    // The retried reader verifies the pending artifact on every observation.
+    // Let it settle a transient restored-original state instead of rejecting
+    // before the concurrent atomic mutation has finished cleaning up.
     const settled = await readRetriedAgentPlan(
       filePath,
       pending.snapshot,

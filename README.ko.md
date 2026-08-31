@@ -41,11 +41,19 @@ required = true
 
 ### 선택적 시맨틱 검색
 
-기본값은 어휘 검색입니다. 고정된 다국어 로컬 모델은 명시적인 setup 명령으로만 설치합니다.
+위의 경량 설치로 어휘 검색과 일반 `kiokuko setup`을 사용할 수 있습니다. 다국어 로컬 모델은
+선택 기능입니다. 사용하려면 필요한 install scripts를 한 번만 명시해 다시 설치한 후 setup 명령을
+실행하십시오.
 
 ```bash
+npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
+
+경량 설치에서는 Transformers.js optional runtime을 생략합니다. `boolean@3.2.0`은 해당 runtime이
+상위 패키지에서 가져오는 transitive dependency이며 Kiokuko의 직접 의존성이 아니므로 경량 설치에
+포함되지 않습니다. 위의 `--allow-scripts`는 한 번의 설치에만 적용합니다. user/global npm 설정을
+영구적으로 저장하거나 `--dangerously-allow-all-scripts`를 사용할 필요가 없습니다.
 
 자동화에서는 `--preset local-small --yes --json`을 사용하십시오. setup은 고정 revision의
 모든 파일을 검증한 뒤 로드하고 SQLite에 설정을 저장한 다음 offline으로 vector를 생성합니다.

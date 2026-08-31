@@ -33,6 +33,7 @@
     "test:unit": "node scripts/run-tests.mjs tests/unit",
     "test:integration": "node scripts/run-tests.mjs tests/integration",
     "test:sqlite-vec": "node --import tsx tests/ci/sqlite-vec-package-smoke.ts",
+    "test:global-install": "node tests/ci/global-install-smoke.mjs",
     "test:evaluation": "npm run build && node scripts/run-retrieval-evaluation.mjs",
     "test:benchmark": "npm run build && node scripts/run-retrieval-benchmark.mjs",
     "test:e2e:codex": "npm run build && node scripts/run-enno-agent-e2e.mjs codex",
@@ -42,7 +43,6 @@
     "sampledb:generate": "node --import tsx tests/fixtures/sample-database.ts tests/sampledb/kiokuko.sqlite3",
     "test:sampledb": "npm run build && node --import tsx tests/ci/verify-sample-database.ts",
     "pack:check": "npm pack --dry-run",
-    "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run pack:check"
   },
   "dependencies": {
@@ -53,14 +53,28 @@
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
-  "optionalDependencies": {
+  "peerDependencies": {
     "@huggingface/hub": "2.16.1",
     "@huggingface/transformers": "4.2.0",
     "sqlite-vec": "0.1.9"
   },
+  "peerDependenciesMeta": {
+    "@huggingface/hub": {
+      "optional": true
+    },
+    "@huggingface/transformers": {
+      "optional": true
+    },
+    "sqlite-vec": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@huggingface/hub": "2.16.1",
+    "@huggingface/transformers": "4.2.0",
     "@types/node": "^24.0.0",
     "@types/semver": "^7.8.0",
+    "sqlite-vec": "0.1.9",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2"
   }
