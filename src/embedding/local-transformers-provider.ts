@@ -11,7 +11,7 @@ function validateInputs(inputs: readonly string[]): readonly string[] {
     throw new KiokukoError('VALIDATION_ERROR', 'Local embedding input batch is invalid');
   }
   return inputs.map((input) => {
-    if (typeof input !== 'string' || input.length === 0 || Buffer.byteLength(input, 'utf8') > MAX_INPUT_BYTES || /[\u0000-\u001f\u007f]/u.test(input)) {
+    if (typeof input !== 'string' || input.length === 0 || Buffer.byteLength(input, 'utf8') > MAX_INPUT_BYTES || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(input)) {
       throw new KiokukoError('VALIDATION_ERROR', 'Local embedding input is invalid');
     }
     return input;
