@@ -18,6 +18,10 @@ import type {
   VectorSearchBackend,
 } from '../embedding/types.js';
 import { successEnvelope } from '../serialization/envelope.js';
+import { runEmbeddingSetup } from '../embedding/setup-service.js';
+import type { ModelDownloader } from '../embedding/model-download.js';
+import type { InstalledModel } from '../embedding/model-installation.js';
+import type { PathEnvironment } from '../config/paths.js';
 
 const MAX_SYNC_JOBS = 64;
 const DRAIN_DEADLINE_MS = 120_000;
@@ -46,6 +50,9 @@ export interface EmbeddingsCommandDependencies {
   readonly backend?: VectorSearchBackend;
   readonly output?: EmbeddingsOutput;
   readonly signals?: EmbeddingsSignalSource;
+  readonly modelDownloader?: ModelDownloader;
+  readonly modelInstaller?: (preset: typeof import('../embedding/presets/local-small.js').LOCAL_SMALL_PRESET, options: Parameters<typeof runEmbeddingSetup>[2]) => Promise<InstalledModel>;
+  readonly pathEnvironment?: PathEnvironment;
 }
 
 interface DrainSummary {
@@ -72,8 +79,8 @@ function positiveLimit(value: string | undefined): number {
   return parsed;
 }
 
-function embeddingConfig(environment: NodeJS.ProcessEnv | undefined): EmbeddingConfig {
-  return parseEmbeddingConfig(environment ?? process.env);
+function embeddingConfig(environment: NodeJS.ProcessEnv | undefined): EmbeddingConfig | undefined {
+  return environment === undefined ? undefined : parseEmbeddingConfig(environment);
 }
 
 function runtimeOptions(dependencies: EmbeddingsCommandDependencies): {
@@ -96,7 +103,7 @@ function runtimeDependencies(
 
 async function withRuntime<T>(
   database: SqliteDatabase,
-  config: EmbeddingConfig,
+  config: EmbeddingConfig | undefined,
   dependencies: EmbeddingsCommandDependencies,
   operation: (runtime: EmbeddingRuntime) => Promise<T>,
 ): Promise<T> {
@@ -158,6 +165,7 @@ async function activate(
   replace: boolean,
 ): Promise<ReturnType<typeof activateEmbeddingProfile>> {
   const config = embeddingConfig(dependencies.environment);
+  if (config === undefined) throw new KiokukoError('CONFLICT', 'Embedding activation requires an explicit setup or test configuration');
   const profile = createEmbeddingProfile(config);
   return dependencies.withDatabase((database) => activateEmbeddingProfile(database, profile, { replace }));
 }
@@ -215,6 +223,34 @@ function defaultOutput(
 export function registerEmbeddingsCommands(cli: Command, dependencies: EmbeddingsCommandDependencies): Command {
   const output = dependencies.output ?? defaultOutput;
   const embeddings = cli.command('embeddings').description('Manage semantic memory embeddings');
+
+  embeddings.command('setup')
+    .description('Install and enable the pinned local semantic-search model')
+    .option('--preset <name>', 'Embedding preset', 'local-small')
+    .option('--yes', 'Confirm model download and vector generation')
+    .option('--dry-run', 'Plan setup without downloading or mutating anything')
+    .option('--offline', 'Use only an already verified local installation')
+    .option('--replace', 'Replace a different active embedding profile')
+    .option('--json', 'Emit one JSON response')
+    .action(async (options: { preset: string; yes?: boolean; dryRun?: boolean; offline?: boolean; replace?: boolean; json?: boolean }) => {
+      const dryRun = options.dryRun === true;
+      const confirmed = options.yes === true;
+      if (!dryRun && !confirmed) throw new KiokukoError('USAGE_ERROR', 'Embedding setup requires --yes in non-interactive mode');
+      const data = await dependencies.withDatabase((database, backend) => runEmbeddingSetup(database, {
+        presetId: options.preset,
+        confirmed,
+        dryRun,
+        offline: options.offline === true,
+        replace: options.replace === true,
+      }, {
+        ...(dependencies.pathEnvironment === undefined ? {} : dependencies.pathEnvironment),
+        ...(dependencies.modelDownloader === undefined ? {} : { downloader: dependencies.modelDownloader }),
+        ...(dependencies.modelInstaller === undefined ? {} : { installer: dependencies.modelInstaller }),
+        ...(dependencies.provider === undefined ? {} : { provider: dependencies.provider }),
+        ...(backend === undefined ? {} : { backendId: backend.id }),
+      }));
+      output(options.json, 'embeddings.setup', data, data.semanticEnabled ? 'Semantic retrieval enabled.' : 'Embedding setup plan created.');
+    });
 
   embeddings.command('status')
     .description('Show embedding configuration and coverage without contacting the provider')

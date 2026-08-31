@@ -40,8 +40,8 @@ test('migration 021 installs the derived embedding schema without provider I/O',
   }) as typeof fetch;
   try {
     const result = migrateDatabase(database);
-    assert.equal(result.currentVersion, 21);
-    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+    assert.equal(result.currentVersion, 22);
+    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
     for (const table of embeddingTables) {
       assert.equal(
         database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.present,
@@ -57,6 +57,11 @@ test('migration 021 installs the derived embedding schema without provider I/O',
       activated_at: null,
     });
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
+    assert.deepEqual({ ...(database.prepare('SELECT mode, provider_kind, setup_state FROM embedding_settings').get() as object) }, {
+      mode: 'off',
+      provider_kind: null,
+      setup_state: 'disabled',
+    });
     assert.deepEqual(migrateDatabase(database).applied, []);
   } finally {
     globalThis.fetch = originalFetch;
@@ -88,7 +93,10 @@ test('migration 021 profile rows are immutable and its manual rollback removes o
   const directory = await temporaryDirectory('embedding-migration-rollback');
   const database = openConnection(path.join(directory, 'data.sqlite3'));
   try {
-    migrateDatabase(database);
+    const migrationsDirectory = path.join(directory, 'migrations');
+    await mkdir(migrationsDirectory);
+    await copyMigrationRange(migrationsDirectory, 1, 21);
+    migrateDatabase(database, migrationsDirectory);
     const profileId = 'a'.repeat(64);
     database.prepare(`
       INSERT INTO embedding_profiles (
@@ -109,6 +117,34 @@ test('migration 021 profile rows are immutable and its manual rollback removes o
     }
     assert.equal(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get<{ version: number }>()?.version, 20);
     assert.equal(database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'entries'").get()?.present, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test('migration 022 preserves an active v1 profile and all semantic projections', async () => {
+  const directory = await temporaryDirectory('embedding-migration-v1-preservation');
+  const migrationsDirectory = path.join(directory, 'migrations');
+  await mkdir(migrationsDirectory);
+  await copyMigrationRange(migrationsDirectory, 1, 21);
+  const database = openConnection(path.join(directory, 'data.sqlite3'));
+  try {
+    migrateDatabase(database, migrationsDirectory);
+    const profileId = 'a'.repeat(64);
+    database.prepare(`
+      INSERT INTO embedding_profiles (
+        profile_id, provider_kind, endpoint_fingerprint, model,
+        dimensions, distance_metric, distance_ceiling, document_template_version,
+        query_template_version, created_at
+      ) VALUES (?, 'openai-compatible', ?, 'legacy-model', 3, 'cosine', 0.8, 1, 1, ?)
+    `).run(profileId, 'b'.repeat(64), '2026-08-30T00:00:00.000Z');
+    database.prepare('UPDATE embedding_runtime SET active_profile_id = ?').run(profileId);
+    const before = database.prepare('SELECT profile_id, provider_kind, model, dimensions FROM embedding_profiles').all();
+    await copyFile(path.join(initialMigrations, '022_embedding_setup_v2.sql'), path.join(migrationsDirectory, '022_embedding_setup_v2.sql'));
+    migrateDatabase(database, migrationsDirectory);
+    assert.deepEqual(database.prepare('SELECT profile_id, provider_kind, model, dimensions FROM embedding_profiles').all(), before);
+    assert.equal(database.prepare('SELECT legacy_profile_id, setup_state FROM embedding_settings').get<{ legacy_profile_id: string; setup_state: string }>()?.legacy_profile_id, profileId);
+    assert.equal(database.prepare('SELECT setup_state FROM embedding_settings').get<{ setup_state: string }>()?.setup_state, 'requires_setup');
   } finally {
     database.close();
   }

@@ -3,7 +3,6 @@ import { getGlobalDatabasePath, type PathEnvironment } from '../config/paths.js'
 import { openConnection } from '../db/connection.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
-import { parseEmbeddingConfig } from '../embedding/config.js';
 import { openEmbeddingDatabase, type EmbeddingDatabaseOpener } from '../embedding/backend.js';
 import { createEmbeddingRuntime } from '../embedding/runtime.js';
 import type { EmbeddingConfig, EmbeddingProvider, EmbeddingRuntime, VectorSearchBackend } from '../embedding/types.js';
@@ -57,9 +56,9 @@ export class McpRuntimeOwner implements McpDatabaseOwner {
       databasePath,
       ...(this.#options.migrationsDirectory === undefined ? {} : { migrationsDirectory: this.#options.migrationsDirectory }),
     });
-    const config = this.#options.embeddingConfig ?? parseEmbeddingConfig(this.#options.env ?? process.env);
+    const config = this.#options.embeddingConfig;
     const opened = await openEmbeddingDatabase(databasePath, {
-      config,
+      ...(config === undefined ? {} : { config }),
       openDatabase: this.#options.openDatabase ?? openConnection,
       ...(this.#options.embeddingBackend === undefined ? {} : { backend: this.#options.embeddingBackend }),
     });

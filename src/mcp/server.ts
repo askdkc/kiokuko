@@ -568,7 +568,6 @@ export async function runMcpServer(dependencies: McpServerDependencies = {}): Pr
     ...(dependencies.migrationsDirectory === undefined ? {} : { migrationsDirectory: dependencies.migrationsDirectory }),
     ...(dependencies.initializeDatabase === undefined ? {} : { initializeDatabase: dependencies.initializeDatabase }),
     ...(dependencies.openConnection === undefined ? {} : { openDatabase: dependencies.openConnection }),
-    ...(dependencies.embeddingEnvironment === undefined ? {} : { env: dependencies.embeddingEnvironment }),
     ...(dependencies.embeddingProvider === undefined ? {} : { embeddingProvider: dependencies.embeddingProvider }),
     ...(dependencies.embeddingBackend === undefined ? {} : { embeddingBackend: dependencies.embeddingBackend }),
   });

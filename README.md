@@ -41,33 +41,24 @@ After setup, launch the target AI client and use it as usual. If it is already r
 
 ### Optional semantic retrieval
 
-Lexical retrieval is the default. To enable local or explicitly approved
-OpenAI-compatible embeddings, configure the provider in the environment and
-activate the profile:
+Lexical retrieval is the default. Install the pinned multilingual local model
+only through an explicit setup command:
 
 ```bash
-export KIOKUKO_EMBEDDINGS=optional
-export KIOKUKO_EMBEDDING_BASE_URL=http://127.0.0.1:8080/v1
-export KIOKUKO_EMBEDDING_MODEL=your-model
-export KIOKUKO_EMBEDDING_DIMENSIONS=1536
-export KIOKUKO_EMBEDDING_DISTANCE_CEILING=0.8
-kiokuko embeddings activate
-kiokuko embeddings sync --limit 64
+kiokuko embeddings setup
 ```
 
-Use `KIOKUKO_EMBEDDINGS=required` only when startup and retrieval must fail
-closed if the provider is unavailable. Remote HTTPS endpoints additionally
-require `KIOKUKO_EMBEDDING_ALLOW_REMOTE=true`; API keys are read only from
-`KIOKUKO_EMBEDDING_API_KEY` and are never shown by status or doctor.
-`kiokuko embeddings status --json` reports profile and coverage metadata,
-`rebuild` requeues current entries, and `rebuild --wait` processes that queue
-before returning. MCP performs only a small workspace-scoped drain before
-task retrieval; it never performs an unbounded background rebuild.
-`KIOKUKO_VECTOR_BACKEND=auto` uses only the package-owned, exact-version
-`sqlite-vec` extension when it loads safely and otherwise falls back to the
-JavaScript exact-cosine backend. Set `javascript` to prohibit extension loading;
-forcing `sqlite-vec` fails closed if it cannot load. No command accepts an
-extension path.
+For automation, use `--preset local-small --yes --json`. Setup downloads only
+the allowlisted revision, verifies every file before loading it, stores runtime
+configuration in SQLite, and builds vectors offline. `--dry-run` performs no
+download or mutation; `--offline` requires an existing verified installation;
+`--replace` permits switching from another active profile.
+
+Inspect state with `kiokuko embeddings status --json` or `kiokuko doctor --json`.
+Use `kiokuko embeddings repair` to restore a missing or corrupt local artifact.
+Existing lexical retrieval and old vectors remain available when optional local
+semantic retrieval is degraded. Embedding configuration is not read from
+environment variables, and model weights are never included in the npm package.
 
 ## How it gets smarter with use
 

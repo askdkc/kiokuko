@@ -214,9 +214,11 @@ async function withEmbeddingDatabase<T>(
   options: Parameters<typeof initializeDatabase>[0] = {},
 ): Promise<T> {
   const initialized = await initializeDatabase(options);
-  const config = parseEmbeddingConfig(dependencies.embeddingEnvironment ?? process.env);
+  const config = dependencies.embeddingEnvironment === undefined
+    ? undefined
+    : parseEmbeddingConfig(dependencies.embeddingEnvironment);
   const opened = await openEmbeddingDatabase(initialized.databasePath, {
-    config,
+    ...(config === undefined ? {} : { config }),
     ...(dependencies.embeddingBackend === undefined ? {} : { backend: dependencies.embeddingBackend }),
   });
   let operationResult: { value: T } | undefined;
@@ -276,7 +278,9 @@ async function withPreparedSemanticRuntime<T>(
   query: string,
   operation: (runtime: HybridSearchRuntime) => T | Promise<T>,
 ): Promise<T> {
-  const config = parseEmbeddingConfig(dependencies.embeddingEnvironment ?? process.env);
+  const config = dependencies.embeddingEnvironment === undefined
+    ? undefined
+    : parseEmbeddingConfig(dependencies.embeddingEnvironment);
   const runtime = createEmbeddingRuntime(database, config, {
     ...(dependencies.embeddingProvider === undefined ? {} : { provider: dependencies.embeddingProvider }),
     ...((selectedBackend ?? dependencies.embeddingBackend) === undefined
@@ -1127,6 +1131,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     ...(dependencies.embeddingEnvironment === undefined ? {} : { environment: dependencies.embeddingEnvironment }),
     ...(dependencies.embeddingProvider === undefined ? {} : { provider: dependencies.embeddingProvider }),
     ...(dependencies.embeddingBackend === undefined ? {} : { backend: dependencies.embeddingBackend }),
+    ...(dependencies.setupEnvironment === undefined ? {} : { pathEnvironment: dependencies.setupEnvironment }),
     output: humanOrJson,
   });
 

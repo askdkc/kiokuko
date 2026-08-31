@@ -8,6 +8,8 @@ import { decodeVector, encodeVector, hashVectorBytes } from './vector.js';
 import type {
   EmbeddingProfile,
   EmbeddingProfileIdentity,
+  LocalEmbeddingProfile,
+  LocalEmbeddingProfileIdentity,
 } from './types.js';
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
@@ -74,6 +76,7 @@ export interface StoredEntryEmbedding {
 
 interface ProfileRow extends SqliteRow {
   profile_id: unknown;
+  schema_version: unknown;
   provider_kind: unknown;
   endpoint_fingerprint: unknown;
   model: unknown;
@@ -82,6 +85,20 @@ interface ProfileRow extends SqliteRow {
   distance_ceiling: unknown;
   document_template_version: unknown;
   query_template_version: unknown;
+  preset_id: unknown;
+  source_model: unknown;
+  artifact_repository: unknown;
+  model_revision: unknown;
+  artifact_manifest_hash: unknown;
+  inference_engine: unknown;
+  inference_engine_version: unknown;
+  dtype: unknown;
+  pooling: unknown;
+  normalize: unknown;
+  maximum_tokens: unknown;
+  input_contract: unknown;
+  query_prefix: unknown;
+  document_prefix: unknown;
   created_at: unknown;
 }
 
@@ -154,7 +171,33 @@ function entryIdValue(value: unknown, label: string): string {
   return value;
 }
 
-function requireProfileIdentity(identity: EmbeddingProfileIdentity): void {
+function requireProfileIdentity(identity: EmbeddingProfileIdentity | LocalEmbeddingProfileIdentity): void {
+  if (identity.schemaVersion === 2) {
+    if (identity.providerKind !== 'local-transformers'
+      || identity.presetId !== 'local-small'
+      || identity.sourceModel !== 'intfloat/multilingual-e5-small'
+      || identity.artifactRepository !== 'Xenova/multilingual-e5-small'
+      || !/^[0-9a-f]{40}$/u.test(identity.modelRevision)
+      || !HASH_PATTERN.test(identity.artifactManifestHash)
+      || identity.inferenceEngine !== 'transformers-js'
+      || identity.inferenceEngineVersion.length === 0
+      || identity.dtype !== 'q8'
+      || identity.pooling !== 'mean'
+      || identity.normalize !== true
+      || identity.maximumTokens !== 512
+      || identity.dimensions !== 384
+      || identity.distanceMetric !== 'cosine'
+      || identity.documentTemplateVersion !== 2
+      || identity.queryTemplateVersion !== 2
+      || identity.inputContract !== 'e5-query-passage-v1'
+      || identity.queryPrefix !== 'query: '
+      || identity.documentPrefix !== 'passage: '
+      || !Number.isFinite(identity.distanceCeiling)
+      || identity.distanceCeiling <= 0 || identity.distanceCeiling >= 2) {
+      invalid('Embedding local profile identity is invalid');
+    }
+    return;
+  }
   if (identity.schemaVersion !== 1
     || identity.providerKind !== 'openai-compatible'
     || !HASH_PATTERN.test(identity.endpointFingerprint)
@@ -184,6 +227,49 @@ function requireProfile(profile: EmbeddingProfile): void {
 }
 
 function profileIdentityFromRow(row: ProfileRow): EmbeddingProfile {
+  if (row.schema_version === 2) {
+    if (typeof row.profile_id !== 'string' || !HASH_PATTERN.test(row.profile_id)
+      || row.provider_kind !== 'local-transformers' || row.endpoint_fingerprint !== null
+      || row.preset_id !== 'local-small' || row.source_model !== 'intfloat/multilingual-e5-small'
+      || row.artifact_repository !== 'Xenova/multilingual-e5-small'
+      || typeof row.model_revision !== 'string' || !/^[0-9a-f]{40}$/u.test(row.model_revision)
+      || typeof row.artifact_manifest_hash !== 'string' || !HASH_PATTERN.test(row.artifact_manifest_hash)
+      || row.inference_engine !== 'transformers-js'
+      || typeof row.inference_engine_version !== 'string' || row.inference_engine_version.length === 0
+      || row.dtype !== 'q8' || row.pooling !== 'mean' || row.normalize !== 1
+      || row.maximum_tokens !== 512 || row.dimensions !== 384 || row.distance_metric !== 'cosine'
+      || row.document_template_version !== 2 || row.query_template_version !== 2
+      || row.input_contract !== 'e5-query-passage-v1' || row.query_prefix !== 'query: '
+      || row.document_prefix !== 'passage: '
+      || typeof row.distance_ceiling !== 'number' || !Number.isFinite(row.distance_ceiling)
+      || row.distance_ceiling <= 0 || row.distance_ceiling >= 2) integrity('Stored local embedding profile is invalid');
+    const identity: LocalEmbeddingProfileIdentity = {
+      schemaVersion: 2,
+      providerKind: 'local-transformers',
+      presetId: 'local-small',
+      sourceModel: 'intfloat/multilingual-e5-small',
+      artifactRepository: 'Xenova/multilingual-e5-small',
+      modelRevision: row.model_revision,
+      artifactManifestHash: row.artifact_manifest_hash,
+      inferenceEngine: 'transformers-js',
+      inferenceEngineVersion: row.inference_engine_version,
+      dtype: 'q8',
+      pooling: 'mean',
+      normalize: true,
+      maximumTokens: 512,
+      dimensions: 384,
+      distanceMetric: 'cosine',
+      distanceCeiling: row.distance_ceiling,
+      inputContract: 'e5-query-passage-v1',
+      documentTemplateVersion: 2,
+      queryTemplateVersion: 2,
+      queryPrefix: 'query: ',
+      documentPrefix: 'passage: ',
+    };
+    if (embeddingProfileId(identity) !== row.profile_id) integrity('Stored local embedding profile ID does not match its identity');
+    storedTimestamp(row.created_at, 'embedding profile created_at');
+    return Object.freeze({ profileId: row.profile_id, identity: Object.freeze(identity) });
+  }
   if (typeof row.profile_id !== 'string' || !HASH_PATTERN.test(row.profile_id)
     || row.provider_kind !== 'openai-compatible'
     || typeof row.endpoint_fingerprint !== 'string' || !HASH_PATTERN.test(row.endpoint_fingerprint)
@@ -212,16 +298,11 @@ function profileIdentityFromRow(row: ProfileRow): EmbeddingProfile {
   return Object.freeze({ profileId: row.profile_id, identity: Object.freeze(identity) });
 }
 
-function profileIdentitiesEqual(left: EmbeddingProfileIdentity, right: EmbeddingProfileIdentity): boolean {
-  return left.schemaVersion === right.schemaVersion
-    && left.providerKind === right.providerKind
-    && left.endpointFingerprint === right.endpointFingerprint
-    && left.model === right.model
-    && left.dimensions === right.dimensions
-    && left.distanceMetric === right.distanceMetric
-    && left.documentTemplateVersion === right.documentTemplateVersion
-    && left.queryTemplateVersion === right.queryTemplateVersion
-    && left.distanceCeiling === right.distanceCeiling;
+function profileIdentitiesEqual(
+  left: EmbeddingProfileIdentity | LocalEmbeddingProfileIdentity,
+  right: EmbeddingProfileIdentity | LocalEmbeddingProfileIdentity,
+): boolean {
+  return left.schemaVersion === right.schemaVersion && embeddingProfileId(left) === embeddingProfileId(right);
 }
 
 function schemaTables(database: SqliteDatabase): Set<string> {
@@ -251,9 +332,12 @@ function embeddingSchemaInstalled(database: SqliteDatabase): boolean {
 
 function readProfileRow(database: SqliteDatabase, profileId: string): EmbeddingProfile | undefined {
   const row = database.prepare(`
-    SELECT profile_id, provider_kind, endpoint_fingerprint, model, dimensions,
+    SELECT profile_id, schema_version, provider_kind, endpoint_fingerprint, model, dimensions,
            distance_metric, distance_ceiling, document_template_version,
-           query_template_version, created_at
+           query_template_version, preset_id, source_model, artifact_repository,
+           model_revision, artifact_manifest_hash, inference_engine,
+           inference_engine_version, dtype, pooling, normalize, maximum_tokens,
+           input_contract, query_prefix, document_prefix, created_at
       FROM embedding_profiles
      WHERE profile_id = ?
   `).get<ProfileRow>(profileId);
@@ -394,6 +478,7 @@ export function activateEmbeddingProfileInTransaction(
   options: ActivateEmbeddingProfileOptions,
 ): EmbeddingProfileActivation {
   requireProfile(profile);
+  if (profile.identity.schemaVersion !== 1) invalid('Legacy embedding activation requires a v1 profile identity');
   if (typeof options.replace !== 'boolean') invalid('replace must be a boolean');
   const now = validateTimestamp(options.now ?? new Date().toISOString(), 'now');
   requireEmbeddingSchema(database);
@@ -449,6 +534,66 @@ export function activateEmbeddingProfile(
   options: ActivateEmbeddingProfileOptions,
 ): EmbeddingProfileActivation {
   return withImmediateTransaction(database, () => activateEmbeddingProfileInTransaction(database, profile, options));
+}
+
+export function activateLocalEmbeddingProfileInTransaction(
+  database: SqliteDatabase,
+  profile: LocalEmbeddingProfile,
+  options: ActivateEmbeddingProfileOptions,
+): EmbeddingProfileActivation {
+  requireProfile(profile);
+  if (profile.identity.schemaVersion !== 2) invalid('Local embedding activation requires a v2 profile identity');
+  if (typeof options.replace !== 'boolean') invalid('replace must be a boolean');
+  const now = validateTimestamp(options.now ?? new Date().toISOString(), 'now');
+  requireEmbeddingSchema(database);
+  const existing = readProfileRow(database, profile.profileId);
+  if (existing === undefined) {
+    database.prepare(`
+      INSERT INTO embedding_profiles (
+        profile_id, schema_version, provider_kind, endpoint_fingerprint, model,
+        dimensions, distance_metric, distance_ceiling, document_template_version,
+        query_template_version, preset_id, source_model, artifact_repository,
+        model_revision, artifact_manifest_hash, inference_engine,
+        inference_engine_version, dtype, pooling, normalize, maximum_tokens,
+        input_contract, query_prefix, document_prefix, created_at
+      ) VALUES (?, 2, 'local-transformers', NULL, ?, 384, 'cosine', ?, 2, 2,
+        ?, ?, ?, ?, ?, 'transformers-js', ?, 'q8', 'mean', 1, 512,
+        'e5-query-passage-v1', 'query: ', 'passage: ', ?)
+    `).run(
+      profile.profileId,
+      profile.identity.sourceModel,
+      profile.identity.distanceCeiling,
+      profile.identity.presetId,
+      profile.identity.sourceModel,
+      profile.identity.artifactRepository,
+      profile.identity.modelRevision,
+      profile.identity.artifactManifestHash,
+      profile.identity.inferenceEngineVersion,
+      now,
+    );
+  } else if (!profileIdentitiesEqual(existing.identity, profile.identity)) {
+    conflict('Embedding profile ID already refers to different profile fields');
+  }
+  const runtime = readEmbeddingRuntimeState(database);
+  if (runtime.activeProfileId === profile.profileId) return { profileId: profile.profileId, generation: runtime.generation, activated: false, enqueued: 0 };
+  if (runtime.activeProfileId !== null && !options.replace) conflict('An active embedding profile already exists; use replace to switch it');
+  const generation = runtime.activeProfileId === null ? runtime.generation : runtime.generation + 1;
+  database.prepare(`
+    UPDATE embedding_runtime SET active_profile_id = ?, generation = ?, activated_at = ?
+     WHERE singleton = 1 AND generation = ?
+  `).run(profile.profileId, generation, now, runtime.generation);
+  const updated = readEmbeddingRuntimeState(database);
+  if (updated.activeProfileId !== profile.profileId || updated.generation !== generation || updated.activatedAt !== now) conflict('Embedding runtime changed while activating a local profile');
+  const enqueued = enqueueAllCurrentEntryEmbeddingsInTransaction(database, now);
+  return { profileId: profile.profileId, generation, activated: true, enqueued };
+}
+
+export function activateLocalEmbeddingProfile(
+  database: SqliteDatabase,
+  profile: LocalEmbeddingProfile,
+  options: ActivateEmbeddingProfileOptions,
+): EmbeddingProfileActivation {
+  return withImmediateTransaction(database, () => activateLocalEmbeddingProfileInTransaction(database, profile, options));
 }
 
 function storedEmbedding(row: EntryEmbeddingRow): StoredEntryEmbedding {

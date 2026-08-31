@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeEmbeddingBaseUrl, parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
+import { normalizeEmbeddingBaseUrl, parseEmbeddingConfig, requireEnabledEmbeddingConfig, findDeprecatedEmbeddingEnvironmentVariables } from '../../src/embedding/config.js';
+import { openConnection } from '../../src/db/connection.js';
+import { migrateDatabase } from '../../src/db/migrate.js';
+import { readPersistedEmbeddingSettings } from '../../src/embedding/settings.js';
 
 function enabledEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
@@ -75,4 +78,26 @@ test('enforces endpoint privacy and transport policy', () => {
   ]) {
     assert.throws(() => normalizeEmbeddingBaseUrl(value, false), { code: 'VALIDATION_ERROR' });
   }
+});
+
+test('reads persisted off settings without consulting embedding environment values', () => {
+  const database = openConnection(':memory:');
+  try {
+    migrateDatabase(database);
+    const config = readPersistedEmbeddingSettings(database);
+    assert.equal(config.mode, 'off');
+    assert.equal(config.provider, 'openai-compatible');
+    assert.equal(config.vectorBackend, 'auto');
+  } finally {
+    database.close();
+  }
+});
+
+test('detects deprecated embedding setting names without returning values', () => {
+  const names = findDeprecatedEmbeddingEnvironmentVariables({
+    KIOKUKO_EMBEDDING_API_KEY: 'do-not-return',
+    KIOKUKO_EMBEDDINGS: 'optional',
+  });
+  assert.deepEqual(names, ['KIOKUKO_EMBEDDINGS', 'KIOKUKO_EMBEDDING_API_KEY']);
+  assert.equal(JSON.stringify(names).includes('do-not-return'), false);
 });
