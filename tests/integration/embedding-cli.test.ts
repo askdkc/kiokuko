@@ -67,7 +67,7 @@ test('embedding setup checks optional runtime before opening the database', asyn
       () => cli.parseAsync(['node', 'kiokuko', 'embeddings', 'setup', '--yes']),
       (error: unknown) => error instanceof KiokukoError
         && error.code === 'SERVICE_UNAVAILABLE'
-        && error.message.includes('npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs'),
+        && error.message.includes('npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs'),
     );
     assert.equal(databaseCalls, 0);
     assert.deepEqual(output, []);

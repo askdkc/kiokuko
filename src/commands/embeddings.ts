@@ -25,7 +25,7 @@ import type { PathEnvironment } from '../config/paths.js';
 
 const MAX_SYNC_JOBS = 64;
 const DRAIN_DEADLINE_MS = 120_000;
-const LOCAL_SEMANTIC_INSTALL_COMMAND = 'npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs';
+const LOCAL_SEMANTIC_INSTALL_COMMAND = 'npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs';
 
 export type EmbeddingsDatabaseRunner = <T>(operation: (
   database: SqliteDatabase,

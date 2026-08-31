@@ -16,7 +16,7 @@ Kiokuko 是面向 AI 编程智能体的外部记忆。
 使用以下两条命令即可轻松开始 💕
 
 ```bash
-npm install --global @askdkc/kiokuko --omit=optional
+npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
@@ -45,7 +45,7 @@ required = true
 如需使用，请先使用所需的 install scripts 重新安装一次，再运行 setup 命令：
 
 ```bash
-npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs
+npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
 

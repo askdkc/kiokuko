@@ -3,7 +3,7 @@
 The default global installation is intentionally lightweight:
 
 ```bash
-npm install --global @askdkc/kiokuko --omit=optional
+npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
@@ -13,7 +13,7 @@ one-time reinstall that explicitly allows only the required install scripts,
 then run setup:
 
 ```bash
-npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs
+npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
 

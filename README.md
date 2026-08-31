@@ -16,7 +16,7 @@ Node.js 24.16.0 or newer is required; Node.js 26.1.0 or newer is also supported.
 Get started easily with these two commands 💕
 
 ```bash
-npm install --global @askdkc/kiokuko --omit=optional
+npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
@@ -46,7 +46,7 @@ default install above. The pinned multilingual local model is an opt-in path.
 Reinstall once with the required install scripts, then run the setup command:
 
 ```bash
-npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs
+npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
 

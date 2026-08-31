@@ -9,7 +9,9 @@ import os from 'node:os';
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const forbiddenPackages = new Set([
+  '@huggingface/hub',
   '@huggingface/transformers',
+  'sqlite-vec',
   'onnxruntime-node',
   'sharp',
   'protobufjs',
@@ -95,7 +97,6 @@ try {
     '--global',
     '--prefix',
     prefixDirectory,
-    '--omit=optional',
     tarball,
   ], repositoryRoot);
   const npmOutput = `${install.stdout}\n${install.stderr}`;

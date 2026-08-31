@@ -16,7 +16,7 @@ Node.js 24.16.0以上が必要です。Node.js 26.1.0以上もサポートして
 以下の2コマンドで楽々スタートです💕
 
 ```bash
-npm install --global @askdkc/kiokuko --omit=optional
+npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
@@ -46,7 +46,7 @@ required = true
 明示して再インストールしてから、setup commandを実行します。
 
 ```bash
-npm install --global @askdkc/kiokuko --allow-scripts=onnxruntime-node,sharp,protobufjs
+npm install --global @askdkc/kiokuko @huggingface/hub@2.16.1 @huggingface/transformers@4.2.0 sqlite-vec@0.1.9 --allow-scripts=onnxruntime-node,sharp,protobufjs
 kiokuko embeddings setup
 ```
 
