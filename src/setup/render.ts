@@ -82,10 +82,33 @@ function isPathPrefix(path: readonly string[], target: readonly string[]): boole
   return path.length < target.length && path.every((segment, index) => target[index] === segment);
 }
 
+/** Remove one exact marker-only line after the user authorizes identity replacement. */
+function removeOrphanedCodexMarker(existing: string, marker: string, position: number): string {
+  const markerEnd = position + marker.length;
+  const startsLine = position === 0 || existing[position - 1] === '\n';
+  const endsLine = markerEnd === existing.length
+    || existing[markerEnd] === '\n'
+    || existing.startsWith('\r\n', markerEnd);
+  if (!startsLine || !endsLine) codexConflict();
+
+  const lineEnd = existing.startsWith('\r\n', markerEnd)
+    ? markerEnd + 2
+    : existing[markerEnd] === '\n'
+      ? markerEnd + 1
+      : markerEnd;
+  return `${existing.slice(0, position)}${existing.slice(lineEnd)}`;
+}
+
 function removeStandaloneCodexManagedBlock(existing: string): string {
   const begins = occurrences(existing, CODEX_MCP_BEGIN);
   const ends = occurrences(existing, CODEX_MCP_END);
   if (begins.length === 0 && ends.length === 0) return existing;
+  if (begins.length === 0 && ends.length === 1) {
+    return removeOrphanedCodexMarker(existing, CODEX_MCP_END, ends[0]!);
+  }
+  if (begins.length === 1 && ends.length === 0) {
+    return removeOrphanedCodexMarker(existing, CODEX_MCP_BEGIN, begins[0]!);
+  }
   if (begins.length !== 1 || ends.length !== 1) codexConflict();
 
   const begin = begins[0]!;

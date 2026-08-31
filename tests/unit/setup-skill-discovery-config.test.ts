@@ -196,6 +196,65 @@ test('Codex setup replaces a legacy marked block and preserves unrelated TOML', 
   assert.equal((replaced.content.match(/# BEGIN KIOKUKO MCP/gu) ?? []).length, 1);
 });
 
+test('Codex setup replaces an orphaned end marker only after explicit authorization', () => {
+  const existing = [
+    'model = "keep"',
+    '# END KIOKUKO MCP',
+    '',
+  ].join('\n');
+
+  assert.throws(
+    () => renderCodexMcpConfig(existing),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'CONFLICT',
+  );
+
+  const replaced = renderCodexMcpConfig(
+    existing,
+    'kiokuko',
+    'official',
+    { replaceConflictingIdentity: true },
+  );
+  assert.match(replaced.content, /^model = "keep"/u);
+  assert.equal((replaced.content.match(/# BEGIN KIOKUKO MCP/gu) ?? []).length, 1);
+  assert.equal((replaced.content.match(/# END KIOKUKO MCP/gu) ?? []).length, 1);
+});
+
+test('Codex setup replaces an orphaned begin marker only after explicit authorization', () => {
+  const existing = [
+    'model = "keep"',
+    '# BEGIN KIOKUKO MCP',
+    '',
+  ].join('\n');
+
+  assert.throws(
+    () => renderCodexMcpConfig(existing),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'CONFLICT',
+  );
+
+  const replaced = renderCodexMcpConfig(
+    existing,
+    'kiokuko',
+    'official',
+    { replaceConflictingIdentity: true },
+  );
+  assert.match(replaced.content, /^model = "keep"/u);
+  assert.equal((replaced.content.match(/# BEGIN KIOKUKO MCP/gu) ?? []).length, 1);
+  assert.equal((replaced.content.match(/# END KIOKUKO MCP/gu) ?? []).length, 1);
+});
+
+test('Codex setup refuses to remove an orphaned marker embedded in another line', () => {
+  const existing = 'model = "keep" # END KIOKUKO MCP\n';
+  assert.throws(
+    () => renderCodexMcpConfig(
+      existing,
+      'kiokuko',
+      'official',
+      { replaceConflictingIdentity: true },
+    ),
+    (error: unknown) => error instanceof KiokukoError && error.code === 'CONFLICT',
+  );
+});
+
 test('Codex setup replaces only Kiokuko from a shared inline MCP table', () => {
   const sharedStatement = 'mcp_servers = { kiokuko = { command = "custom" }, other = { command = "keep" } }\n';
   const replaced = renderCodexMcpConfig(sharedStatement, 'kiokuko', 'official', { replaceConflictingIdentity: true });

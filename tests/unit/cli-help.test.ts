@@ -339,7 +339,7 @@ test('client conflict prompt defaults to yes and accepts explicit negative answe
   }
 });
 
-test('interactive setup replaces an unmanaged Codex MCP identity after accepting the default confirmation', async () => {
+test('interactive setup replaces an orphaned Codex MCP marker after accepting the default confirmation', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-cli-codex-replace-'));
   const bin = path.join(root, 'bin');
   const codexDirectory = path.join(root, '.codex');
@@ -349,7 +349,7 @@ test('interactive setup replaces an unmanaged Codex MCP identity after accepting
   const codexExecutable = path.join(bin, 'codex');
   await writeFile(codexExecutable, '#!/bin/sh\n');
   await chmod(codexExecutable, 0o755);
-  await writeFile(configPath, 'model = "keep"\n[mcp_servers.kiokuko]\ncommand = "custom"\n');
+  await writeFile(configPath, 'model = "keep"\n# END KIOKUKO MCP\n');
 
   const input = new PassThrough() as PassThrough & { isTTY?: boolean };
   input.isTTY = true;
@@ -408,7 +408,8 @@ test('interactive setup replaces an unmanaged Codex MCP identity after accepting
   assert.match(stdout, /Kiokuko configured for codex/u);
   const config = await readFile(configPath, 'utf8');
   assert.match(config, /^model = "keep"/u);
-  assert.doesNotMatch(config, /command = "custom"/u);
+  assert.equal((config.match(/# BEGIN KIOKUKO MCP/gu) ?? []).length, 1);
+  assert.equal((config.match(/# END KIOKUKO MCP/gu) ?? []).length, 1);
   assert.match(config, /# Managed by `kiokuko setup`\./u);
 });
 
