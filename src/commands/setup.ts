@@ -41,6 +41,7 @@ import { KiokukoError } from '../errors.js';
 import { isSkillDiscoveryMode, normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
 import type { SkillDiscoveryMode } from '../skills/types.js';
 import { hasCanonicalOpenCodeMcpConfig, renderOpenCodeConfig } from '../setup/opencode-config.js';
+import { setupMcpIdentityConflictClient } from '../setup/mcp-conflict.js';
 import { hasCanonicalCodexMcpConfig, renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
 import { hasCanonicalClaudeMcpConfig, renderClaudeConfig } from '../setup/claude-config.js';
 import { renderHermesConfig } from '../setup/hermes-config.js';
@@ -264,6 +265,87 @@ export async function promptReplaceConflictingMcp(
     return await askReplaceConflictingMcp(prompt, output, client);
   } finally {
     prompt.close();
+  }
+}
+
+export interface SetupFlowOptions {
+  readonly environment?: PathEnvironment;
+  readonly clients?: SetupClient[];
+  readonly command?: string;
+  readonly dryRun?: boolean;
+  readonly standardSkills?: boolean;
+  readonly skillDiscoveryMode?: SkillDiscoveryMode;
+  readonly ennoOduno?: EnnoSetupMode;
+  readonly json?: boolean;
+  readonly input?: NodeJS.ReadableStream;
+  readonly output?: NodeJS.WritableStream;
+}
+
+export interface SetupFlowDependencies<T extends { clients: SetupClient[]; projectAgentFiles: ProjectAgentRefreshResult[] }> {
+  readonly setupGlobalClients?: (options: SetupOptions) => Promise<T>;
+}
+
+/** Run the shared client-selection, conflict-confirmation, and setup flow. */
+export async function runSetupFlow<T extends { clients: SetupClient[]; projectAgentFiles: ProjectAgentRefreshResult[] } = SetupResult>(
+  options: SetupFlowOptions = {},
+  dependencyOverrides: SetupFlowDependencies<T> = {},
+): Promise<T> {
+  const pathEnvironment = options.environment ?? {};
+  const setupProcessEnvironment = pathEnvironment.env ?? process.env;
+  const requestedSkillDiscoveryMode = options.skillDiscoveryMode
+    ?? (Object.prototype.hasOwnProperty.call(setupProcessEnvironment, SKILL_DISCOVERY_ENV)
+      ? normalizeSkillDiscoveryMode(setupProcessEnvironment[SKILL_DISCOVERY_ENV])
+      : undefined);
+  const detectedClients = options.clients === undefined
+    ? await detectInstalledClients(pathEnvironment)
+    : [];
+  const input = options.input ?? stdin;
+  const output = options.output ?? stdout;
+  const interactive = options.json !== true
+    && (input as { isTTY?: boolean }).isTTY === true
+    && (output as { isTTY?: boolean }).isTTY === true;
+  let clients: SetupClient[];
+  let skillDiscoveryMode = requestedSkillDiscoveryMode;
+  if (interactive && options.clients === undefined && requestedSkillDiscoveryMode === undefined) {
+    const prompted = await promptSetupConfiguration(detectedClients, { input, output });
+    clients = prompted.clients;
+    skillDiscoveryMode = prompted.skillDiscoveryMode;
+  } else {
+    clients = options.clients ?? (interactive
+      ? await promptSetupClients(detectedClients, { input, output })
+      : detectedClients);
+    if (interactive && clients.length > 0 && skillDiscoveryMode === undefined) {
+      skillDiscoveryMode = await promptCommunitySkillDiscovery({ input, output });
+    }
+  }
+  const setupOptions: SetupOptions = {
+    ...pathEnvironment,
+    clients,
+    command: options.command ?? 'kiokuko',
+    dryRun: options.dryRun === true,
+    standardSkills: options.standardSkills ?? true,
+    ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
+    ...(options.ennoOduno === undefined ? {} : { ennoOduno: options.ennoOduno }),
+  };
+  const runSetup = dependencyOverrides.setupGlobalClients
+    ?? (setupGlobalClients as unknown as (options: SetupOptions) => Promise<T>);
+  const replacementClients = new Set<SetupClient>();
+  for (;;) {
+    try {
+      return await runSetup({
+        ...setupOptions,
+        replaceConflictingMcpServers: [...replacementClients],
+      });
+    } catch (error) {
+      const conflictClient = setupMcpIdentityConflictClient(error);
+      if (!interactive
+        || conflictClient === undefined
+        || !clients.includes(conflictClient)
+        || replacementClients.has(conflictClient)) throw error;
+      const replace = await promptReplaceConflictingMcp(conflictClient, { input, output });
+      if (!replace) throw error;
+      replacementClients.add(conflictClient);
+    }
   }
 }
 

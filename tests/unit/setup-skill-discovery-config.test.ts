@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import { parse } from 'jsonc-parser';
 import { KiokukoError } from '../../src/errors.js';
@@ -46,7 +47,7 @@ test('Codex setup upgrades only the exact previous managed block to required MCP
   assert.equal(renderCodexMcpConfig(upgraded.content).action, 'unchanged');
 });
 
-test('maintained READMEs match the required Codex core and public trust contracts', () => {
+test('README entry points and English/Japanese docs carry the setup and trust contracts', () => {
   const requiredCore = [
     '[mcp_servers.kiokuko]',
     'command = "kiokuko"',
@@ -58,16 +59,49 @@ test('maintained READMEs match the required Codex core and public trust contract
 
   for (const name of ['README.md', 'README.ja.md', 'README.zh-CN.md', 'README.ko.md']) {
     const readme = readFileSync(new URL(`../../${name}`, import.meta.url), 'utf8');
-    assert.ok(readme.includes(requiredCore), name);
-    for (const contractTerm of [
-      'required = false',
-      'structuredContent.code',
-      'structuredContent.retryable',
-      'BACKPRESSURE',
-      'ToolLifecycleContributor',
-      '0.151.0',
-      'not-run',
-    ]) assert.ok(readme.includes(contractTerm), `${name}: ${contractTerm}`);
+    assert.match(readme, /Node\.js 24\.16\.0/u, name);
+    assert.match(readme, /npm install --global @askdkc\/kiokuko/u, name);
+    assert.match(readme, /kiokuko setup/u, name);
+    assert.match(readme, /docs\/(README|getting-started)/u, name);
+  }
+
+  const gettingStarted = readFileSync(new URL('../../docs/getting-started.md', import.meta.url), 'utf8');
+  assert.ok(gettingStarted.includes(requiredCore));
+  for (const contractTerm of [
+    'required = false',
+    'CONFLICT',
+    'doctor is read-only',
+  ]) assert.ok(gettingStarted.includes(contractTerm), `getting-started.md: ${contractTerm}`);
+
+  const security = readFileSync(new URL('../../docs/security-and-trust.md', import.meta.url), 'utf8');
+  for (const contractTerm of [
+    'structuredContent.code',
+    'structuredContent.retryable',
+    'BACKPRESSURE',
+    'ToolLifecycleContributor',
+    'isError: true',
+  ]) assert.ok(security.includes(contractTerm), `security-and-trust.md: ${contractTerm}`);
+});
+
+test('README and documentation index links resolve inside the repository', () => {
+  const repositoryRoot = path.resolve(new URL('../..', import.meta.url).pathname);
+  const sources = [
+    'README.md',
+    'README.ja.md',
+    'README.zh-CN.md',
+    'README.ko.md',
+    'docs/README.md',
+    'docs/README.ja.md',
+  ];
+  for (const relativeSource of sources) {
+    const sourcePath = path.join(repositoryRoot, relativeSource);
+    const content = readFileSync(sourcePath, 'utf8');
+    for (const match of content.matchAll(/\[[^\]]+\]\(([^)]+)\)/gu)) {
+      const target = match[1]!;
+      if (/^(?:https?:|mailto:|#)/u.test(target)) continue;
+      const targetPath = target.split('#', 1)[0]!;
+      assert.ok(existsSync(path.resolve(path.dirname(sourcePath), targetPath)), `${relativeSource}: ${target}`);
+    }
   }
 });
 

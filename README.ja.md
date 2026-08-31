@@ -2,316 +2,74 @@
 
 [English](README.md) | 日本語 | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
 
-**MCPでつなぎ、RAGで思い出し、作業後に記憶する。**
+**MCPで接続し、必要な記憶を検索し、作業後に知識を蓄積する。**
 
-Kiokukoは、AIコーディングエージェント向けの外部記憶です。
+KiokukoはAIコーディングエージェント向けのローカル外部メモリです。SQLiteに知識を保存し、
+次のタスクに関係する文脈を検索し、作業結果から再利用できる知識を記録します。
 
-過去の作業から得た知識をローカルのSQLiteへ保存し、次の依頼で関連する記憶だけを検索してAIへ渡します。
+## 基本概念
 
-ユーザーが毎回プロンプトに過去の経緯を貼ったり、記憶を手作業で探したりする必要はありません。普段どおりAIを使うだけで、プロジェクト固有の知識が少しずつ蓄積され、次の作業へ再利用されます。
+```text
+依頼 → MCP接続 → 関係する記憶を検索 → 作業
+                                  ↓
+                         再利用できる知識を保存
+```
 
-## すぐ使う
+記憶はProject・Ecosystem・Globalに分離されます。現在のコード、設定、実行結果が過去の記憶より優先されます。
 
-Node.js 24.16.0以上が必要です。Node.js 26.1.0以上もサポートしています。
-以下の2コマンドで楽々スタートです💕
+## 最短セットアップ
+
+Node.js 24.16.0以上が必要です（Node.js 26.1.0以上にも対応）。
 
 ```bash
 npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-`setup`は、インストール済みの対応クライアントを検出し、SQLiteデータベースとMCP接続を自動設定します。
-同時に、同梱の`memory-reasoning` Skillと他のKiokuko標準Skillも配置します。既存環境には次回の`kiokuko setup`で追加され、同名の非managedファイルは上書きしません。
-標準の`kiokuko-soul` routerは、範囲が明確で低リスクなcode変更と、明示的なminimal・YAGNI依頼に`kiokuko-simple-work`を適用します。通常のcode契約、security、accessibility、error handling、検証は省略しません。
-対話式setupでは、監査済みcommunity Skillも参考資料として利用するか確認します。既定は「いいえ」です。
+`setup`はローカルDBを初期化し、対応クライアントを検出し、標準SkillとMCP接続を設定します。
+起動中のクライアントは、設定後に一度再起動してください。正確な設定規則は
+[導入ガイド](docs/getting-started.ja.md)を参照してください。
 
-Codex向けsetupは、次の正確なmanaged MCP coreを生成します（この後にSkill discovery用のenvironment行が続きます）。
+## 主な機能
 
-```toml
-[mcp_servers.kiokuko]
-command = "kiokuko"
-args = ["mcp"]
-enabled = true
-required = true
-```
+- **RAGメモリ**: 標準はlexical検索、任意でローカルsemantic検索。
+- **Akinator**: 曖昧な依頼を作業前に具体化。
+- **Enno-Oduno**: 複数手順の計画、確認、検証、回復。
+- **ローカルWeb UI**: 保存した記憶の確認と整理。
+- **参照専用Skill**: 外部Skillは検証して保存するが、自動実行しない。
 
-`required = true`により、Kiokukoを初期化できない場合は、必須SOUL・policyなしで続行せずCodexのstartupまたはresumeが失敗します。`kiokuko setup`を再実行すると、`required`だけを含まない正確な旧managed blockは更新されます。値、順序、重複key、追加fieldが変更されたblockは上書きせず、conflictを返します。明示的に`required = false`へ変更したblockはuser-managedとなり、以後のsetupでは上書きしません。KiokukoはCodex全体のoptional MCP graceやstartup timeoutを変更しません。
-
-設定後、対象のAIクライアントを起動し、あとは普段どおり使うだけです。すでに起動している場合は、いったん終了してから起動し直してください。setupがCodexのStop hookを作成または更新した場合は、Codexで`/hooks`を開き、そのhookを明示的に信頼してください。
-
-### Semantic検索（任意）
-
-上記の軽量インストールでlexical検索と通常の`kiokuko setup`を利用できます。
-固定された多言語local modelは任意機能です。次のコマンドを実行すると、optional
-runtimeがない場合は固定依存関係を自動インストールし、その後に登録済みプロジェクトの
-managed instructionsを更新します。グローバルclientのMCP設定は書き換えないため、設定には
-`kiokuko setup`を使ってください。
+semantic検索を有効にする場合も、通常のclient設定フローを使います。
 
 ```bash
 kiokuko embeddings setup
 ```
 
-軽量インストールではTransformers.jsのoptional runtimeを省略します。
-`boolean@3.2.0`はそのruntimeが上流で引き込むtransitive dependencyであり、Kiokuko
-自身の依存ではないため、軽量インストールには含まれません。Linuxではoptional
-runtimeがない場合、初回の依存関係インストールに`sudo`を使います。macOSでは共有
-グローバルprefixを変更せず、Kiokuko自身のパッケージ内`node_modules`へインストールします。
-その他の環境ではnpmを直接呼び出します。npm設定への永続化や`--dangerously-allow-all-scripts`は
-使用しません。
+managed MCP blockと登録済みプロジェクトのinstructionsを更新します。unmanaged identityの置換は対話確認後だけ行い、
+非対話または`--dry-run --json`では変更せずfail closedします。詳細は
+[semantic retrievalガイド](docs/semantic-retrieval.ja.md)を参照してください。
 
-自動化では`--preset local-small --json`を使います。setupはallowlist済み
-revisionの全fileを検証してからloadし、設定をSQLiteへ保存し、offlineでvectorを生成します。
-`--dry-run`はdownloadと変更を行わず、`--offline`は検証済みinstallを要求し、
-`--replace`は別profileからの切替を許可します。状態は`kiokuko embeddings status --json`、
-`kiokuko doctor --json`で確認し、破損時は`kiokuko embeddings repair`を使います。
-Embedding設定はenvironmentから読まず、model weightはnpm packageへ含めません。
+## 対応クライアント
 
-## 使うほど賢くなる仕組み
+Codex、OpenCode、Claude Code、Hermes Agentに対応しています。client別の設定、再起動、Web UIは
+[導入ガイド](docs/getting-started.ja.md)にまとめています。
 
-```text
-ユーザーの依頼
-      ↓
-関連する過去の記憶を検索
-      ↓
-AIが記憶を参照して作業
-      ↓
-再利用できる成果や教訓を保存
-      ↓
-次の依頼で再び検索
-```
+## 安全性と制約
 
-Kiokukoは、次の流れを繰り返します。
+会話全文は保存せず、パスワード、API key、token、秘密鍵に似た内容を拒否します。保存された記憶は参考情報であり、
+現在のリポジトリと実行結果で確認してください。
 
-1. 作業前に、現在のプロジェクトとGlobal記憶を検索する
-2. 関連性の高い記憶だけをAIへ渡す
-3. AIが作業を実行する
-4. 作業後に、再利用できる知識を記憶する
-5. 次の作業で、その記憶を再利用する
+MCPの利用はclientとモデルが決めるため、**毎回必ずKiokukoが呼ばれる保証はありません**。信頼境界と公開エラーは
+[Security and trust](docs/security-and-trust.ja.md)で説明しています。
 
-つまりKiokukoは、**永続的な記憶を蓄積していくRAGシステム**です。
+## 詳細ドキュメント
 
-MCPはAIクライアントとKiokukoを接続し、RAGは必要な記憶を検索してAIへ渡します。
+- [ドキュメント目次](docs/README.ja.md)
+- [導入ガイド](docs/getting-started.ja.md)
+- [基本概念](docs/concepts.ja.md)
+- [Enno-Oduno](docs/enno-oduno.ja.md)
+- [Semantic retrieval](docs/semantic-retrieval.ja.md)
+- [Security and trust](docs/security-and-trust.ja.md)
+- [CLI contract](docs/cli-contract.md)
 
-### セットアップ後に起こるAIエージェントの挙動
-
-#### AI Akinator
-
-AIエージェントに渡された依頼が漠然としていてAIに具体性が見えない時は、Akinatorが内部的な質問を行い、AIにとって必要な具体性に依頼を固めて行きます。この際に推奨される言語やフレームワークなどのSkillがあれば取得して利用可能にします。
-
-#### 役小角 (Enno-oduno)
-
-<img  width="634" src="https://github.com/askdkc/kiokuko/blob/main/skills/kiokuko-enno-oduno/enno-oduno.png?raw=true">
-
-AIエージェントへの依頼を処理するLoop処理：役小角 が有効になります。
-
-依頼内容の理想系を決め、プランニングを行い、実装を小エージェントにオーケストレーションで処理させ、最後に理想に合致するかを自動でチェックしてくれます。
-
-#### 記憶の格納
-
-モデル向けの記憶は、capability gateを通るMCPツール `task_prepare` と
-`task_answer` からだけタスクへ渡されます。`task_prepare`は役小角の入口です。タスクを処理した後に内容が記録され、必要に応じてAIが使う知識へと昇華可能かを検討します。実用に耐える知識が昇格されるように自動調整されています。
-
-ready応答にモデル向けcontextがなく、project内にはretrievable entryが残っている場合、`memoryPolicy`に`deliveryEmpty: true`と`storedEntryCount`が入ります。意図的なcapability withholdingと検索結果ゼロを区別するには`contextWithheld`も確認してください。
-
-### Enno-Oduno（役小角）Agent Loop 詳細
-
-`build`、`debug`、`review`、`devops`では、`task_prepare`がrun-bound loopを開始して`ennoOduno`を返します。強制される役割順序は次のとおりです。
-
-```text
-ユーザーの依頼
-  -> task_prepare: 役小角がCodex、Claude Code、OpenCodeを特定
-  -> currentRoleが役小角なら、requiredSkillsのkiokuko-enno-odunoを読み、適用
-  -> 必要なら役小角がAkinatorの質問をユーザーへ返す
-  -> 小角の理想像がtask_prepare handoffとAkinatorが発見した全Skillから最適な到達点を導出
-  -> enno_ideal_submitが理想像を保存し、その後にだけクライアント別の前鬼へ渡す
-  -> 前鬼がrequiredSkillsのkiokuko-single-purpose-functionsを先に読み、計画へ適用
-  -> code変更を一つの凝集した関数/ユースケース契約、一責務、一変更理由、focused test target単位へ分割
-  -> 前鬼がWorkUnitごとにversion付きexpertRefsを1〜3個選び、未選択fragmentは既定で読まない
-  -> 前鬼がWorkPlan、WorkUnit、expert refs、Skill snapshot、検証方法を提出
-  -> 必要なら役小角がユーザー確認を得る
-   -> 後鬼が承認済みWorkUnitだけをオーケストレーション
-   -> enno_verify_prepareがfinal verifierを実行し、freshな証拠を保存
-   -> 証拠の準備後にだけ、親ホストがfinal-review Advisorをfan-out
-   -> enno_finishが保存済み証拠からaccept/replan/blockを決定
-        -> 成功: 役小角が受け入れ、読み取り専用の小角の瞑想へ移行
-            -> 変更済み・承認済みpathから、根拠のある古いtestまたは関数を探索
-            -> enno_meditation_submitが削除せずに候補を保存し、その後runを完了
-       -> 失敗: 役小角がrevisionを上げ、Review結果を前鬼へ返す
-   -> 前鬼の修正plan提出と必要な確認が終わるまで後鬼は再開不可
-```
-
-Final Reviewは意図的に二段階です。`enno_verify_prepare`はdatabase
-transactionの外側でshellを無効にし、repository内に限定したcwdで承認済み
-verifierを実行します。証拠はcontract/mutation revision、verifier仕様、
-Git・index・worktree・untracked file・symlinkを含むrepository全状態に結び付きます。
-`enno_finish`はその状態を再検査し、subprocessを起動せず、完全な保存済みpassing
-証拠だけを受け入れます。testがpassingしただけではrunを
-受け入れません。
-Enno continuationを有効にした場合、CodexとClaude Codeは上限付きStop hook、
-OpenCodeは上限付き`session.idle` pluginを使います。Hermesはnative stdio MCPと
-bundled Skillだけを使い、Enno continuation adapterは導入しません。
-
-Enno入力の不備は、値を含まない上限付き`ENNO_INPUT_INVALID`として返します。
-advisory roundは`not_started`、`fanout_requested`、`aggregated`、`consumed`と遷移し、
-集約結果の消費待ちでだけadvisory fieldが必須です。新しいWorkUnitは`code`、`ui`、
-`test`、`docs`、`operations`のlocal routeを宣言します。codeは`code.*` expert、UIは
-`code.*`と`ui.*`の両方を必要としますが、その要件をtest/docs/operations unitへ
-波及させません。plan recoveryはユーザー選択まで自動continuationを止めるmarkerだけを保存し、
-plan保存や実装開始は行いません。continuationは
-route epochに固定した短命resume tokenと単一所有者のexecution leaseを使い、期限切れの
-operation/verifierはatomicにabandonして再取得できます。narrativeと証拠はhash化・保存前に
-sanitizeし、secretを含むverifier commandは拒否します。
-
-同梱のcoding Skillは、問題構造化を必要な強さで適用します。WorkUnitがdomain語彙、
-公開response・DTO・ViewModel、またはstorage・API・serialization・UI間の変換を
-定義する場合は`code.modeling.v1` expertを選びます。表現を変えない機械的修正では、
-code変更という理由だけで選びません。このexpertは利用側から形を決め、名前付きの
-変換を設計しますが、Lisp構文・macro・DSLの使用は要求しません。既存installには、
-次回の`kiokuko setup`でmanaged referenceが配布されます。
-
-したがってintakeが未完了なら、返すのは役小角directiveと`answer_intake`であり、その`requiredSkills`には`kiokuko-enno-oduno`が含まれ、前鬼はまだ開始しません。準備完了したintakeは、まず`oduno_ideal`と`submit_ideal`を返します。`enno_ideal_submit`では、Akinatorが選択したdiscovery setの全Skillについて貢献を正確に一件ずつ指定する必要があり、外部Skillは引き続きuntrusted reference-onlyの指針として扱います。その後にだけ、runはrevision固定の前鬼directiveを返します。このdirectiveは、空のdraft Skill snapshotでもcompact indexである`kiokuko-single-purpose-functions`を`requiredSkills`へ含めます。前鬼はこのindexをWorkUnit選定前に使い、無意味な微小関数を作らず、code変更を凝集した関数またはユースケース契約とfocused test targetへ分割します。各code変更WorkUnitは理由付きの登録済み`expertRefs`を1〜3個選ぶ必要があり、UI WorkUnitは`code.*`と`ui.*`を少なくとも一つずつ要求します。`enno_plan_submit`は欠落、重複、未知、上限超過のmixtureを拒否し、その選択をrevisionとともに保存します。後鬼はSkillの全referenceではなく、そのfragmentだけを読みます。controller Skillはrole単位であり、WorkUnitのSkill snapshotには混ぜません。完全なプランの受理と必要な確認が成功するまで、後鬼には遷移できません。最終Review失敗時も古い後鬼WorkUnitを直接再開しません。却下したplanと検証証拠を旧revisionの履歴として保持し、`zenki_planning`へ戻して新しいplanを必須にします。Reviewを受け入れると、直接完了せず`oduno_meditation`へ移行します。`enno_meditation_submit`はrepositoryを変更せず、検査したrepository-relative pathと根拠付きの古いtestまたは関数の候補を保存してからrunを完了します。応答の`orchestrationId`を全Enno MCP操作で使い、ホスト側session identityとは分離します。推論したscope、達成条件、Skill、expert選択、検証コマンドがある場合、実装前に通常のクライアントUIへ確認を返します。`needs_confirmation`応答には、確定済み契約の決定的な表示projectionである`ennoOduno.directive.userFacingConfirmation`が含まれます。scope、除外、達成条件、表示番号付き依存を持つ作業項目、reference-only状態を含むSkill、選定理由付きの専門観点、focused/final checks、試行上限が、それぞれprovenance basis（ユーザー指定・リポジトリ検証済み・提案）付きで一度ずつ現れます。クライアントモデルはraw directive JSONや内部識別子を出さずに全項目をユーザーの言語で提示し、明示的なapprove・revise・cancelを待ちます。secretを示す表示値や64 KiBを超えるprojectionは、redactionや切り詰めではなくplan submitの拒否になります。
-
-公開MCP tool failureは通常の`isError: true` tool resultです。一般failureはallowlist済みの人間向け文言と`structuredContent.code`、`structuredContent.retryable`だけを含み、`BACKPRESSURE`だけが上限付き`retryAfterSeconds`も返せます。元のmessage、stack、任意のdetails、path、SQL、request payload、credentialらしい値は一般payloadへコピーしません。checkpoint、plan recovery、Enno validationの専用errorは、用途別の上限付きfieldを維持します。
-
-Codex extensionは、completion eventとmodel inputより前に、成功・errorのどちらのMCP resultも検査・置換できます。したがってextension層はtrusted computing baseの一部です。`userFacingConfirmation`はKiokuko serverが生成したprojectionであり、extension処理後に実際に表示またはmodelへ送信された内容の証明ではありません。重要なKiokuko resultを変更するextensionとは併用しないでください。KiokukoはCodexから改変不能なoriginal-result provenanceやmodified flagを受け取れないため、end-to-end真正性を主張せず、server-only digestやHMACで代用しません。完全な上流契約には、extensionが偽装できないoriginal-result digestまたはidentifier、modified flag、正確なtool callとのbindingが必要です。
-
-Codexのeffective plugin catalogは、requested repositoryや選択modelによって変化し得ます。hostはtask preparationから保持した完全なeffective Skill/MCP tool catalogを渡す必要があります。順序と同一descriptorの重複はbindingを変えませんが、項目の追加・削除、canonical name、kind、descriptionの変更は環境変更としてplan開始を止めます。catalog省略と明示的な空catalogは別の意味です。一つのplugin marketplaceのload errorを空catalogへ潰して、他の有効なcapabilityまで隠してはいけません。load errorは別に診断可能な状態を維持する必要があります。
-
-### 計画開始時に環境情報が不足・変化した場合
-
-ここでいう「環境情報」は、現在のAIクライアントで利用できるSkillとMCPツールの一覧です。ホストが自動収集する内部情報であり、ユーザーが一覧の保存場所を探したり、設定データを手作業で作成したりする必要はありません。
-
-この一覧が何らかの理由で計画へ引き継がれていない、またはタスク準備時から変わっている場合、Kiokukoは自動continuationを止めるmarkerだけを保存し、安全確認を完了できないため作業を開始しません。関連するSkillの探索、3件の助言結果の計画への反映、重複実行を防ぐ受付記録の作成、plan保存、計画版の更新より前に停止するため、この計画開始による新しい作業や追加のコード変更はありません。同じrunを再送する場合は、ユーザーが選んだrecovery actionも添付します。そのうえで、状況に応じて次の選択肢を表示し、ユーザーの明示回答を待ちます。
-
-各選択肢は、ラベルと推奨表示、どのような意図に適するか、選択後に何が起きるか、の順で表示されます。
-
-環境情報が引き継がれていないだけで、現在の実行をそのまま継続できる場合：
-
-- **同じ計画で続ける（推奨）**：計画内容は正しく、現在の環境情報を付け直すだけでよい場合に選びます。ホストが環境情報を自動で付け直し、現在の実行をそのまま続けます。
-- **計画を見直す**：作業範囲、作業項目、確認方法を変更してから続けたい場合に選びます。クライアントが変更内容を質問し、回答があるまで実装を開始しません。
-- **中止する**：この作業を続けない場合に選びます。現在の実行を取り消し、代わりの実行は作りません。
-
-利用できるSkillやMCPツールがタスク準備後に変わった場合：
-
-- **現在の環境で同じ計画をやり直す（推奨）**：計画内容は正しく、利用できる機能だけが変わった場合に選びます。現在の実行を先に取り消し、現在の環境と同じ確定済み計画で新しい実行を開始します。
-- **計画を見直してからやり直す**：機能の増減に合わせて作業範囲、作業項目、確認方法も変更したい場合に選びます。クライアントが変更内容を質問し、回答後に現在の実行を取り消して、現在の環境と修正済み計画で新しい実行を開始します。
-- **中止する**：この作業を続けない場合に選びます。現在の実行を取り消し、代わりの実行は作りません。
-
-旧動作によって今回の実行がすでに終了している場合：
-
-- **同じ計画で新しくやり直す（推奨）**：終了済み実行の計画内容は正しく、そのまま再利用したい場合に選びます。終了済み実行は変更せず、現在の環境と同じ確定済み計画で新しい実行を開始します。
-- **計画を見直してからやり直す**：代わりの実行を作る前に、作業範囲、作業項目、確認方法を変更したい場合に選びます。クライアントが変更内容を質問し、終了済み実行は変更せず、回答後に現在の環境と修正済み計画で新しい実行を開始します。
-- **中止する**：この作業を再開しない場合に選びます。終了済み実行は終了したままとし、新しい実行は作りません。
-
-クライアントは説明をユーザーの言語で表示し、機械用の選択値、内部の理由コード、処理名、機能一覧、識別子、計画版、表示形式の版番号、生のJSONは表示しません。どの状況でも、ユーザーが選択する前に再提出、取消、新しい実行の作成を自動で行いません。
-
-3役は現在のクライアントモデルを順番に使います。Kiokukoが別モデルを呼ぶことはなく、OpenAI、Anthropic、OpenCodeのAPI keyもKiokuko側には不要です。Codex/Claude Codeは上限付きStop hook、OpenCodeは上限付き`session.idle` pluginを使います。OpenCodeでは子sessionのidleを無視し、同じ完了turnの重複配送を抑止します。同じOSユーザーでcanonical repositoryへアクセスできるlocal processは、そのrunを再開できるものとして信頼します。PID、process ancestry、実行ファイル、code signingによる証明は追加しません。adapterは現在の短命resume tokenを優先し、有効なtoken routeがなければCodex、Claude Code、OpenCodeをまたいでcanonical repository内の一意なactive runを原子的に再ルーティングします。再ルーティングはroute epochを増やして古いtokenを無効化し、activeなWorkUnit execution leaseがある間は行いません。複数候補なら全runを変更せず制御を返します。公開応答の`clientBinding`は現在のrouteを表し、`bound`は所有者を意味しません。sessionごとのcontinuation上限到達はそのsessionの自動継続だけを止め、runとledgerは別のlocal project clientが再開できるactive状態を維持します。Claude Codeではネイティブの8回連続block強制解除より前にKiokukoが制御をユーザーへ返します。Hermesに自動continuation hookはありませんが、同じrun identityを使うMCP操作は継続できます。adapter停止時は固定警告付きでfail-openします。外部Skillは引き続きuntrusted reference-onlyで、自動インストール・自動実行しません。
-
-```bash
-kiokuko setup --clients codex,opencode,claude --enno-oduno on
-kiokuko enno run --role zenki --input-json -
-```
-
-実クライアントE2Eはrelease gateとは分離されています。対応する環境変数がない場合は`not-run`になります。
-
-```bash
-npm run test:e2e:codex
-npm run test:e2e:opencode
-npm run test:e2e:claude
-npm run test:e2e:agents
-```
-
-`RUN_CODEX_E2E=1`を指定した場合、Codex runnerは実行ファイルのversionを記録し、agent作業を始める前に0.151.0以上を要求します。その後、意図的に失敗する`required = true` MCP serverを持つ隔離configを使い、明示的なMCP startup failureを観測した場合だけ先へ進みます。インストール済みCodex CLIには、このrepositoryから`ToolLifecycleContributor`を注入する経路がありません。そのためdirect/Code Modeでのsuccess・error result置換、immutable provenance、repository-local marketplace分離は、対応する外部Codex fixtureが用意されるまで明示的な`not-run` subcheckです。推論だけでpassとは報告しません。
-
-対応クライアント：
-
-- Codex
-- OpenCode
-- Claude Code
-- Hermes Agent
-
-## 記憶はプロジェクトごとに分離
-
-通常の検索では、無関係なプロジェクトの記憶を混ぜません。
-
-- **Project記憶**  
-  現在のリポジトリだけで使う知識
-
-- **Ecosystem記憶**  
-  元のプロジェクトに保持したまま、言語、フレームワーク、データベース、ランタイム、ツールなどの適用条件が現在のプロジェクトと一致する場合だけ再利用する知識
-
-- **Global記憶**  
-  特定のプロジェクトに依存せず、複数プロジェクトで再利用するよう明示的に一般化した知識
-
-自由形式のタグが一致するだけでは、Project記憶は他のプロジェクトへ共有されません。Ecosystem検索では、記憶に保存された構造化された適用条件と、現在のプロジェクトから検出した技術構成の両方が一致するかを確認します。プロジェクト固有のパスや識別子などを含む記憶は対象外です。
-
-プロジェクトはGitリモートやパスから自動判定されます。
-
-Project記憶をGlobal記憶へ移す場合は、Curatorで候補を確認して明示的に承認します。
-
-```bash
-kiokuko curator
-```
-
-## 記憶を確認する
-
-ローカルWeb UIから、保存された記憶の検索、確認、編集ができます。
-
-```bash
-kiokuko web
-```
-
-ブラウザで次を開きます。
-
-```text
-http://127.0.0.1:4173
-```
-
-Web UIはローカル環境だけで動作し、外部ネットワークへ公開されません。
-Web UIと明示的なmemory CLI commandは人間/operator向けの管理surfaceです。
-モデルが `task_prepare` / `task_answer` を迂回してタスク記憶を取得する経路ではありません。
-
-## 外部Skill
-
-外部Skillの発見は参考データ専用で、Akinatorのtask preparationでは既定で
-`official` モードを使います。現在のGitHub commitを検証し、制限した本文を
-常に `candidate` + `untrusted` + `reference` の記憶として保存します。
-インストールや実行は行いません。自動発見を止める場合は
-`KIOKUKO_SKILL_DISCOVERY=off` を指定します。`community` は引き続き明示的な
-opt-inです。対話式 `kiokuko setup` はcommunityを有効にするか確認し、バッチ実行では
-`--skill-discovery community` で明示できます。
-
-具体的な操作例:
-
-```bash
-kiokuko skills find svelte --official-only --json
-kiokuko skills list
-kiokuko skills disable sveltejs/ai-tools/svelte-code-writer
-kiokuko skills refresh sveltejs/ai-tools/svelte-code-writer
-```
-
-Web UIのExternal Skills画面ではsource状態を確認し、mappingを無効化・再有効化
-できます。インストール、script実行、MCP登録の操作はありません。
-
-## 安全性
-
-Kiokukoは会話全文を保存しません。
-
-パスワード、APIキー、トークン、秘密鍵など、シークレットに見える内容は保存を拒否します。
-
-保存された記憶は常に参考情報として扱われます。過去の記憶より、現在のコード、設定、実行結果が優先されます。
-
-## MoA Advisory Round
-
-理想像・計画・最終Reviewでは、親ホストが固定3スロットの隔離されたread-only Advisorをfan-outできます。Advisorを起動するのはKiokukoではなく親ホストであり、promptだけでは隔離の証明になりません。隔離を検証できないslotは`unavailable`として報告し、親Aggregatorだけがidentityを含まない構造化結果を`enno_advice_submit`へ送ります。結果は`host_reported`として記録し、provider/model identityやraw subagent出力は保存しません。各Roundはphase、revision、mutation revision、policy、slot定義、context digestに固定されます。
-
-## 注意
-
-Kiokukoはプロンプトを横取りする仕組みではありません。自動利用は各AIクライアントとモデルのMCP呼び出しに依存するため、すべてのターンで必ず呼び出される保証はありません。
-
-詳細なコマンドは次から確認できます。
-
-```bash
-kiokuko --help
-kiokuko setup --help
-```
+実装者向け資料は[architecture](docs/architecture.md)、[database](docs/database.md)、[execution ledger](docs/execution-ledger.md)、
+[client compatibility](docs/client-compatibility.md)を参照してください。

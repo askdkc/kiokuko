@@ -25,7 +25,14 @@ import { runEmbeddingSetup } from '../embedding/setup-service.js';
 import type { ModelDownloader } from '../embedding/model-download.js';
 import type { InstalledModel } from '../embedding/model-installation.js';
 import type { PathEnvironment } from '../config/paths.js';
-import { setupGlobalClients, type SetupOptions, type SetupResult } from './setup.js';
+import {
+  parseEnnoSetupMode,
+  parseSetupClients,
+  parseSetupSkillDiscoveryMode,
+  runSetupFlow,
+  type SetupOptions,
+  type SetupResult,
+} from './setup.js';
 
 const MAX_SYNC_JOBS = 64;
 const DRAIN_DEADLINE_MS = 120_000;
@@ -109,6 +116,8 @@ export interface EmbeddingsCommandDependencies {
   readonly modelDownloader?: ModelDownloader;
   readonly modelInstaller?: (preset: typeof import('../embedding/presets/local-small.js').LOCAL_SMALL_PRESET, options: Parameters<typeof runEmbeddingSetup>[2]) => Promise<InstalledModel>;
   readonly pathEnvironment?: PathEnvironment;
+  readonly setupInput?: NodeJS.ReadableStream;
+  readonly setupOutput?: NodeJS.WritableStream;
   readonly setupGlobalClients?: (options: SetupOptions) => Promise<Pick<SetupResult, 'clients' | 'projectAgentFiles'>>;
 }
 
@@ -348,16 +357,50 @@ export function registerEmbeddingsCommands(cli: Command, dependencies: Embedding
   const embeddings = cli.command('embeddings').description('Manage semantic memory embeddings');
 
   embeddings.command('setup')
-    .description('Install semantic search and refresh managed instructions in registered projects')
+    .description('Install semantic search and configure supported clients')
     .option('--preset <name>', 'Embedding preset', 'local-small')
+    .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes')
+    .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
     .option('--dry-run', 'Plan setup without downloading or mutating anything')
+    .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
+    .option('--skill-discovery <mode>', 'External Skill discovery: off,official,community')
+    .option('--enno-oduno <mode>', 'Enno-Oduno agent loop: on,off')
     .option('--offline', 'Use only an already verified local installation')
     .option('--replace', 'Replace a different active embedding profile')
     .option('--json', 'Emit one JSON response')
-    .action(async (options: { preset: string; dryRun?: boolean; offline?: boolean; replace?: boolean; json?: boolean }) => {
+    .action(async (options: {
+      preset: string;
+      clients?: string;
+      command: string;
+      dryRun?: boolean;
+      standardSkills: boolean;
+      skillDiscovery?: string;
+      ennoOduno?: string;
+      offline?: boolean;
+      replace?: boolean;
+      json?: boolean;
+    }) => {
       const dryRun = options.dryRun === true;
       const confirmed = true;
       if (!dryRun) await ensureOptionalRuntime(dependencies);
+      const clients = options.clients === undefined ? undefined : parseSetupClients(options.clients);
+      const skillDiscoveryMode = options.skillDiscovery === undefined
+        ? undefined
+        : parseSetupSkillDiscoveryMode(options.skillDiscovery);
+      const setup = await runSetupFlow<Pick<SetupResult, 'clients' | 'projectAgentFiles'>>({
+        ...(dependencies.pathEnvironment === undefined ? {} : { environment: dependencies.pathEnvironment }),
+        ...(clients === undefined ? {} : { clients }),
+        command: options.command,
+        dryRun,
+        standardSkills: options.standardSkills,
+        ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
+        ...(options.ennoOduno === undefined ? {} : { ennoOduno: parseEnnoSetupMode(options.ennoOduno) }),
+        json: options.json === true,
+        ...(dependencies.setupInput === undefined ? {} : { input: dependencies.setupInput }),
+        ...(dependencies.setupOutput === undefined ? {} : { output: dependencies.setupOutput }),
+      }, {
+        ...(dependencies.setupGlobalClients === undefined ? {} : { setupGlobalClients: dependencies.setupGlobalClients }),
+      });
       const embeddingData = await dependencies.withDatabase((database, backend) => runEmbeddingSetup(database, {
         presetId: options.preset,
         confirmed,
@@ -371,19 +414,11 @@ export function registerEmbeddingsCommands(cli: Command, dependencies: Embedding
         ...(dependencies.provider === undefined ? {} : { provider: dependencies.provider }),
         ...(backend === undefined ? {} : { backendId: backend.id }),
       }));
-      const projectSetup = await (dependencies.setupGlobalClients ?? setupGlobalClients)({
-        // Embedding setup refreshes registered project instructions, but does
-        // not rewrite global client MCP configuration. Use `kiokuko setup`
-        // for explicit client configuration and conflict replacement.
-        clients: [],
-        ...(dependencies.pathEnvironment === undefined ? {} : dependencies.pathEnvironment),
-        dryRun,
-      });
       const data = {
         ...embeddingData,
         projectSetup: {
-          clients: projectSetup.clients,
-          projectAgentFiles: projectSetup.projectAgentFiles,
+          clients: setup.clients,
+          projectAgentFiles: setup.projectAgentFiles,
         },
       };
       output(options.json, 'embeddings.setup', data, data.semanticEnabled ? 'Semantic retrieval enabled.' : 'Embedding setup plan created.');

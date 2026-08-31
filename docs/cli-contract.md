@@ -10,8 +10,10 @@ kiokuko setup
 This keeps lexical retrieval and the normal setup flow available without the
 optional local semantic runtime. To opt into local semantic retrieval, run the
 following command. It installs the pinned optional dependencies when needed,
-then refreshes registered-project instructions. It does not rewrite global
-client MCP configuration; use `kiokuko setup` for explicit client setup:
+then applies the same client configuration flow as `kiokuko setup`: managed
+MCP blocks are updated and registered-project instructions are refreshed.
+Unmanaged MCP identities require interactive confirmation before replacement;
+non-interactive or `--dry-run --json` runs fail closed without changing them.
 
 ```bash
 kiokuko embeddings setup
