@@ -899,11 +899,18 @@ async function conditionalInstall(
       expectation.containmentRoot,
     );
     await dependencies.beforeRename?.(filePath, quarantinePath);
-    requireArtifact(
-      await readArtifactInBoundDirectory(filePath, parent, expectation.containmentRoot),
-      plannedTarget,
-      'Planned target changed during the update quarantine hook',
+    const targetAfterQuarantineHook = await readArtifactInBoundDirectory(
+      filePath,
+      parent,
+      expectation.containmentRoot,
     );
+    if (!sameArtifact(targetAfterQuarantineHook, plannedTarget)) {
+      // A concurrent atomic writer can win between the initial read and this
+      // second observation. Report a target-scoped conflict so callers that
+      // support convergence can observe the winner instead of treating the
+      // expected race as an integrity failure.
+      throw changedAfterPlanning(filePath);
+    }
     await requireAbsentInBoundDirectory(
       quarantinePath,
       parent,

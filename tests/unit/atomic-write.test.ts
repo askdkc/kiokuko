@@ -1300,6 +1300,30 @@ test('conditional update restores the exact original when an alternate appears a
   assert.equal(await readFile(alternate, 'utf8'), 'concurrent\n');
 });
 
+test('conditional update reports a target-scoped conflict when a concurrent writer wins before quarantine', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-atomic-concurrent-quarantine-'));
+  const target = path.join(directory, 'target.txt');
+  await writeFile(target, 'original\n');
+  const planned = await readRegularFile(target);
+  assert.ok(planned);
+
+  await assert.rejects(
+    atomicWriteTextIfUnchanged(target, 'managed\n', { expected: planned }, 0o640, {
+      beforeRename: async () => {
+        await rename(target, `${target}.concurrent`);
+        await writeFile(target, 'concurrent\n');
+      },
+    }),
+    (error: unknown) => error instanceof Error
+      && 'code' in error
+      && error.code === 'CONFLICT'
+      && 'details' in error
+      && (error.details as { target?: string }).target === target,
+  );
+  assert.equal(await readFile(target, 'utf8'), 'concurrent\n');
+  assert.equal(await readFile(`${target}.concurrent`, 'utf8'), 'original\n');
+});
+
 test('a failed create rollback reports the still-installed target as a committed mutation', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-atomic-alternate-create-rollback-'));
   const target = path.join(directory, 'target.txt');
