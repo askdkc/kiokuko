@@ -41,32 +41,19 @@ required = true
 
 ### Semantic検索（任意）
 
-既定ではlexical検索を使います。ローカル、または明示的に許可したOpenAI互換
-Embedding providerを使う場合は、環境変数で設定してprofileをactivateします。
+既定ではlexical検索を使います。固定された多言語local modelは明示的な
+setup commandだけで導入します。
 
 ```bash
-export KIOKUKO_EMBEDDINGS=optional
-export KIOKUKO_EMBEDDING_BASE_URL=http://127.0.0.1:8080/v1
-export KIOKUKO_EMBEDDING_MODEL=your-model
-export KIOKUKO_EMBEDDING_DIMENSIONS=1536
-export KIOKUKO_EMBEDDING_DISTANCE_CEILING=0.8
-kiokuko embeddings activate
-kiokuko embeddings sync --limit 64
+kiokuko embeddings setup
 ```
 
-provider停止時もstartupと検索をfail closedにしたい場合だけ、
-`KIOKUKO_EMBEDDINGS=required`を使います。remote HTTPS endpointには
-`KIOKUKO_EMBEDDING_ALLOW_REMOTE=true`も必要です。API keyは
-`KIOKUKO_EMBEDDING_API_KEY`からだけ読み、statusやdoctorには表示しません。
-`kiokuko embeddings status --json`はprofileとcoverageのmetadata、
-`rebuild`はcurrent entryを再enqueueし、`rebuild --wait`は完了まで処理します。
-MCPはtask retrieval前にworkspace限定の小さなdrainだけを行い、無制限のbackground
-rebuildは実行しません。
-`KIOKUKO_VECTOR_BACKEND=auto`はpackage所有・exact versionの
-`sqlite-vec` extensionを安全にloadできる場合だけ使用し、それ以外は
-JavaScript exact-cosine backendへfallbackします。extension loadingを禁止する
-場合は`javascript`を指定します。`sqlite-vec`を強制するとload不能時にfail closedします。
-任意のextension pathを受け取るcommandはありません。
+自動化では`--preset local-small --yes --json`を使います。setupはallowlist済み
+revisionの全fileを検証してからloadし、設定をSQLiteへ保存し、offlineでvectorを生成します。
+`--dry-run`はdownloadと変更を行わず、`--offline`は検証済みinstallを要求し、
+`--replace`は別profileからの切替を許可します。状態は`kiokuko embeddings status --json`、
+`kiokuko doctor --json`で確認し、破損時は`kiokuko embeddings repair`を使います。
+Embedding設定はenvironmentから読まず、model weightはnpm packageへ含めません。
 
 ## 使うほど賢くなる仕組み
 

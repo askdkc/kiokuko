@@ -7,6 +7,8 @@ import { readEmbeddingProfile, readEmbeddingRuntimeState } from './store.js';
 import { decodeVector, encodeVector, hashVectorBytes } from './vector.js';
 
 export const QUERY_TEMPLATE_VERSION = 1 as const;
+export const QUERY_TEMPLATE_VERSION_V2 = 2 as const;
+export const EMBEDDING_QUERY_INPUT_CONTRACT = 'e5-query-passage-v1' as const;
 export const MAX_QUERY_TEXT_BYTES = 32 * 1024;
 export const QUERY_EMBEDDING_CACHE_LIMIT = 512;
 
@@ -77,6 +79,27 @@ export function normalizeEmbeddingQuery(value: string): string {
 /** Hash only the canonical query template; the raw query is never stored. */
 export function queryEmbeddingHash(value: string): string {
   return canonicalContentHash({ templateVersion: QUERY_TEMPLATE_VERSION, text: canonicalQueryText(value) });
+}
+
+export function normalizeCanonicalEmbeddingQuery(value: string): string {
+  return canonicalQueryText(value);
+}
+
+export function renderEmbeddingQueryInput(value: string, prefix = 'query: '): string {
+  const normalized = normalizeCanonicalEmbeddingQuery(value);
+  if (prefix !== 'query: ') invalid('Embedding provider query prefix is invalid');
+  return `${prefix}${normalized}`;
+}
+
+/** Hash the complete v2 provider input contract without storing raw query text. */
+export function queryEmbeddingHashV2(value: string): string {
+  const normalized = normalizeCanonicalEmbeddingQuery(value);
+  return canonicalContentHash({
+    contract: EMBEDDING_QUERY_INPUT_CONTRACT,
+    prefix: 'query: ',
+    templateVersion: QUERY_TEMPLATE_VERSION_V2,
+    text: normalized,
+  });
 }
 
 export const embeddingQueryHash = queryEmbeddingHash;

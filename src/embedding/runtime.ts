@@ -11,7 +11,7 @@ import {
   type ClaimedEmbeddingJob,
   type EmbeddingJobErrorCode,
 } from './jobs.js';
-import { parseEmbeddingConfig, requireEnabledEmbeddingConfig } from './config.js';
+import { requireEnabledEmbeddingConfig } from './config.js';
 import { createEmbeddingProfile, embeddingProfileId } from './profile.js';
 import {
   normalizeEmbeddingQuery,
@@ -24,6 +24,9 @@ import { EmbeddingProviderError } from './provider.js';
 import { OpenAICompatibleEmbeddingProvider } from './openai-compatible-provider.js';
 import { normalizeVector } from './vector.js';
 import { readActiveEmbeddingProfile, readEntryEmbedding } from './store.js';
+import { defaultEmbeddingConfig, readPersistedEmbeddingSettings } from './settings.js';
+import { getEmbeddingPresetDirectory } from '../config/paths.js';
+import { LocalTransformersEmbeddingProvider } from './local-transformers-provider.js';
 import type {
   EmbeddingConfig,
   EmbeddingDrainResult,
@@ -34,6 +37,7 @@ import type {
   EnabledEmbeddingConfig,
   PreparedSemanticQuery,
   VectorSearchBackend,
+  LocalEmbeddingProfile,
 } from './types.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import type { HybridSearchRuntime } from '../memory/hybrid-retrieval.js';
@@ -48,6 +52,7 @@ export interface EmbeddingRuntimeOptions {
   readonly backend?: VectorSearchBackend;
   readonly now?: () => string;
   readonly enqueueWrite?: <T>(operation: () => T | PromiseLike<T>) => Promise<T>;
+  readonly profile?: EmbeddingProfile;
 }
 
 interface EnabledRuntimeState {
@@ -150,7 +155,7 @@ function createEnabledRuntime(
   config: EnabledEmbeddingConfig,
   options: EmbeddingRuntimeOptions,
 ): EmbeddingRuntime {
-  const profile = createEmbeddingProfile(config);
+  const profile = options.profile ?? createEmbeddingProfile(config);
   const active = readActiveEmbeddingProfile(database);
   if (active === null || active.profile.profileId !== profile.profileId) {
     if (config.mode === 'required') unavailable('Embedding profile is not active');
@@ -400,11 +405,36 @@ function createEnabledRuntime(
 
 export function createEmbeddingRuntime(
   database: SqliteDatabase,
-  config: EmbeddingConfig = parseEmbeddingConfig(),
+  config?: EmbeddingConfig,
   options: EmbeddingRuntimeOptions = {},
 ): EmbeddingRuntime {
-  if (config.mode === 'off') return disabledRuntime('off');
-  return createEnabledRuntime(database, requireEnabledEmbeddingConfig(config), options);
+  const persisted = config ?? (() => {
+    try { return readPersistedEmbeddingSettings(database); } catch { return defaultEmbeddingConfig(); }
+  })();
+  if (persisted.mode === 'off') return disabledRuntime('off');
+  const active = readActiveEmbeddingProfile(database);
+  if (active?.profile.identity.schemaVersion === 2) {
+    const localIdentity = active.profile.identity;
+    if (localIdentity.schemaVersion !== 2) throw new KiokukoError('INTEGRITY_ERROR', 'Local embedding profile identity is invalid');
+    const localProfile: LocalEmbeddingProfile = { profileId: active.profile.profileId, identity: localIdentity };
+    const localProvider = options.provider ?? new LocalTransformersEmbeddingProvider({
+      profile: localProfile.identity,
+      modelDirectory: getEmbeddingPresetDirectory(localProfile.identity.presetId, localProfile.identity.modelRevision),
+    });
+    return createEnabledRuntime(database, {
+      mode: persisted.mode,
+      provider: 'openai-compatible',
+      baseUrl: 'http://127.0.0.1/kiokuko-local',
+      model: localProfile.identity.sourceModel,
+      dimensions: localProfile.identity.dimensions,
+      distanceCeiling: localProfile.identity.distanceCeiling,
+      allowRemote: false,
+      vectorBackend: persisted.vectorBackend,
+      timeoutMs: persisted.timeoutMs,
+      batchSize: persisted.batchSize,
+    }, { ...options, provider: localProvider, profile: localProfile });
+  }
+  return createEnabledRuntime(database, requireEnabledEmbeddingConfig(persisted), options);
 }
 
 /** Convert an owned runtime into the retrieval-only shape consumed by search lanes. */

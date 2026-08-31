@@ -22,6 +22,7 @@ import { inspectLegacyContextDeliveries, type LegacyDeliveryInspectionReport } f
 import { inspectEmbeddingHealth } from '../embedding/diagnostics.js';
 import { EmbeddingBackendUnavailableError, openEmbeddingDatabase } from '../embedding/backend.js';
 import { parseEmbeddingConfig } from '../embedding/config.js';
+import { readPersistedEmbeddingSettings } from '../embedding/settings.js';
 import type { VectorSearchBackend } from '../embedding/types.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 
@@ -364,7 +365,11 @@ async function collectDoctorResult(
     detail: `scanned=${options.legacyDeliveries.scanned}, valid=${options.legacyDeliveries.valid}, invalid=${options.legacyDeliveries.invalid}, findings=${options.legacyDeliveries.findings.length}, scanTruncated=${options.legacyDeliveries.scanTruncated}, findingsTruncated=${options.legacyDeliveries.findingsTruncated}`,
   };
   const runtime = await runtimeCheck(options.databasePath, options.runtimeDescriptorPath);
-  const embeddings = inspectEmbeddingHealth(database, options.embeddingEnvironment ?? process.env, options.embeddingBackend);
+  const embeddings = inspectEmbeddingHealth(
+    database,
+    options.embeddingEnvironment ?? readPersistedEmbeddingSettings(database),
+    options.embeddingBackend,
+  );
   const ennoLeaseSchemaPresent = ['enno_operation_receipts', 'enno_verifier_runs'].every((table) => (
     Boolean(database.prepare(`
       SELECT 1 AS present FROM sqlite_schema
@@ -498,7 +503,9 @@ export async function runDoctor(
   const initialized = await initializeDatabase(initOptions);
   let embeddingConfig;
   try {
-    embeddingConfig = parseEmbeddingConfig(options.embeddingEnvironment ?? process.env);
+    embeddingConfig = options.embeddingEnvironment === undefined
+      ? undefined
+      : parseEmbeddingConfig(options.embeddingEnvironment);
   } catch {
     embeddingConfig = undefined;
   }
@@ -511,7 +518,7 @@ export async function runDoctor(
   } else {
     try {
       opened = await openEmbeddingDatabase(initialized.databasePath, {
-        config: embeddingConfig,
+        ...(embeddingConfig === undefined ? {} : { config: embeddingConfig }),
         openDatabase: dependencies.openConnection ?? openConnection,
         ...(options.embeddingBackend === undefined ? {} : { backend: options.embeddingBackend }),
       });

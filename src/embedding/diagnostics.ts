@@ -5,6 +5,7 @@ import { embeddingProfileId, createEmbeddingProfile } from './profile.js';
 import { readActiveEmbeddingProfile, readEmbeddingRuntimeState } from './store.js';
 import { decodeVector, hashVectorBytes } from './vector.js';
 import type { EmbeddingConfig, EmbeddingMode, EmbeddingProfile, VectorSearchBackend } from './types.js';
+import { readPersistedEmbeddingSettings } from './settings.js';
 
 const EMBEDDING_TABLES = [
   'embedding_profiles',
@@ -141,7 +142,7 @@ function activeStatus(
     mode: config.mode,
     activeProfileId: active.profileId,
     providerKind: active.identity.providerKind,
-    model: active.identity.model,
+    model: active.identity.schemaVersion === 2 ? active.identity.sourceModel : active.identity.model,
     dimensions: active.identity.dimensions,
     distanceMetric: active.identity.distanceMetric,
     distanceCeiling: active.identity.distanceCeiling,
@@ -162,7 +163,7 @@ function activeStatus(
 
 export function readEmbeddingStatus(
   database: SqliteDatabase,
-  config: EmbeddingConfig = parseEmbeddingConfig(),
+  config: EmbeddingConfig = readPersistedEmbeddingSettings(database),
   backend?: VectorSearchBackend,
 ): EmbeddingStatus {
   const runtime = readEmbeddingRuntimeState(database);
@@ -260,13 +261,28 @@ function safeConfig(environment: NodeJS.ProcessEnv): { config?: EmbeddingConfig;
   }
 }
 
+function isEmbeddingConfig(value: NodeJS.ProcessEnv | EmbeddingConfig): value is EmbeddingConfig {
+  return typeof value.mode === 'string' && typeof value.provider === 'string'
+    && typeof value.allowRemote === 'boolean' && typeof value.vectorBackend === 'string'
+    && typeof value.timeoutMs === 'number' && typeof value.batchSize === 'number';
+}
+
 export function inspectEmbeddingHealth(
   database: SqliteDatabase,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment: NodeJS.ProcessEnv | EmbeddingConfig = readPersistedEmbeddingSettings(database),
   backend?: VectorSearchBackend,
 ): EmbeddingHealth {
-  const parsed = safeConfig(environment);
-  const config = parsed.config ?? { mode: 'off', provider: 'openai-compatible', allowRemote: false, vectorBackend: 'auto', timeoutMs: 30_000, batchSize: 16 };
+  const parsed = isEmbeddingConfig(environment)
+    ? { config: environment, invalid: false }
+    : safeConfig(environment);
+  const config: EmbeddingConfig = (isEmbeddingConfig(environment) ? environment : parsed.config) ?? {
+    mode: 'off',
+    provider: 'openai-compatible',
+    allowRemote: false,
+    vectorBackend: 'auto',
+    timeoutMs: 30_000,
+    batchSize: 16,
+  };
   let status = emptyStatus(config, backend);
   let findings = parsed.invalid ? 1 : 0;
   const tables = objectNames(database, 'table');

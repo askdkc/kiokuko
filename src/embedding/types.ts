@@ -3,6 +3,7 @@ import type { SqliteDatabase } from '../db/adapter.js';
 export type EmbeddingMode = 'off' | 'optional' | 'required';
 export type VectorBackendPreference = 'auto' | 'javascript' | 'sqlite-vec';
 export type EmbeddingProviderKind = 'openai-compatible';
+export type LocalEmbeddingProviderKind = 'local-transformers';
 
 export interface EmbeddingConfig {
   readonly mode: EmbeddingMode;
@@ -38,9 +39,39 @@ export interface EmbeddingProfileIdentity {
   readonly distanceCeiling: number;
 }
 
+/** Immutable identity for a verified, local Transformers.js embedding space. */
+export interface LocalEmbeddingProfileIdentity {
+  readonly schemaVersion: 2;
+  readonly providerKind: 'local-transformers';
+  readonly presetId: 'local-small';
+  readonly sourceModel: 'intfloat/multilingual-e5-small';
+  readonly artifactRepository: 'Xenova/multilingual-e5-small';
+  readonly modelRevision: string;
+  readonly artifactManifestHash: string;
+  readonly inferenceEngine: 'transformers-js';
+  readonly inferenceEngineVersion: string;
+  readonly dtype: 'q8';
+  readonly pooling: 'mean';
+  readonly normalize: true;
+  readonly maximumTokens: 512;
+  readonly dimensions: 384;
+  readonly distanceMetric: 'cosine';
+  readonly distanceCeiling: number;
+  readonly inputContract: 'e5-query-passage-v1';
+  readonly documentTemplateVersion: 2;
+  readonly queryTemplateVersion: 2;
+  readonly queryPrefix: 'query: ';
+  readonly documentPrefix: 'passage: ';
+}
+
+export interface LocalEmbeddingProfile {
+  readonly profileId: string;
+  readonly identity: LocalEmbeddingProfileIdentity;
+}
+
 export interface EmbeddingProfile {
   readonly profileId: string;
-  readonly identity: EmbeddingProfileIdentity;
+  readonly identity: EmbeddingProfileIdentity | LocalEmbeddingProfileIdentity;
 }
 
 export interface PreparedSemanticQuery {
@@ -80,7 +111,7 @@ export interface VectorSearchBackend {
 }
 
 export interface EmbeddingProvider {
-  readonly profile: EmbeddingProfileIdentity;
+  readonly profile: EmbeddingProfileIdentity | LocalEmbeddingProfileIdentity;
 
   embed(
     inputs: readonly string[],

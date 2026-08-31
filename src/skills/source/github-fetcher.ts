@@ -136,15 +136,16 @@ export class GitHubSkillSourceFetcher implements SkillSourceFetcher {
       return response;
     } catch (error) {
       if (error instanceof SkillSourceError) throw error;
+      if (signal?.aborted && signal.reason !== undefined) throw signal.reason;
       if (isExternalFetchFailure(error)) throw new SkillSourceError('source_unavailable');
       throw error;
     }
   }
   private async text(url: URL, signal: AbortSignal, limit: number): Promise<string> {
     const response = await this.request(url, signal);
-    return this.responseText(response, limit, 'skill_too_large');
+    return this.responseText(response, limit, 'skill_too_large', signal);
   }
-  private async responseText(response: Response, limit: number, overflowCode: SkillSourceFailureCode): Promise<string> {
+  private async responseText(response: Response, limit: number, overflowCode: SkillSourceFailureCode, signal?: AbortSignal): Promise<string> {
     const contentLength = response.headers.get('content-length');
     if (contentLength !== null && !/^\d+$/u.test(contentLength)) skillSourceFailure('skill_validation_failed');
     const declared = contentLength === null ? null : Number(contentLength);
@@ -162,6 +163,7 @@ export class GitHubSkillSourceFetcher implements SkillSourceFetcher {
       if (INVALID_UNICODE.test(content)) skillSourceFailure('skill_validation_failed');
       return content;
     } catch (error) {
+      if (signal?.aborted && signal.reason !== undefined) throw signal.reason;
       if (isExternalFetchFailure(error)) throw new SkillSourceError('source_unavailable');
       throw error;
     }
@@ -169,7 +171,7 @@ export class GitHubSkillSourceFetcher implements SkillSourceFetcher {
   private async json(url: URL, signal: AbortSignal, limit = MAX_API_RESPONSE_BYTES, overflowCode: SkillSourceFailureCode = 'skill_validation_failed'): Promise<unknown> {
     const response = await this.request(url, signal);
     if (!hasAcceptedGitHubJsonContentType(response)) skillSourceFailure('skill_validation_failed');
-    const body = await this.responseText(response, limit, overflowCode);
+    const body = await this.responseText(response, limit, overflowCode, signal);
     try {
       return parseStrictJson(
         body,
@@ -185,7 +187,7 @@ export class GitHubSkillSourceFetcher implements SkillSourceFetcher {
     const { candidate, owner, repo } = sourceParts(input);
     const fetchRequest = sourceFetchRequest(request);
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    const onAbort = () => controller.abort();
+    const onAbort = () => controller.abort(signal?.reason);
     if (signal?.aborted) controller.abort();
     else signal?.addEventListener('abort', onAbort, { once: true });
     try {

@@ -47,6 +47,7 @@ function issueAuthorization(candidate: SkillCandidate): SkillMaterializationAuth
 export async function authorizeSkillMaterialization(
   provider: SkillRegistryProvider,
   candidate: SkillCandidate,
+  signal?: AbortSignal,
 ): Promise<SkillMaterializationAuthorizationResult> {
   const validated = validateSkillCandidate(candidate);
   const canonicalCandidate = {
@@ -66,7 +67,7 @@ export async function authorizeSkillMaterialization(
   if (provider.audit === undefined) return { status: 'unavailable', candidate: auditableCandidate };
   const expectedBinding = binding(auditableCandidate);
   const auditInput = Object.freeze({ ...auditableCandidate });
-  const result = await provider.audit(auditInput);
+  const result = await provider.audit(auditInput, signal);
   const postAuditCandidate = validateSkillCandidate(auditInput);
   if (!sameBinding(expectedBinding, binding(postAuditCandidate))) {
     throw new SkillProviderError('registry_invalid_response');

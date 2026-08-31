@@ -31,10 +31,10 @@ import {
   createEmbeddingRuntime,
   type EmbeddingRuntimeOptions,
 } from '../embedding/runtime.js';
-import { parseEmbeddingConfig } from '../embedding/config.js';
 import { openEmbeddingDatabase, type EmbeddingDatabaseOpener } from '../embedding/backend.js';
 import { createEmbeddingWorker, type EmbeddingWorker } from '../embedding/worker.js';
 import type { EmbeddingProvider, EmbeddingRuntime, EmbeddingConfig, VectorSearchBackend } from '../embedding/types.js';
+import { defaultEmbeddingConfig } from '../embedding/settings.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 0;
@@ -63,7 +63,7 @@ export interface HttpApplicationContext {
 export type HttpApplicationFactory = (context: HttpApplicationContext) => RequestListener;
 export type EmbeddingRuntimeFactory = (
   database: SqliteDatabase,
-  config: EmbeddingConfig,
+  config: EmbeddingConfig | undefined,
   options: EmbeddingRuntimeOptions,
 ) => EmbeddingRuntime | PromiseLike<EmbeddingRuntime>;
 export type EmbeddingWorkerFactory = (runtime: EmbeddingRuntime) => EmbeddingWorker;
@@ -396,10 +396,13 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       databasePath,
       ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
     });
-    const embeddingConfig = options.embeddingConfig ?? parseEmbeddingConfig(options.env ?? process.env);
+    const embeddingConfig = options.embeddingConfig
+      ?? (options.openDatabase === undefined && options.dependencies?.openDatabase === undefined
+        ? undefined
+        : defaultEmbeddingConfig());
     const configuredEmbeddingBackend = options.dependencies?.embeddingBackend ?? options.embeddingBackend;
     const opened = await openEmbeddingDatabase(databasePath, {
-      config: embeddingConfig,
+      ...(embeddingConfig === undefined ? {} : { config: embeddingConfig }),
       openDatabase,
       ...(configuredEmbeddingBackend === undefined ? {} : { backend: configuredEmbeddingBackend }),
     });

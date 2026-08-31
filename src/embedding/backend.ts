@@ -4,6 +4,7 @@ import { KiokukoError } from '../errors.js';
 import { JavaScriptVectorSearchBackend } from './javascript-backend.js';
 import { createSqliteVecLoader, type SqliteVecLoader } from './sqlite-vec-loader.js';
 import { SqliteVecVectorSearchBackend } from './sqlite-vec-backend.js';
+import { defaultEmbeddingConfig, readPersistedEmbeddingSettings } from './settings.js';
 import type { EmbeddingConfig, VectorSearchBackend } from './types.js';
 
 export type EmbeddingDatabaseOpener = (
@@ -12,7 +13,7 @@ export type EmbeddingDatabaseOpener = (
 ) => SqliteDatabase | PromiseLike<SqliteDatabase>;
 
 export interface OpenEmbeddingDatabaseOptions {
-  readonly config: EmbeddingConfig;
+  readonly config?: EmbeddingConfig;
   readonly openDatabase?: EmbeddingDatabaseOpener;
   readonly createLoader?: () => Promise<SqliteVecLoader | null>;
   readonly backend?: VectorSearchBackend;
@@ -48,18 +49,31 @@ export async function openEmbeddingDatabase(
   if (options.backend !== undefined) {
     return { database: await openDatabase(databasePath), backend: options.backend };
   }
-  if (options.config.mode === 'off') {
+  let config = options.config;
+  if (config === undefined) {
+    const probe = await openDatabase(databasePath);
+    try {
+      try {
+        config = readPersistedEmbeddingSettings(probe);
+      } catch {
+        config = defaultEmbeddingConfig();
+      }
+    } finally {
+      probe.close();
+    }
+  }
+  if (config.mode === 'off') {
     return { database: await openDatabase(databasePath), backend: undefined };
   }
 
   const javascriptBackend = new JavaScriptVectorSearchBackend();
-  if (options.config.vectorBackend === 'javascript') {
+  if (config.vectorBackend === 'javascript') {
     return { database: await openDatabase(databasePath), backend: javascriptBackend };
   }
 
   const loader = await (options.createLoader ?? createSqliteVecLoader)();
   if (loader === null) {
-    if (options.config.vectorBackend === 'sqlite-vec') forcedSqliteVecUnavailable();
+    if (config.vectorBackend === 'sqlite-vec') forcedSqliteVecUnavailable();
     return { database: await openDatabase(databasePath), backend: javascriptBackend };
   }
 
@@ -68,7 +82,7 @@ export async function openEmbeddingDatabase(
     return { database, backend: new SqliteVecVectorSearchBackend() };
   } catch (error) {
     if (!(error instanceof SqliteVecLoadError)) throw error;
-    if (options.config.vectorBackend === 'sqlite-vec') forcedSqliteVecUnavailable();
+    if (config.vectorBackend === 'sqlite-vec') forcedSqliteVecUnavailable();
     return { database: await openDatabase(databasePath), backend: javascriptBackend };
   }
 }

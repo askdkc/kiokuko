@@ -79,6 +79,7 @@ export interface PrepareAgentTaskInput {
   skillDiscoveryMode?: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
   embeddingRuntime?: EmbeddingRuntime;
+  signal?: AbortSignal;
 }
 
 export interface AnswerAgentTaskInput {
@@ -92,6 +93,7 @@ export interface AnswerAgentTaskInput {
   skillDiscoveryMode?: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
   embeddingRuntime?: EmbeddingRuntime;
+  signal?: AbortSignal;
 }
 
 export interface PreparedAgentTask {
@@ -517,6 +519,7 @@ interface FinalizeAgentTaskInput {
   discoveryMode: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
   embeddingRuntime?: EmbeddingRuntime;
+  signal?: AbortSignal;
 }
 
 interface PreparedTaskContextQuery {
@@ -696,6 +699,7 @@ async function resolveSkillDiscovery(
       maxQueries: claimed.queryBudget as 1 | 2 | 3,
       maxSelectedSkills: claimed.selectionBudget as 1 | 2,
       ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
     }, {
       ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
       assertBeforePersist: assertDiscoveryState,
@@ -707,6 +711,14 @@ async function resolveSkillDiscovery(
       assertDiscoveryState,
     );
   } catch (error) {
+    if (input.signal?.aborted) {
+      try {
+        failAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity, error);
+      } catch (recoveryError) {
+        if (recoveryError instanceof AggregateError) throw recoveryError;
+      }
+      throw error;
+    }
     failAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity, error);
   }
   return skillDiscovery;
@@ -841,6 +853,15 @@ function withPreparedEnno(
   };
 }
 
+function failTaskRunAfterAbort(database: SqliteDatabase, runId: string, cause: unknown): never {
+  try {
+    new LedgerStore(database).updateRunStatus(runId, 'failed');
+  } catch (recoveryError) {
+    throw new AggregateError([cause, recoveryError], 'Task timeout recovery could not finalize the run state');
+  }
+  throw cause;
+}
+
 type PreparedEnnoInput = Pick<PreparedAgentTask, 'project' | 'run' | 'skillDiscovery'> & {
   intake: Pick<PreparedAgentTask['intake'], 'status' | 'sessionId' | 'profile' | 'question' | 'reasoning'>;
 };
@@ -902,19 +923,25 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
     workspace: project.workspace,
     sessionId: opened.intakeSessionId,
   });
-  return finalizeAgentTask({
-    database,
-    project,
-    executionContext,
-    manifestSnapshot,
-    context,
-    runId: opened.runId,
-    capabilities: input.capabilities,
-    maxContextChars,
-    discoveryMode,
-    ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
-    ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
-  });
+  try {
+    return await finalizeAgentTask({
+      database,
+      project,
+      executionContext,
+      manifestSnapshot,
+      context,
+      runId: opened.runId,
+      capabilities: input.capabilities,
+      maxContextChars,
+      discoveryMode,
+      ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
+      ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+  } catch (error) {
+    if (input.signal?.aborted) return failTaskRunAfterAbort(database, opened.runId, error);
+    throw error;
+  }
 }
 
 export async function answerAgentTask(database: SqliteDatabase, input: AnswerAgentTaskInput): Promise<PreparedAgentTask> {
@@ -949,17 +976,23 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
     workspace: project.workspace,
     sessionId: answered.intakeSessionId,
   });
-  return finalizeAgentTask({
-    database,
-    project,
-    executionContext,
-    manifestSnapshot,
-    context,
-    runId: answered.runId,
-    capabilities: input.capabilities,
-    maxContextChars,
-    discoveryMode,
-    ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
-    ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
-  });
+  try {
+    return await finalizeAgentTask({
+      database,
+      project,
+      executionContext,
+      manifestSnapshot,
+      context,
+      runId: answered.runId,
+      capabilities: input.capabilities,
+      maxContextChars,
+      discoveryMode,
+      ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
+      ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+  } catch (error) {
+    if (input.signal?.aborted) return failTaskRunAfterAbort(database, answered.runId, error);
+    throw error;
+  }
 }

@@ -7,6 +7,27 @@ const MAX_MODEL_LENGTH = 256;
 const MAX_API_KEY_LENGTH = 4_096;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 
+export const DEPRECATED_EMBEDDING_ENVIRONMENT_VARIABLES = Object.freeze([
+  'KIOKUKO_EMBEDDINGS',
+  'KIOKUKO_EMBEDDING_PROVIDER',
+  'KIOKUKO_EMBEDDING_BASE_URL',
+  'KIOKUKO_EMBEDDING_MODEL',
+  'KIOKUKO_EMBEDDING_DIMENSIONS',
+  'KIOKUKO_EMBEDDING_DISTANCE_CEILING',
+  'KIOKUKO_EMBEDDING_API_KEY',
+  'KIOKUKO_EMBEDDING_ALLOW_REMOTE',
+  'KIOKUKO_EMBEDDING_TIMEOUT_MS',
+  'KIOKUKO_EMBEDDING_BATCH_SIZE',
+  'KIOKUKO_VECTOR_BACKEND',
+] as const);
+
+/** Report only deprecated setting names; never inspect or return their values. */
+export function findDeprecatedEmbeddingEnvironmentVariables(
+  environment: NodeJS.ProcessEnv = process.env,
+): readonly string[] {
+  return DEPRECATED_EMBEDDING_ENVIRONMENT_VARIABLES.filter((name) => Object.hasOwn(environment, name));
+}
+
 function invalid(message: string): never {
   throw new KiokukoError('VALIDATION_ERROR', message);
 }

@@ -362,3 +362,55 @@ export async function ensurePlatformDataDirectory(options: PathEnvironment = {})
   await mkdir(directory, { recursive: true, mode: 0o700 });
   return directory;
 }
+
+function embeddingCoordinate(value: string, field: string): string {
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(value) && field === 'preset') {
+    throw new KiokukoError('VALIDATION_ERROR', `${field} is invalid`);
+  }
+  if (field === 'revision' && !/^[0-9a-f]{40}$/u.test(value)) {
+    throw new KiokukoError('VALIDATION_ERROR', `${field} is invalid`);
+  }
+  return value;
+}
+
+export function getEmbeddingModelsDirectory(options: PathEnvironment = {}): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getPlatformDataDirectory({ platform, env }), 'models', 'embeddings');
+}
+
+export function getEmbeddingModelStagingDirectory(options: PathEnvironment = {}): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getEmbeddingModelsDirectory({ platform, env }), '.staging');
+}
+
+export function getEmbeddingSetupLockPath(options: PathEnvironment = {}): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getEmbeddingModelsDirectory({ platform, env }), '.setup.lock');
+}
+
+export function getEmbeddingPresetDirectory(
+  preset: string,
+  revision: string,
+  options: PathEnvironment = {},
+): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(
+    getEmbeddingModelsDirectory({ platform, env }),
+    embeddingCoordinate(preset, 'preset'),
+    embeddingCoordinate(revision, 'revision'),
+  );
+}
+
+export function getEmbeddingModelManifestPath(
+  preset: string,
+  revision: string,
+  options: PathEnvironment = {},
+): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getEmbeddingPresetDirectory(preset, revision, { platform, env }), 'kiokuko-model-manifest.json');
+}

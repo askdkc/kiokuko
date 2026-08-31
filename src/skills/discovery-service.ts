@@ -304,11 +304,12 @@ export class SkillDiscoveryService {
     this.assertBeforePersist = dependencies.assertBeforePersist;
   }
 
-  private async fetchSnapshot(candidate: SkillCandidate, request: SkillSourceFetchRequest) {
+  private async fetchSnapshot(candidate: SkillCandidate, request: SkillSourceFetchRequest, signal?: AbortSignal) {
     const key = JSON.stringify([candidateId(candidate), request.purpose, request.purpose === 'refresh' ? request.expectedPrimaryPath : null]);
-    const active = this.sourceFlights.get(key);
+    const active = signal === undefined ? this.sourceFlights.get(key) : undefined;
     if (active) return active;
-    const flight = this.sourceFetcher.fetch(candidate, request);
+    const flight = this.sourceFetcher.fetch(candidate, request, signal);
+    if (signal !== undefined) return flight;
     this.sourceFlights.set(key, flight);
     try { return await flight; }
     finally { if (this.sourceFlights.get(key) === flight) this.sourceFlights.delete(key); }
@@ -321,6 +322,7 @@ export class SkillDiscoveryService {
     mode: 'official' | 'community';
     now: string;
     allowAuthenticationFallback: boolean;
+    signal?: AbortSignal;
   }): Promise<{ result: SkillSearchResult; cacheHits: number; authenticationFallbackUsed: boolean; failureCode?: 'registry_authentication_failed' | 'registry_unavailable' | 'registry_rate_limited' }> {
     const persistent = readPersistentSkillSearchCache(database, { ...input, provider: input.provider.id });
     if (persistent !== null) {
@@ -339,7 +341,7 @@ export class SkillDiscoveryService {
         query: input.query,
         mode: input.mode,
         owner: input.owner,
-        loader: () => findSkills({ query: input.query, limit: 20, ...(input.owner === null ? {} : { owner: input.owner }) }, {
+          loader: () => findSkills({ query: input.query, limit: 20, ...(input.owner === null ? {} : { owner: input.owner }), ...(input.signal === undefined ? {} : { signal: input.signal }) }, {
           provider: input.provider,
           fallbackOnAuthentication: false,
         }),
@@ -435,7 +437,7 @@ export class SkillDiscoveryService {
     const search = async (query: string, owner: string | null, requirements: SkillRequirement[], target: Map<string, AssociatedCandidate>): Promise<void> => {
       if (providerRequestsLatched) return;
       try {
-        const loaded = await this.searchWithCache(database, { provider: this.provider, query, owner, mode, now, allowAuthenticationFallback: true });
+        const loaded = await this.searchWithCache(database, { provider: this.provider, query, owner, mode, now, allowAuthenticationFallback: true, ...(input.signal === undefined ? {} : { signal: input.signal }) });
         base.cacheHits += loaded.cacheHits;
         primaryAuthenticationFailed ||= loaded.authenticationFallbackUsed;
         if (loaded.failureCode !== undefined) {
@@ -473,7 +475,7 @@ export class SkillDiscoveryService {
         else for (const candidate of cachedCurated.candidates) associateCandidate(officialCandidates, candidate, requirementsToSearch);
       } else {
         try {
-          const curated = await this.provider.curated();
+          const curated = await this.provider.curated(input.signal);
           const result: SkillSearchResult = { provider: this.provider.id, experimental: compatibilityProvider(this.provider.id), candidates: curated ?? [] };
           writePersistentSkillSearchCache(database, { provider: this.provider.id, query: CURATED_CACHE_QUERY, owner: null, mode, result, outcome: result.candidates.length === 0 ? 'empty' : 'success', ttlMs: 6 * 60 * 60_000, now });
           for (const candidate of result.candidates) associateCandidate(officialCandidates, candidate, requirementsToSearch);
@@ -547,7 +549,7 @@ export class SkillDiscoveryService {
       auditAttempts += 1;
       let audit;
       try {
-        audit = await authorizeSkillMaterialization(this.provider, candidate);
+        audit = await authorizeSkillMaterialization(this.provider, candidate, input.signal);
       } catch (error) {
         const code = providerFailureCode(error);
         if (code === undefined) throw error;
@@ -679,7 +681,7 @@ export class SkillDiscoveryService {
             if (detail === undefined) throw new KiokukoError('CONFLICT', 'External Skill changed during discovery');
             fetchRequest = externalSkillSourceFetchRequest(detail);
           }
-          const fetched = await this.fetchSnapshot(candidate, fetchRequest);
+          const fetched = await this.fetchSnapshot(candidate, fetchRequest, input.signal);
           snapshot = validateSkillSnapshot({
             candidate,
             sourceCommit: fetched.sourceCommit,

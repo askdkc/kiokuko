@@ -16,6 +16,7 @@
     "dist/",
     "migrations/",
     "skills/",
+    "docs/",
     "templates/",
     "README.md",
     "README.ja.md",
@@ -53,6 +54,8 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
+    "@huggingface/hub": "2.16.1",
+    "@huggingface/transformers": "4.2.0",
     "sqlite-vec": "0.1.9"
   },
   "devDependencies": {

@@ -435,7 +435,8 @@ export async function recallScopedMemory(
   }, runtime);
 }
 
-export async function checkpointScopedMemory(database: SqliteDatabase, input: ScopedCheckpointInput): Promise<ScopedCheckpointResult> {
+export async function checkpointScopedMemory(database: SqliteDatabase, input: ScopedCheckpointInput, signal?: AbortSignal): Promise<ScopedCheckpointResult> {
+  if (signal?.aborted) throw signal.reason;
   const request = normalizeCheckpointInput(input);
   const runId = 'runId' in request ? request.runId : undefined;
   const deliveryId = 'runId' in request ? request.deliveryId : undefined;
@@ -561,6 +562,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
   });
 
   const project = await resolveProjectWorkspace(database, request.cwd);
+  if (signal?.aborted) throw signal.reason;
   if (!sameProject(plannedProject, project)) {
     throw new KiokukoError('CONFLICT', 'Checkpoint project identity changed after validation');
   }

@@ -7,6 +7,8 @@ import { validateApplicability, validateSignals } from '../memory/structured-mem
 import type { EmbeddingDocument } from './types.js';
 
 export const EMBEDDING_DOCUMENT_TEMPLATE_VERSION = 1 as const;
+export const EMBEDDING_DOCUMENT_TEMPLATE_VERSION_V2 = 2 as const;
+export const EMBEDDING_INPUT_CONTRACT = 'e5-query-passage-v1' as const;
 export const MAX_EMBEDDING_DOCUMENT_BYTES = 32 * 1024;
 export const BODY_TRUNCATION_MARKER = '[body truncated]' as const;
 
@@ -113,4 +115,24 @@ export function buildEmbeddingDocument(input: EmbeddingDocumentInput): Embedding
     throw new KiokukoError('SECURITY_REJECTION', 'Embedding document resembles a secret and was not sent');
   }
   return Object.freeze({ text, bytes, documentHash: documentHash(bytes), truncated });
+}
+
+/** Build the provider-neutral v2 memory representation for E5 models. */
+export function buildCanonicalEmbeddingDocument(input: EmbeddingDocumentInput): EmbeddingDocument {
+  const document = buildEmbeddingDocument(input);
+  const text = document.text.replace(/^kiokuko-memory-v1\n/u, 'kiokuko-memory-v2\n');
+  const bytes = encoder.encode(text);
+  return Object.freeze({
+    text,
+    bytes,
+    documentHash: documentHash(bytes),
+    truncated: document.truncated,
+  });
+}
+
+export function renderEmbeddingProviderInput(canonicalText: string, prefix = 'passage: '): string {
+  if (typeof canonicalText !== 'string' || canonicalText.length === 0 || prefix !== 'passage: ') {
+    invalid('Embedding provider document input is invalid');
+  }
+  return `${prefix}${canonicalText}`;
 }
