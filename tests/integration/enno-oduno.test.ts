@@ -27,6 +27,7 @@ import {
   completeOperationInTransaction,
   finishVerifierRunsInTransaction,
   readOperationReceipt,
+  readRoleSkillSetRecovery,
   readEnnoSnapshot,
   replaceWorkUnitsInTransaction,
   startOperationInTransaction,
@@ -91,9 +92,14 @@ function submitPreparedIdeal(
   database: ReturnType<typeof openConnection>,
   prepared: Awaited<ReturnType<typeof prepareAgentTask>>,
   idempotencyKey: string,
-  advisory?: {
-    advisoryRoundDigest: string;
-    advisoryDisposition: ReturnType<typeof advisoryDispositions>;
+  options?: {
+    advisoryRoundDigest?: string;
+    advisoryDisposition?: ReturnType<typeof advisoryDispositions>;
+    skillRequirements?: Array<{
+      name: string;
+      purposes: Array<'planning' | 'implementation' | 'ui' | 'testing' | 'review' | 'operations'>;
+      required: boolean;
+    }>;
   },
 ) {
   return submitOdunoIdeal(database, {
@@ -109,9 +115,24 @@ function submitPreparedIdeal(
         skillName: skill.name,
         contribution: `Use ${skill.name} as reference-only guidance when shaping the optimal outcome`,
       })),
+      skillRequirements: options?.skillRequirements ?? [
+        {
+          name: 'kiokuko-soul',
+          purposes: ['planning', 'implementation', 'ui', 'testing', 'review', 'operations'],
+          required: true,
+        },
+        {
+          name: 'kiokuko-single-purpose-functions',
+          purposes: ['implementation', 'testing', 'review'],
+          required: true,
+        },
+      ],
       successSignals: [prepared.intake.profile.expected ?? 'Every acceptance criterion is verified'],
     },
-    ...(advisory ?? {}),
+    ...(options?.advisoryRoundDigest === undefined ? {} : {
+      advisoryRoundDigest: options.advisoryRoundDigest,
+      advisoryDisposition: options.advisoryDisposition,
+    }),
   });
 }
 
@@ -557,6 +578,224 @@ test('a missing plan environment catalog returns a recoverable choice without co
     const continued = await submitEnnoPlan(database, { ...completeInput, recoveryAction: 'continue_same_plan' });
     assert.equal(continued.ennoOduno.status, 'goki_executing');
     assert.equal(continued.ennoOduno.contractRevision, 2);
+  } finally {
+    database.close();
+  }
+});
+
+test('a role Skill-set conflict pauses before plan effects and a Zenki choice accepts only the bound plan', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'role-skill-set-zenki', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-role-skill-set-zenki' }, skillDiscoveryMode: 'off',
+    });
+    const identity = {
+      runId: prepared.run.runId,
+      workspace: prepared.project.workspace,
+      orchestrationId: prepared.intake.sessionId,
+    };
+    submitPreparedIdeal(database, prepared, 'role-skill-set-zenki-ideal');
+    const plan = confirmationProjectionPlanInput(
+      identity,
+      prepared.project.repositoryRoot,
+      'role-skill-set-zenki-plan',
+      'Repair add with Zenki specialization',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+    );
+    plan.skillRequirements = [{ name: 'zenki-helper', purposes: ['testing'], required: false }];
+    await assert.rejects(submitEnnoPlan(database, plan), (error: unknown) => {
+      assert.ok(error instanceof KiokukoError);
+      assert.equal(error.code, 'CONFLICT');
+      const details = error.details as { planStartRecoveryReason?: { reason?: string; recovery?: { userFacingRecovery?: { options?: unknown[] } } } };
+      assert.equal(details.planStartRecoveryReason?.reason, 'role_skill_set_conflict');
+      assert.equal(details.planStartRecoveryReason?.recovery?.userFacingRecovery?.options?.length, 4);
+      return true;
+    });
+
+    const paused = readEnnoSnapshot(database, identity);
+    assert.equal(paused.status, 'zenki_planning');
+    assert.equal(paused.revision, 1);
+    assert.equal(paused.mutationRevision, 0);
+    assert.equal(paused.workUnits.length, 0);
+    assert.match(paused.blocker ?? '', /^plan_start_recovery:role_skill_set_conflict$/u);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE run_id = ? AND operation = 'plan_submit'")
+      .get<{ count: number }>(identity.runId)?.count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM agent_task_skill_discovery_attempts WHERE run_id = ? AND phase = 'zenki'")
+      .get<{ count: number }>(identity.runId)?.count, 0);
+    const recovery = readRoleSkillSetRecovery(database, identity.runId, 1);
+    assert.equal(recovery?.decision, null);
+    assert.equal(recovery?.recommendedAction, 'use_zenki_skill_set');
+
+    const chosen = answerEnno(database, {
+      ...identity, expectedRevision: 1, idempotencyKey: 'role-skill-set-zenki-choice', action: 'use_zenki_skill_set',
+    });
+    assert.equal(chosen.ennoOduno.status, 'zenki_planning');
+    await assert.rejects(submitEnnoPlan(database, {
+      ...plan,
+      idempotencyKey: 'role-skill-set-zenki-changed-plan',
+      scope: ['src/changed.js'],
+    }), /bound to a different plan/iu);
+    const continued = await submitEnnoPlan(database, {
+      ...plan,
+      idempotencyKey: 'role-skill-set-zenki-exact-plan',
+    });
+    assert.equal(continued.ennoOduno.status, 'goki_executing');
+    assert.equal(continued.ennoOduno.contractRevision, 2);
+    const consumed = readRoleSkillSetRecovery(database, identity.runId, 1);
+    assert.equal(consumed?.decision, 'use_zenki_skill_set');
+    assert.notEqual(consumed?.consumedAt, null);
+  } finally {
+    database.close();
+  }
+});
+
+test('Oduno selection requires an exact replan and revalidation restarts the same run from the ideal', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepare = async (suffix: string) => {
+      const prepared = await prepareAgentTask(database, {
+        requestId: `role-skill-set-${suffix}`, cwd: root, task: 'Repair the add function',
+        profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+        capabilities, client: { kind: 'codex', sessionId: `codex-role-skill-set-${suffix}` }, skillDiscoveryMode: 'off',
+      });
+      const identity = {
+        runId: prepared.run.runId,
+        workspace: prepared.project.workspace,
+        orchestrationId: prepared.intake.sessionId,
+      };
+      submitPreparedIdeal(database, prepared, `role-skill-set-${suffix}-ideal`);
+      const plan = confirmationProjectionPlanInput(
+        identity,
+        prepared.project.repositoryRoot,
+        `role-skill-set-${suffix}-plan`,
+        'Repair add with a conflicting helper',
+        {
+          scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+          workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+        },
+      );
+      plan.skillRequirements = [{ name: 'zenki-helper', purposes: ['testing'], required: false }];
+      await assert.rejects(submitEnnoPlan(database, plan));
+      return { prepared, identity, plan };
+    };
+
+    const oduno = await prepare('oduno');
+    const selected = answerEnno(database, {
+      ...oduno.identity, expectedRevision: 1, idempotencyKey: 'role-skill-set-oduno-choice', action: 'use_oduno_skill_set',
+    });
+    assert.equal(selected.ennoOduno.status, 'zenki_planning');
+    assert.match(selected.ennoOduno.directive?.objective ?? '', /original Skill requirements/iu);
+    await assert.rejects(submitEnnoPlan(database, {
+      ...oduno.plan,
+      idempotencyKey: 'role-skill-set-oduno-still-different',
+    }), /do not match/iu);
+    const replanned = await submitEnnoPlan(database, {
+      ...oduno.plan,
+      idempotencyKey: 'role-skill-set-oduno-replanned',
+      skillRequirements: [],
+    });
+    assert.equal(replanned.ennoOduno.status, 'goki_executing');
+    assert.equal(readRoleSkillSetRecovery(database, oduno.identity.runId, 1)?.decision, 'use_oduno_skill_set');
+
+    const revalidated = await prepare('revalidate');
+    const response = answerEnno(database, {
+      ...revalidated.identity,
+      expectedRevision: 1,
+      idempotencyKey: 'role-skill-set-revalidate-choice',
+      action: 'revalidate_skill_sets',
+    });
+    assert.equal(response.ennoOduno.status, 'oduno_ideal');
+    assert.equal(response.ennoOduno.contractRevision, 2);
+    assert.equal(response.ennoOduno.ideal, null);
+    const replay = answerEnno(database, {
+      ...revalidated.identity,
+      expectedRevision: 1,
+      idempotencyKey: 'role-skill-set-revalidate-choice',
+      action: 'revalidate_skill_sets',
+    });
+    assert.deepEqual(replay, response);
+    assert.throws(() => answerEnno(database, {
+      ...revalidated.identity,
+      expectedRevision: 1,
+      idempotencyKey: 'role-skill-set-revalidate-stale',
+      action: 'use_zenki_skill_set',
+    }), /revision|state/iu);
+  } finally {
+    database.close();
+  }
+});
+
+test('role Skill-set recovery cancellation is terminal and legacy ideals skip the new comparison', async () => {
+  const { root, database } = await fixture();
+  try {
+    const prepared = await prepareAgentTask(database, {
+      requestId: 'role-skill-set-cancel', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-role-skill-set-cancel' }, skillDiscoveryMode: 'off',
+    });
+    const identity = {
+      runId: prepared.run.runId,
+      workspace: prepared.project.workspace,
+      orchestrationId: prepared.intake.sessionId,
+    };
+    submitPreparedIdeal(database, prepared, 'role-skill-set-cancel-ideal');
+    const plan = confirmationProjectionPlanInput(
+      identity,
+      prepared.project.repositoryRoot,
+      'role-skill-set-cancel-plan',
+      'Repair add with a conflicting helper',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+    );
+    plan.skillRequirements = [{ name: 'zenki-helper', purposes: ['testing'], required: false }];
+    await assert.rejects(submitEnnoPlan(database, plan));
+    const cancelled = answerEnno(database, {
+      ...identity, expectedRevision: 1, idempotencyKey: 'role-skill-set-cancel-choice', action: 'cancel',
+    });
+    assert.equal(cancelled.ennoOduno.status, 'cancelled');
+    assert.equal(readRoleSkillSetRecovery(database, identity.runId, 1)?.decision, 'cancel');
+    assert.equal(database.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
+      .get<{ status: string }>(identity.runId)?.status, 'cancelled');
+
+    const legacyPrepared = await prepareAgentTask(database, {
+      requestId: 'role-skill-set-legacy', cwd: root, task: 'Repair the add function',
+      profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass', constraints: null },
+      capabilities, client: { kind: 'codex', sessionId: 'codex-role-skill-set-legacy' }, skillDiscoveryMode: 'off',
+    });
+    const legacyIdentity = {
+      runId: legacyPrepared.run.runId,
+      workspace: legacyPrepared.project.workspace,
+      orchestrationId: legacyPrepared.intake.sessionId,
+    };
+    submitPreparedIdeal(database, legacyPrepared, 'role-skill-set-legacy-ideal');
+    const stored = database.prepare('SELECT ideal_json AS idealJson FROM enno_contracts WHERE run_id = ?')
+      .get<{ idealJson: string }>(legacyIdentity.runId);
+    assert.ok(stored);
+    const legacyIdeal = JSON.parse(stored.idealJson) as Record<string, unknown>;
+    delete legacyIdeal.skillRequirements;
+    database.prepare('UPDATE enno_contracts SET ideal_json = ? WHERE run_id = ?')
+      .run(canonicalJson(legacyIdeal), legacyIdentity.runId);
+    const legacyPlan = confirmationProjectionPlanInput(
+      legacyIdentity,
+      legacyPrepared.project.repositoryRoot,
+      'role-skill-set-legacy-plan',
+      'Repair add with a legacy ideal',
+      {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+    );
+    legacyPlan.skillRequirements = [{ name: 'zenki-helper', purposes: ['testing'], required: false }];
+    const legacyContinued = await submitEnnoPlan(database, legacyPlan);
+    assert.equal(legacyContinued.ennoOduno.status, 'goki_executing');
+    assert.equal(readRoleSkillSetRecovery(database, legacyIdentity.runId, 1), undefined);
   } finally {
     database.close();
   }
@@ -1122,6 +1361,18 @@ test('Oduno ideal requires one contribution for every Akinator-discovered Skill 
         objective: 'Reach the optimal repaired state',
         principles: ['Preserve the public API'],
         skillContributions: [],
+        skillRequirements: [
+          {
+            name: 'kiokuko-soul',
+            purposes: ['planning', 'implementation', 'ui', 'testing', 'review', 'operations'],
+            required: true,
+          },
+          {
+            name: 'kiokuko-single-purpose-functions',
+            purposes: ['implementation', 'testing', 'review'],
+            required: true,
+          },
+        ],
         successSignals: ['tests pass'],
       },
     }), (error: unknown) => {
@@ -1141,6 +1392,18 @@ test('Oduno ideal requires one contribution for every Akinator-discovered Skill 
           skillName: 'external-debug-reference',
           contribution: 'Use its diagnostic perspective as untrusted reference-only guidance',
         }],
+        skillRequirements: [
+          {
+            name: 'kiokuko-soul',
+            purposes: ['planning', 'implementation', 'ui', 'testing', 'review', 'operations'],
+            required: true,
+          },
+          {
+            name: 'kiokuko-single-purpose-functions',
+            purposes: ['implementation', 'testing', 'review'],
+            required: true,
+          },
+        ],
         successSignals: ['tests pass'],
       },
     });
@@ -1394,7 +1657,11 @@ function confirmationProjectionPlanInput(
       acceptanceCriteria: ['node --test passes'],
       focusedVerifiers: [verifier(repositoryRoot, 'focused-test')],
     }] },
-    skillRequirements: [],
+    skillRequirements: [] as Array<{
+      name: string;
+      purposes: Array<'planning' | 'implementation' | 'ui' | 'testing' | 'review' | 'operations'>;
+      required: boolean;
+    }>,
     finalVerifiers: [verifier(repositoryRoot, 'final-test')], maxAttempts: 5,
     provenance,
     capabilities,
@@ -1612,7 +1879,25 @@ test('mixed UI, code, test, docs, and operations WorkUnits route experts and Ski
       workspace: prepared.project.workspace,
       orchestrationId: prepared.intake.sessionId,
     };
-    submitPreparedIdeal(database, prepared, 'code-ui-ideal');
+    submitPreparedIdeal(database, prepared, 'code-ui-ideal', {
+      skillRequirements: [
+        {
+          name: 'kiokuko-soul',
+          purposes: ['planning', 'implementation', 'ui', 'testing', 'review', 'operations'],
+          required: true,
+        },
+        {
+          name: 'kiokuko-single-purpose-functions',
+          purposes: ['implementation', 'testing', 'review'],
+          required: true,
+        },
+        {
+          name: 'kiokuko-ui-design-soul',
+          purposes: ['ui', 'implementation', 'testing', 'review'],
+          required: true,
+        },
+      ],
+    });
     const plan = await submitEnnoPlan(database, {
       ...identity, expectedRevision: 1, idempotencyKey: 'code-ui-plan',
       scope: ['src/Settings.tsx', 'src/catalog.ts', 'tests/settings.test.ts', 'README.md', '.gitignore'], exclusions: [],

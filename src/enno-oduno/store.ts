@@ -12,6 +12,7 @@ import {
   parseEnnoRequestHandoff,
   parseOdunoIdeal,
   parseOdunoMeditation,
+  parseSkillRequirementList,
   parseVerifierSpec,
   parseWorkReportResult,
   parseWorkPlan,
@@ -31,6 +32,8 @@ import {
   type EnnoStatus,
   type OdunoIdeal,
   type OdunoMeditation,
+  type SkillRequirement,
+  type SkillRequirementDifference,
   type StoredWorkUnit,
   type VerifierRunResult,
   type VerifierRunStatus,
@@ -39,6 +42,10 @@ import {
   type WorkReportResult,
   type WorkUnitStatus,
 } from './types.js';
+import {
+  normalizeSkillRequirementSet,
+  skillRequirementDifference,
+} from './skills.js';
 import {
   advisoryContextForSnapshot,
   advisoryInputDigest,
@@ -107,6 +114,30 @@ interface VerifierResultRow extends SqliteRow {
 interface AdvisoryStateRow extends SqliteRow {
   inputDigest: string;
   state: 'advice_submitted' | 'aggregated' | 'consumed';
+}
+
+interface RoleSkillSetRecoveryRow extends SqliteRow {
+  runId: string;
+  contractRevision: number;
+  planDigest: string;
+  odunoRequirementsJson: string;
+  zenkiRequirementsJson: string;
+  differenceJson: string;
+  recommendedAction: RoleSkillSetRecoveryRecord['recommendedAction'];
+  decision: RoleSkillSetRecoveryRecord['decision'];
+  consumedAt: string | null;
+}
+
+export interface RoleSkillSetRecoveryRecord {
+  runId: string;
+  contractRevision: number;
+  planDigest: string;
+  odunoRequirements: SkillRequirement[];
+  zenkiRequirements: SkillRequirement[];
+  difference: SkillRequirementDifference;
+  recommendedAction: 'use_zenki_skill_set' | 'revalidate_skill_sets';
+  decision: 'use_oduno_skill_set' | 'use_zenki_skill_set' | 'revalidate_skill_sets' | 'cancel' | null;
+  consumedAt: string | null;
 }
 
 function advisoryPhaseState(
@@ -263,6 +294,159 @@ function parseCanonicalJson(value: string, message: string): unknown {
 
 function contractRow(database: SqliteDatabase, runId: string): ContractRow | undefined {
   return database.prepare('SELECT * FROM enno_contracts WHERE run_id = ?').get<ContractRow>(runId);
+}
+
+function roleSkillSetRecoveryRow(
+  database: SqliteDatabase,
+  runId: string,
+  contractRevision: number,
+): RoleSkillSetRecoveryRow | undefined {
+  return database.prepare(`
+    SELECT run_id AS runId, contract_revision AS contractRevision,
+           plan_digest AS planDigest,
+           oduno_requirements_json AS odunoRequirementsJson,
+           zenki_requirements_json AS zenkiRequirementsJson,
+           difference_json AS differenceJson,
+           recommended_action AS recommendedAction,
+           decision, consumed_at AS consumedAt
+    FROM enno_skill_set_recoveries
+    WHERE run_id = ? AND contract_revision = ?
+  `).get<RoleSkillSetRecoveryRow>(runId, contractRevision);
+}
+
+function parsedRoleSkillSetRecovery(row: RoleSkillSetRecoveryRow): RoleSkillSetRecoveryRecord {
+  const odunoRequirements = normalizeSkillRequirementSet(parseSkillRequirementList(parseCanonicalJson(
+    row.odunoRequirementsJson,
+    'Stored Oduno Skill requirements are invalid',
+  )));
+  const zenkiRequirements = normalizeSkillRequirementSet(parseSkillRequirementList(parseCanonicalJson(
+    row.zenkiRequirementsJson,
+    'Stored Zenki Skill requirements are invalid',
+  )));
+  const difference = skillRequirementDifference(odunoRequirements, zenkiRequirements);
+  if (canonicalJson(difference) !== row.differenceJson) {
+    integrity('Stored Skill requirement difference is invalid');
+  }
+  if (row.recommendedAction !== 'use_zenki_skill_set' && row.recommendedAction !== 'revalidate_skill_sets') {
+    integrity('Stored Skill-set recovery recommendation is invalid');
+  }
+  if (row.decision !== null && ![
+    'use_oduno_skill_set',
+    'use_zenki_skill_set',
+    'revalidate_skill_sets',
+    'cancel',
+  ].includes(row.decision)) integrity('Stored Skill-set recovery decision is invalid');
+  if (row.consumedAt !== null
+    && row.decision !== 'use_oduno_skill_set'
+    && row.decision !== 'use_zenki_skill_set') {
+    integrity('Stored Skill-set recovery consumption is invalid');
+  }
+  return {
+    runId: row.runId,
+    contractRevision: row.contractRevision,
+    planDigest: row.planDigest,
+    odunoRequirements,
+    zenkiRequirements,
+    difference,
+    recommendedAction: row.recommendedAction,
+    decision: row.decision,
+    consumedAt: row.consumedAt,
+  };
+}
+
+export function readRoleSkillSetRecovery(
+  database: SqliteDatabase,
+  runId: string,
+  contractRevision: number,
+): RoleSkillSetRecoveryRecord | undefined {
+  const row = roleSkillSetRecoveryRow(database, runId, contractRevision);
+  return row === undefined ? undefined : parsedRoleSkillSetRecovery(row);
+}
+
+export function createRoleSkillSetRecoveryInTransaction(
+  database: SqliteDatabase,
+  input: Omit<RoleSkillSetRecoveryRecord, 'decision' | 'consumedAt' | 'difference'> & {
+    difference: SkillRequirementDifference;
+  },
+): RoleSkillSetRecoveryRecord {
+  const odunoRequirements = normalizeSkillRequirementSet(input.odunoRequirements);
+  const zenkiRequirements = normalizeSkillRequirementSet(input.zenkiRequirements);
+  const difference = skillRequirementDifference(odunoRequirements, zenkiRequirements);
+  const expected = {
+    ...input,
+    odunoRequirements,
+    zenkiRequirements,
+    difference,
+    decision: null,
+    consumedAt: null,
+  } satisfies RoleSkillSetRecoveryRecord;
+  const existing = readRoleSkillSetRecovery(database, input.runId, input.contractRevision);
+  if (existing !== undefined) {
+    if (canonicalJson(existing) !== canonicalJson(expected)) {
+      throw new KiokukoError('CONFLICT', 'Pending Skill-set recovery changed');
+    }
+    return existing;
+  }
+  const now = new Date().toISOString();
+  const inserted = database.prepare(`
+    INSERT INTO enno_skill_set_recoveries (
+      run_id, contract_revision, plan_digest,
+      oduno_requirements_json, zenki_requirements_json, difference_json,
+      recommended_action, decision, consumed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+    RETURNING run_id AS runId
+  `).get<{ runId: string }>(
+    input.runId,
+    input.contractRevision,
+    input.planDigest,
+    canonicalJson(odunoRequirements),
+    canonicalJson(zenkiRequirements),
+    canonicalJson(difference),
+    input.recommendedAction,
+    now,
+    now,
+  );
+  if (inserted?.runId !== input.runId) throw new KiokukoError('CONFLICT', 'Skill-set recovery could not be persisted');
+  return readRoleSkillSetRecovery(database, input.runId, input.contractRevision)!;
+}
+
+export function decideRoleSkillSetRecoveryInTransaction(
+  database: SqliteDatabase,
+  input: {
+    runId: string;
+    contractRevision: number;
+    decision: NonNullable<RoleSkillSetRecoveryRecord['decision']>;
+  },
+): RoleSkillSetRecoveryRecord {
+  const now = new Date().toISOString();
+  const updated = database.prepare(`
+    UPDATE enno_skill_set_recoveries
+    SET decision = ?, updated_at = ?
+    WHERE run_id = ? AND contract_revision = ?
+      AND decision IS NULL AND consumed_at IS NULL
+    RETURNING run_id AS runId
+  `).get<{ runId: string }>(input.decision, now, input.runId, input.contractRevision);
+  if (updated?.runId !== input.runId) throw new KiokukoError('CONFLICT', 'Skill-set recovery choice is stale or already decided');
+  return readRoleSkillSetRecovery(database, input.runId, input.contractRevision)!;
+}
+
+export function consumeRoleSkillSetRecoveryInTransaction(
+  database: SqliteDatabase,
+  input: {
+    runId: string;
+    contractRevision: number;
+    decision: 'use_oduno_skill_set' | 'use_zenki_skill_set';
+  },
+): void {
+  const now = new Date().toISOString();
+  const updated = database.prepare(`
+    UPDATE enno_skill_set_recoveries
+    SET consumed_at = ?, updated_at = ?
+    WHERE run_id = ? AND contract_revision = ?
+      AND decision = ? AND consumed_at IS NULL
+    RETURNING run_id AS runId
+  `).get<{ runId: string }>(now, now, input.runId, input.contractRevision, input.decision);
+  if (updated?.runId !== input.runId) throw new KiokukoError('CONFLICT', 'Skill-set recovery choice is stale or already consumed');
 }
 
 function validateContractRow(row: ContractRow): void {

@@ -172,11 +172,11 @@ code変更という理由だけで選びません。このexpertは利用側か�
 
 Codex extensionは、completion eventとmodel inputより前に、成功・errorのどちらのMCP resultも検査・置換できます。したがってextension層はtrusted computing baseの一部です。`userFacingConfirmation`はKiokuko serverが生成したprojectionであり、extension処理後に実際に表示またはmodelへ送信された内容の証明ではありません。重要なKiokuko resultを変更するextensionとは併用しないでください。KiokukoはCodexから改変不能なoriginal-result provenanceやmodified flagを受け取れないため、end-to-end真正性を主張せず、server-only digestやHMACで代用しません。完全な上流契約には、extensionが偽装できないoriginal-result digestまたはidentifier、modified flag、正確なtool callとのbindingが必要です。
 
-Codexのeffective plugin catalogは、requested repositoryや選択modelによって変化し得ます。hostはtask preparationから保持した完全なeffective Skill/MCP tool catalogを渡す必要があります。順序と同一descriptorの重複はbindingを変えませんが、項目の追加・削除、canonical name、kind、descriptionの変更は環境変更としてplan開始を止めます。catalog省略と明示的な空catalogは別の意味です。一つのplugin marketplaceのload errorを空catalogへ潰して、他の有効なcapabilityまで隠してはいけません。load errorは別に診断可能な状態を維持する必要があります。
+KiokukoはCodex全体のplugin・Skill・tool在庫を所有しません。新規runがbindingするのは、Kiokukoのmanaged six-Skill manifestにある利用可能な正確な名前だけを含むrequired `kiokukoSkills`です。Kiokuko MCP tool集合はserver内部manifestから取得します。optional `clientInventory`は最大200件の推薦専用・非保存・非binding入力であり、call間で変化してもenvironment recoveryを起こしません。Codex hostは`ALL_TOOLS.map(...)`を使ってはならず、任意のMCP在庫には`ALL_TOOLS.filter(tool => tool.name.startsWith("mcp__"))`だけを使い、built-in toolをMCP toolへ変換しません。
 
 ### 計画開始時に環境情報が不足・変化した場合
 
-ここでいう「環境情報」は、現在のAIクライアントで利用できるSkillとMCPツールの一覧です。ホストが自動収集する内部情報であり、ユーザーが一覧の保存場所を探したり、設定データを手作業で作成したりする必要はありません。
+ここでいう「環境情報」は、現在のAIクライアント全体の在庫ではなく、bindingされたKiokuko managed Skill集合です。ホストが`kiokukoSkills`を自動収集し、ユーザーが設定データを手作業する必要はありません。optional `clientInventory`の変化はこの環境変更に含みません。
 
 この一覧が何らかの理由で計画へ引き継がれていない、またはタスク準備時から変わっている場合、Kiokukoは自動continuationを止めるmarkerだけを保存し、安全確認を完了できないため作業を開始しません。関連するSkillの探索、3件の助言結果の計画への反映、重複実行を防ぐ受付記録の作成、plan保存、計画版の更新より前に停止するため、この計画開始による新しい作業や追加のコード変更はありません。同じrunを再送する場合は、ユーザーが選んだrecovery actionも添付します。そのうえで、状況に応じて次の選択肢を表示し、ユーザーの明示回答を待ちます。
 

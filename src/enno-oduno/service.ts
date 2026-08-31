@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
-import { assertCapabilityCatalogBinding } from '../akinator/capability-binding.js';
+import { assertCapabilityCatalogBinding, capabilityCatalogBindingVersion } from '../akinator/capability-binding.js';
 import { normalizeCapabilityCatalog } from '../akinator/capabilities.js';
 import { getAkinatorContextService } from '../akinator/service.js';
 import type { AkinatorQuestion, AkinatorReasoning, TaskProfile } from '../akinator/types.js';
@@ -57,7 +57,10 @@ import {
 import {
   completeRequiredSkillList,
   createSkillSetEntries,
+  normalizeSkillRequirementSet,
   orderedUniqueSkillNames,
+  skillRequirementDifference,
+  skillRequirementDifferenceIsEmpty,
   unavailableRequiredSkills,
 } from './skills.js';
 import {
@@ -65,11 +68,15 @@ import {
   assertExecutionLeaseInTransaction,
   claimExecutionLeaseInTransaction,
   completeOperationInTransaction,
+  consumeRoleSkillSetRecoveryInTransaction,
+  createRoleSkillSetRecoveryInTransaction,
   createEnnoDraft,
+  decideRoleSkillSetRecoveryInTransaction,
   finishVerifierRunsInTransaction,
   readEnnoSnapshot,
   readFreshFinalVerifierResults,
   readOperationReceipt,
+  readRoleSkillSetRecovery,
   releaseExecutionLeaseInTransaction,
   renewExecutionLeaseInTransaction,
   resolveEnnoIdentity,
@@ -82,6 +89,7 @@ import {
   updateContractInTransaction,
   type EnnoIdentity,
   type OperationIdentity,
+  type RoleSkillSetRecoveryRecord,
 } from './store.js';
 import {
   ENNO_APPLICABLE_TASK_TYPES,
@@ -100,14 +108,17 @@ import {
   type StoredAdvisoryRound,
   type OdunoIdeal,
   type OdunoMeditation,
+  type SkillRequirement,
   type VerifierSpec,
   type VerifierRunResult,
 } from './types.js';
 import { runVerifiers, type VerifierDependencies } from './verifier.js';
 import {
+  buildRoleSkillSetRecovery,
   planStartRecoveryBlocker,
   planStartRecoveryError,
   planStartRecoveryReasonFromBlocker,
+  PLAN_START_RECOVERY_DETAIL_KEY,
   type PlanStartRecoveryReason,
 } from './plan-recovery.js';
 import { ennoValidationError } from './validation-errors.js';
@@ -133,6 +144,20 @@ type EnnoAnswer = z.infer<typeof ennoAnswerSchema>;
 type WorkReport = z.infer<typeof workReportSchema>;
 type FinishRequest = z.infer<typeof finishSchema>;
 type MeditationSubmission = z.infer<typeof meditationSubmissionSchema>;
+
+function planBindingInput(plan: Pick<PlanSubmission, 'capabilities' | 'kiokukoSkills'>): unknown {
+  return plan.kiokukoSkills ?? plan.capabilities;
+}
+
+function planAvailableCapabilities(
+  plan: Pick<PlanSubmission, 'capabilities' | 'kiokukoSkills' | 'clientInventory'>,
+): unknown {
+  if (plan.kiokukoSkills === undefined) return plan.capabilities;
+  return [
+    ...plan.kiokukoSkills.map((name) => ({ kind: 'skill' as const, name })),
+    ...(plan.clientInventory ?? []),
+  ];
+}
 
 export interface EnnoOperationResponse {
   ennoOduno: EnnoOdunoState;
@@ -735,7 +760,9 @@ async function discoverZenkiSkills(
       revision: snapshot.revision,
       mode: intake.mode,
       workPlan: plan.workPlan,
-      capabilities: plan.capabilities ?? null,
+      ...(plan.kiokukoSkills === undefined
+        ? { capabilities: plan.capabilities ?? null }
+        : { kiokukoSkills: plan.kiokukoSkills }),
       skillRequirements: plan.skillRequirements,
     }),
   };
@@ -762,7 +789,7 @@ async function discoverZenkiSkills(
     const summary = await (dependencies.discoverSkills ?? discoverSkills)(database, {
       ...context,
       task: `${context.task}\n${plan.workPlan.objective}`,
-      capabilities: plan.capabilities,
+      capabilities: planAvailableCapabilities(plan),
       mode: intake.mode,
       maxQueries: claimed.queryBudget as 1 | 2 | 3,
       maxSelectedSkills: claimed.selectionBudget as 1 | 2,
@@ -805,14 +832,16 @@ function assertIdealSkillCoverage(snapshot: EnnoRunSnapshot, ideal: IdealSubmiss
 
 function planCapabilityRecoveryReason(
   database: SqliteDatabase,
-  input: Pick<PlanSubmission, 'runId' | 'capabilities'>,
+  input: Pick<PlanSubmission, 'runId' | 'capabilities' | 'kiokukoSkills'>,
   workspace: string,
 ): PlanStartRecoveryReason | null {
-  if (input.capabilities === undefined) return 'environment_information_missing';
   const run = new LedgerStore(database).readRun(input.runId, workspace);
   if (run === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Enno ledger run disappeared during plan validation');
+  const bindingVersion = capabilityCatalogBindingVersion(run.metadata);
+  if (bindingVersion === 1 && input.capabilities === undefined) return 'environment_information_missing';
+  if (bindingVersion === 2 && input.kiokukoSkills === undefined) return 'environment_information_missing';
   try {
-    assertCapabilityCatalogBinding(run.metadata, input.capabilities);
+    assertCapabilityCatalogBinding(run.metadata, planBindingInput(input));
     return null;
   } catch (error) {
     if (error instanceof KiokukoError && error.code === 'CONFLICT') {
@@ -844,11 +873,92 @@ function pausePlanStartRecovery(
   throw planStartRecoveryError(reason);
 }
 
+function roleSkillSetPlanDigest(input: PlanSubmission, requirements: readonly SkillRequirement[]): string {
+  return canonicalContentHash({
+    scope: input.scope,
+    exclusions: input.exclusions,
+    acceptanceCriteria: input.acceptanceCriteria,
+    workPlan: input.workPlan,
+    skillRequirements: normalizeSkillRequirementSet(requirements),
+    finalVerifiers: input.finalVerifiers,
+    maxAttempts: input.maxAttempts,
+    provenance: input.provenance,
+  });
+}
+
+function roleSkillSetRecoveryForRecord(record: RoleSkillSetRecoveryRecord) {
+  return buildRoleSkillSetRecovery({
+    odunoRequirements: record.odunoRequirements,
+    zenkiRequirements: record.zenkiRequirements,
+    zenkiRequiredSkillsAvailable: record.recommendedAction === 'use_zenki_skill_set',
+  });
+}
+
+function throwRoleSkillSetRecovery(record: RoleSkillSetRecoveryRecord): never {
+  const recovery = roleSkillSetRecoveryForRecord(record);
+  throw new KiokukoError('CONFLICT', 'Plan start requires an explicit recovery choice', {
+    [PLAN_START_RECOVERY_DETAIL_KEY]: {
+      reason: 'role_skill_set_conflict',
+      recovery,
+    },
+  });
+}
+
+function pauseRoleSkillSetRecovery(
+  database: SqliteDatabase,
+  snapshot: EnnoRunSnapshot,
+  input: {
+    planDigest: string;
+    odunoRequirements: readonly SkillRequirement[];
+    zenkiRequirements: readonly SkillRequirement[];
+    zenkiRequiredSkillsAvailable: boolean;
+  },
+): never {
+  const recovery = buildRoleSkillSetRecovery(input);
+  const recommended = recovery.userFacingRecovery.options.find((option) => option.recommended)?.action;
+  if (recommended !== 'use_zenki_skill_set' && recommended !== 'revalidate_skill_sets') {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Role Skill-set recovery recommendation is invalid');
+  }
+  let record: RoleSkillSetRecoveryRecord | undefined;
+  withImmediateTransaction(database, () => {
+    const current = readEnnoSnapshot(database, {
+      runId: snapshot.runId,
+      workspace: snapshot.workspace,
+      orchestrationId: snapshot.orchestrationId,
+    });
+    assertExpected(current, snapshot.revision, ['zenki_planning']);
+    record = createRoleSkillSetRecoveryInTransaction(database, {
+      runId: current.runId,
+      contractRevision: current.revision,
+      planDigest: input.planDigest,
+      odunoRequirements: [...input.odunoRequirements],
+      zenkiRequirements: [...input.zenkiRequirements],
+      difference: skillRequirementDifference(input.odunoRequirements, input.zenkiRequirements),
+      recommendedAction: recommended,
+    });
+    updateContractInTransaction(database, current, {
+      contract: current.contract,
+      status: 'zenki_planning',
+      confirmationState: current.confirmationState,
+      blocker: planStartRecoveryBlocker('role_skill_set_conflict'),
+    });
+  });
+  throwRoleSkillSetRecovery(record!);
+}
+
+function sameSkillRequirements(
+  left: readonly SkillRequirement[],
+  right: readonly SkillRequirement[],
+): boolean {
+  return canonicalJson(normalizeSkillRequirementSet(left)) === canonicalJson(normalizeSkillRequirementSet(right));
+}
+
 function endedBeforeWorkBecausePlanCatalogWasLost(
   database: SqliteDatabase,
   snapshot: EnnoRunSnapshot,
-  capabilities: PlanSubmission['capabilities'],
+  plan: Pick<PlanSubmission, 'capabilities' | 'kiokukoSkills' | 'clientInventory'>,
 ): boolean {
+  const capabilities = planAvailableCapabilities(plan);
   if (capabilities === undefined
     || snapshot.status !== 'blocked'
     || snapshot.blocker?.startsWith('Required Skills unavailable:') !== true
@@ -865,7 +975,7 @@ function endedBeforeWorkBecausePlanCatalogWasLost(
   const run = new LedgerStore(database).readRun(snapshot.runId, snapshot.workspace);
   if (run === undefined) return false;
   try {
-    assertCapabilityCatalogBinding(run.metadata, capabilities);
+    assertCapabilityCatalogBinding(run.metadata, planBindingInput(plan));
     return true;
   } catch (error) {
     if (error instanceof KiokukoError && error.code === 'CONFLICT') return false;
@@ -934,7 +1044,7 @@ export async function submitEnnoPlan(
   const parsedInput = parsePlanSubmission(rawInput);
   const current = readEnnoSnapshot(database, identity(database, parsedInput));
   const input = sanitizePlanSubmission(parsedInput, current.repositoryRoot);
-  if (endedBeforeWorkBecausePlanCatalogWasLost(database, current, input.capabilities)) {
+  if (endedBeforeWorkBecausePlanCatalogWasLost(database, current, input)) {
     throw planStartRecoveryError('previous_attempt_ended');
   }
   const operation = operationIdentity('plan_submit', input.idempotencyKey, input);
@@ -945,7 +1055,7 @@ export async function submitEnnoPlan(
   const pendingRecovery = planStartRecoveryReasonFromBlocker(before.blocker);
   if (pendingRecovery === 'environment_information_missing') {
     if (input.recoveryAction === undefined) throw planStartRecoveryError(pendingRecovery);
-  } else if (pendingRecovery !== null) {
+  } else if (pendingRecovery !== null && pendingRecovery !== 'role_skill_set_conflict') {
     throw planStartRecoveryError(pendingRecovery);
   } else if (input.recoveryAction !== undefined) {
     throw new KiokukoError('CONFLICT', 'Enno plan has no pending same-run recovery choice');
@@ -959,9 +1069,6 @@ export async function submitEnnoPlan(
   }
   const recoveryReason = planCapabilityRecoveryReason(database, input, before.workspace);
   if (recoveryReason !== null) pausePlanStartRecovery(database, before, recoveryReason);
-  if (input.advisoryRoundDigest !== undefined) {
-    requireAdvisoryRound(database, before, 'planning', before.mutationRevision, advisoryContextForSubmission(before, 'planning'), input.advisoryRoundDigest);
-  }
   const includesCodeChanges = planChangesCode(input, before.taskType);
   const includesUiWork = planHasUi(input);
   assertWorkPlanExpertCoverage(input.workPlan);
@@ -969,15 +1076,61 @@ export async function submitEnnoPlan(
     workPlan: input.workPlan,
     finalVerifiers: input.finalVerifiers,
   });
-  const zenkiDiscovery = await discoverZenkiSkills(database, before, input, dependencies);
-  const requirements = completeRequiredSkillList({
+  const requirements = normalizeSkillRequirementSet(completeRequiredSkillList({
     requested: input.skillRequirements,
     includesCodeChanges,
     includesUiWork,
-  });
+  }));
+  const planDigest = roleSkillSetPlanDigest(input, requirements);
+  const pendingRoleRecovery = readRoleSkillSetRecovery(database, before.runId, before.revision);
+  let selectedRoleSkillSet: 'use_oduno_skill_set' | 'use_zenki_skill_set' | undefined;
+  if (pendingRoleRecovery !== undefined) {
+    if (pendingRoleRecovery.consumedAt !== null) {
+      throw new KiokukoError('CONFLICT', 'Skill-set recovery was already consumed');
+    }
+    if (pendingRoleRecovery.decision === null) throwRoleSkillSetRecovery(pendingRoleRecovery);
+    if (pendingRoleRecovery.decision === 'use_zenki_skill_set') {
+      if (pendingRoleRecovery.planDigest !== planDigest) {
+        throw new KiokukoError('CONFLICT', 'Zenki Skill-set choice is bound to a different plan');
+      }
+      selectedRoleSkillSet = pendingRoleRecovery.decision;
+    } else if (pendingRoleRecovery.decision === 'use_oduno_skill_set') {
+      if (!sameSkillRequirements(pendingRoleRecovery.odunoRequirements, requirements)) {
+        throw new KiokukoError('CONFLICT', 'Replanned Skill requirements do not match the selected Enno-Oduno set');
+      }
+      selectedRoleSkillSet = pendingRoleRecovery.decision;
+    } else {
+      throw new KiokukoError('CONFLICT', 'Skill-set recovery choice no longer permits plan submission');
+    }
+  } else {
+    if (pendingRecovery === 'role_skill_set_conflict') {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Pending Skill-set recovery record is missing');
+    }
+    const odunoRequirements = before.ideal?.skillRequirements;
+    if (odunoRequirements !== undefined) {
+      const difference = skillRequirementDifference(odunoRequirements, requirements);
+      if (!skillRequirementDifferenceIsEmpty(difference)) {
+        const preliminaryEntries = createSkillSetEntries(database, {
+          requirements,
+          capabilities: planAvailableCapabilities(input),
+          discoveries: [before.contract.skillSet.intakeDiscovery],
+        });
+        pauseRoleSkillSetRecovery(database, before, {
+          planDigest,
+          odunoRequirements,
+          zenkiRequirements: requirements,
+          zenkiRequiredSkillsAvailable: unavailableRequiredSkills(preliminaryEntries).length === 0,
+        });
+      }
+    }
+  }
+  if (input.advisoryRoundDigest !== undefined) {
+    requireAdvisoryRound(database, before, 'planning', before.mutationRevision, advisoryContextForSubmission(before, 'planning'), input.advisoryRoundDigest);
+  }
+  const zenkiDiscovery = await discoverZenkiSkills(database, before, input, dependencies);
   const entries = createSkillSetEntries(database, {
     requirements,
-    capabilities: input.capabilities,
+    capabilities: planAvailableCapabilities(input),
     discoveries: [before.contract.skillSet.intakeDiscovery, zenkiDiscovery],
   });
   const unavailable = unavailableRequiredSkills(entries);
@@ -1030,6 +1183,13 @@ export async function submitEnnoPlan(
       input.advisoryRoundDigest,
       input.advisoryDisposition as AdvisoryDisposition[] | undefined,
     );
+    if (selectedRoleSkillSet !== undefined) {
+      consumeRoleSkillSetRecoveryInTransaction(database, {
+        runId: current.runId,
+        contractRevision: current.revision,
+        decision: selectedRoleSkillSet,
+      });
+    }
     const status = unavailable.length > 0
       ? 'blocked' as const
       : needsConfirmation ? 'needs_confirmation' as const : 'goki_executing' as const;
@@ -1085,11 +1245,20 @@ export function answerEnno(
   if (replay !== undefined) return replay;
   return withImmediateTransaction(database, () => {
     const current = readEnnoSnapshot(database, identity(database, input));
+    const roleSkillSetAction = input.action === 'use_oduno_skill_set'
+      || input.action === 'use_zenki_skill_set'
+      || input.action === 'revalidate_skill_sets';
+    const pendingRoleRecovery = readRoleSkillSetRecovery(database, current.runId, current.revision);
     assertExpected(
       current,
       input.expectedRevision,
-      input.action === 'cancel' ? ['needs_confirmation', 'zenki_planning'] : ['needs_confirmation'],
+      roleSkillSetAction
+        ? ['zenki_planning']
+        : input.action === 'cancel' ? ['needs_confirmation', 'zenki_planning'] : ['needs_confirmation'],
     );
+    if (roleSkillSetAction && (pendingRoleRecovery === undefined || pendingRoleRecovery.decision !== null)) {
+      throw new KiokukoError('CONFLICT', 'No undecided Skill-set recovery is waiting for this choice');
+    }
     const operationOwner = startOperationInTransaction(database, input.runId, operation);
     let next: EnnoRunSnapshot;
     let executionLease: EnnoExecutionLease | undefined;
@@ -1117,7 +1286,72 @@ export function answerEnno(
         blocker: input.requestedChanges ?? null,
       });
       next = readEnnoSnapshot(database, identity(database, input));
+    } else if (input.action === 'use_oduno_skill_set' || input.action === 'use_zenki_skill_set') {
+      decideRoleSkillSetRecoveryInTransaction(database, {
+        runId: current.runId,
+        contractRevision: current.revision,
+        decision: input.action,
+      });
+      updateContractInTransaction(database, current, {
+        contract: current.contract,
+        status: 'zenki_planning',
+        confirmationState: current.confirmationState,
+        blocker: input.action === 'use_oduno_skill_set'
+          ? 'The user selected Enno-Oduno\'s original Skill requirements. Zenki must submit a new plan whose complete requirements match ideal.skillRequirements exactly.'
+          : planStartRecoveryBlocker('role_skill_set_conflict'),
+      });
+      appendEnnoEventInTransaction(database, input.runId, 'decision.recorded', 'enno-oduno', input.action, {
+        decision: input.action,
+        phase: 'skill_set_recovery',
+      });
+      next = readEnnoSnapshot(database, identity(database, input));
+    } else if (input.action === 'revalidate_skill_sets') {
+      decideRoleSkillSetRecoveryInTransaction(database, {
+        runId: current.runId,
+        contractRevision: current.revision,
+        decision: input.action,
+      });
+      const revisedContract: EnnoOdunoContract = {
+        ...current.contract,
+        revision: current.revision + 1,
+        workPlan: {
+          objective: current.handoff.target ?? current.handoff.objective,
+          units: [],
+        },
+        skillSet: {
+          entries: [],
+          intakeDiscovery: current.contract.skillSet.intakeDiscovery,
+          zenkiDiscovery: emptyDiscovery(current.contract.skillSet.intakeDiscovery.mode),
+        },
+        finalVerifiers: [],
+        provenance: {
+          ...current.contract.provenance,
+          workPlan: 'inferred',
+          skillSet: 'inferred',
+          finalVerifiers: 'inferred',
+        },
+      };
+      updateContractInTransaction(database, current, {
+        contract: revisedContract,
+        status: 'oduno_ideal',
+        confirmationState: 'not_required',
+        blocker: null,
+        planDigest: null,
+        ideal: null,
+      });
+      appendEnnoEventInTransaction(database, input.runId, 'decision.recorded', 'enno-oduno', input.action, {
+        decision: input.action,
+        phase: 'skill_set_recovery',
+      });
+      next = readEnnoSnapshot(database, identity(database, input));
     } else {
+      if (current.status === 'zenki_planning' && pendingRoleRecovery !== undefined && pendingRoleRecovery.decision === null) {
+        decideRoleSkillSetRecoveryInTransaction(database, {
+          runId: current.runId,
+          contractRevision: current.revision,
+          decision: 'cancel',
+        });
+      }
       updateContractInTransaction(database, current, {
         contract: current.contract,
         status: 'cancelled',

@@ -439,7 +439,7 @@ export const ennoRequestHandoffSchema = z.object({
   stopConditions: z.array(canonicalText(8_192)).max(16),
 }).strict();
 
-export const odunoIdealSchema = z.object({
+const odunoIdealShape = {
   objective: canonicalText(16_384),
   principles: z.array(canonicalText(8_192)).min(1).max(32),
   skillContributions: z.array(z.object({
@@ -447,12 +447,29 @@ export const odunoIdealSchema = z.object({
     contribution: canonicalText(8_192),
   }).strict()).max(2),
   successSignals: z.array(canonicalText(8_192)).min(1).max(32),
-}).strict().superRefine((ideal, context) => {
+} as const;
+
+function refineOdunoIdeal(
+  ideal: { skillContributions: Array<{ skillName: string }> },
+  context: z.RefinementCtx,
+): void {
   const names = ideal.skillContributions.map((item) => item.skillName);
   if (new Set(names).size !== names.length) {
     context.addIssue({ code: 'custom', message: 'Oduno ideal Skill contributions must be unique', path: ['skillContributions'] });
   }
-});
+}
+
+const skillRequirementListSchema = z.array(skillRequirementSchema).max(64);
+
+export const odunoIdealSchema = z.object({
+  ...odunoIdealShape,
+  skillRequirements: skillRequirementListSchema.optional(),
+}).strict().superRefine(refineOdunoIdeal);
+
+const submittedOdunoIdealSchema = z.object({
+  ...odunoIdealShape,
+  skillRequirements: skillRequirementListSchema,
+}).strict().superRefine(refineOdunoIdeal);
 
 export const odunoMeditationSchema = z.object({
   summary: canonicalText(16_384),
@@ -491,7 +508,7 @@ export const idealSubmissionSchema = z.object({
   idempotencyKey: identifier,
   advisoryRoundDigest: advisoryRoundDigestSchema.optional(),
   advisoryDisposition: z.array(advisoryDispositionSchema).max(3).optional(),
-  ideal: odunoIdealSchema,
+  ideal: submittedOdunoIdealSchema,
 }).strict().superRefine((value, context) => {
   requireExplicitIdentityOrResumeToken(value, context);
   requireDispositionWithDigest(value, context);
@@ -518,11 +535,20 @@ export const planSubmissionSchema = z.object({
     'Required only when explicitly resuming a same-run plan-start recovery after the user chose one displayed option.',
   ),
   capabilities: z.array(z.unknown()).optional().describe(
-    'Complete current client capability descriptors. The field remains transport-optional only so omission can return a safe user-facing recovery choice before any plan effect.',
+    'Legacy binding-v1 continuation only.',
+  ),
+  kiokukoSkills: z.array(canonicalText(300)).max(6).optional().describe(
+    'Required for binding-v2 runs and bound independently from client inventory.',
+  ),
+  clientInventory: z.array(z.unknown()).optional().describe(
+    'Optional recommendation and external-Skill availability inventory; never run-bound.',
   ),
 }).strict().superRefine((submission, context) => {
   requireExplicitIdentityOrResumeToken(submission, context);
   requireDispositionWithDigest(submission, context);
+  if (submission.capabilities !== undefined && submission.kiokukoSkills !== undefined) {
+    context.addIssue({ code: 'custom', message: 'Legacy capabilities and kiokukoSkills are mutually exclusive', path: ['capabilities'] });
+  }
   const requirements = new Set(submission.skillRequirements.map((requirement) => requirement.name.normalize('NFKC').toLowerCase()));
   const standardSkills = new Set([
     STANDARD_SOUL_SKILL_NAME,
@@ -550,7 +576,14 @@ export const ennoAnswerSchema = z.object({
   resumeToken: resumeTokenSchema.optional(),
   expectedRevision: z.number().int().min(1),
   idempotencyKey: identifier,
-  action: z.enum(['approve', 'revise', 'cancel']),
+  action: z.enum([
+    'approve',
+    'revise',
+    'use_oduno_skill_set',
+    'use_zenki_skill_set',
+    'revalidate_skill_sets',
+    'cancel',
+  ]),
   requestedChanges: canonicalText(16_384).optional(),
 }).strict().superRefine((value, context) => {
   requireExplicitIdentityOrResumeToken(value, context);
@@ -647,6 +680,10 @@ export function parseEnnoRequestHandoff(input: unknown): EnnoRequestHandoff {
 
 export function parseOdunoIdeal(input: unknown): OdunoIdeal {
   return parseBoundary(odunoIdealSchema, input, 'Stored Oduno ideal is invalid');
+}
+
+export function parseSkillRequirementList(input: unknown): z.infer<typeof skillRequirementListSchema> {
+  return parseBoundary(skillRequirementListSchema, input, 'Stored Skill requirements are invalid');
 }
 
 export function parseOdunoMeditation(input: unknown): OdunoMeditation {

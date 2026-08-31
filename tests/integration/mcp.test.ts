@@ -17,12 +17,26 @@ import { GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
 import { MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS, MAX_RAW_CAPABILITY_DESCRIPTION_CHARS } from '../../src/akinator/capabilities.js';
 import { KiokukoError, type ErrorCode } from '../../src/errors.js';
 import { PACKAGE_VERSION } from '../../src/package-version.js';
+import { KIOKUKO_MCP_TOOL_NAMES } from '../../src/mcp/tool-catalog.js';
 
 const SOUL_CAPABILITY = {
   kind: 'skill',
   name: 'kiokuko-soul',
   description: 'Route Kiokuko work to every applicable bundled Skill.',
 } as const;
+
+const CODE_IDEAL_SKILL_REQUIREMENTS = [
+  {
+    name: 'kiokuko-soul',
+    purposes: ['planning', 'implementation', 'ui', 'testing', 'review', 'operations'],
+    required: true,
+  },
+  {
+    name: 'kiokuko-single-purpose-functions',
+    purposes: ['implementation', 'testing', 'review'],
+    required: true,
+  },
+] as const;
 
 function sqliteError(errcode: number, message = 'sqlite operation failed'): Error {
   return Object.assign(new Error(message), { code: 'ERR_SQLITE_ERROR', errcode });
@@ -41,8 +55,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
   try {
     assert.deepEqual(client.getServerVersion(), { name: 'kiokuko', version: PACKAGE_VERSION });
     const instructions = client.getInstructions() ?? '';
-    assert.match(instructions, /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(instructions, /Every descriptor must include its kind and canonical name/u);
+    assert.match(instructions, /required kiokukoSkills.*managed six-Skill manifest/iu);
+    assert.match(instructions, /Optional clientInventory is recommendation-only, capped, never stored or run-bound/iu);
+    assert.match(instructions, /never use ALL_TOOLS\.map\(\.\.\.\)/u);
     assert.match(instructions, /memory-reasoning is missing or unknown.*nextAction remains proceed.*repository evidence/iu);
     assert.match(instructions, /read and apply the available local memory-reasoning Skill before using that memory/);
     assert.match(instructions, /convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
@@ -70,25 +85,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /never select a repository-wide latest run/iu);
     assert.match(instructions, /ask_user_confirmation.*userFacingConfirmation.*never output raw directive JSON/isu);
     assert.match(instructions, /userFacingRecovery.*whenToChoose.*whatHappens.*explicit choice/isu);
+    assert.match(instructions, /Skill differences.*advantage.*disadvantage.*enno_answer/isu);
+    assert.match(instructions, /complete Skill requirement set.*Legacy stored ideals/isu);
     assert.match(instructions, /Do not retry, cancel, or create a new task automatically/iu);
-    assert.match(instructions, /never ask the user to locate or construct that catalog/iu);
+    assert.match(instructions, /Never ask the user to locate an inventory or construct JSON/iu);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      'curator_check',
-      'curator_globalize',
-      'enno_advice_read',
-      'enno_advice_submit',
-      'enno_answer',
-      'enno_finish',
-      'enno_ideal_submit',
-      'enno_meditation_submit',
-      'enno_plan_submit',
-      'enno_verify_prepare',
-      'enno_work_report',
-      'memory_checkpoint',
-      'task_answer',
-      'task_prepare',
-    ]);
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [...KIOKUKO_MCP_TOOL_NAMES].sort());
     assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_answer')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.readOnlyHint, false);
@@ -111,18 +113,11 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     const ennoFinishTool = tools.tools.find((tool) => tool.name === 'enno_finish');
     const ennoIdealTool = tools.tools.find((tool) => tool.name === 'enno_ideal_submit');
     const ennoMeditationTool = tools.tools.find((tool) => tool.name === 'enno_meditation_submit');
-    assert.match(taskPrepareTool?.description ?? '', /once for one logical user request/);
-    assert.match(taskPrepareTool?.description ?? '', /create a new bounded opaque value for each logical request/);
-    assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
-    assert.match(taskPrepareTool?.description ?? '', /Reusing an ID with changed bound input is a conflict/);
-    assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction and memoryPolicy before proceeding/);
+    assert.match(taskPrepareTool?.description ?? '', /Run Akinator once for one logical request/);
+    assert.match(taskPrepareTool?.description ?? '', /New Codex runs require kiokukoSkills/);
+    assert.match(taskPrepareTool?.description ?? '', /Optional clientInventory is recommendation-only, capped at 200, never stored or run-bound/);
     assert.match(taskPrepareTool?.description ?? '', /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
     assert.match(taskPrepareTool?.description ?? '', /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
-    assert.match(taskPrepareTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
-    assert.match(taskPrepareTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
-    assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
-    assert.match(taskPrepareTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(taskPrepareTool?.description ?? '', /read and apply local memory-reasoning before using it and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(taskPrepareTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
     assert.match(taskPrepareTool?.description ?? '', /never use ~, \$HOME, or HOME-relative path fragments/u);
     assert.match(taskPrepareTool?.description ?? '', /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
@@ -131,24 +126,19 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /structured handoff.*Oduno ideal.*every Akinator-discovered Skill.*harness-specific Zenki directive/u);
     assert.match(taskPrepareTool?.description ?? '', /failed review never returns directly to Goki/u);
     assert.match(taskPrepareTool?.description ?? '', /ennoOduno\.orchestrationId/u);
-    assert.match(taskAnswerTool?.description ?? '', /required run ID returned by task_prepare/);
-    assert.match(taskAnswerTool?.description ?? '', /Repeat the same capability catalog and context budget/);
-    assert.match(taskAnswerTool?.description ?? '', /changed context budget conflicts before intake mutation/);
-    assert.match(taskAnswerTool?.description ?? '', /inspect the returned nextAction and memoryPolicy before proceeding/);
-    assert.match(taskAnswerTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
-    assert.match(taskAnswerTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
-    assert.match(taskAnswerTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
-    assert.match(taskAnswerTool?.description ?? '', /read and apply local memory-reasoning before using it and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
+    assert.match(taskAnswerTool?.description ?? '', /Binding-v2 runs repeat the same kiokukoSkills and context budget/);
+    assert.match(taskAnswerTool?.description ?? '', /clientInventory may be omitted or refreshed/);
+    assert.match(taskAnswerTool?.description ?? '', /Legacy capabilities are accepted only for binding-v1 continuation/);
     assert.match(ennoFinishTool?.description ?? '', /returns Review feedback to Zenki for a new plan/u);
     assert.match(ennoFinishTool?.description ?? '', /advances a new run to Oduno meditation instead of completing it directly/iu);
     const ennoPlanTool = tools.tools.find((tool) => tool.name === 'enno_plan_submit');
     const ennoAnswerTool = tools.tools.find((tool) => tool.name === 'enno_answer');
     assert.match(ennoPlanTool?.description ?? '', /needs_confirmation response carries the decided ennoOduno\.directive\.userFacingConfirmation projection/u);
     assert.match(ennoPlanTool?.description ?? '', /without raw directive JSON or internal identifiers/u);
-    assert.match(ennoPlanTool?.description ?? '', /automatic-continuation pause.*wait for the user's explicit choice/iu);
-    assert.match(ennoPlanTool?.description ?? '', /same-run retry must pass the selected recoveryAction/iu);
-    assert.match(ennoAnswerTool?.description ?? '', /only the action the user explicitly chose after seeing the user-facing confirmation or plan-start recovery choices/iu);
-    assert.match(ennoAnswerTool?.description ?? '', /During planning, only explicit cancellation is accepted/iu);
+    assert.match(ennoPlanTool?.description ?? '', /Binding-v2 runs repeat the exact kiokukoSkills/iu);
+    assert.match(ennoPlanTool?.description ?? '', /clientInventory.*explicitly required external Skills.*never changes run identity/iu);
+    assert.match(ennoAnswerTool?.description ?? '', /only the action the user explicitly chose after seeing the user-facing confirmation or recovery choices/iu);
+    assert.match(ennoAnswerTool?.description ?? '', /pending role Skill-set recovery accepts its displayed Oduno, Zenki, or revalidation choice/iu);
     assert.match(ennoIdealTool?.description ?? '', /optimal goal.*task_prepare handoff.*every Akinator-discovered Skill.*before Zenki planning/iu);
     assert.match(ennoMeditationTool?.description ?? '', /obsolete test or function deletion candidates.*without mutating the repository/iu);
     assert.match(taskAnswerTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
@@ -178,16 +168,18 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /Use the exact current question/);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /value must be exactly one returned option/);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /options is null, provide grounded non-empty text/);
-    for (const schema of [taskPrepareSchema, taskAnswerSchema]) {
-      assert.equal(schema.properties?.capabilities?.type, 'array');
-      assert.match(
-        schema.properties?.capabilities?.description ?? '',
-        /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u,
-      );
-      assert.match(schema.properties?.capabilities?.description ?? '', /kind and canonical name/u);
-    }
+    assert.equal(taskPrepareSchema.properties?.kiokukoSkills?.type, 'array');
+    assert.match(taskPrepareSchema.properties?.kiokukoSkills?.description ?? '', /STANDARD_SKILL_MANIFESTS/u);
+    assert.equal(taskPrepareSchema.properties?.clientInventory?.type, 'array');
+    assert.match(taskPrepareSchema.properties?.clientInventory?.description ?? '', /recommendation-only.*never stored or run-bound/iu);
+    assert.match(taskPrepareSchema.properties?.capabilities?.description ?? '', /Legacy binding-v1 clients only/iu);
+    assert.equal(taskAnswerSchema.properties?.kiokukoSkills?.type, 'array');
+    assert.equal(taskAnswerSchema.properties?.clientInventory?.type, 'array');
+    assert.match(taskAnswerSchema.properties?.capabilities?.description ?? '', /Legacy binding-v1 continuation only/iu);
     assert.equal(ennoPlanSchema.properties?.capabilities?.type, 'array');
-    assert.match(ennoPlanSchema.properties?.capabilities?.description ?? '', /transport-optional.*user-facing recovery choice/iu);
+    assert.match(ennoPlanSchema.properties?.capabilities?.description ?? '', /Legacy binding-v1 continuation only/iu);
+    assert.equal(ennoPlanSchema.properties?.kiokukoSkills?.type, 'array');
+    assert.equal(ennoPlanSchema.properties?.clientInventory?.type, 'array');
     for (const toolName of [
       'enno_advice_submit',
       'enno_advice_read',
@@ -666,6 +658,18 @@ test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno deri
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     try {
+      if (clientFixture.expectedKind === 'codex') {
+        const legacyNewRun = await client.callTool({
+          name: 'task_prepare',
+          arguments: {
+            soulRead: true,
+            requestId: 'codex-legacy-new-run-rejected',
+            task: 'Review',
+            capabilities: [SOUL_CAPABILITY],
+          },
+        });
+        assert.equal(legacyNewRun.isError, true);
+      }
       const prepared = await client.callTool({
         name: 'task_prepare',
         arguments: {
@@ -677,15 +681,15 @@ test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno deri
             target: 'src/add.js',
             expected: 'node --test passes',
           },
-          capabilities: [SOUL_CAPABILITY, {
-            kind: 'skill',
-            name: 'kiokuko-single-purpose-functions',
-            description: 'Focused code contracts and tests.',
-          }],
+          kiokukoSkills: ['kiokuko-soul', 'kiokuko-single-purpose-functions'],
         },
       });
       assert.equal(prepared.isError, undefined);
       const content = prepared.structuredContent as {
+        capabilities?: unknown;
+        kiokukoCapabilities: { bindingVersion: number; availableSkillCount: number; managedToolCount: number };
+        clientRecommendations: unknown[];
+        inventoryWarnings: unknown[];
         ennoOduno: {
           status: string;
           currentRole: string | null;
@@ -704,6 +708,16 @@ test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno deri
           } | null;
         };
       };
+      assert.equal(content.capabilities, undefined);
+      assert.deepEqual(content.kiokukoCapabilities, {
+        bindingVersion: 2,
+        availability: 'known-nonempty',
+        availableSkillCount: 2,
+        managedToolCount: 14,
+        diagnostics: { received: 2, accepted: 2, truncated: 0, dropped: 0 },
+      });
+      assert.ok(Array.isArray(content.clientRecommendations));
+      assert.deepEqual(content.inventoryWarnings, []);
       assert.equal(content.ennoOduno.status, 'oduno_ideal');
       assert.equal(content.ennoOduno.currentRole, 'enno-oduno');
       assert.deepEqual(content.ennoOduno.clientBinding, {
@@ -743,6 +757,153 @@ test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno deri
       await client.close();
       if (server.isConnected()) await server.close();
     }
+  }
+});
+
+test('binding-v2 task_answer accepts changed recommendation-only client inventory', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-v2-inventory-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-v2-inventory-data-'));
+  const server = createKiokukoMcpServer({ databasePath: path.join(data, 'kiokuko.sqlite3'), cwd: () => root });
+  const client = new Client({ name: 'codex-mcp-client', version: 'fixture-version' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const prepared = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'v2-changing-inventory',
+        task: 'Implement a feature',
+        profileHints: { taskType: 'build', expected: 'tests pass' },
+        kiokukoSkills: ['kiokuko-soul', 'memory-reasoning'],
+        clientInventory: [{ kind: 'mcp_tool', name: 'mcp__github__search' }],
+      },
+    });
+    assert.equal(prepared.isError, undefined);
+    const first = prepared.structuredContent as {
+      run: { runId: string };
+      intake: { sessionId: string; question: { id: string } };
+    };
+    assert.equal(first.intake.question.id, 'target');
+    const answered = await client.callTool({
+      name: 'task_answer',
+      arguments: {
+        runId: first.run.runId,
+        sessionId: first.intake.sessionId,
+        questionId: 'target',
+        value: 'src/feature.ts',
+        kiokukoSkills: ['memory-reasoning', 'kiokuko-soul'],
+        clientInventory: [{ kind: 'mcp_tool', name: 'mcp__sites__deploy' }],
+      },
+    });
+    assert.equal(answered.isError, undefined);
+    const content = answered.structuredContent as { capabilities?: unknown; kiokukoCapabilities: { bindingVersion: number } };
+    assert.equal(content.capabilities, undefined);
+    assert.equal(content.kiokukoCapabilities.bindingVersion, 2);
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
+test('binding-v2 Enno plan checks an external required Skill from clientInventory without binding it', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-v2-enno-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-v2-enno-data-'));
+  const server = createKiokukoMcpServer({ databasePath: path.join(data, 'kiokuko.sqlite3'), cwd: () => root });
+  const client = new Client({ name: 'codex-mcp-client', version: 'fixture-version' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const kiokukoSkills = ['kiokuko-soul', 'kiokuko-single-purpose-functions'];
+  const clientInventory = [{ kind: 'skill', name: 'external-test-skill' }];
+  const skillRequirements = [
+    { name: 'kiokuko-soul', purposes: ['planning', 'implementation', 'ui', 'testing', 'review', 'operations'], required: true },
+    { name: 'kiokuko-single-purpose-functions', purposes: ['implementation', 'testing', 'review'], required: true },
+    { name: 'external-test-skill', purposes: ['testing'], required: true },
+  ];
+  try {
+    const prepared = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'v2-enno-external-skill',
+        task: 'Implement the feature and test it',
+        profileHints: { taskType: 'build', target: 'src/feature.ts', expected: 'tests pass' },
+        kiokukoSkills,
+        clientInventory,
+      },
+    });
+    assert.equal(prepared.isError, undefined);
+    const state = prepared.structuredContent as {
+      project: { workspace: string };
+      run: { runId: string };
+      ennoOduno: { orchestrationId: string; contractRevision: number };
+    };
+    const identity = {
+      runId: state.run.runId,
+      workspace: state.project.workspace,
+      orchestrationId: state.ennoOduno.orchestrationId,
+    };
+    const ideal = await client.callTool({
+      name: 'enno_ideal_submit',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'v2-enno-ideal',
+        ideal: {
+          objective: 'Implement the feature with the required test Skill',
+          principles: ['Keep capability ownership separated'],
+          skillContributions: [],
+          skillRequirements,
+          successSignals: ['tests pass'],
+        },
+      },
+    });
+    assert.equal(ideal.isError, undefined);
+    const planned = await client.callTool({
+      name: 'enno_plan_submit',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'v2-enno-plan',
+        kiokukoSkills,
+        clientInventory,
+        scope: ['src/feature.ts'],
+        exclusions: [],
+        acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
+        workPlan: {
+          objective: 'Implement and test the feature',
+          units: [{
+            id: 'feature',
+            objective: 'Implement the feature',
+            scope: ['src/feature.ts'],
+            dependencies: [],
+            skillNames: ['kiokuko-soul', 'kiokuko-single-purpose-functions', 'external-test-skill'],
+            expertRefs: [{ id: 'code.verification.v1', reason: 'The change requires regression verification.' }],
+            acceptanceCriteria: ['tests pass'],
+            focusedVerifiers: [],
+            routes: ['code', 'test'],
+          }],
+        },
+        skillRequirements,
+        finalVerifiers: [{ id: 'node', kind: 'custom', executable: 'node', args: ['--version'], timeoutMs: 30000, cwd: '.' }],
+        maxAttempts: 8,
+        provenance: {
+          scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+          workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+        },
+      },
+    });
+    assert.equal(planned.isError, undefined, JSON.stringify(planned.content));
+    const plannedState = planned.structuredContent as { ennoOduno: { status: string; directive: { workUnit: { skillNames: string[] } } } };
+    assert.equal(plannedState.ennoOduno.status, 'goki_executing');
+    assert.ok(plannedState.ennoOduno.directive.workUnit.skillNames.includes('external-test-skill'));
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
   }
 });
 
@@ -794,6 +955,7 @@ test('enno_plan_submit returns the userFacingConfirmation projection over the MC
           objective: 'Repair the add function with focused verification',
           principles: ['Preserve the public API'],
           skillContributions: [],
+          skillRequirements: CODE_IDEAL_SKILL_REQUIREMENTS,
           successSignals: ['node --test passes'],
         },
       },
@@ -991,6 +1153,7 @@ test('MCP transports advisory submission and final verification preparation with
           objective: 'Repair the add function with focused verification',
           principles: ['Preserve the public API'],
           skillContributions: [],
+          skillRequirements: CODE_IDEAL_SKILL_REQUIREMENTS,
           successSignals: ['node --test passes'],
         },
       },
@@ -1121,6 +1284,7 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
           objective: 'Repair the add function with focused verification',
           principles: ['Preserve the public API'],
           skillContributions: [],
+          skillRequirements: CODE_IDEAL_SKILL_REQUIREMENTS,
           successSignals: ['tests pass'],
         },
       },
@@ -1304,6 +1468,145 @@ test('plan-start recovery exposes only concise user choices and leaves the same 
   }
 });
 
+test('MCP exposes a bounded four-choice role Skill-set recovery and waits for the explicit choice', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-role-skill-recovery-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-role-skill-recovery-data-'));
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'kiokuko-role-skill-recovery-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const capabilities = [SOUL_CAPABILITY, {
+      kind: 'skill',
+      name: 'kiokuko-single-purpose-functions',
+      description: 'Focused code contracts and tests.',
+    }];
+    const prepared = await client.callTool({
+      name: 'task_prepare',
+      arguments: {
+        soulRead: true,
+        requestId: 'mcp-role-skill-recovery-request',
+        task: 'Repair the add function',
+        profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass' },
+        capabilities,
+      },
+    });
+    const preparedContent = prepared.structuredContent as {
+      run: { runId: string };
+      project: { workspace: string };
+      intake: { sessionId: string };
+    };
+    const identity = {
+      runId: preparedContent.run.runId,
+      workspace: preparedContent.project.workspace,
+      orchestrationId: preparedContent.intake.sessionId,
+    };
+    const ideal = await client.callTool({
+      name: 'enno_ideal_submit',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'mcp-role-skill-recovery-ideal',
+        ideal: {
+          objective: 'Repair the add function with focused verification',
+          principles: ['Preserve the public API'],
+          skillContributions: [],
+          skillRequirements: CODE_IDEAL_SKILL_REQUIREMENTS,
+          successSignals: ['tests pass'],
+        },
+      },
+    });
+    assert.equal(ideal.isError, undefined);
+    const plan = {
+      ...identity,
+      expectedRevision: 1,
+      idempotencyKey: 'mcp-role-skill-recovery-plan',
+      scope: ['src/add.js'],
+      exclusions: [],
+      acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
+      workPlan: {
+        objective: 'Repair add with Zenki specialization',
+        units: [{
+          id: 'repair-add', objective: 'Repair the add implementation', scope: ['src/add.js'], dependencies: [],
+          routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
+          expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the regression with focused evidence' }],
+          acceptanceCriteria: ['tests pass'], focusedVerifiers: [],
+        }],
+      },
+      skillRequirements: [{ name: 'zenki-helper', purposes: ['testing'], required: false }],
+      finalVerifiers: [{
+        id: 'final-test', kind: 'test', executable: process.execPath,
+        args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000,
+      }],
+      maxAttempts: 5,
+      provenance: {
+        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
+        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
+      },
+      capabilities,
+    };
+    const recovery = await client.callTool({ name: 'enno_plan_submit', arguments: plan });
+    assert.equal(recovery.isError, true);
+    const recoveryContent = recovery.structuredContent as {
+      reason: string;
+      userFacingRecovery: {
+        skillSetDifference: { addedByZenki: Array<{ name: string }> };
+        options: Array<{ action: string; recommended: boolean; advantages: string[]; disadvantages: string[] }>;
+      };
+    };
+    assert.equal(recoveryContent.reason, 'role_skill_set_conflict');
+    assert.deepEqual(recoveryContent.userFacingRecovery.skillSetDifference.addedByZenki.map((item) => item.name), ['zenki-helper']);
+    assert.deepEqual(recoveryContent.userFacingRecovery.options.map((option) => option.action), [
+      'use_oduno_skill_set', 'use_zenki_skill_set', 'revalidate_skill_sets', 'cancel',
+    ]);
+    assert.equal(recoveryContent.userFacingRecovery.options.filter((option) => option.recommended).length, 1);
+    assert.equal(recoveryContent.userFacingRecovery.options.every((option) => option.advantages.length > 0), true);
+    assert.equal(recoveryContent.userFacingRecovery.options.every((option) => option.disadvantages.length > 0), true);
+    const visible = JSON.stringify(recovery.content);
+    assert.match(visible, /Skill differences/iu);
+    assert.match(visible, /Advantage:/u);
+    assert.match(visible, /Disadvantage:/u);
+    assert.equal((visible.match(/Recommended/gu) ?? []).length, 1);
+    for (const forbidden of [
+      'capabilities', 'catalog', 'digest', 'revision', identity.runId,
+      'use_oduno_skill_set', 'use_zenki_skill_set', 'revalidate_skill_sets', 'presentationVersion',
+    ]) {
+      assert.equal(visible.toLowerCase().includes(forbidden.toLowerCase()), false, forbidden);
+    }
+    const inspection = openConnection(databasePath);
+    try {
+      assert.equal(inspection.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE run_id = ? AND operation = 'plan_submit'")
+        .get<{ count: number }>(identity.runId)?.count, 0);
+      assert.equal(inspection.prepare("SELECT COUNT(*) AS count FROM agent_task_skill_discovery_attempts WHERE run_id = ? AND phase = 'zenki'")
+        .get<{ count: number }>(identity.runId)?.count, 0);
+    } finally {
+      inspection.close();
+    }
+    const choice = await client.callTool({
+      name: 'enno_answer',
+      arguments: {
+        ...identity,
+        expectedRevision: 1,
+        idempotencyKey: 'mcp-role-skill-recovery-choice',
+        action: 'use_zenki_skill_set',
+      },
+    });
+    assert.equal(choice.isError, undefined);
+    const continued = await client.callTool({
+      name: 'enno_plan_submit',
+      arguments: { ...plan, idempotencyKey: 'mcp-role-skill-recovery-continued' },
+    });
+    assert.equal(continued.isError, undefined);
+    assert.equal((continued.structuredContent as { ennoOduno: { status: string } }).ennoOduno.status, 'goki_executing');
+  } finally {
+    await client.close();
+    if (server.isConnected()) await server.close();
+  }
+});
+
 test('malformed compatibility discovery degrades across task_prepare and enno_plan_submit without an integrity error', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-malformed-discovery-repo-'));
   execFileSync('git', ['init', '-q', root]);
@@ -1377,6 +1680,7 @@ test('malformed compatibility discovery degrades across task_prepare and enno_pl
           objective: 'Repair the Svelte component with focused verification',
           principles: ['Preserve the public API'],
           skillContributions: [],
+          skillRequirements: CODE_IDEAL_SKILL_REQUIREMENTS,
           successSignals: ['node --test passes'],
         },
       },

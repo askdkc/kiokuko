@@ -6,25 +6,101 @@ import {
   STANDARD_UI_SKILL_NAME,
 } from '../setup/standard-skills.js';
 import type { SkillDiscoverySummary } from '../skills/types.js';
-import type { SkillPurpose, SkillSetEntry } from './types.js';
+import type {
+  SkillPurpose,
+  SkillRequirement,
+  SkillRequirementDifference,
+  SkillSetEntry,
+} from './types.js';
 
-export interface RequestedSkill {
-  name: string;
-  purposes: SkillPurpose[];
-  required: boolean;
-}
+export type RequestedSkill = SkillRequirement;
+
+const SKILL_PURPOSE_ORDER: readonly SkillPurpose[] = [
+  'planning',
+  'implementation',
+  'ui',
+  'testing',
+  'review',
+  'operations',
+];
 
 function normalize(value: string): string {
   return value.normalize('NFKC').toLowerCase().replaceAll('_', '-');
 }
 
 function mergedRequirement(existing: RequestedSkill | undefined, next: RequestedSkill): RequestedSkill {
-  if (existing === undefined) return { ...next, purposes: [...new Set(next.purposes)] };
+  const orderedPurposes = (purposes: readonly SkillPurpose[]): SkillPurpose[] => SKILL_PURPOSE_ORDER
+    .filter((purpose) => purposes.includes(purpose));
+  if (existing === undefined) return { ...next, purposes: orderedPurposes([...new Set(next.purposes)]) };
   return {
     name: existing.name,
-    purposes: [...new Set([...existing.purposes, ...next.purposes])],
+    purposes: orderedPurposes([...new Set([...existing.purposes, ...next.purposes])]),
     required: existing.required || next.required,
   };
+}
+
+export function normalizeSkillRequirementSet(requirements: readonly SkillRequirement[]): SkillRequirement[] {
+  const byName = new Map<string, SkillRequirement>();
+  for (const requirement of requirements) {
+    const key = normalize(requirement.name);
+    byName.set(key, mergedRequirement(byName.get(key), requirement));
+  }
+  return [...byName.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, requirement]) => ({ ...requirement, purposes: [...requirement.purposes] }));
+}
+
+function samePurposes(left: readonly SkillPurpose[], right: readonly SkillPurpose[]): boolean {
+  return left.length === right.length && left.every((purpose, index) => purpose === right[index]);
+}
+
+export function skillRequirementDifference(
+  odunoRequirements: readonly SkillRequirement[],
+  zenkiRequirements: readonly SkillRequirement[],
+): SkillRequirementDifference {
+  const oduno = normalizeSkillRequirementSet(odunoRequirements);
+  const zenki = normalizeSkillRequirementSet(zenkiRequirements);
+  const odunoByName = new Map(oduno.map((requirement) => [normalize(requirement.name), requirement]));
+  const zenkiByName = new Map(zenki.map((requirement) => [normalize(requirement.name), requirement]));
+  const addedByZenki = zenki.filter((requirement) => !odunoByName.has(normalize(requirement.name)));
+  const omittedByZenki = oduno.filter((requirement) => !zenkiByName.has(normalize(requirement.name)));
+  const changed = oduno.flatMap((odunoRequirement) => {
+    const zenkiRequirement = zenkiByName.get(normalize(odunoRequirement.name));
+    if (zenkiRequirement === undefined
+      || (odunoRequirement.required === zenkiRequirement.required
+        && samePurposes(odunoRequirement.purposes, zenkiRequirement.purposes))) return [];
+    return [{
+      name: odunoRequirement.name,
+      oduno: { ...odunoRequirement, purposes: [...odunoRequirement.purposes] },
+      zenki: { ...zenkiRequirement, purposes: [...zenkiRequirement.purposes] },
+    }];
+  });
+  return {
+    addedByZenki: addedByZenki.map((requirement) => ({ ...requirement, purposes: [...requirement.purposes] })),
+    omittedByZenki: omittedByZenki.map((requirement) => ({ ...requirement, purposes: [...requirement.purposes] })),
+    changed,
+  };
+}
+
+export function skillRequirementDifferenceIsEmpty(difference: SkillRequirementDifference): boolean {
+  return difference.addedByZenki.length === 0
+    && difference.omittedByZenki.length === 0
+    && difference.changed.length === 0;
+}
+
+export function zenkiRequirementsPreserveOduno(
+  odunoRequirements: readonly SkillRequirement[],
+  zenkiRequirements: readonly SkillRequirement[],
+): boolean {
+  const zenkiByName = new Map(normalizeSkillRequirementSet(zenkiRequirements)
+    .map((requirement) => [normalize(requirement.name), requirement]));
+  return normalizeSkillRequirementSet(odunoRequirements).every((odunoRequirement) => {
+    if (!odunoRequirement.required) return true;
+    const zenkiRequirement = zenkiByName.get(normalize(odunoRequirement.name));
+    return zenkiRequirement !== undefined
+      && zenkiRequirement.required
+      && odunoRequirement.purposes.every((purpose) => zenkiRequirement.purposes.includes(purpose));
+  });
 }
 
 export function orderedUniqueSkillNames(...groups: readonly (readonly string[])[]): string[] {

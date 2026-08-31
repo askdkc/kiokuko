@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildPlanStartRecovery,
+  buildRoleSkillSetRecovery,
   PLAN_START_RECOVERY_REASONS,
   renderPlanStartRecovery,
 } from '../../src/enno-oduno/plan-recovery.js';
@@ -106,7 +107,7 @@ test('an already-ended attempt explains that the plan can be reused in a new att
 });
 
 test('every user-visible recovery hides internal protocol terms', () => {
-  for (const reason of PLAN_START_RECOVERY_REASONS) {
+  for (const reason of PLAN_START_RECOVERY_REASONS.filter((item) => item !== 'role_skill_set_conflict')) {
     const recovery = buildPlanStartRecovery(reason);
     const rendered = renderPlanStartRecovery(recovery);
     assert.equal(recovery.userFacingRecovery.options.length, 3);
@@ -127,4 +128,81 @@ test('every user-visible recovery hides internal protocol terms', () => {
       assert.equal(rendered.toLowerCase().includes(forbidden.toLowerCase()), false, `${reason}: ${forbidden}`);
     }
   }
+});
+
+test('role Skill-set recovery ignores order and duplicates and recommends a safe Zenki superset', () => {
+  const recovery = buildRoleSkillSetRecovery({
+    odunoRequirements: [
+      { name: 'Test_Skill', purposes: ['testing'], required: false },
+      { name: 'test-skill', purposes: ['review'], required: true },
+    ],
+    zenkiRequirements: [
+      { name: 'implementation-helper', purposes: ['implementation'], required: true },
+      { name: 'TEST-SKILL', purposes: ['review', 'testing'], required: true },
+    ],
+    zenkiRequiredSkillsAvailable: true,
+  });
+  assert.equal(recovery.reason, 'role_skill_set_conflict');
+  assert.deepEqual(recovery.userFacingRecovery.skillSetDifference, {
+    addedByZenki: [{ name: 'implementation-helper', purposes: ['implementation'], required: true }],
+    omittedByZenki: [],
+    changed: [],
+  });
+  assert.equal(recovery.userFacingRecovery.options.length, 4);
+  assert.deepEqual(
+    recovery.userFacingRecovery.options.filter((option) => option.recommended).map((option) => option.action),
+    ['use_zenki_skill_set'],
+  );
+  const rendered = renderPlanStartRecovery(recovery);
+  assert.match(rendered, /Skill differences:/u);
+  assert.match(rendered, /Added by Zenki: implementation-helper/u);
+  assert.equal((rendered.match(/Advantage:/gu) ?? []).length, 4);
+  assert.equal((rendered.match(/Disadvantage:/gu) ?? []).length, 4);
+  assert.equal((rendered.match(/\(Recommended\)/gu) ?? []).length, 1);
+});
+
+test('role Skill-set recovery recommends revalidation when Zenki weakens or cannot execute a requirement', () => {
+  const recovery = buildRoleSkillSetRecovery({
+    odunoRequirements: [{ name: 'guard', purposes: ['planning', 'implementation'], required: true }],
+    zenkiRequirements: [{ name: 'guard', purposes: ['planning'], required: false }],
+    zenkiRequiredSkillsAvailable: false,
+  });
+  assert.deepEqual(recovery.userFacingRecovery.skillSetDifference, {
+    addedByZenki: [],
+    omittedByZenki: [],
+    changed: [{
+      name: 'guard',
+      oduno: { name: 'guard', purposes: ['planning', 'implementation'], required: true },
+      zenki: { name: 'guard', purposes: ['planning'], required: false },
+    }],
+  });
+  assert.deepEqual(
+    recovery.userFacingRecovery.options.filter((option) => option.recommended).map((option) => option.action),
+    ['revalidate_skill_sets'],
+  );
+  const rendered = renderPlanStartRecovery(recovery);
+  for (const forbidden of [
+    'enno_', 'capabilities', 'catalog', 'digest', 'run id', 'runId', 'revision',
+    'use_oduno_skill_set', 'use_zenki_skill_set', 'revalidate_skill_sets', 'presentationVersion',
+  ]) {
+    assert.equal(rendered.toLowerCase().includes(forbidden.toLowerCase()), false, forbidden);
+  }
+});
+
+test('role Skill-set recovery rejects empty, unsafe, and oversized public projections', () => {
+  assert.throws(() => buildRoleSkillSetRecovery({
+    odunoRequirements: [{ name: 'same', purposes: ['planning'], required: true }],
+    zenkiRequirements: [{ name: 'SAME', purposes: ['planning'], required: true }],
+    zenkiRequiredSkillsAvailable: true,
+  }), /non-empty difference/iu);
+  assert.throws(() => buildRoleSkillSetRecovery({
+    odunoRequirements: [{ name: 'safe', purposes: ['planning'], required: true }],
+    zenkiRequirements: [{ name: '-----BEGIN PRIVATE KEY-----', purposes: ['planning'], required: true }],
+    zenkiRequiredSkillsAvailable: true,
+  }), /unsafe content/iu);
+  assert.throws(() => buildRoleSkillSetRecovery({
+    odunoRequirements: [{ name: 'safe', purposes: ['planning'], required: true }],
+    zenkiRequirements: [{ name: 'x'.repeat(70_000), purposes: ['planning'], required: true }],
+    zenkiRequiredSkillsAvailable: true,
+  }), /too large/iu);
 });

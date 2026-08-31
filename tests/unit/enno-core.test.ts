@@ -159,6 +159,7 @@ test('role scripts reject revision conflicts and generate only the role owning t
       objective: 'Reach the verified optimal add implementation',
       principles: ['Preserve the public API'],
       skillContributions: [],
+      skillRequirements: [{ name: 'kiokuko-soul', purposes: ['planning'], required: true }],
       successSignals: ['Tests pass'],
     },
     workUnits: [{
@@ -473,6 +474,7 @@ test('plan validation diagnostics are bounded, value-free, and directly correcti
       objective: 'x'.repeat(16_385),
       principles: ['Keep the contract'],
       skillContributions: [],
+      skillRequirements: [{ name: 'kiokuko-soul', purposes: ['planning'], required: true }],
       successSignals: ['Tests pass'],
     },
   }));

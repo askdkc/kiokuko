@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   MAX_CAPABILITY_ITEMS,
+  MAX_CLIENT_INVENTORY_ITEMS,
   MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS,
   MAX_RAW_CAPABILITY_DESCRIPTION_CHARS,
   MEMORY_REASONING_SKILL_NAME,
@@ -10,10 +11,14 @@ import {
   deriveMemoryUseSignal,
   hasBlockingRequiredCapability,
   memoryReasoningCapabilityAvailability,
+  normalizeClientInventory,
   normalizeCapabilityCatalog,
+  normalizeKiokukoSkills,
   resolveCapabilities as resolveCapabilitiesCore,
 } from '../../src/akinator/capabilities.js';
 import { STANDARD_SOUL_SKILL_NAME } from '../../src/setup/standard-skills.js';
+import { STANDARD_SKILL_NAMES } from '../../src/setup/standard-skills.js';
+import { KIOKUKO_MANAGED_TOOL_COUNT } from '../../src/mcp/tool-catalog.js';
 
 const buildProfile = {
   taskType: 'build' as const,
@@ -141,6 +146,43 @@ test('fails closed when catalog items are invalid or omitted at processing bound
   assert.equal(over.availability, 'unknown');
   assert.equal(invalid.availability, 'unknown');
   assert.deepEqual(invalid.diagnostics, { received: 1, accepted: 0, truncated: 0, dropped: 1 });
+});
+
+test('separates the six Kiokuko-owned Skills from the 217-entry Codex inventory incident', () => {
+  const kiokuko = normalizeKiokukoSkills(STANDARD_SKILL_NAMES);
+  const inventory = [
+    ...Array.from({ length: 18 }, (_, index) => ({ kind: 'skill', name: `external-skill-${index}` })),
+    ...Array.from({ length: 174 }, (_, index) => ({ kind: 'mcp_tool', name: `mcp__server__tool_${index}` })),
+    ...Array.from({ length: 19 }, (_, index) => ({ kind: 'mcp_tool', name: `builtin_${index}` })),
+  ];
+  const client = normalizeClientInventory(inventory, 'codex');
+
+  assert.equal(kiokuko.availability, 'known-nonempty');
+  assert.deepEqual(kiokuko.skills, [...STANDARD_SKILL_NAMES].sort());
+  assert.deepEqual(kiokuko.diagnostics, { received: 6, accepted: 6, truncated: 0, dropped: 0 });
+  assert.equal(KIOKUKO_MANAGED_TOOL_COUNT, 14);
+  assert.deepEqual(client.diagnostics, { received: 192, accepted: 192, truncated: 0, dropped: 0 });
+  assert.deepEqual(client.warnings, [{
+    code: 'CLIENT_INVENTORY_NON_MCP_TOOLS_IGNORED',
+    message: 'Some Codex built-in tools were ignored because they are not MCP tools.',
+  }]);
+});
+
+test('keeps client inventory limits advisory and Kiokuko Skill validity independent', () => {
+  const exact = normalizeClientInventory(Array.from({ length: MAX_CLIENT_INVENTORY_ITEMS }, (_, index) => ({
+    kind: 'mcp_tool', name: `mcp__server__tool_${index}`,
+  })), 'codex');
+  const over = normalizeClientInventory(Array.from({ length: MAX_CLIENT_INVENTORY_ITEMS + 1 }, (_, index) => ({
+    kind: 'mcp_tool', name: `mcp__server__tool_${index}`,
+  })), 'codex');
+  const malformedOwned = normalizeKiokukoSkills([...STANDARD_SKILL_NAMES, 'github']);
+
+  assert.equal(exact.availability, 'known-nonempty');
+  assert.deepEqual(exact.diagnostics, { received: 200, accepted: 200, truncated: 0, dropped: 0 });
+  assert.equal(over.availability, 'unknown');
+  assert.deepEqual(over.diagnostics, { received: 201, accepted: 200, truncated: 0, dropped: 1 });
+  assert.equal(malformedOwned.availability, 'unknown');
+  assert.equal(malformedOwned.diagnostics.dropped, 1);
 });
 
 function aggregateCatalog(lastDescriptionLength: number, withUnreadSuffix = false): Array<unknown> {

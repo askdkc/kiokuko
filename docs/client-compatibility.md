@@ -171,8 +171,8 @@ internal tool and field names, catalog, hashes, run identity, revisions,
 presentation version, reason codes, and raw JSON remain hidden. The client must
 not retry, cancel, or create a replacement automatically.
 
-For missing information, continuing attaches the complete catalog retained by
-the host and reuses the same attempt; reviewing asks the user for changes and
+For missing Kiokuko-owned information, continuing attaches the exact bound
+`kiokukoSkills` retained by the host and reuses the same attempt; reviewing asks the user for changes and
 starts no implementation before the answer; cancelling ends the current attempt
 without a replacement. For changed environment information, restarting first
 cancels the active planning attempt and then opens a new task with the current
@@ -182,6 +182,17 @@ attempt already ended because the catalog was provably lost during plan
 submission, both restart choices leave that terminal attempt unchanged and open
 a replacement only after the user chooses and, for review, answers. Cancelling
 an already-ended attempt creates nothing.
+
+When the environment binding matches but the Skill requirements persisted in
+the Oduno ideal differ from Zenki's complete route-expanded requirements, the
+same projection additionally contains only the added, omitted, and changed
+Skill names, purposes, and requiredness. Clients show four choices with every
+advantage and disadvantage: replan with Oduno's exact set, reuse only the bound
+Zenki plan, revalidate the same attempt from the ideal while preserving intake,
+or cancel. Exactly one choice is recommended: Zenki only when it preserves all
+required Oduno purposes and every required Zenki Skill is executable;
+otherwise revalidation. The client passes the explicit choice through
+`enno_answer` and performs no automatic plan retry or implementation.
 
 For new Codex, OpenCode, and Claude Code setup, Enno-Oduno continuation is
 enabled by default; existing managed installations remain unchanged until
@@ -205,17 +216,19 @@ retired Claude prompt handler. A modified, duplicate, relocated, or partial
 legacy identity is `CONFLICT` and requires manual review; unrelated client
 settings are preserved.
 
-`task_prepare` can accept an ephemeral catalog of skill and MCP-tool names from
-the calling client. Kiokuko matches Akinator policy recommendations and task
-terms against that catalog, but cannot enumerate another MCP server or a
-client's private skill registry by itself. A result therefore distinguishes
-`available`, `missing`, and `unknown`; it never treats a fetched `SKILL.md` as
-installed or executable. External skill discovery is controlled independently
+New `task_prepare` calls separate ownership explicitly. Required
+`kiokukoSkills` contains only exact available names from Kiokuko's managed
+six-Skill manifest. Kiokuko owns its MCP tool manifest internally; clients do
+not enumerate those tools. Optional `clientInventory` contains advisory Skill
+and MCP metadata for recommendations and external-Skill availability checks.
+It is capped at 200, never stored or run-bound, and cannot trigger environment
+recovery. In Codex, clients must not use `ALL_TOOLS.map(...)`; optional MCP
+inventory selects only names beginning with `mcp__`, and built-in tools are not
+relabeled as MCP tools. External skill discovery is controlled independently
 by `KIOKUKO_SKILL_DISCOVERY=off|official|community` and defaults to `official`.
-When enabled, Kiokuko compares the project fingerprint with relevant client
-skills rather than checking whether the catalog is globally empty. An omitted
-catalog is treated as unknown availability; official reference-only discovery
-may still proceed, but fetched skills are never treated as installed or
+When enabled, Kiokuko may compare the project fingerprint with the current
+advisory client inventory. Omitted inventory reduces recommendation quality but
+does not make Kiokuko's own availability unknown. Fetched skills are never treated as installed or
 executable. Akinator discovery and `kiokuko skills find` share the same
 provider-backed `findSkills` operation. There is no legacy fixed-source sync or
 guessed-source fallback; bounded exact verification of a reviewed,
@@ -234,9 +247,10 @@ The legacy ungated `guide context` path was removed. Task-aware context must use
 `kiokuko-soul` hard gate applies. External Skill discovery belongs to
 `task_prepare` or the explicit `skills find` / `skills import` commands.
 
-Every `task_answer` request must include the exact `run.runId`, capability
-catalog, and context budget supplied to `task_prepare`; clients must not fall
-back to session-only run lookup or replace those bindings between answers. Inspect
+Every binding-v2 `task_answer` request must include the exact `run.runId`, bound
+`kiokukoSkills`, and context budget supplied to `task_prepare`; optional
+`clientInventory` may be omitted or refreshed. Clients must not fall back to
+session-only run lookup or replace the owned binding between answers. Inspect
 `nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer` response. Every task
 requires the exact local `kiokuko-soul`; missing or unknown availability returns
 `required_capability_unavailable`, even while intake needs an answer. For a ready

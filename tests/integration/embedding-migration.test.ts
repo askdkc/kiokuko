@@ -40,8 +40,8 @@ test('migration 021 installs the derived embedding schema without provider I/O',
   }) as typeof fetch;
   try {
     const result = migrateDatabase(database);
-    assert.equal(result.currentVersion, 22);
-    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+    assert.equal(result.currentVersion, 23);
+    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
     for (const table of embeddingTables) {
       assert.equal(
         database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.present,

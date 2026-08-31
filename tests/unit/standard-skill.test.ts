@@ -147,9 +147,11 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, /Read this Skill before any other bundled Kiokuko Skill/);
   assert.match(soulSkill, /Akinator is the mandatory state machine between this SOUL read and every planning or implementation route/);
   assert.match(soulSkill, /It applies whether or not Enno-Oduno is applicable/);
-  assert.match(soulSkill, /Call `task_prepare` at most once.*complete capability catalog available in the current client/su);
+  assert.match(soulSkill, /Call `task_prepare` at most once.*required `kiokukoSkills`.*optional recommendation-only `clientInventory`/su);
   assert.match(soulSkill, /`needs_answer`.*Akinator controls progress.*Do not plan, implement, verify, enter the simple\/code\/UI routes, or call `memory_checkpoint` while unresolved/su);
-  assert.match(soulSkill, /Repeat the same capability catalog and context budget.*continue until `ready` or `exhausted`/su);
+  assert.match(soulSkill, /Repeat the same bound `kiokukoSkills` and context budget.*clientInventory.*advisory.*continue until `ready` or `exhausted`/su);
+  assert.match(soulSkill, /never turn the whole Codex `ALL_TOOLS` registry into MCP descriptors/iu);
+  assert.match(soulSkill, /ALL_TOOLS\.filter\(tool => tool\.name\.startsWith\("mcp__"\)\)/u);
   assert.match(soulSkill, /If `ennoOduno\.applicable=true`, read `kiokuko-enno-oduno` now.*do not start Zenki or Goki/su);
   assert.match(soulSkill, /`exhausted`.*`intake\.missingFields` may remain.*do not invent the missing answers/su);
   assert.match(soulSkill, /Enter planning and implementation routes only after the Akinator gate reaches `ready` or `exhausted` and top-level `nextAction` permits progress/);

@@ -2,6 +2,7 @@ import type { TaskProfile } from './types.js';
 import {
   STANDARD_FUNCTION_SKILL_NAME,
   STANDARD_MEMORY_SKILL_NAME,
+  STANDARD_SKILL_NAMES,
   STANDARD_SOUL_SKILL_NAME,
   STANDARD_UI_SKILL_NAME,
 } from '../setup/standard-skills.js';
@@ -13,7 +14,9 @@ export type CapabilityKind = (typeof CAPABILITY_KINDS)[number];
 export const MAX_CAPABILITY_DESCRIPTION_CHARS = 2_000;
 export const MAX_RAW_CAPABILITY_DESCRIPTION_CHARS = 64_000;
 export const MAX_CAPABILITY_NAME_CHARS = 300;
-export const MAX_CAPABILITY_ITEMS = 200;
+export const MAX_CLIENT_INVENTORY_ITEMS = 200;
+/** Legacy v1 catalog limit. New ownership-safe flows use MAX_CLIENT_INVENTORY_ITEMS only for recommendations. */
+export const MAX_CAPABILITY_ITEMS = MAX_CLIENT_INVENTORY_ITEMS;
 export const MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS = 512_000;
 
 export interface CapabilityDescriptor {
@@ -39,8 +42,18 @@ export interface NormalizedCapabilityCatalog {
   budgetExceeded: boolean;
 }
 
+export interface NormalizedKiokukoSkills {
+  availability: CapabilityCatalogAvailability;
+  skills: string[];
+  diagnostics: CapabilityCatalogDiagnostics;
+}
+
+export interface NormalizedClientInventory extends NormalizedCapabilityCatalog {
+  warnings: CapabilityWarning[];
+}
+
 export interface CapabilityWarning {
-  code: 'CAPABILITY_CATALOG_COMPACTED' | 'CAPABILITY_CATALOG_ITEMS_DROPPED' | 'CAPABILITY_CATALOG_BUDGET_EXCEEDED' | 'CAPABILITY_CATALOG_UNAVAILABLE';
+  code: 'CAPABILITY_CATALOG_COMPACTED' | 'CAPABILITY_CATALOG_ITEMS_DROPPED' | 'CAPABILITY_CATALOG_BUDGET_EXCEEDED' | 'CAPABILITY_CATALOG_UNAVAILABLE' | 'CLIENT_INVENTORY_NON_MCP_TOOLS_IGNORED';
   message: string;
 }
 
@@ -238,6 +251,62 @@ function validateCapabilityHeader(value: unknown): Pick<CapabilityDescriptor, 'k
   return { kind: value.kind, name: value.name };
 }
 
+const MANAGED_SKILL_NAMES = new Set<string>(STANDARD_SKILL_NAMES);
+
+export function normalizeKiokukoSkills(input: unknown): NormalizedKiokukoSkills {
+  const emptyDiagnostics = { received: 0, accepted: 0, truncated: 0, dropped: 0 };
+  if (input === undefined || !Array.isArray(input)) {
+    return { availability: 'unknown', skills: [], diagnostics: emptyDiagnostics };
+  }
+  const diagnostics: CapabilityCatalogDiagnostics = {
+    received: input.length,
+    accepted: 0,
+    truncated: 0,
+    dropped: 0,
+  };
+  const skills: string[] = [];
+  for (const item of input) {
+    if (typeof item !== 'string'
+      || item.length === 0
+      || item.trim() !== item
+      || boundedCodePointLength(item, MAX_CAPABILITY_NAME_CHARS) > MAX_CAPABILITY_NAME_CHARS
+      || /[\p{Cc}\p{Cf}]/u.test(item)
+      || !MANAGED_SKILL_NAMES.has(item)) {
+      diagnostics.dropped += 1;
+      continue;
+    }
+    diagnostics.accepted += 1;
+    skills.push(item);
+  }
+  const normalized = [...new Set(skills)].sort(compareCanonicalStrings);
+  const availability: CapabilityCatalogAvailability = input.length === 0
+    ? 'known-empty'
+    : diagnostics.dropped > 0
+      ? 'unknown'
+      : 'known-nonempty';
+  return { availability, skills: normalized, diagnostics };
+}
+
+export function normalizeClientInventory(input: unknown, clientKind?: string): NormalizedClientInventory {
+  let ignoredCodexBuiltins = false;
+  const filtered = Array.isArray(input) && clientKind === 'codex'
+    ? input.filter((item) => {
+        if (!isPlainRecord(item) || item.kind !== 'mcp_tool' || typeof item.name !== 'string') return true;
+        if (item.name.startsWith('mcp__')) return true;
+        ignoredCodexBuiltins = true;
+        return false;
+      })
+    : input;
+  const normalized = normalizeCapabilityCatalog(filtered);
+  return {
+    ...normalized,
+    warnings: ignoredCodexBuiltins ? [{
+      code: 'CLIENT_INVENTORY_NON_MCP_TOOLS_IGNORED',
+      message: 'Some Codex built-in tools were ignored because they are not MCP tools.',
+    }] : [],
+  };
+}
+
 export function normalizeCapabilityCatalog(input: unknown): NormalizedCapabilityCatalog {
   const emptyDiagnostics = { received: 0, accepted: 0, truncated: 0, dropped: 0 };
   if (input === undefined) {
@@ -251,11 +320,11 @@ export function normalizeCapabilityCatalog(input: unknown): NormalizedCapability
     received: input.length,
     accepted: 0,
     truncated: 0,
-    dropped: Math.max(0, input.length - MAX_CAPABILITY_ITEMS),
+    dropped: Math.max(0, input.length - MAX_CLIENT_INVENTORY_ITEMS),
   };
   const skills: CapabilityDescriptor[] = [];
   const tools: CapabilityDescriptor[] = [];
-  const processCount = Math.min(input.length, MAX_CAPABILITY_ITEMS);
+  const processCount = Math.min(input.length, MAX_CLIENT_INVENTORY_ITEMS);
   let remaining = MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS;
   let budgetExceeded = false;
   const accept = (descriptor: CapabilityDescriptor, truncated: boolean): void => {

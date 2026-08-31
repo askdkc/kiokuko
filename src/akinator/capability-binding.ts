@@ -1,13 +1,15 @@
 import type { JsonObject } from '../ledger/types.js';
 import { KiokukoError } from '../errors.js';
 import { canonicalContentHash } from '../serialization/validate.js';
-import { normalizeCapabilityCatalog, type CapabilityDescriptor } from './capabilities.js';
+import { KIOKUKO_MCP_TOOL_NAMES } from '../mcp/tool-catalog.js';
+import { normalizeCapabilityCatalog, normalizeKiokukoSkills, type CapabilityDescriptor } from './capabilities.js';
 
-export const CAPABILITY_CATALOG_BINDING_VERSION = 1 as const;
+export const LEGACY_CAPABILITY_CATALOG_BINDING_VERSION = 1 as const;
+export const CAPABILITY_CATALOG_BINDING_VERSION = 2 as const;
 export const CAPABILITY_CATALOG_BINDING_METADATA_KEY = 'kiokukoCapabilityCatalogBinding' as const;
 
 type CapabilityCatalogBinding = {
-  version: typeof CAPABILITY_CATALOG_BINDING_VERSION;
+  version: typeof LEGACY_CAPABILITY_CATALOG_BINDING_VERSION | typeof CAPABILITY_CATALOG_BINDING_VERSION;
   digest: string;
 };
 
@@ -32,7 +34,7 @@ function canonicalDescriptorSet(descriptors: CapabilityDescriptor[]): Capability
  * Hash only the normalized effective catalog. Raw descriptions remain ephemeral,
  * while malformed/omitted catalogs retain distinct fail-closed identities.
  */
-export function capabilityCatalogDigest(capabilities: unknown): string {
+export function legacyCapabilityCatalogDigest(capabilities: unknown): string {
   const normalized = normalizeCapabilityCatalog(capabilities);
   const skills = canonicalDescriptorSet(normalized.skills);
   const tools = canonicalDescriptorSet(normalized.tools);
@@ -46,13 +48,34 @@ export function capabilityCatalogDigest(capabilities: unknown): string {
         dropped: 0,
       };
   return canonicalContentHash({
-    version: CAPABILITY_CATALOG_BINDING_VERSION,
+    version: LEGACY_CAPABILITY_CATALOG_BINDING_VERSION,
     supplied: capabilities !== undefined,
     availability: normalized.availability,
     diagnostics,
     budgetExceeded: normalized.budgetExceeded,
     skills,
     tools,
+  });
+}
+
+export function capabilityCatalogDigest(kiokukoSkills: unknown): string {
+  const normalized = normalizeKiokukoSkills(kiokukoSkills);
+  const uniqueCount = normalized.skills.length;
+  const diagnostics = normalized.availability === 'unknown'
+    ? normalized.diagnostics
+    : {
+        received: uniqueCount,
+        accepted: uniqueCount,
+        truncated: 0,
+        dropped: 0,
+      };
+  return canonicalContentHash({
+    version: CAPABILITY_CATALOG_BINDING_VERSION,
+    supplied: kiokukoSkills !== undefined,
+    availability: normalized.availability,
+    diagnostics,
+    skills: normalized.skills,
+    tools: [...KIOKUKO_MCP_TOOL_NAMES].sort(),
   });
 }
 
@@ -64,10 +87,37 @@ export function bindCapabilityCatalog(
     throw new KiokukoError('VALIDATION_ERROR', 'Run metadata contains a reserved capability binding');
   }
   const binding: CapabilityCatalogBinding = {
-    version: CAPABILITY_CATALOG_BINDING_VERSION,
-    digest: capabilityCatalogDigest(capabilities),
+    version: LEGACY_CAPABILITY_CATALOG_BINDING_VERSION,
+    digest: legacyCapabilityCatalogDigest(capabilities),
   };
   return { ...metadata, [CAPABILITY_CATALOG_BINDING_METADATA_KEY]: binding };
+}
+
+export function bindKiokukoCapabilityCatalog(
+  metadata: JsonObject,
+  kiokukoSkills: unknown,
+): JsonObject {
+  if (Object.prototype.hasOwnProperty.call(metadata, CAPABILITY_CATALOG_BINDING_METADATA_KEY)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Run metadata contains a reserved capability binding');
+  }
+  const binding: CapabilityCatalogBinding = {
+    version: CAPABILITY_CATALOG_BINDING_VERSION,
+    digest: capabilityCatalogDigest(kiokukoSkills),
+  };
+  return { ...metadata, [CAPABILITY_CATALOG_BINDING_METADATA_KEY]: binding };
+}
+
+export function capabilityCatalogBindingVersion(metadata: JsonObject): 1 | 2 {
+  const value = metadata[CAPABILITY_CATALOG_BINDING_METADATA_KEY];
+  if (!isPlainRecord(value)
+    || Object.keys(value).length !== 2
+    || (value.version !== LEGACY_CAPABILITY_CATALOG_BINDING_VERSION
+      && value.version !== CAPABILITY_CATALOG_BINDING_VERSION)
+    || typeof value.digest !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(value.digest)) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Run capability catalog binding is missing or invalid');
+  }
+  return value.version;
 }
 
 export function assertCapabilityCatalogBinding(
@@ -75,14 +125,11 @@ export function assertCapabilityCatalogBinding(
   capabilities: unknown,
 ): void {
   const value = metadata[CAPABILITY_CATALOG_BINDING_METADATA_KEY];
-  if (!isPlainRecord(value)
-    || Object.keys(value).length !== 2
-    || value.version !== CAPABILITY_CATALOG_BINDING_VERSION
-    || typeof value.digest !== 'string'
-    || !/^[0-9a-f]{64}$/u.test(value.digest)) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Run capability catalog binding is missing or invalid');
-  }
-  if (value.digest !== capabilityCatalogDigest(capabilities)) {
+  const version = capabilityCatalogBindingVersion(metadata);
+  const expected = version === LEGACY_CAPABILITY_CATALOG_BINDING_VERSION
+    ? legacyCapabilityCatalogDigest(capabilities)
+    : capabilityCatalogDigest(capabilities);
+  if (!isPlainRecord(value) || value.digest !== expected) {
     throw new KiokukoError('CONFLICT', 'Capability catalog differs from the catalog bound when the run was opened');
   }
 }

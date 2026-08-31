@@ -97,6 +97,8 @@ export const STANDARD_SKILL_MANIFESTS = [{
   files: STANDARD_SOUL_SKILL_FILES,
 }] as const satisfies readonly StandardSkillManifest[];
 
+export const STANDARD_SKILL_NAMES = STANDARD_SKILL_MANIFESTS.map((manifest) => manifest.name) as readonly string[];
+
 export interface BundledStandardSkillFile {
   readonly skillName: string;
   readonly managedMarker: string;

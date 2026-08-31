@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 23 -->/);
+  assert.match(rendered, /<!-- kiokuko-template-version: 24 -->/);
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
@@ -72,16 +72,18 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /never select a repository-wide latest run/iu);
   assert.match(rendered, /ask_user_confirmation.*userFacingConfirmation.*never output raw directive JSON/isu);
   assert.match(rendered, /userFacingRecovery.*whenToChoose.*whatHappens.*explicit choice/isu);
+  assert.match(rendered, /Skill differences.*advantage.*disadvantage.*enno_answer/isu);
+  assert.match(rendered, /complete Skill requirement set.*Legacy stored ideals/isu);
   assert.match(rendered, /Do not retry, cancel, or create a new task automatically/iu);
-  assert.match(rendered, /never ask the user to locate or construct that catalog/iu);
+  assert.match(rendered, /Never ask the user to locate an inventory or construct JSON/iu);
   assert.match(rendered, /active planning attempt.*restart choice explicitly cancels it before starting a new `task_prepare`/iu);
   assert.match(rendered, /attempt already ended.*do not try to cancel it again/iu);
   assert.match(rendered, /ambiguous candidates fail open without mutation/u);
   assert.match(rendered, /`ENNO_INPUT_INVALID`/u);
   assert.match(rendered, /Plan-start recovery persists only a continuation pause until the user chooses/u);
   assert.match(rendered, /expired started rows are atomically abandoned/u);
-  assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
-  assert.match(rendered, /Every descriptor must include its kind and canonical name/u);
+  assert.match(rendered, /required `kiokukoSkills`.*managed six-Skill manifest/iu);
+  assert.match(rendered, /Optional `clientInventory` is recommendation-only, capped, never stored or run-bound/iu);
   assert.match(rendered, /bounded opaque `requestId`/);
   assert.match(rendered, /Use a new ID for every new logical request/);
   assert.match(rendered, /Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict/);
@@ -108,7 +110,9 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /never pass `~`, `\$HOME`, or HOME-relative fragments/u);
   assert.match(rendered, /`executionContext\.cwdIsRepositoryRoot` is true, do not prepend repository path segments/u);
   assert.match(rendered, /produces an `external_directory` permission request, reject the malformed path and retry/u);
-  assert.match(rendered, /Call `task_answer` with that run ID, the same capability catalog, and the same context budget/);
+  assert.match(rendered, /Call `task_answer` with that run ID, the same bound `kiokukoSkills`, and the same context budget/);
+  assert.match(rendered, /Optional `clientInventory` is recommendation-only, capped, never stored or run-bound/iu);
+  assert.match(rendered, /never use `ALL_TOOLS\.map\(\.\.\.\)`/u);
   assert.match(rendered, /When `runId` is supplied, the run must be active/);
   assert.match(rendered, /Do not call `memory_checkpoint` while `task_prepare` or `task_answer` reports `needs_answer`/);
   assert.match(rendered, /complete the required `task_answer` loop first/);

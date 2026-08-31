@@ -209,6 +209,24 @@ export interface StoredAdvisoryRound {
 }
 
 export type SkillPurpose = 'planning' | 'implementation' | 'ui' | 'testing' | 'review' | 'operations';
+export interface SkillRequirement {
+  name: string;
+  purposes: SkillPurpose[];
+  required: boolean;
+}
+
+export interface SkillRequirementChange {
+  name: string;
+  oduno: SkillRequirement;
+  zenki: SkillRequirement;
+}
+
+export interface SkillRequirementDifference {
+  addedByZenki: SkillRequirement[];
+  omittedByZenki: SkillRequirement[];
+  changed: SkillRequirementChange[];
+}
+
 export type ContractProvenance = 'explicit_user' | 'repository_evidence' | 'inferred';
 export const ENNO_PROVENANCE_KEYS = [
   'scope',
@@ -296,6 +314,8 @@ export interface OdunoIdeal {
   objective: string;
   principles: string[];
   skillContributions: OdunoIdealSkillContribution[];
+  /** Missing only for ideals stored before role Skill-set recovery was introduced. */
+  skillRequirements?: SkillRequirement[] | undefined;
   successSignals: string[];
 }
 

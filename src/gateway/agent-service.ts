@@ -42,7 +42,10 @@ import type { RunRecord } from '../ledger/types.js';
 import {
   assertCapabilityCatalogBinding,
   bindCapabilityCatalog,
+  bindKiokukoCapabilityCatalog,
+  capabilityCatalogBindingVersion,
   capabilityCatalogDigest,
+  legacyCapabilityCatalogDigest,
 } from '../akinator/capability-binding.js';
 
 const PROFILE_FIELDS = ['taskType', 'target', 'expected', 'constraints'] as const;
@@ -63,6 +66,7 @@ type GatewayOpenRequest = {
   coverage: Coverage;
   metadata: JsonObject;
   capabilities?: JsonValue;
+  kiokukoSkills?: JsonValue;
   parentRunId?: string;
   startedAt?: string;
 };
@@ -237,7 +241,7 @@ function profileHints(value: unknown): TaskInput['profileHints'] {
 function normalizeOpenRequest(value: unknown): GatewayOpenRequest {
   assertJsonValue(value);
   const input = object(value);
-  knownFields(input, ['apiVersion', 'workspace', 'client', 'task', 'captureProfile', 'coverage', 'metadata', 'capabilities', 'parentRunId', 'startedAt']);
+  knownFields(input, ['apiVersion', 'workspace', 'client', 'task', 'captureProfile', 'coverage', 'metadata', 'capabilities', 'kiokukoSkills', 'parentRunId', 'startedAt']);
   if (input.apiVersion !== '1') validation();
   const workspace = boundedString(input.workspace, 16 * 1024);
 
@@ -268,6 +272,7 @@ function normalizeOpenRequest(value: unknown): GatewayOpenRequest {
   const metadata = metadataValue as JsonObject;
   const startedAt = optionalString(input.startedAt, 64);
   if (startedAt !== undefined) validateTimestamp(startedAt, 'startedAt');
+  if (input.capabilities !== undefined && input.kiokukoSkills !== undefined) validation();
   return {
     apiVersion: '1',
     workspace,
@@ -277,6 +282,7 @@ function normalizeOpenRequest(value: unknown): GatewayOpenRequest {
     coverage,
     metadata,
     ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities as JsonValue }),
+    ...(input.kiokukoSkills === undefined ? {} : { kiokukoSkills: input.kiokukoSkills as JsonValue }),
     ...(input.parentRunId === undefined ? {} : { parentRunId: boundedString(input.parentRunId, MAX_ID_LENGTH) }),
     ...(startedAt === undefined ? {} : { startedAt }),
   };
@@ -310,14 +316,15 @@ function readRunInput(value: unknown): { runId: string } {
   return { runId: boundedString(input.runId, MAX_ID_LENGTH) };
 }
 
-function answerRequest(value: unknown, workspace: string): {
+function answerRequest(value: unknown, workspace: string, bindingVersion: 1 | 2): {
   value: { apiVersion: '1'; questionId: string; value: string };
   capabilities?: JsonValue;
+  kiokukoSkills?: JsonValue;
   hashRequest: JsonObject;
 } {
   assertJsonValue(value);
   const input = object(value);
-  knownFields(input, ['apiVersion', 'questionId', 'value', 'capabilities']);
+  knownFields(input, ['apiVersion', 'questionId', 'value', 'capabilities', 'kiokukoSkills']);
   if (input.apiVersion !== '1') validation();
   const questionId = boundedString(input.questionId, MAX_ID_LENGTH);
   if (typeof input.value !== 'string') validation();
@@ -326,12 +333,20 @@ function answerRequest(value: unknown, workspace: string): {
   const normalized = sanitized.value;
   const answer = { apiVersion: '1' as const, questionId: normalized.questionId, value: normalized.value as string };
   const capabilities = input.capabilities as JsonValue | undefined;
+  const kiokukoSkills = input.kiokukoSkills as JsonValue | undefined;
+  if (capabilities !== undefined && kiokukoSkills !== undefined) validation();
+  if (bindingVersion === 1 && kiokukoSkills !== undefined) validation();
+  if (bindingVersion === 2 && kiokukoSkills === undefined) validation();
+  const bindingInput = bindingVersion === 1 ? capabilities : kiokukoSkills;
   return {
     value: answer,
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(kiokukoSkills === undefined ? {} : { kiokukoSkills }),
     hashRequest: jsonObject({
       ...answer,
-      capabilityCatalogDigest: capabilityCatalogDigest(capabilities),
+      capabilityCatalogDigest: bindingVersion === 1
+        ? legacyCapabilityCatalogDigest(bindingInput)
+        : capabilityCatalogDigest(bindingInput),
     }),
   };
 }
@@ -403,7 +418,9 @@ export class AgentGatewayService {
     const request = normalizeOpenRequest(envelope.request);
     const task = sanitizeTask(request.task, { workspace: request.workspace, ...(this.options.home === undefined ? {} : { home: this.options.home }) }).value;
     const metadata = sanitizeRunMetadata(
-      bindCapabilityCatalog(request.metadata, request.capabilities),
+      request.kiokukoSkills === undefined
+        ? bindCapabilityCatalog(request.metadata, request.capabilities)
+        : bindKiokukoCapabilityCatalog(request.metadata, request.kiokukoSkills),
       { workspace: request.workspace, ...(this.options.home === undefined ? {} : { home: this.options.home }) },
     ).value as JsonObject;
     const client = request.client;
@@ -495,8 +512,12 @@ export class AgentGatewayService {
   answerIntake(input: unknown, options: AgentGatewayAnswerOptions = {}): GatewayIntakeResponse {
     const envelope = runEnvelope(input);
     const initialRun = this.requireRun(envelope.runId);
-    const request = answerRequest(envelope.request, initialRun.workspace);
-    assertCapabilityCatalogBinding(initialRun.metadata, request.capabilities);
+    const bindingVersion = capabilityCatalogBindingVersion(initialRun.metadata);
+    const request = answerRequest(envelope.request, initialRun.workspace, bindingVersion);
+    assertCapabilityCatalogBinding(
+      initialRun.metadata,
+      bindingVersion === 1 ? request.capabilities : request.kiokukoSkills,
+    );
     const now = this.currentTime();
     return withImmediateTransaction(this.database, () => {
       options.assertBeforeAnswer?.();

@@ -116,12 +116,14 @@ Accept only an explicit approve, revise, or cancel decision passed through `enno
 
 If plan submission returns `userFacingRecovery`, present only its explanation of what happened, the work-state statement, the resolution, and every choice in the user's language. For each choice, show its label and recommendation first, then translate and show `whenToChoose` as the user intent it fits and `whatHappens` as the exact result. Do not expose the machine `action`, internal tool or field names, capability catalog, digest, run identity, revision, presentation version, raw JSON, or reason code. Wait for the user's explicit choice; never retry, cancel, or create a replacement automatically.
 
-- Continue the same plan by attaching the complete capability catalog retained by the host from task preparation. Never ask the user to locate a catalog or construct JSON.
+When the projection includes Skill differences, it is a distinct role Skill-set conflict rather than an environment change. Show only added, omitted, and changed Skill names, purposes, and requiredness, followed by all four choices with every advantage and disadvantage. Pass only the user's explicit choice through `enno_answer`: Enno-Oduno requires Zenki to replan with the ideal's exact requirements, Zenki permits only the compared plan, revalidation restarts the same attempt from the Oduno ideal while preserving intake, and cancellation creates no replacement. Never begin implementation automatically.
+
+- Continue the same plan by attaching the exact bound `kiokukoSkills` retained by the host. Optional current `clientInventory` is advisory and is supplied only when external required-Skill availability must be checked. Never ask the user to locate an inventory or construct JSON.
 - A plan-review choice asks what the user wants changed and starts no implementation.
 - For an active planning attempt, a restart choice first passes the user's explicit cancellation through `enno_answer`, then starts a new `task_prepare` with the current environment. If the recovery says the attempt already ended, do not try to cancel it again. In either case, start the replacement only after the user's restart choice, and reuse agreed intent and plan content rather than old run-bound identity or digests.
 - A cancel choice creates no replacement and leaves an already-ended attempt unchanged.
 
-During `zenki_planning`, `enno_answer` accepts only explicit cancellation for this user-owned recovery path. Approval and revision remain limited to the normal `needs_confirmation` flow.
+During `zenki_planning`, `enno_answer` accepts the three displayed role Skill-set choices only for a pending role conflict; other planning recovery paths accept only explicit cancellation. Approval and ordinary revision remain limited to the normal `needs_confirmation` flow.
 
 Returning this recovery projection persists only a continuation pause: no
 Skill-discovery attempt, advisory consumption, operation receipt, contract
@@ -180,6 +182,7 @@ Describe the best reachable outcome, not the implementation steps. The persisted
 - one bounded objective grounded in the `task_prepare` handoff;
 - concrete principles preserving the task constraints and trust boundaries;
 - exactly one contribution for every Akinator-discovered Skill, with no invented or omitted Skill names;
+- the complete Skill requirement set selected from the handoff and current evidence;
 - observable success signals that can later be checked by the approved contract and verifiers.
 
 The ideal is revision-bound input to Zenki. Zenki may decide how to realize it, but may not silently replace it.

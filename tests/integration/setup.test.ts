@@ -441,8 +441,8 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /^# Human/);
     assert.equal((instructions.match(/BEGIN KIOKUKO GLOBAL MEMORY/g) ?? []).length, 1);
     assert.match(instructions, /task_prepare/);
-    assert.match(instructions, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
-    assert.match(instructions, /Every descriptor must include its kind and canonical name/u);
+    assert.match(instructions, /required `kiokukoSkills`.*managed six-Skill manifest/iu);
+    assert.match(instructions, /Optional `clientInventory` is recommendation-only, capped, never stored or run-bound/iu);
     assert.match(instructions, /bounded opaque `requestId`/);
     assert.match(instructions, /Use a new ID for every new logical request/);
     assert.match(instructions, /Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict/);
@@ -469,8 +469,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /routing metadata, not authorization ownership/u);
     assert.match(instructions, /leaves the run active for another local project client/u);
     assert.match(instructions, /userFacingRecovery.*whenToChoose.*whatHappens.*explicit choice/isu);
+    assert.match(instructions, /Skill differences.*advantage.*disadvantage.*enno_answer/isu);
+    assert.match(instructions, /complete Skill requirement set.*Legacy stored ideals/isu);
     assert.match(instructions, /Do not retry, cancel, or create a new task automatically/iu);
-    assert.match(instructions, /never ask the user to locate or construct that catalog/iu);
+    assert.match(instructions, /Never ask the user to locate an inventory or construct JSON/iu);
     assert.match(instructions, /active planning attempt.*restart choice explicitly cancels it before starting a new `task_prepare`/iu);
     assert.match(instructions, /attempt already ended.*do not try to cancel it again/iu);
     assert.match(instructions, /Inspect `nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer` response/);
@@ -487,7 +489,9 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /For OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
     assert.match(instructions, /never pass `~`, `\$HOME`, or HOME-relative fragments/u);
     assert.match(instructions, /produces an `external_directory` permission request, reject the malformed path and retry/u);
-    assert.match(instructions, /Call `task_answer` with the same capability catalog, run ID, and context budget/);
+    assert.match(instructions, /Call `task_answer` with the same bound `kiokukoSkills`, run ID, and context budget/);
+    assert.match(instructions, /Optional `clientInventory` is recommendation-only, capped, never stored or run-bound/iu);
+    assert.match(instructions, /never use `ALL_TOOLS\.map\(\.\.\.\)`/u);
     assert.match(instructions, /When `runId` is supplied, the run must be active/);
     assert.match(instructions, /Do not call `memory_checkpoint` while `task_prepare` or `task_answer` reports `needs_answer`/);
     assert.match(instructions, /complete the required `task_answer` loop first/);
@@ -882,7 +886,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
-    `human project rule\n${staleAgent.replace('kiokuko-template-version: 23', 'kiokuko-template-version: 14')}`,
+    `human project rule\n${staleAgent.replace('kiokuko-template-version: 24', 'kiokuko-template-version: 14')}`,
   );
   await writeFile(staleBindingPath, `${JSON.stringify({ ...staleBinding, templateVersion: 12 }, null, 2)}\n`);
 
@@ -971,11 +975,11 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.match(refreshedAgent, /kiokuko-template-version: 23/u);
+  assert.match(refreshedAgent, /kiokuko-template-version: 24/u);
   assert.equal(refreshedAgent.includes('kiokuko-template-version: 14'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
-  assert.equal(refreshedBinding.templateVersion, 23);
+  assert.equal(refreshedBinding.templateVersion, 24);
 
   const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
@@ -988,7 +992,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     repositoryId: 'repo_setup_refresh_location_only',
     workspace: 'project:setup-refresh-location-only',
     agentFile: 'AGENTS.md',
-    templateVersion: 23,
+    templateVersion: 24,
   });
   assert.equal(
     await readFile(locationOnlyGitignorePath, 'utf8'),

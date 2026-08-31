@@ -11,6 +11,8 @@ import { openConnection } from '../../src/db/connection.js';
 import { readEntry, recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 import { startAgentHttpServer } from '../../src/server/agent-application.js';
+import { AgentGatewayService } from '../../src/gateway/agent-service.js';
+import { CAPABILITY_CATALOG_BINDING_METADATA_KEY } from '../../src/akinator/capability-binding.js';
 import { documentsFromSkillSnapshot } from '../../src/skills/import-preparation.js';
 import { importSkillSnapshot } from '../../src/skills/store.js';
 import { validateSkillSnapshot } from '../../src/skills/source/snapshot-validator.js';
@@ -119,6 +121,52 @@ function intakeOpenBody(workspace: string, capabilities: unknown[] | undefined) 
     },
   };
 }
+
+test('Agent Gateway v2 binds only kiokukoSkills and rejects a changed owned Skill set', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-agent-v2-binding-'));
+  const databasePath = path.join(directory, 'kiokuko.sqlite3');
+  await initializeDatabase({ databasePath });
+  const database = openConnection(databasePath);
+  try {
+    const service = new AgentGatewayService(database, {
+      now: () => '2026-08-31T00:00:00.000Z',
+      runIdFactory: () => 'v2-capability-run',
+      sessionIdFactory: () => 'v2-capability-session',
+      eventIdFactory: (() => { let index = 0; return () => `v2-capability-event-${++index}`; })(),
+    });
+    const request = {
+      apiVersion: '1',
+      workspace: 'project:v2-capability-binding',
+      client: { kind: 'codex' },
+      task: {
+        title: 'Implement an ambiguous feature',
+        query: 'Please help with this request',
+        profileHints: { taskType: null, target: null, expected: null, constraints: null },
+      },
+      captureProfile: 'minimal',
+      coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' },
+      metadata: { source: 'test' },
+      kiokukoSkills: ['kiokuko-soul'],
+    };
+    const opened = service.openRun({ idempotencyKey: 'v2-open', request });
+    const metadata = JSON.parse(database.prepare('SELECT metadata_json AS metadata FROM ledger_runs WHERE run_id = ?')
+      .get<{ metadata: string }>(opened.runId)!.metadata) as Record<string, any>;
+    assert.equal(metadata[CAPABILITY_CATALOG_BINDING_METADATA_KEY].version, 2);
+
+    assert.doesNotThrow(() => service.answerIntake({
+      runId: opened.runId,
+      idempotencyKey: 'v2-answer',
+      request: { apiVersion: '1', questionId: 'taskType', value: 'build', kiokukoSkills: ['kiokuko-soul'] },
+    }));
+    assert.throws(() => service.answerIntake({
+      runId: opened.runId,
+      idempotencyKey: 'v2-conflict',
+      request: { apiVersion: '1', questionId: 'target', value: 'src/a.ts', kiokukoSkills: [] },
+    }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+  } finally {
+    database.close();
+  }
+});
 
 async function makePriorContextActionable(
   baseUrl: string,

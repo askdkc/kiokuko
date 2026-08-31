@@ -17,6 +17,11 @@ const capabilities = [
   { kind: 'skill', name: 'kiokuko-single-purpose-functions', description: 'Code contracts.' },
 ];
 
+const codeSkillRequirements = [
+  { name: 'kiokuko-soul', purposes: ['planning', 'implementation', 'ui', 'testing', 'review', 'operations'], required: true },
+  { name: 'kiokuko-single-purpose-functions', purposes: ['implementation', 'testing', 'review'], required: true },
+] as const;
+
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-advisory-repo-'));
   execFileSync('git', ['init', '-q', root]);
@@ -268,6 +273,7 @@ test('advice round digest binds the allowlisted context and is consumed by the e
         objective: 'Reach the verified repair outcome',
         principles: ['Preserve the request constraints'],
         skillContributions: prepared.skillDiscovery.selected.map((skill) => ({ skillName: skill.name, contribution: `Use ${skill.name} as reference-only guidance` })),
+        skillRequirements: codeSkillRequirements,
         successSignals: ['tests pass'],
       },
     }), /Enno input is invalid/iu);
@@ -301,6 +307,7 @@ test('advice round digest binds the allowlisted context and is consumed by the e
         objective: 'Reach the verified repair outcome',
         principles: ['Preserve the request constraints'],
         skillContributions: prepared.skillDiscovery.selected.map((skill) => ({ skillName: skill.name, contribution: `Use ${skill.name} as reference-only guidance` })),
+        skillRequirements: codeSkillRequirements,
         successSignals: ['tests pass'],
       },
     });
@@ -343,7 +350,10 @@ test('a submitted advisory round cannot advance the phase without its digest and
     });
     assert.throws(() => submitOdunoIdeal(database, {
       ...id, expectedRevision: 1, idempotencyKey: 'ideal-no-digest',
-      ideal: { objective: 'Reach a verified outcome', principles: ['Preserve constraints'], skillContributions: [], successSignals: ['tests pass'] },
+      ideal: {
+        objective: 'Reach a verified outcome', principles: ['Preserve constraints'],
+        skillContributions: [], skillRequirements: codeSkillRequirements, successSignals: ['tests pass'],
+      },
     }), /Enno input is invalid/iu);
     assert.equal(
       database.prepare("SELECT COUNT(*) AS count FROM ledger_events WHERE event_type = 'enno.advice_disposition'").get<{ count: number }>()?.count,

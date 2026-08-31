@@ -194,7 +194,13 @@ test('ideal context is phase-specific and carries no Enno identity', () => {
 });
 
 test('planning context carries the persisted ideal plus skill availability', () => {
-  const ideal = { objective: 'Reach the verified repair outcome', principles: ['Preserve constraints'], skillContributions: [], successSignals: ['tests pass'] };
+  const ideal = {
+    objective: 'Reach the verified repair outcome', principles: ['Preserve constraints'], skillContributions: [],
+    skillRequirements: [
+      { name: 'kiokuko-soul', purposes: ['planning' as const], required: true },
+    ],
+    successSignals: ['tests pass'],
+  };
   const base = snapshot({ status: 'zenki_planning', ideal });
   const context = advisoryContextForSnapshot(base, 'planning');
   assert.deepEqual(context.phase, 'planning');

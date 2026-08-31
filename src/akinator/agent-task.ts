@@ -18,14 +18,18 @@ import {
   hasActionableMemorySelection,
   hasBlockingRequiredCapability,
   memoryReasoningCapabilityAvailability,
+  normalizeClientInventory,
   normalizeCapabilityCatalog,
+  normalizeKiokukoSkills,
   resolveCapabilities,
   type CapabilityResolution,
   type CapabilityWarning,
   type MemoryPolicy,
   type MemoryUseSignal,
 } from './capabilities.js';
-import { capabilityCatalogDigest } from './capability-binding.js';
+import { capabilityCatalogDigest, legacyCapabilityCatalogDigest } from './capability-binding.js';
+import { KIOKUKO_MANAGED_TOOL_COUNT } from '../mcp/tool-catalog.js';
+import { STANDARD_SKILL_NAMES } from '../setup/standard-skills.js';
 import {
   claimAgentTaskSkillDiscoveryAttempt,
   completeAgentTaskSkillDiscoveryAttempt,
@@ -74,6 +78,8 @@ export interface PrepareAgentTaskInput {
   cwd?: string;
   profileHints?: Partial<TaskProfile>;
   capabilities?: unknown;
+  kiokukoSkills?: unknown;
+  clientInventory?: unknown;
   maxContextChars?: number;
   client?: { kind?: string; version?: string; sessionId?: string };
   skillDiscoveryMode?: SkillDiscoveryMode;
@@ -88,6 +94,8 @@ export interface AnswerAgentTaskInput {
   value: string;
   cwd?: string;
   capabilities?: unknown;
+  kiokukoSkills?: unknown;
+  clientInventory?: unknown;
   maxContextChars?: number;
   runId: string;
   skillDiscoveryMode?: SkillDiscoveryMode;
@@ -109,6 +117,15 @@ export interface PreparedAgentTask {
     reasoning: AkinatorReasoning;
   };
   capabilities: CapabilityResolution;
+  kiokukoCapabilities?: {
+    bindingVersion: 2;
+    availability: CapabilityResolution['availability'];
+    availableSkillCount: number | null;
+    managedToolCount: number;
+    diagnostics: CapabilityResolution['diagnostics'];
+  };
+  clientRecommendations?: CapabilityResolution['recommendations'];
+  inventoryWarnings?: CapabilityWarning[];
   run: { runId: string; status: 'intake' | 'active' };
   skillDiscovery: SkillDiscoverySummary;
   context: ScopedContextResult | null;
@@ -158,15 +175,21 @@ function emptySkillDiscovery(mode: SkillDiscoveryMode): SkillDiscoverySummary {
   return { attempted: false, mode, requirements: [], queries: [], cacheHits: 0, candidates: 0, selected: [], failures: [] };
 }
 
-function skillDiscoveryRequestIdentity(mode: SkillDiscoveryMode, capabilities: unknown): {
+function skillDiscoveryRequestIdentity(
+  mode: SkillDiscoveryMode,
+  input: { capabilities?: unknown; kiokukoSkills?: unknown; clientInventory?: unknown },
+): {
   mode: SkillDiscoveryMode;
   capabilityCatalogDigest: string;
 } {
-  const normalized = normalizeCapabilityCatalog(capabilities);
+  const inventory = input.kiokukoSkills === undefined ? input.capabilities : input.clientInventory;
+  const normalized = normalizeCapabilityCatalog(inventory);
   const effectiveMode = mode === 'community' && normalized.availability === 'unknown' ? 'official' : mode;
   return {
     mode: effectiveMode,
-    capabilityCatalogDigest: capabilityCatalogDigest(capabilities),
+    capabilityCatalogDigest: input.kiokukoSkills === undefined
+      ? legacyCapabilityCatalogDigest(input.capabilities)
+      : capabilityCatalogDigest(input.kiokukoSkills),
   };
 }
 
@@ -243,6 +266,15 @@ function memoryCapabilityUnavailableForTask(context: AkinatorContext, capabiliti
   return context.status === 'ready'
     && (context.session.profile.taskType === 'build' || context.session.profile.taskType === 'debug')
     && memoryReasoningCapabilityAvailability(capabilities) !== 'available';
+}
+
+function capabilityGateInput(input: Pick<FinalizeAgentTaskInput, 'capabilities' | 'kiokukoSkills'>): unknown {
+  if (input.kiokukoSkills === undefined) return input.capabilities;
+  const normalized = normalizeKiokukoSkills(input.kiokukoSkills);
+  return [
+    ...normalized.skills.map((name) => ({ kind: 'skill' as const, name })),
+    ...(normalized.availability === 'unknown' ? [{ kind: 'invalid', name: 'invalid-owned-capability-input' }] : []),
+  ];
 }
 
 type NonTerminalTaskRun = Omit<RunRecord, 'status'> & { status: 'intake' | 'active' };
@@ -456,7 +488,12 @@ function buildPreparedTaskBase(
   project: ResolvedProjectWorkspace,
   executionContext: AgentTaskExecutionContext,
   context: AkinatorContext,
-  capabilities: unknown,
+  capabilityInput: {
+    capabilities?: unknown;
+    kiokukoSkills?: unknown;
+    clientInventory?: unknown;
+    clientKind?: string;
+  },
   run: { runId: string; status: 'intake' | 'active' },
   scopedContext: ScopedContextResult | null,
   skillDiscovery: SkillDiscoverySummary,
@@ -473,11 +510,29 @@ function buildPreparedTaskBase(
       storedEntryCount: retrievableWorkspaceEntryCount(database, project.workspace),
     }
     : undefined;
+  const isV2 = capabilityInput.kiokukoSkills !== undefined;
+  const owned = isV2 ? normalizeKiokukoSkills(capabilityInput.kiokukoSkills) : undefined;
+  const inventory = isV2
+    ? normalizeClientInventory(capabilityInput.clientInventory, capabilityInput.clientKind)
+    : undefined;
+  const managedNames = new Set<string>(STANDARD_SKILL_NAMES);
+  const ownedDescriptors = owned?.skills.map((name) => ({ kind: 'skill' as const, name })) ?? [];
+  const advisoryDescriptors = inventory === undefined ? [] : [
+    ...inventory.skills.filter((item) => !managedNames.has(item.name)),
+    ...inventory.tools,
+  ];
+  const policyCapabilities = !isV2
+    ? capabilityInput.capabilities
+    : [
+        ...ownedDescriptors,
+        ...advisoryDescriptors,
+        ...(owned?.availability === 'unknown' ? [{ kind: 'invalid', name: 'invalid-owned-capability-input' }] : []),
+      ];
   const capabilityResolution = resolveCapabilities({
     task: context.session.task,
     profile: context.session.profile,
     recommendedTags: context.recommendedTags,
-    ...(capabilities === undefined ? {} : { capabilities }),
+    ...(policyCapabilities === undefined ? {} : { capabilities: policyCapabilities }),
     memoryUse,
   });
   return {
@@ -493,11 +548,31 @@ function buildPreparedTaskBase(
       reasoning: deriveAkinatorReasoning(context.session.task, context.session.profile),
     },
     capabilities: capabilityResolution,
+    ...(isV2 ? {
+      kiokukoCapabilities: {
+        bindingVersion: 2 as const,
+        availability: owned!.availability,
+        availableSkillCount: owned!.availability === 'unknown' ? null : owned!.skills.length,
+        managedToolCount: KIOKUKO_MANAGED_TOOL_COUNT,
+        diagnostics: owned!.diagnostics,
+      },
+      clientRecommendations: capabilityResolution.recommendations,
+      inventoryWarnings: [
+        ...inventory!.warnings,
+        ...resolveCapabilities({
+          task: context.session.task,
+          profile: context.session.profile,
+          recommendedTags: context.recommendedTags,
+          ...(capabilityInput.clientInventory === undefined ? {} : { capabilities: capabilityInput.clientInventory }),
+          memoryUse: 'none',
+        }).warnings,
+      ],
+    } : {}),
     run,
     skillDiscovery,
     context: scopedContext,
-    memoryPolicy: deriveMemoryPolicy(context.session.profile, memoryUse, capabilities, deliveryObservation),
-    warnings: capabilityResolution.warnings,
+    memoryPolicy: deriveMemoryPolicy(context.session.profile, memoryUse, isV2 ? ownedDescriptors : capabilityInput.capabilities, deliveryObservation),
+    warnings: isV2 ? inventory!.warnings : capabilityResolution.warnings,
     nextAction: hasBlockingRequiredCapability(capabilityResolution)
       ? 'required_capability_unavailable'
       : context.status === 'needs_answer'
@@ -514,7 +589,10 @@ interface FinalizeAgentTaskInput {
   manifestSnapshot: ReturnType<typeof captureProjectManifestSnapshot>;
   context: AkinatorContext;
   runId: string;
-  capabilities: unknown;
+  capabilities?: unknown;
+  kiokukoSkills?: unknown;
+  clientInventory?: unknown;
+  clientKind?: string;
   maxContextChars: number;
   discoveryMode: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
@@ -604,7 +682,9 @@ function prepareTaskContextQuery(
       task: context.session.task,
       profile: context.session.profile,
       recommendedTags: context.recommendedTags,
-      capabilityCatalogDigest: capabilityCatalogDigest(input.capabilities),
+      capabilityCatalogDigest: input.kiokukoSkills === undefined
+        ? legacyCapabilityCatalogDigest(input.capabilities)
+        : capabilityCatalogDigest(input.kiokukoSkills),
       mode: input.discoveryMode,
     }),
   };
@@ -694,7 +774,9 @@ async function resolveSkillDiscovery(
       task: context.session.task,
       profile: context.session.profile,
       recommendedTags: context.recommendedTags,
-      ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+      ...((input.kiokukoSkills === undefined ? input.capabilities : input.clientInventory) === undefined
+        ? {}
+        : { capabilities: input.kiokukoSkills === undefined ? input.capabilities : input.clientInventory }),
       mode: input.discoveryMode,
       maxQueries: claimed.queryBudget as 1 | 2 | 3,
       maxSelectedSkills: claimed.selectionBudget as 1 | 2,
@@ -778,7 +860,12 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
   let context = currentAgentTaskContext(input.database, input.runId, input.context);
   let run = authoritativeTaskRun(input.database, input.runId, context.status);
   if (context.status === 'needs_answer') {
-    return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
+    return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, {
+      capabilities: input.capabilities,
+      kiokukoSkills: input.kiokukoSkills,
+      clientInventory: input.clientInventory,
+      ...(input.clientKind === undefined ? {} : { clientKind: input.clientKind }),
+    }, {
       runId: input.runId,
       status: run.status,
     }, null, emptySkillDiscovery(input.discoveryMode), 'none'));
@@ -788,7 +875,7 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
   const replayedAttempt = input.discoveryMode === 'off'
     ? undefined
     : readAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity);
-  let missingMemoryCapability = memoryCapabilityUnavailableForTask(context, input.capabilities);
+  let missingMemoryCapability = memoryCapabilityUnavailableForTask(context, capabilityGateInput(input));
   let preDiscoveryMemoryState: string | null = null;
   if (missingMemoryCapability && replayedAttempt === undefined && input.discoveryMode !== 'off') {
     const preview = await previewMemoryBeforeDiscovery(input, prepared, run, context);
@@ -800,7 +887,12 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
       if (preview.candidate.taskProfileHash !== canonicalContentHash(context.session.profile)) {
         throw new KiokukoError('CONFLICT', 'Task profile changed while scoped context was being prepared');
       }
-      return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
+      return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, {
+        capabilities: input.capabilities,
+        kiokukoSkills: input.kiokukoSkills,
+        clientInventory: input.clientInventory,
+        ...(input.clientKind === undefined ? {} : { clientKind: input.clientKind }),
+      }, {
         runId: input.runId,
         status: run.status,
       }, null, emptySkillDiscovery(input.discoveryMode), preview.memoryUse));
@@ -818,7 +910,7 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
   });
   context = currentAgentTaskContext(input.database, input.runId, context);
   run = authoritativeTaskRun(input.database, input.runId, context.status);
-  missingMemoryCapability = memoryCapabilityUnavailableForTask(context, input.capabilities);
+  missingMemoryCapability = memoryCapabilityUnavailableForTask(context, capabilityGateInput(input));
   // Enno's start event is part of the run projection used by scoped-context
   // selection. Materialize it before selection so an exact task_prepare retry
   // observes the same projection and replays the same delivery.
@@ -837,7 +929,12 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
   const selected = await selectFinalTaskContext({ input, prepared, context, missingMemoryCapability });
   context = selected.context;
   run = selected.run;
-  return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
+  return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, {
+    capabilities: input.capabilities,
+    kiokukoSkills: input.kiokukoSkills,
+    clientInventory: input.clientInventory,
+    ...(input.clientKind === undefined ? {} : { clientKind: input.clientKind }),
+  }, {
     runId: input.runId,
     status: run.status,
   }, selected.scopedContext, skillDiscovery, selected.memoryUse));
@@ -880,7 +977,7 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
   const { project, executionContext } = await requireProject(database, input.cwd);
   await drainEmbeddingsBeforeRetrieval(input.embeddingRuntime, project.workspace);
   const manifestSnapshot = captureProjectManifestSnapshot(project);
-  const discoveryRequest = skillDiscoveryRequestIdentity(input.skillDiscoveryMode ?? readSkillDiscoveryConfig().mode, input.capabilities);
+  const discoveryRequest = skillDiscoveryRequestIdentity(input.skillDiscoveryMode ?? readSkillDiscoveryConfig().mode, input);
   const discoveryMode = discoveryRequest.mode;
   const hints = input.profileHints ?? {};
   const profileHints = {
@@ -916,6 +1013,7 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
         maxContextChars,
       ),
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+      ...(input.kiokukoSkills === undefined ? {} : { kiokukoSkills: input.kiokukoSkills }),
     },
   });
   authoritativeTaskRun(database, opened.runId);
@@ -932,6 +1030,9 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
       context,
       runId: opened.runId,
       capabilities: input.capabilities,
+      kiokukoSkills: input.kiokukoSkills,
+      clientInventory: input.clientInventory,
+      clientKind: client.kind,
       maxContextChars,
       discoveryMode,
       ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
@@ -949,13 +1050,14 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
   const { project, executionContext } = await requireRegisteredProjectReadOnly(database, input.cwd);
   await drainEmbeddingsBeforeRetrieval(input.embeddingRuntime, project.workspace);
   const manifestSnapshot = captureProjectManifestSnapshot(project);
-  const discoveryRequest = skillDiscoveryRequestIdentity(input.skillDiscoveryMode ?? readSkillDiscoveryConfig().mode, input.capabilities);
+  const discoveryRequest = skillDiscoveryRequestIdentity(input.skillDiscoveryMode ?? readSkillDiscoveryConfig().mode, input);
   const discoveryMode = discoveryRequest.mode;
   const runRow = database.prepare(`SELECT lr.run_id AS runId FROM ledger_runs AS lr JOIN run_intakes AS ri ON ri.run_id = lr.run_id WHERE lr.run_id = ? AND ri.session_id = ? AND lr.workspace = ?`).get<{ runId: string }>(input.runId, input.sessionId, project.workspace);
   if (!runRow) throw new KiokukoError('NOT_FOUND', 'Task run was not found for the intake session');
   authoritativeTaskRun(database, runRow.runId);
   const gateway = new AgentGatewayService(database);
-  const runMetadata = gateway.readRun({ runId: runRow.runId }).metadata;
+  const runView = gateway.readRun({ runId: runRow.runId });
+  const runMetadata = runView.metadata;
   assertProjectManifestSnapshotBinding(runMetadata, project, manifestSnapshot);
   assertSkillDiscoveryRequestBinding(runMetadata, discoveryRequest);
   assertTaskContextRequestBinding(runMetadata, maxContextChars);
@@ -968,6 +1070,7 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
         questionId: input.questionId,
         value: input.value,
         ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
+        ...(input.kiokukoSkills === undefined ? {} : { kiokukoSkills: input.kiokukoSkills }),
       },
     },
     { assertBeforeAnswer: () => assertRegisteredProjectLocation(database, project) },
@@ -985,6 +1088,9 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
       context,
       runId: answered.runId,
       capabilities: input.capabilities,
+      kiokukoSkills: input.kiokukoSkills,
+      clientInventory: input.clientInventory,
+      clientKind: runView.client.kind,
       maxContextChars,
       discoveryMode,
       ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
