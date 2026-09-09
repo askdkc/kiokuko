@@ -192,18 +192,23 @@ export async function initializeDatabase(options: InitOptions = {}, hooks: InitH
     requireDatabaseFileIdentity(databasePath, identity!);
     database = openConnection(databasePath, { expectedFileIdentity: identity! });
     const version = dataVersion(database);
+    // Pending schema writes need an unchanged source; an existing current
+    // schema only needs locked history/integrity validation and performs no DDL.
+    const requiresStableSource = plan === undefined || plan.pending.length > 0;
     if (descriptor !== undefined) requireFreshDatabaseMetadata(database);
     await hooks.afterWritableOpen?.();
-    if (dataVersion(database) !== version) throw new KiokukoError('CONFLICT', 'Database changed after writable open');
+    if (requiresStableSource && dataVersion(database) !== version) throw new KiokukoError('CONFLICT', 'Database changed after writable open');
     withSqliteLockRetry(() => database!.exec('BEGIN IMMEDIATE'));
     try {
       requireDatabaseFileIdentity(databasePath, identity!);
-      if (dataVersion(database) !== version) throw new KiokukoError('CONFLICT', 'Database changed before initialization acquired its lock');
+      if (requiresStableSource && dataVersion(database) !== version) throw new KiokukoError('CONFLICT', 'Database changed before initialization acquired its lock');
       if (descriptor !== undefined) requireFreshDatabaseMetadata(database);
       const locked = inspectMigrationSnapshot(database, snapshot);
       if (plan !== undefined && !samePlan(plan, locked)) throw new KiokukoError('CONFLICT', 'Database history changed after preflight');
       requireForeignKeyIntegrity(database, 'before');
-      const migration = migrateDatabaseSnapshotInTransaction(database, snapshot);
+      const migration = locked.pending.length === 0
+        ? { applied: [], currentVersion: locked.currentVersion }
+        : migrateDatabaseSnapshotInTransaction(database, snapshot);
       requireForeignKeyIntegrity(database, 'after');
       hooks.beforeCommit?.();
       requireDatabaseFileIdentity(databasePath, identity!);

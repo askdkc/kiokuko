@@ -276,3 +276,38 @@ test('initializeDatabase rejects a future-version database before opening it for
   );
   assert.deepEqual(await readFile(databasePath), before);
 });
+
+test('current-schema initialization tolerates concurrent data writes after revalidating history under the lock', async () => {
+  const root = await temporaryDirectory('no-op-concurrent-write');
+  const { databasePath, oldMigrations } = await createVersionOneDatabase(root);
+  const result = await initializeDatabase({ databasePath, migrationsDirectory: oldMigrations }, {
+    afterWritableOpen() {
+      const writer = openConnection(databasePath);
+      try { writer.prepare('UPDATE preserved_data SET value = ? WHERE id = 1').run('concurrent update'); }
+      finally { writer.close(); }
+    },
+  });
+  assert.deepEqual(result.applied, []);
+  const database = openConnection(databasePath, { readOnly: true });
+  try {
+    assert.equal(database.prepare('SELECT value FROM preserved_data WHERE id = 1').get()?.value, 'concurrent update');
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()?.count, 1);
+  } finally { database.close(); }
+});
+
+test('no-op initialization still rejects concurrent migration history tampering', async () => {
+  const root = await temporaryDirectory('no-op-history-tampering');
+  const { databasePath, oldMigrations } = await createVersionOneDatabase(root);
+  await assert.rejects(initializeDatabase({ databasePath, migrationsDirectory: oldMigrations }, {
+    afterWritableOpen() {
+      const writer = openConnection(databasePath);
+      try { writer.exec("UPDATE schema_migrations SET checksum = 'tampered'"); }
+      finally { writer.close(); }
+    },
+  }), (error: unknown) => error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR' && /checksum mismatch/u.test(error.message));
+  const database = openConnection(databasePath, { readOnly: true });
+  try {
+    assert.equal(database.prepare('SELECT checksum FROM schema_migrations').get()?.checksum, 'tampered');
+    assert.equal(database.prepare('SELECT value FROM preserved_data WHERE id = 1').get()?.value, 'keep me');
+  } finally { database.close(); }
+});
