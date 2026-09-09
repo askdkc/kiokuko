@@ -1,5 +1,7 @@
 # Kiokuko（記憶庫）
 
+1.0では旧DBを利用できません。新規DBで開始してください。[破壊的変更と旧設定の撤去手順](docs/breaking-changes-1.0.md)を参照してください。
+
 [English](README.md) | 日本語 | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
 
 **MCPで接続し、必要な記憶を検索し、作業後に知識を蓄積する。**
@@ -34,7 +36,6 @@ kiokuko setup
 
 - **RAGメモリ**: 標準はlexical検索、任意でローカルsemantic検索。
 - **Akinator**: 曖昧な依頼を作業前に具体化。
-- **役小角(enno-oduno)**: 複数手順の計画、確認、検証、回復。
 - **ローカルWeb UI**: 保存した記憶の確認と整理。
 - **参照専用Skill**: 外部Skillは検証して保存するが、自動実行しない。
 
@@ -66,7 +67,6 @@ MCPの利用はclientとモデルが決めるため、**毎回必ずKiokukoが�
 - [ドキュメント目次](docs/README.ja.md)
 - [導入ガイド](docs/getting-started.ja.md)
 - [基本概念](docs/concepts.ja.md)
-- [役小角(enno-oduno)](docs/enno-oduno.ja.md)
 - [Semantic retrieval](docs/semantic-retrieval.ja.md)
 - [Security and trust](docs/security-and-trust.ja.md)
 - [CLI contract](docs/cli-contract.md)

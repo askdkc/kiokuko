@@ -1,7 +1,7 @@
-import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdir, lstat, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { KiokukoError } from '../errors.js';
 
@@ -120,13 +120,6 @@ export function getCodexConfigPath(options: PathEnvironment = {}): string {
   return join(getCodexHome(options), 'config.toml');
 }
 
-/** Codex personal hooks configuration. */
-export function getCodexHooksPath(options: PathEnvironment = {}): string {
-  const { platform } = selectedEnvironment(options);
-  const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  return join(getCodexHome(options), 'hooks.json');
-}
-
 export function getCodexInstructionsPath(options: PathEnvironment = {}): string {
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
@@ -174,18 +167,6 @@ export function getClaudeSkillsDirectory(options: PathEnvironment = {}): string 
   return join(getClaudeConfigDirectory(options), 'skills');
 }
 
-/** Exact one-way upgrade target for the retired managed Claude prompt hook. */
-export function getLegacyClaudePromptHookSettingsPath(options: PathEnvironment = {}): string {
-  const { platform } = selectedEnvironment(options);
-  const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  return join(getClaudeConfigDirectory(options), 'settings.json');
-}
-
-/** Claude Code personal settings, including lifecycle hooks. */
-export function getClaudeSettingsPath(options: PathEnvironment = {}): string {
-  return getLegacyClaudePromptHookSettingsPath(options);
-}
-
 /** OpenCode's documented global configuration directory. */
 export function getOpenCodeConfigDirectory(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);
@@ -205,21 +186,6 @@ export function getOpenCodeSkillsDirectory(options: PathEnvironment = {}): strin
   const { platform } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(getOpenCodeConfigDirectory(options), 'skills');
-}
-
-/** Exact one-way upgrade target for the retired managed OpenCode loop guard. */
-export function getLegacyOpenCodeLoopGuardPath(options: PathEnvironment = {}): string {
-  const { platform } = selectedEnvironment(options);
-  const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-loop-guard.js');
-}
-
-
-/** Managed OpenCode Enno-Oduno session.idle plugin. */
-export function getOpenCodeEnnoPluginPath(options: PathEnvironment = {}): string {
-  const { platform } = selectedEnvironment(options);
-  const join = platform === 'win32' ? path.win32.join : path.posix.join;
-  return join(getOpenCodeConfigDirectory(options), 'plugins', 'kiokuko-enno-oduno.js');
 }
 
 function getHermesRoot(options: PathEnvironment): string {

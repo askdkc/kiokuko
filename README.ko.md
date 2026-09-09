@@ -1,5 +1,7 @@
 # Kiokuko (記憶庫)
 
+1.0에서는 기존 DB를 지원하지 않습니다. 새 DB를 사용하세요. [주요 변경 사항과 이전 설정 제거](docs/breaking-changes-1.0.md)를 확인하세요。
+
 [English](README.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | 한국어
 
 **MCP로 연결하고, 필요한 기억을 검색하고, 작업 후 지식을 축적합니다.**
@@ -31,7 +33,6 @@ kiokuko setup
 
 - RAG 기억（기본 lexical, 선택적 로컬 semantic 검색）
 - 모호한 요청을 구체화하는 Akinator
-- 계획·확인·검증·복구를 담당하는 役小角(enno-oduno)
 - 기억을 검토하는 로컬 Web UI
 - 자동 실행하지 않는 검증된 참조 전용 External Skill
 
@@ -56,4 +57,4 @@ MCP 호출 여부는 클라이언트와 모델이 결정하므로 **모든 턴�
 
 ## 자세한 문서
 
-[영문 문서 목차](docs/README.md)에서 Getting started, Concepts, Enno-Oduno, Semantic retrieval, Security and trust와 구현자용 문서로 이동할 수 있습니다.
+[영문 문서 목차](docs/README.md)에서 Getting started, Concepts, Semantic retrieval, Security and trust와 구현자용 문서로 이동할 수 있습니다.

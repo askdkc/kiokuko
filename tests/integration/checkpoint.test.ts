@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
-import path from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { evaluateProfile } from '../../src/akinator/domain.js';
+import { buildRecommendations } from '../../src/context/recommendations.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { AgentGatewayService } from '../../src/gateway/agent-service.js';
-import { CheckpointService, FeedbackService } from '../../src/gateway/checkpoint-service.js';
-import { evaluateProfile } from '../../src/akinator/domain.js';
-import { buildRecommendations } from '../../src/context/recommendations.js';
+import { CheckpointMutationService, FeedbackService } from '../../src/gateway/checkpoint-service.js';
 import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 
 const migrations = path.resolve(import.meta.dirname, '../../migrations');
@@ -39,7 +39,7 @@ test('checkpoint appends, projects task profile revisions, and replays canonical
   const db = await database();
   const gateway = new AgentGatewayService(db, { now: () => now });
   const opened = open(gateway, 'checkpoint-ready');
-  const service = new CheckpointService(db, () => now);
+  const service = new CheckpointMutationService(db, () => now);
   const request = {
     apiVersion: '1',
     taskProfileRevision: { target: 'src/revised.ts' },
@@ -52,12 +52,12 @@ test('checkpoint appends, projects task profile revisions, and replays canonical
   ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
   assert.ok(stored);
   const persisted = JSON.parse(stored.responseJson) as Record<string, unknown>;
-  assert.ok(Object.hasOwn(persisted, 'recommendations'));
-  assert.equal(Object.hasOwn(persisted, 'preliminaryRecommendations'), false);
-  assert.deepEqual(persisted.recommendations, first.recommendations);
-  assert.equal(persisted.nudge, null);
-  assert.equal(persisted.context, null);
-  assert.equal(persisted.untrusted, true);
+  assert.equal(Object.hasOwn(persisted, 'recommendations'), false);
+  assert.equal(Object.hasOwn(persisted, 'preliminaryRecommendations'), true);
+  assert.deepEqual(persisted.preliminaryRecommendations, first.preliminaryRecommendations);
+  assert.equal(persisted.nudge, undefined);
+  assert.equal(persisted.context, undefined);
+  assert.equal(persisted.untrusted, undefined);
   const replay = service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-1', request });
   assert.deepEqual(replay, first);
   assert.equal(first.acceptedThrough, 5);
@@ -67,54 +67,6 @@ test('checkpoint appends, projects task profile revisions, and replays canonical
   assert.equal(first.projection.taskProfile.target, 'src/revised.ts');
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count, 5);
   assert.throws(() => service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-1', request: { apiVersion: '1', currentStep: 'different' } }), (error: unknown) => (error as { code?: string }).code === 'CONFLICT');
-});
-
-test('replays pre-refactor checkpoint idempotency records through the legacy service', async () => {
-  const db = await database();
-  try {
-    const gateway = new AgentGatewayService(db, { now: () => now });
-    const opened = open(gateway, 'checkpoint-legacy-replay');
-    const service = new CheckpointService(db, () => now);
-    const request = {
-      apiVersion: '1',
-      currentStep: 'continue bounded work',
-      characterBudget: 9000,
-    };
-    const first = service.checkpoint({
-      runId: opened.runId,
-      idempotencyKey: 'checkpoint-legacy-replay-1',
-      request,
-    });
-    const stored = db.prepare(
-      'SELECT response_json AS responseJson FROM gateway_idempotency WHERE scope = ?',
-    ).get<{ responseJson: string }>(`agent.checkpoint.${opened.runId}`);
-    assert.ok(stored);
-    const legacyResponse: Record<string, unknown> = {
-      ...first,
-      recommendations: first.recommendations,
-      nudge: null,
-      context: null,
-      untrusted: true,
-    };
-    delete legacyResponse.preliminaryRecommendations;
-    db.prepare('UPDATE gateway_idempotency SET response_json = ? WHERE scope = ?').run(
-      canonicalJson(legacyResponse),
-      `agent.checkpoint.${opened.runId}`,
-    );
-
-    const replay = service.checkpoint({
-      runId: opened.runId,
-      idempotencyKey: 'checkpoint-legacy-replay-1',
-      request,
-    });
-    assert.deepEqual(replay, first);
-    assert.equal(
-      db.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count,
-      first.acceptedThrough,
-    );
-  } finally {
-    db.close();
-  }
 });
 
 test('rejects type-correct checkpoint acknowledgements that violate request or projection binding', async () => {
@@ -192,7 +144,7 @@ test('rejects type-correct checkpoint acknowledgements that violate request or p
     try {
       const gateway = new AgentGatewayService(db, { now: () => now });
       const opened = open(gateway, `checkpoint-corrupt-${corruption.name}`);
-      const service = new CheckpointService(db, () => now);
+      const service = new CheckpointMutationService(db, () => now);
       const request = {
         apiVersion: '1',
         currentGoal: 'persist one acknowledgement',
@@ -226,7 +178,7 @@ test('checkpoint rejects intake runs before appending work events', async () => 
   const db = await database();
   const gateway = new AgentGatewayService(db, { now: () => now });
   const opened = open(gateway, 'checkpoint-intake', false);
-  const service = new CheckpointService(db, () => now);
+  const service = new CheckpointMutationService(db, () => now);
   assert.throws(() => service.checkpoint({ runId: opened.runId, idempotencyKey: 'checkpoint-intake-1', request: { apiVersion: '1', currentStep: 'blocked' } }), (error: unknown) => (error as { code?: string }).code === 'CONFLICT');
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ?').get<{ count: number }>(opened.runId)?.count, 1);
 });
@@ -258,7 +210,7 @@ test('checkpoint reports the authoritative exhausted intake status instead of in
     opened.runId,
   );
 
-  const service = new CheckpointService(db, () => now);
+  const service = new CheckpointMutationService(db, () => now);
   const response = service.checkpoint({
     runId: opened.runId,
     idempotencyKey: 'checkpoint-exhausted-status-1',
@@ -276,7 +228,7 @@ test('checkpoint validates authoritative intake and the full event hash chain be
     try {
       const gateway = new AgentGatewayService(db, { now: () => now });
       const opened = open(gateway, `checkpoint-preflight-${corruption}`);
-      const service = new CheckpointService(db, () => now);
+      const service = new CheckpointMutationService(db, () => now);
       if (corruption === 'intake-profile-hash') {
         db.prepare('UPDATE run_intakes SET initial_profile_hash = ? WHERE run_id = ?')
           .run('f'.repeat(64), opened.runId);

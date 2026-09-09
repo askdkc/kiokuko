@@ -6,10 +6,10 @@
 - global memory entries;
 - one imported external-skill snapshot and its entry mappings.
 
-The fixture intentionally stops at schema version 11. CI copies it into an
-isolated application-data directory before running `kiokuko setup`, so the
-committed file is never migrated in place. The test then runs `kiokuko doctor`
-and checks the migrated data through a real `kiokuko web` process.
+The fixture is generated from schema version 1, the Kiokuko 1.0 baseline.
+CI copies it into an isolated application-data directory before running
+`kiokuko setup`. The test verifies unchanged migration history, runs
+`kiokuko doctor`, and checks the data through a real `kiokuko web` process.
 
 Regenerate it after intentionally changing the fixture or its baseline:
 

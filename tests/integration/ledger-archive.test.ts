@@ -4,10 +4,15 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { openConnection } from '../../src/db/connection.js';
-import type { SqliteDatabase } from '../../src/db/adapter.js';
-import { migrateDatabase } from '../../src/db/migrate.js';
+import { finalizeRunIntakeLink, insertAkinatorAnswer, insertAkinatorSession, insertRunIntakeLink } from '../../src/akinator/store.js';
 import { exportWorkspace } from '../../src/commands/export.js';
+import { readContextDelivery, recordContextDelivery, type ContextDeliveryInput } from '../../src/context/delivery.js';
+import { recordContextFeedback } from '../../src/context/feedback.js';
+import { recordNudgeDeliveryInTransaction } from '../../src/context/nudge-store.js';
+import type { SqliteDatabase } from '../../src/db/adapter.js';
+import { openConnection } from '../../src/db/connection.js';
+import { migrateDatabase } from '../../src/db/migrate.js';
+import { KiokukoError } from '../../src/errors.js';
 import {
   exportLedgerArchive,
   importLedgerArchive,
@@ -15,15 +20,11 @@ import {
   MAX_ARCHIVE_LINE_COUNT,
   MAX_ARCHIVE_TOTAL_BYTES,
 } from '../../src/ledger/archive.js';
-import { LedgerStore } from '../../src/ledger/store.js';
-import { finalizeRunIntakeLink, insertAkinatorAnswer, insertAkinatorSession, insertRunIntakeLink } from '../../src/akinator/store.js';
-import { recordEntry } from '../../src/memory/entries.js';
-import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
-import { recordContextFeedback } from '../../src/context/feedback.js';
-import { readContextDelivery, recordContextDelivery, type ContextDeliveryInput } from '../../src/context/delivery.js';
 import { inspectLedger } from '../../src/ledger/maintenance.js';
+import { LedgerStore } from '../../src/ledger/store.js';
+import { recordEntry } from '../../src/memory/entries.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
-import { recordNudgeDeliveryInTransaction } from '../../src/context/nudge-store.js';
+import { canonicalContentHash, canonicalJson } from '../../src/serialization/validate.js';
 
 async function setup() {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-ledger-archive-'));
@@ -107,16 +108,6 @@ function rebuildArchive(content: string, mutate: (lines: Array<Record<string, un
   return `${canonicalJson({ type: 'checksum', sha256: createHash('sha256').update(payload).digest('hex') })}\n${payload}`;
 }
 
-function legacyV2Archive(content: string): string {
-  return rebuildArchive(content, (lines) => {
-    const manifest = lines[0]!;
-    const counts = { ...(manifest.counts as Record<string, number>) };
-    delete counts.nudgeDeliveries;
-    manifest.archiveVersion = 2;
-    manifest.counts = counts;
-  });
-}
-
 function seedSingleRun(database: ReturnType<typeof openConnection>, workspace = 'workspace:validation') {
   const store = new LedgerStore(database, { now: () => fixedNow });
   store.createRun({
@@ -160,7 +151,7 @@ test('exports an empty workspace as a deterministic ledger manifest without memo
     assert.equal(before.includes('ledger_events'), false);
     assert.equal(first.content.split('\n').length, 3);
     assert.match(first.content, /"type":"checksum"/);
-     assert.match(first.content, /"archiveVersion":3/);
+    assert.match(first.content, /"archiveVersion":3/);
     assert.match(first.content, /"format":"kiokuko-ledger-jsonl"/);
   } finally {
     database.close();
@@ -237,24 +228,6 @@ test('imports a ledger graph transactionally and re-imports identical rows as no
     assert.equal(duplicate.imported.events, 0);
     assert.equal(duplicate.duplicates.runs, 1);
     assert.equal(duplicate.duplicates.events, 1);
-  } finally {
-    source.close();
-    target.close();
-  }
-});
-
-test('imports a release-shaped v2 archive and upgrades it to the v3 output shape', async () => {
-  const source = await setup();
-  const target = await setup();
-  try {
-    const legacy = legacyV2Archive(seedSingleRun(source));
-    const imported = importLedgerArchive(target, { content: legacy });
-    assert.equal(imported.imported.runs, 1);
-    assert.equal(imported.imported.events, 1);
-    const upgraded = exportLedgerArchive(target, { workspace: 'workspace:validation' });
-    assert.equal(upgraded.counts.nudgeDeliveries, 0);
-    assert.match(upgraded.content, /"archiveVersion":3/);
-    assert.match(upgraded.content, /"nudgeDeliveries":0/);
   } finally {
     source.close();
     target.close();
@@ -509,7 +482,7 @@ test('round-trips ecosystem delivery feedback without rewriting the source works
       intakeSessionId: sessionId,
       taskProfileHash,
       queryHash: 'b'.repeat(64),
-       policyVersion: 'context-ranking-v6',
+      policyVersion: 'context-ranking-v6',
       scoreSchemaVersion: 2,
       charBudget: 1000,
       charCount: 100,
@@ -922,4 +895,15 @@ test('archive database boundaries preserve programmer faults and classify only S
   } finally {
     source.close();
   }
+});
+
+test('rejects previous ledger archive versions without importing records', async () => {
+  const database = await setup();
+  try {
+    const current = seedSingleRun(database);
+    const previous = rebuildArchive(current, lines => { lines[0]!.archiveVersion = 2; });
+    const before = database.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get();
+    assert.throws(() => importLedgerArchive(database, { content: previous }), (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR');
+    assert.deepEqual(database.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get(), before);
+  } finally { database.close(); }
 });

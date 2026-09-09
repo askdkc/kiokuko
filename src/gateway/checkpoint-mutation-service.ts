@@ -1,16 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { isProxy } from 'node:util/types';
-import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
-import { withImmediateTransaction } from '../db/transaction.js';
-import { KiokukoError } from '../errors.js';
 import { readAkinatorSession, readRunIntakeLink } from '../akinator/store.js';
-import { checkpointEligibility } from '../ledger/checkpoint-eligibility.js';
-import { projectLedger, type LedgerProjection } from '../ledger/projection.js';
-import { LedgerStore } from '../ledger/store.js';
-import { sanitizeEvent } from '../ledger/redaction.js';
-import { validateEventBatch, validateTimestamp } from '../ledger/validate.js';
-import { COVERAGE_LEVELS, type JsonObject, type JsonValue, type LedgerEventInput, type LedgerEventType, type RunStatus } from '../ledger/types.js';
-import { executeIdempotentInTransaction } from '../server/idempotency.js';
+import {
+  recordContextFeedbackInTransaction,
+  validateFeedbackTimestamp,
+} from '../context/feedback.js';
 import {
   buildRecommendations,
   RECOMMENDATION_CODES,
@@ -18,11 +12,17 @@ import {
   type Recommendation,
 } from '../context/recommendations.js';
 import { readContextRunRetrievalState } from '../context/run-state.js';
-import {
-  recordContextFeedbackInTransaction,
-  validateFeedbackTimestamp,
-} from '../context/feedback.js';
+import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
+import { withImmediateTransaction } from '../db/transaction.js';
+import { KiokukoError } from '../errors.js';
+import { checkpointEligibility } from '../ledger/checkpoint-eligibility.js';
+import { projectLedger, type LedgerProjection } from '../ledger/projection.js';
+import { sanitizeEvent } from '../ledger/redaction.js';
+import { LedgerStore } from '../ledger/store.js';
+import { COVERAGE_LEVELS, type JsonObject, type JsonValue, type LedgerEventInput, type LedgerEventType, type RunStatus } from '../ledger/types.js';
+import { validateEventBatch, validateTimestamp } from '../ledger/validate.js';
 import { canonicalJson } from '../serialization/validate.js';
+import { executeIdempotentInTransaction } from '../server/idempotency.js';
 
 const CHECKPOINT_EVENT_TYPES: readonly LedgerEventType[] = [
   'step.started', 'step.completed', 'step.failed', 'file.changed', 'error.recorded',
@@ -64,13 +64,6 @@ export interface CheckpointMutationPort {
   checkpoint(input: unknown): CheckpointMutationResult | PromiseLike<CheckpointMutationResult>;
 }
 
-type PersistedCheckpointAcknowledgement = Omit<CheckpointMutationResult, 'preliminaryRecommendations'> & {
-  readonly recommendations: readonly Recommendation[];
-  readonly nudge: null;
-  readonly context: null;
-  readonly untrusted: true;
-};
-
 function validation(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Invalid checkpoint request');
 }
@@ -89,9 +82,9 @@ function assertCheckpointEligible(status: RunStatus): void {
   throw new KiokukoError('CONFLICT', status === 'intake'
     ? 'Checkpoint is not allowed during intake'
     : 'Checkpoint is not allowed for a terminal run', {
-      checkpointEligibility: eligibility,
-      runStatus: status,
-    });
+    checkpointEligibility: eligibility,
+    runStatus: status,
+  });
 }
 
 function assertPlainObject(value: unknown): Record<string, unknown> {
@@ -262,17 +255,8 @@ function storedCheckpointObject(value: unknown): Record<string, unknown> {
   return value;
 }
 
-function serializeCheckpointAcknowledgement(
-  value: CheckpointMutationResult,
-): PersistedCheckpointAcknowledgement {
-  const { preliminaryRecommendations, ...acknowledgement } = value;
-  return {
-    ...acknowledgement,
-    recommendations: preliminaryRecommendations,
-    nudge: null,
-    context: null,
-    untrusted: true,
-  };
+function serializeCheckpointAcknowledgement(value: CheckpointMutationResult): CheckpointMutationResult {
+  return value;
 }
 
 function sameTaskProfile(
@@ -366,10 +350,7 @@ function normalizeCheckpointMutationResult(
   expected: { runId: string; characterBudget: number },
 ): CheckpointMutationResult {
   const object = storedCheckpointObject(value);
-  const recommendations = Object.hasOwn(object, 'preliminaryRecommendations')
-    ? object.preliminaryRecommendations
-    : object.recommendations;
-  const normalized = { ...object, preliminaryRecommendations: recommendations };
+  const normalized = object;
   if (!isCheckpointMutationResult(normalized)) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored checkpoint acknowledgement is invalid');
   }
@@ -550,7 +531,7 @@ function mutationValue(
 }
 
 export class CheckpointMutationService {
-  constructor(private readonly database: SqliteDatabase, private readonly now: () => string = () => new Date().toISOString()) {}
+  constructor(private readonly database: SqliteDatabase, private readonly now: () => string = () => new Date().toISOString()) { }
 
   checkpoint(input: unknown): CheckpointMutationResult {
     const value = assertPlainObject(input);

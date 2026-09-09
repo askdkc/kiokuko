@@ -1,6 +1,6 @@
 {
   "name": "@askdkc/kiokuko",
-  "version": "0.2.17",
+  "version": "1.0.0",
   "description": "Model-agnostic external memory for AI coding agents",
   "type": "module",
   "bin": {
@@ -36,10 +36,6 @@
     "test:global-install": "node tests/ci/global-install-smoke.mjs",
     "test:evaluation": "npm run build && node scripts/run-retrieval-evaluation.mjs",
     "test:benchmark": "npm run build && node scripts/run-retrieval-benchmark.mjs",
-    "test:e2e:codex": "npm run build && node scripts/run-enno-agent-e2e.mjs codex",
-    "test:e2e:opencode": "npm run build && node scripts/run-enno-agent-e2e.mjs opencode",
-    "test:e2e:claude": "npm run build && node scripts/run-enno-agent-e2e.mjs claude",
-    "test:e2e:agents": "npm run build && node scripts/run-enno-agent-e2e.mjs all",
     "sampledb:generate": "node --import tsx tests/fixtures/sample-database.ts tests/sampledb/kiokuko.sqlite3",
     "test:sampledb": "npm run build && node --import tsx tests/ci/verify-sample-database.ts",
     "pack:check": "npm pack --dry-run",

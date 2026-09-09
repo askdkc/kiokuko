@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto';
 
+import { parseStoredNudgeDelivery, validateStoredNudgeHistory } from '../context/nudge-validation.js';
+import { DEFAULT_NUDGE_RATE_LIMIT, NUDGE_CODES, NUDGE_POLICY_VERSION, NUDGE_PRIORITY } from '../context/nudges.js';
+import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
 import type { SqliteDatabase, SqliteValue } from '../db/adapter.js';
 import { isSqliteCorruptionError, isSqliteUniqueConstraintError } from '../db/sqlite-retry.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { findSecret } from '../memory/secrets.js';
 import { canonicalJson, compareCanonicalStrings, requireWorkspace } from '../serialization/validate.js';
-import { hashLedgerEvent, GENESIS_HASH } from './hash.js';
-import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
-import { DEFAULT_NUDGE_RATE_LIMIT, NUDGE_CODES, NUDGE_POLICY_VERSION, NUDGE_PRIORITY } from '../context/nudges.js';
-import { parseStoredNudgeDelivery, validateStoredNudgeHistory } from '../context/nudge-validation.js';
+import { GENESIS_HASH, hashLedgerEvent } from './hash.js';
 import {
   CAPTURE_PROFILES,
   COVERAGE_LEVELS,
@@ -23,8 +23,6 @@ import {
 export const LEDGER_ARCHIVE_FORMAT = 'kiokuko-ledger-jsonl' as const;
 export const LEDGER_ARCHIVE_API_VERSION = '1' as const;
 export const LEDGER_ARCHIVE_VERSION = 3 as const;
-const LEGACY_LEDGER_ARCHIVE_VERSION = 2 as const;
-const SUPPORTED_LEDGER_ARCHIVE_VERSIONS: ReadonlySet<number> = new Set([LEGACY_LEDGER_ARCHIVE_VERSION, LEDGER_ARCHIVE_VERSION]);
 
 export const MAX_ARCHIVE_LINE_COUNT = 10_000;
 export const MAX_ARCHIVE_LINE_BYTES = 512 * 1024;
@@ -726,11 +724,9 @@ function parseLine(line: string, fields: readonly string[]): Row {
   return parsed;
 }
 
-function parseCounts(value: unknown, archiveVersion: number): LedgerArchiveCounts {
+function parseCounts(value: unknown): LedgerArchiveCounts {
   assertObject(value);
-  const fields = Object.keys(EMPTY_COUNTS).filter((field) => (
-    archiveVersion !== LEGACY_LEDGER_ARCHIVE_VERSION || field !== 'nudgeDeliveries'
-  ));
+  const fields = Object.keys(EMPTY_COUNTS);
   assertFields(value, fields);
   const counts = { ...EMPTY_COUNTS };
   for (const type of fields as ArchiveRecordType[]) counts[type] = integerValue(value[type]);
@@ -749,12 +745,11 @@ function parseArchive(content: string): { workspace: string; counts: LedgerArchi
   if (manifest.type !== 'manifest'
     || manifest.apiVersion !== LEDGER_ARCHIVE_API_VERSION
     || typeof manifest.archiveVersion !== 'number'
-    || !SUPPORTED_LEDGER_ARCHIVE_VERSIONS.has(manifest.archiveVersion)
+    || manifest.archiveVersion !== LEDGER_ARCHIVE_VERSION
     || manifest.format !== LEDGER_ARCHIVE_FORMAT) validation();
-  const archiveVersion = manifest.archiveVersion as typeof LEGACY_LEDGER_ARCHIVE_VERSION | typeof LEDGER_ARCHIVE_VERSION;
   secretScan(manifest as ArchiveRecord);
   const workspace = requireWorkspace(manifest.workspace);
-  const counts = parseCounts(manifest.counts, archiveVersion);
+  const counts = parseCounts(manifest.counts);
   const records = new Map<ArchiveRecordType, ArchiveRecord[]>();
   for (const type of Object.keys(EMPTY_COUNTS) as ArchiveRecordType[]) records.set(type, []);
   const seenManifest = [manifest];
@@ -773,7 +768,6 @@ function parseArchive(content: string): { workspace: string; counts: LedgerArchi
     if (typeof type !== 'string') validation();
     const archiveType = RECORD_TYPES.get(type);
     if (!archiveType) validation();
-    if (archiveVersion === LEGACY_LEDGER_ARCHIVE_VERSION && archiveType === 'nudgeDeliveries') validation();
     const parsed = parseLine(line, RECORD_FIELDS[archiveType]);
     const normalized = normalizeRecord(archiveType, parsed, workspace, true);
     secretScan(normalized);

@@ -3,31 +3,28 @@ import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
-import { initializeDatabase } from './init.js';
-import { databaseFileIdentity, openConnection } from '../db/connection.js';
-import { KiokukoError } from '../errors.js';
 import { readRegularFile } from '../agent-file/atomic-write.js';
 import { BEGIN_MARKER, END_MARKER } from '../agent-file/managed-block.js';
+import { getCodexConfigPath, getDatabaseLockPath, getRuntimeDescriptorPath } from '../config/paths.js';
 import { readProjectConfig } from '../config/project-config.js';
-import { getCodexConfigPath, getDatabaseLockPath, getGlobalDatabasePath, getRuntimeDescriptorPath } from '../config/paths.js';
+import type { SqliteDatabase } from '../db/adapter.js';
+import { openConnection } from '../db/connection.js';
+import { EmbeddingBackendUnavailableError, openEmbeddingDatabase } from '../embedding/backend.js';
+import { parseEmbeddingConfig } from '../embedding/config.js';
+import { inspectEmbeddingHealth } from '../embedding/diagnostics.js';
+import { readPersistedEmbeddingSettings } from '../embedding/settings.js';
+import type { VectorSearchBackend } from '../embedding/types.js';
+import { KiokukoError } from '../errors.js';
+import { inspectLedger } from '../ledger/maintenance.js';
+import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
+import { readEntryRevision } from '../memory/revisions.js';
+import { findSecret } from '../memory/secrets.js';
 import { listRepositoryLocations, type RepositoryLocation } from '../repository/binding.js';
 import { isPidAlive } from '../server/instance-lock.js';
 import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
-import { inspectLedger } from '../ledger/maintenance.js';
-import { findSecret } from '../memory/secrets.js';
-import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
-import { hybridSearchProjectionSchema } from '../memory/structured-memory.js';
-import { readEntryRevision } from '../memory/revisions.js';
-import { inspectMigrationSnapshot, loadMigrationSnapshot } from '../db/migrate.js';
-import { inspectLegacyContextDeliveries, type LegacyDeliveryInspectionReport } from '../context/delivery-migration.js';
-import { inspectEmbeddingHealth } from '../embedding/diagnostics.js';
-import { EmbeddingBackendUnavailableError, openEmbeddingDatabase } from '../embedding/backend.js';
-import { parseEmbeddingConfig } from '../embedding/config.js';
-import { readPersistedEmbeddingSettings } from '../embedding/settings.js';
-import type { VectorSearchBackend } from '../embedding/types.js';
-import type { SqliteDatabase } from '../db/adapter.js';
-import { renderCodexMcpConfig } from '../setup/render.js';
 import { setupMcpIdentityConflictClient } from '../setup/mcp-conflict.js';
+import { renderCodexMcpConfig } from '../setup/render.js';
+import { initializeDatabase } from './init.js';
 
 export interface DoctorCheck {
   ok: boolean;
@@ -40,7 +37,6 @@ export interface DoctorResult {
   databasePath: string;
   currentVersion: number;
   capabilities: Awaited<ReturnType<typeof initializeDatabase>>['capabilities'] | null;
-  legacyDeliveries: LegacyDeliveryInspectionReport;
   integrity: string;
   fts5: boolean;
   checks: {
@@ -60,11 +56,9 @@ export interface DoctorResult {
     secrets: DoctorCheck;
     ledger: DoctorCheck;
     nudgeDeliveries: DoctorCheck;
-    legacyDeliveries: DoctorCheck;
     runtime: DoctorCheck;
     hybridSearch: DoctorCheck;
     embeddings: DoctorCheck;
-    ennoOperations: DoctorCheck;
     codexMcp: DoctorCheck;
   };
 }
@@ -121,15 +115,6 @@ export async function promptRemoveMissingRepositoryLocations(
 
 function count(database: SqliteDatabase, sql: string, ...parameters: Array<string | number>): number {
   return Number(database.prepare(sql).get<{ count: number }>(...parameters)?.count ?? 0);
-}
-
-function hasColumn(database: SqliteDatabase, table: string, column: string): boolean {
-  return Boolean(database.prepare('SELECT 1 AS present FROM pragma_table_info(?) WHERE name = ?').get(table, column));
-}
-
-function legacyDeliverySchemaIsInspectable(database: SqliteDatabase): boolean {
-  return hasColumn(database, 'context_deliveries', 'score_schema_version')
-    && hasColumn(database, 'context_delivery_entries', 'origin_scope');
 }
 
 function balancedMarkers(content: string): boolean {
@@ -210,7 +195,6 @@ interface DoctorCollectionOptions {
   runtimeDescriptorPath?: string;
   embeddingEnvironment?: NodeJS.ProcessEnv;
   embeddingBackend?: VectorSearchBackend;
-  legacyDeliveries: LegacyDeliveryInspectionReport;
   codexMcp: DoctorCheck;
 }
 
@@ -220,7 +204,6 @@ async function collectDoctorResult(
 ): Promise<DoctorResult> {
   const integrity = database.prepare('PRAGMA integrity_check').get<{ integrity_check: string }>()?.integrity_check ?? 'unknown';
   const foreignKeyRows = database.prepare('PRAGMA foreign_key_check').all();
-  const currentMemoryFormatAvailable = options.databaseVersion >= 9;
   const fts5 = Boolean(database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'entries_fts'").get());
   const migrationRows = count(database, 'SELECT COUNT(*) AS count FROM schema_migrations');
   const migrationCheck = { ok: migrationRows === options.currentVersion, count: migrationRows, detail: `expected ${options.currentVersion}` };
@@ -228,7 +211,7 @@ async function collectDoctorResult(
   const entryCount = count(database, 'SELECT COUNT(*) AS count FROM entries');
   const ftsCount = fts5 ? count(database, 'SELECT COUNT(*) AS count FROM entries_fts') : 0;
   let ftsCurrentMismatches = 0;
-  if (fts5 && currentMemoryFormatAvailable) {
+  if (fts5) {
     const currentRows = database.prepare(`
       SELECT e.rowid, e.id, r.title, r.body, r.summary, e.current_revision
         FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
@@ -239,17 +222,11 @@ async function collectDoctorResult(
       if (!projected || projected.title !== row.title || projected.body !== row.body || projected.summary !== (row.summary ?? '') || projected.tags_text !== tags.join(' ')) ftsCurrentMismatches += 1;
     }
   }
-  const ftsCheck = !currentMemoryFormatAvailable
-    ? {
-      ok: fts5 && entryCount === ftsCount,
-      count: Math.abs(entryCount - ftsCount) + (fts5 ? 0 : 1),
-      detail: `present=${fts5}, entries=${entryCount}, fts=${ftsCount}, currentMismatches=deferred until migration 009`,
-    }
-    : {
-      ok: fts5 && entryCount === ftsCount && ftsCurrentMismatches === 0,
-      count: Math.abs(entryCount - ftsCount) + ftsCurrentMismatches + (fts5 ? 0 : 1),
-      detail: `present=${fts5}, entries=${entryCount}, fts=${ftsCount}, currentMismatches=${ftsCurrentMismatches}`,
-    };
+  const ftsCheck = {
+    ok: fts5 && entryCount === ftsCount && ftsCurrentMismatches === 0,
+    count: Math.abs(entryCount - ftsCount) + ftsCurrentMismatches + (fts5 ? 0 : 1),
+    detail: `present=${fts5}, entries=${entryCount}, fts=${ftsCount}, currentMismatches=${ftsCurrentMismatches}`,
+  };
   const missingCurrentRevisions = count(database, `
     SELECT COUNT(*) AS count FROM entries e
     LEFT JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
@@ -279,60 +256,45 @@ async function collectDoctorResult(
       .all<{ singleton: unknown; algorithm: unknown }>()
     : [];
   let revisionHashMismatches = 0;
-  if (currentMemoryFormatAvailable) {
-    revisionHashMismatches = hashFormats.length === 1
-      && hashFormats[0]?.singleton === 1
-      && hashFormats[0].algorithm === 'canonical-json-utf16-tags-v1'
-      ? 0
-      : 1;
-    for (const row of revisionRows) {
-      try {
-        // The shared decoder accepts only the canonical JSON preimage and the
-        // single locale-independent revision hash format.
-        readEntryRevision(database, {
-          entryId: row.entry_id,
-          workspace: row.workspace,
-          revision: row.revision,
-        });
-      } catch (error) {
-        if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
-          revisionHashMismatches += 1;
-          continue;
-        }
-        throw error;
+  revisionHashMismatches = hashFormats.length === 1
+    && hashFormats[0]?.singleton === 1
+    && hashFormats[0].algorithm === 'canonical-json-utf16-tags-v1'
+    ? 0
+    : 1;
+  for (const row of revisionRows) {
+    try {
+      // The shared decoder accepts only the canonical JSON preimage and the
+      // single locale-independent revision hash format.
+      readEntryRevision(database, {
+        entryId: row.entry_id,
+        workspace: row.workspace,
+        revision: row.revision,
+      });
+    } catch (error) {
+      if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
+        revisionHashMismatches += 1;
+        continue;
       }
+      throw error;
     }
   }
-  const revisionHashCheck = !currentMemoryFormatAvailable
-    ? { ok: true, count: 0, detail: 'current revision hashes deferred until migration 009' }
-    : { ok: revisionHashMismatches === 0, count: revisionHashMismatches };
-  const hybridCheck = !currentMemoryFormatAvailable
-    ? (() => {
-      try {
-        hybridSearchProjectionSchema(database);
-        return { ok: true, count: 0, detail: 'current projection contents deferred until migration 009' };
-      } catch (error) {
-        if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
-          return { ok: false, count: 1, detail: 'search projection schema is invalid' };
-        }
-        throw error;
+
+  const revisionHashCheck = { ok: revisionHashMismatches === 0, count: revisionHashMismatches };
+  const hybridCheck = (() => {
+    try {
+      const projection = hybridSearchProjectionStatus(database);
+      return {
+        ok: projection.missingSignals === 0 && projection.extraSignals === 0 && projection.staleTrigram === 0,
+        count: projection.missingSignals + projection.extraSignals + projection.staleTrigram,
+        detail: `entries=${projection.entries}, trigram=${projection.trigram}, signals=${projection.signals}, missingSignals=${projection.missingSignals}, extraSignals=${projection.extraSignals}, staleTrigram=${projection.staleTrigram}`,
+      };
+    } catch (error) {
+      if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
+        return { ok: false, count: 1, detail: 'stored projection source is invalid' };
       }
-    })()
-    : (() => {
-      try {
-        const projection = hybridSearchProjectionStatus(database);
-        return {
-          ok: projection.missingSignals === 0 && projection.extraSignals === 0 && projection.staleTrigram === 0,
-          count: projection.missingSignals + projection.extraSignals + projection.staleTrigram,
-          detail: `entries=${projection.entries}, trigram=${projection.trigram}, signals=${projection.signals}, missingSignals=${projection.missingSignals}, extraSignals=${projection.extraSignals}, staleTrigram=${projection.staleTrigram}`,
-        };
-      } catch (error) {
-        if (error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR') {
-          return { ok: false, count: 1, detail: 'stored projection source is invalid' };
-        }
-        throw error;
-      }
-    })();
+      throw error;
+    }
+  })();
   const danglingLinks = count(database, `
     SELECT COUNT(*) AS count FROM entry_links l
     LEFT JOIN entries f ON f.id = l.from_entry_id
@@ -388,53 +350,12 @@ async function collectDoctorResult(
     count: ledgerReport.checks.nudgeDeliveries.findingCount,
     detail: `deliveries=${ledgerReport.counts.nudgeDeliveries}, findings=${ledgerReport.checks.nudgeDeliveries.findingCount}`,
   };
-  const legacyDeliveriesTruncated = options.legacyDeliveries.scanTruncated
-    || options.legacyDeliveries.findingsTruncated;
-  const legacyDeliveries = {
-    ok: options.legacyDeliveries.invalid === 0 && !legacyDeliveriesTruncated,
-    count: options.legacyDeliveries.invalid + (legacyDeliveriesTruncated ? 1 : 0),
-    detail: `scanned=${options.legacyDeliveries.scanned}, valid=${options.legacyDeliveries.valid}, invalid=${options.legacyDeliveries.invalid}, findings=${options.legacyDeliveries.findings.length}, scanTruncated=${options.legacyDeliveries.scanTruncated}, findingsTruncated=${options.legacyDeliveries.findingsTruncated}`,
-  };
   const runtime = await runtimeCheck(options.databasePath, options.runtimeDescriptorPath);
   const embeddings = inspectEmbeddingHealth(
     database,
     options.embeddingEnvironment ?? readPersistedEmbeddingSettings(database),
     options.embeddingBackend,
   );
-  const ennoLeaseSchemaPresent = ['enno_operation_receipts', 'enno_verifier_runs'].every((table) => (
-    Boolean(database.prepare(`
-      SELECT 1 AS present FROM sqlite_schema
-      WHERE type = 'table' AND name = ?
-    `).get(table)) && hasColumn(database, table, 'lease_expires_at')
-  ));
-  const ennoOperations = options.databaseVersion < 19
-    ? { ok: true, count: 0, detail: 'Enno operation lease inspection is unavailable before migration 019' }
-    : !ennoLeaseSchemaPresent
-      ? { ok: false, count: 1, detail: 'Migration 019 Enno operation lease schema is incomplete' }
-    : (() => {
-      const now = new Date().toISOString();
-      const expiredReceipts = count(database, `
-        SELECT COUNT(*) AS count FROM enno_operation_receipts
-        WHERE state = 'started'
-          AND (julianday(lease_expires_at) IS NULL OR lease_expires_at <= ?)
-      `, now);
-      const recoveredReceipts = count(database, `
-        SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE state = 'abandoned'
-      `);
-      const expiredVerifiers = count(database, `
-        SELECT COUNT(*) AS count FROM enno_verifier_runs
-        WHERE status = 'started'
-          AND (julianday(lease_expires_at) IS NULL OR lease_expires_at <= ?)
-      `, now);
-      const recoveredVerifiers = count(database, `
-        SELECT COUNT(*) AS count FROM enno_verifier_runs WHERE status = 'abandoned'
-      `);
-      return {
-        ok: expiredReceipts + expiredVerifiers === 0,
-        count: expiredReceipts + expiredVerifiers,
-        detail: `staleReceipts=${expiredReceipts}, staleVerifiers=${expiredVerifiers}, recoveredReceipts=${recoveredReceipts}, recoveredVerifiers=${recoveredVerifiers}`,
-      };
-    })();
   const checks = {
     integrity: { ok: integrity === 'ok', detail: integrity },
     foreignKeys: { ok: foreignKeyRows.length === 0, count: foreignKeyRows.length },
@@ -452,11 +373,9 @@ async function collectDoctorResult(
     secrets: { ok: secretCount === 0, count: secretCount },
     ledger: ledgerCheck,
     nudgeDeliveries,
-    legacyDeliveries,
     runtime,
     hybridSearch: hybridCheck,
     embeddings: embeddings.check,
-    ennoOperations,
     codexMcp: options.codexMcp,
   };
   const ok = Object.values(checks).every((check) => check.ok);
@@ -465,70 +384,16 @@ async function collectDoctorResult(
     databasePath: '<redacted>',
     currentVersion: options.currentVersion,
     capabilities: options.capabilities,
-    legacyDeliveries: options.legacyDeliveries,
     integrity,
     fts5,
     checks,
   };
 }
 
-async function legacyMigrationPreflight(options: DoctorOptions): Promise<DoctorResult | undefined> {
-  const databasePath = options.databasePath ?? getGlobalDatabasePath();
-  if (databasePath === ':memory:') return undefined;
-  let identity;
-  try {
-    identity = databaseFileIdentity(databasePath);
-  } catch {
-    return undefined;
-  }
-  const database = openConnection(databasePath, { readOnly: true, expectedFileIdentity: identity });
-  let operationFailed = false;
-  let operationError: unknown;
-  let result: DoctorResult | undefined;
-  try {
-    const snapshot = loadMigrationSnapshot(options.migrationsDirectory);
-    const plan = inspectMigrationSnapshot(database, snapshot);
-    if (plan.pending.includes(12) && legacyDeliverySchemaIsInspectable(database)) {
-      const report = inspectLegacyContextDeliveries(database);
-      if (report.invalid > 0 || report.scanTruncated || report.findingsTruncated) {
-        result = await collectDoctorResult(database, {
-          databasePath,
-          databaseVersion: plan.databaseVersion,
-          currentVersion: plan.currentVersion,
-          capabilities: null,
-           ...(options.runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: options.runtimeDescriptorPath }),
-           ...(options.embeddingEnvironment === undefined ? {} : { embeddingEnvironment: options.embeddingEnvironment }),
-           ...(options.embeddingBackend === undefined ? {} : { embeddingBackend: options.embeddingBackend }),
-           legacyDeliveries: report,
-           codexMcp: options.databasePath === undefined ? await codexMcpCheck() : skippedCodexMcpCheck(),
-        });
-      }
-    }
-  } catch (error) {
-    operationFailed = true;
-    operationError = error;
-  }
-  try {
-    database.close();
-  } catch (closeError) {
-    if (operationFailed) {
-      throw new AggregateError(
-        [operationError, closeError],
-        'Doctor legacy preflight failed and closing the database connection also failed',
-      );
-    }
-    throw closeError;
-  }
-  if (operationFailed) throw operationError;
-  return result;
-}
-
 export async function runDoctor(
   options: DoctorOptions = {},
   dependencies: DoctorDependencies = {},
 ): Promise<DoctorResult> {
-  const preflight = await legacyMigrationPreflight(options);
-  if (preflight !== undefined) return preflight;
   const initOptions = {
     ...(options.databasePath === undefined ? {} : { databasePath: options.databasePath }),
     ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
@@ -562,7 +427,6 @@ export async function runDoctor(
   let operationFailed = false;
   let operationError: unknown;
   try {
-    const legacyDeliveries = inspectLegacyContextDeliveries(database);
     doctorResult = await collectDoctorResult(database, {
       databasePath: initialized.databasePath,
       databaseVersion: initialized.currentVersion,
@@ -573,7 +437,6 @@ export async function runDoctor(
       ...((opened.backend ?? options.embeddingBackend) === undefined
         ? {}
         : { embeddingBackend: opened.backend ?? options.embeddingBackend }),
-      legacyDeliveries,
       codexMcp,
     });
   } catch (error) {

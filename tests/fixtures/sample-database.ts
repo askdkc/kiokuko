@@ -11,11 +11,11 @@ import { ensureGlobalWorkspace } from '../../src/memory/workspaces.js';
 import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import { documentsFromSkillSnapshot } from '../../src/skills/import-preparation.js';
 import { requirementForOfficialSkill } from '../../src/skills/official-catalog.js';
-import { importSkillSnapshot } from '../../src/skills/store.js';
 import { validateSkillSnapshot } from '../../src/skills/source/snapshot-validator.js';
+import { importSkillSnapshot } from '../../src/skills/store.js';
 import type { SkillCandidate } from '../../src/skills/types.js';
 
-export const SAMPLE_DATABASE_BASELINE_VERSION = 11;
+export const SAMPLE_DATABASE_BASELINE_VERSION = 1;
 export const SAMPLE_PROJECT_WORKSPACE = 'project:sampledb-ci';
 export const SAMPLE_GLOBAL_WORKSPACE = 'global';
 export const SAMPLE_EXTERNAL_SKILL_ID = 'github:sveltejs/ai-tools:svelte-code-writer';
@@ -260,7 +260,7 @@ function canonicalizeGeneratedIdentifiers(database: ReturnType<typeof openConnec
     for (const [index, externalEntry] of externalEntries.entries()) {
       const canonicalId = FIXTURE_EXTERNAL_ENTRY_IDS[index]!;
       database.prepare('UPDATE entries SET id = ? WHERE id = ?').run(canonicalId, externalEntry.entry_id);
-      for (const table of ['entry_revisions', 'entry_revision_tags', 'audit_events', 'entry_search_signals', 'external_skill_entries']) {
+      for (const table of ['entry_revisions', 'entry_revision_tags', 'audit_events', 'entry_search_signals', 'entry_search_documents', 'external_skill_entries']) {
         database.prepare(`UPDATE ${table} SET entry_id = ? WHERE entry_id = ?`).run(canonicalId, externalEntry.entry_id);
       }
     }

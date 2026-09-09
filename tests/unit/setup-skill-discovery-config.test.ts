@@ -1,8 +1,8 @@
+import { parse } from 'jsonc-parser';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { parse } from 'jsonc-parser';
 import { KiokukoError } from '../../src/errors.js';
 import { renderOpenCodeConfig } from '../../src/setup/opencode-config.js';
 import { renderCodexMcpConfig } from '../../src/setup/render.js';
@@ -25,7 +25,7 @@ test('Codex setup writes and preserves the external Skill discovery mode', () =>
   assert.equal(renderCodexMcpConfig(relocated.content, '/opt/kiokuko').action, 'unchanged');
 });
 
-test('Codex setup upgrades only the exact previous managed block to required MCP', () => {
+test('Codex setup rejects the previous managed block without required MCP', () => {
   const legacy = [
     'model = "keep"',
     '# BEGIN KIOKUKO MCP',
@@ -39,12 +39,7 @@ test('Codex setup upgrades only the exact previous managed block to required MCP
     '',
   ].join('\n');
 
-  const upgraded = renderCodexMcpConfig(legacy);
-  assert.equal(upgraded.action, 'updated');
-  assert.match(upgraded.content, /^model = "keep"$/mu);
-  assert.match(upgraded.content, /^required = true$/mu);
-  assert.match(upgraded.content, /KIOKUKO_SKILL_DISCOVERY = "community"/u);
-  assert.equal(renderCodexMcpConfig(upgraded.content).action, 'unchanged');
+  assert.throws(() => renderCodexMcpConfig(legacy), error => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
 });
 
 test('README entry points and English/Japanese docs carry the setup and trust contracts', () => {

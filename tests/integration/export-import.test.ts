@@ -21,8 +21,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { openConnection } from '../../src/db/connection.js';
-import { migrateDatabase } from '../../src/db/migrate.js';
+import { createBackup } from '../../src/commands/backup.js';
+import { runDoctor } from '../../src/commands/doctor.js';
 import { exportWorkspace, writeExport } from '../../src/commands/export.js';
 import {
   WORKSPACE_ARCHIVE_MAX_BYTES,
@@ -30,21 +30,21 @@ import {
   WORKSPACE_ARCHIVE_MAX_LINE_BYTES,
   importWorkspace,
 } from '../../src/commands/import.js';
-import type { SqliteDatabase, SqliteRow, SqliteStatement, SqliteValue } from '../../src/db/adapter.js';
-import { recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
-import { linkEntries, promoteEntry, supersedeEntry } from '../../src/memory/lifecycle.js';
-import { createBackup } from '../../src/commands/backup.js';
-import { runDoctor } from '../../src/commands/doctor.js';
-import { AgentGatewayService } from '../../src/gateway/agent-service.js';
-import { createRuntimeDescriptor, writeRuntimeDescriptor } from '../../src/server/runtime-descriptor.js';
 import { readNudgeHistory, recordNudgeDeliveryInTransaction } from '../../src/context/nudge-store.js';
+import type { SqliteDatabase, SqliteRow, SqliteStatement, SqliteValue } from '../../src/db/adapter.js';
+import { openConnection } from '../../src/db/connection.js';
+import { migrateDatabase } from '../../src/db/migrate.js';
+import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { exportLedgerArchive } from '../../src/ledger/archive.js';
 import { inspectLedger } from '../../src/ledger/maintenance.js';
+import { recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
+import { linkEntries, promoteEntry, supersedeEntry } from '../../src/memory/lifecycle.js';
 import {
   canonicalEntryRevisionContentHash,
   canonicalJson,
   type EntryKind,
 } from '../../src/serialization/validate.js';
+import { createRuntimeDescriptor, writeRuntimeDescriptor } from '../../src/server/runtime-descriptor.js';
 import { MAX_STRICT_JSON_DEPTH } from '../../src/setup/strict-json.js';
 
 const execFileAsync = promisify(execFile);
@@ -318,57 +318,57 @@ test('import rejects incomplete, duplicate, unknown, malformed, and count-mismat
       code: 'VALIDATION_ERROR' | 'INTEGRITY_ERROR';
       mutate: (payload: Record<string, unknown>[]) => void;
     }> = [
-      {
-        name: 'omitted manifest count',
-        code: 'VALIDATION_ERROR',
-        mutate: (payload) => {
-          delete (payload[0]!.counts as Record<string, unknown>).audit;
+        {
+          name: 'omitted manifest count',
+          code: 'VALIDATION_ERROR',
+          mutate: (payload) => {
+            delete (payload[0]!.counts as Record<string, unknown>).audit;
+          },
         },
-      },
-      {
-        name: 'duplicate manifest',
-        code: 'INTEGRITY_ERROR',
-        mutate: (payload) => {
-          payload.push({ ...payload[0]!, counts: { ...(payload[0]!.counts as Record<string, unknown>) } });
+        {
+          name: 'duplicate manifest',
+          code: 'INTEGRITY_ERROR',
+          mutate: (payload) => {
+            payload.push({ ...payload[0]!, counts: { ...(payload[0]!.counts as Record<string, unknown>) } });
+          },
         },
-      },
-      {
-        name: 'unknown record type',
-        code: 'VALIDATION_ERROR',
-        mutate: (payload) => {
-          payload.push({ type: 'unknown-record' });
+        {
+          name: 'unknown record type',
+          code: 'VALIDATION_ERROR',
+          mutate: (payload) => {
+            payload.push({ type: 'unknown-record' });
+          },
         },
-      },
-      {
-        name: 'extra record field',
-        code: 'VALIDATION_ERROR',
-        mutate: (payload) => {
-          payload.find((line) => line.type === 'entry')!.unexpected = true;
+        {
+          name: 'extra record field',
+          code: 'VALIDATION_ERROR',
+          mutate: (payload) => {
+            payload.find((line) => line.type === 'entry')!.unexpected = true;
+          },
         },
-      },
-      {
-        name: 'malformed record field',
-        code: 'VALIDATION_ERROR',
-        mutate: (payload) => {
-          payload.find((line) => line.type === 'entry')!.confidence = '0.5';
+        {
+          name: 'malformed record field',
+          code: 'VALIDATION_ERROR',
+          mutate: (payload) => {
+            payload.find((line) => line.type === 'entry')!.confidence = '0.5';
+          },
         },
-      },
-      {
-        name: 'unrepresentable revision history',
-        code: 'VALIDATION_ERROR',
-        mutate: (payload) => {
-          payload.find((line) => line.type === 'entry')!.revision = 2;
+        {
+          name: 'unrepresentable revision history',
+          code: 'VALIDATION_ERROR',
+          mutate: (payload) => {
+            payload.find((line) => line.type === 'entry')!.revision = 2;
+          },
         },
-      },
-      {
-        name: 'record count mismatch',
-        code: 'INTEGRITY_ERROR',
-        mutate: (payload) => {
-          const counts = payload[0]!.counts as Record<string, unknown>;
-          counts.entries = Number(counts.entries) + 1;
+        {
+          name: 'record count mismatch',
+          code: 'INTEGRITY_ERROR',
+          mutate: (payload) => {
+            const counts = payload[0]!.counts as Record<string, unknown>;
+            counts.entries = Number(counts.entries) + 1;
+          },
         },
-      },
-    ];
+      ];
 
     for (const fixture of cases) {
       const invalidPath = path.join(source.directory, `${fixture.name.replaceAll(' ', '-')}.jsonl`);
@@ -446,47 +446,47 @@ test('import rejects impossible entry lifecycle states before mutating any archi
       name: string;
       mutate: (entry: Record<string, unknown>) => void;
     }> = [
-      {
-        name: 'created after updated',
-        mutate: (entry) => {
-          entry.created_at = '2026-08-20T00:00:03.000Z';
-          entry.updated_at = '2026-08-20T00:00:02.000Z';
+        {
+          name: 'created after updated',
+          mutate: (entry) => {
+            entry.created_at = '2026-08-20T00:00:03.000Z';
+            entry.updated_at = '2026-08-20T00:00:02.000Z';
+          },
         },
-      },
-      {
-        name: 'candidate has verified timestamp',
-        mutate: (entry) => {
-          entry.verified_at = '2026-08-20T00:00:00.000Z';
+        {
+          name: 'candidate has verified timestamp',
+          mutate: (entry) => {
+            entry.verified_at = '2026-08-20T00:00:00.000Z';
+          },
         },
-      },
-      {
-        name: 'verified lacks verified timestamp',
-        mutate: (entry) => {
-          entry.status = 'verified';
-          entry.verified_at = null;
+        {
+          name: 'verified lacks verified timestamp',
+          mutate: (entry) => {
+            entry.status = 'verified';
+            entry.verified_at = null;
+          },
         },
-      },
-      {
-        name: 'candidate names a supersession target',
-        mutate: (entry) => {
-          entry.superseded_by = second.id;
+        {
+          name: 'candidate names a supersession target',
+          mutate: (entry) => {
+            entry.superseded_by = second.id;
+          },
         },
-      },
-      {
-        name: 'supersession target is outside archive',
-        mutate: (entry) => {
-          entry.status = 'superseded';
-          entry.superseded_by = 'missing-from-archive';
+        {
+          name: 'supersession target is outside archive',
+          mutate: (entry) => {
+            entry.status = 'superseded';
+            entry.superseded_by = 'missing-from-archive';
+          },
         },
-      },
-      {
-        name: 'entry supersedes itself',
-        mutate: (entry) => {
-          entry.status = 'superseded';
-          entry.superseded_by = first.id;
+        {
+          name: 'entry supersedes itself',
+          mutate: (entry) => {
+            entry.status = 'superseded';
+            entry.superseded_by = first.id;
+          },
         },
-      },
-    ];
+      ];
 
     for (const fixture of cases) {
       const input = path.join(source.directory, `invalid-${fixture.name.replaceAll(' ', '-')}.jsonl`);
@@ -789,21 +789,21 @@ test('import rejects BOM, duplicate, deep, and malformed-Unicode JSON without ch
       message: RegExp;
       workspaceOverride?: string;
     }> = [
-      { name: 'utf8-bom', content: `\uFEFF${archive}`, message: /BOM/iu },
-      { name: 'duplicate-outer-key', content: duplicateOuterKey, message: /contains invalid JSON/iu },
-      { name: 'over-deep-outer-json', content: overDeepOuterJson, message: /contains invalid JSON/iu },
-      { name: 'duplicate-nested-key', content: duplicateNestedKey, message: /must contain valid JSON/iu },
-      { name: 'over-deep-nested-json', content: overDeepNestedJson, message: /must contain valid JSON/iu },
-      { name: 'direct-lone-surrogate', content: directLoneSurrogate, message: /contains invalid JSON/iu },
-      { name: 'lone-surrogate-nested-key', content: loneSurrogateNestedKey, message: /must contain valid JSON/iu },
-      { name: 'lone-surrogate-nested-value', content: loneSurrogateNestedValue, message: /must contain valid JSON/iu },
-      {
-        name: 'lone-surrogate-workspace-override',
-        content: archive,
-        message: /well-formed Unicode/iu,
-        workspaceOverride: 'project:\uD800',
-      },
-    ];
+        { name: 'utf8-bom', content: `\uFEFF${archive}`, message: /BOM/iu },
+        { name: 'duplicate-outer-key', content: duplicateOuterKey, message: /contains invalid JSON/iu },
+        { name: 'over-deep-outer-json', content: overDeepOuterJson, message: /contains invalid JSON/iu },
+        { name: 'duplicate-nested-key', content: duplicateNestedKey, message: /must contain valid JSON/iu },
+        { name: 'over-deep-nested-json', content: overDeepNestedJson, message: /must contain valid JSON/iu },
+        { name: 'direct-lone-surrogate', content: directLoneSurrogate, message: /contains invalid JSON/iu },
+        { name: 'lone-surrogate-nested-key', content: loneSurrogateNestedKey, message: /must contain valid JSON/iu },
+        { name: 'lone-surrogate-nested-value', content: loneSurrogateNestedValue, message: /must contain valid JSON/iu },
+        {
+          name: 'lone-surrogate-workspace-override',
+          content: archive,
+          message: /well-formed Unicode/iu,
+          workspaceOverride: 'project:\uD800',
+        },
+      ];
 
     for (const fixture of cases) {
       const input = path.join(source.directory, `${fixture.name}.jsonl`);
@@ -1005,59 +1005,59 @@ test('import rejects secret-like content in every archive record category withou
       name: string;
       mutate: (payload: Record<string, unknown>[]) => void;
     }> = [
-      {
-        name: 'manifest and workspace identity',
-        mutate: (payload) => {
-          const secretWorkspace = `project:${secret}`;
-          payload.find((line) => line.type === 'manifest')!.workspace = secretWorkspace;
-          for (const entry of payload.filter((line) => line.type === 'entry')) entry.workspace = secretWorkspace;
-          for (const audit of payload.filter((line) => line.type === 'audit')) audit.workspace = secretWorkspace;
+        {
+          name: 'manifest and workspace identity',
+          mutate: (payload) => {
+            const secretWorkspace = `project:${secret}`;
+            payload.find((line) => line.type === 'manifest')!.workspace = secretWorkspace;
+            for (const entry of payload.filter((line) => line.type === 'entry')) entry.workspace = secretWorkspace;
+            for (const audit of payload.filter((line) => line.type === 'audit')) audit.workspace = secretWorkspace;
+          },
         },
-      },
-      {
-        name: 'tag value',
-        mutate: (payload) => {
-          payload.find((line) => line.type === 'tag' && line.entry_id === first.id)!.tag = secret;
-          recomputeArchiveEntryHash(payload, first.id);
+        {
+          name: 'tag value',
+          mutate: (payload) => {
+            payload.find((line) => line.type === 'tag' && line.entry_id === first.id)!.tag = secret;
+            recomputeArchiveEntryHash(payload, first.id);
+          },
         },
-      },
-      {
-        name: 'link actor',
-        mutate: (payload) => {
-          payload.find((line) => line.type === 'link')!.created_by = secret;
+        {
+          name: 'link actor',
+          mutate: (payload) => {
+            payload.find((line) => line.type === 'link')!.created_by = secret;
+          },
         },
-      },
-      {
-        name: 'audit actor',
-        mutate: (payload) => {
-          payload.find((line) => line.type === 'audit')!.actor = secret;
+        {
+          name: 'audit actor',
+          mutate: (payload) => {
+            payload.find((line) => line.type === 'audit')!.actor = secret;
+          },
         },
-      },
-      {
-        name: 'nested audit details',
-        mutate: (payload) => {
-          payload.find((line) => line.type === 'audit')!.details_json = canonicalJson({ nested: { token: secret } });
+        {
+          name: 'nested audit details',
+          mutate: (payload) => {
+            payload.find((line) => line.type === 'audit')!.details_json = canonicalJson({ nested: { token: secret } });
+          },
         },
-      },
-      {
-        name: 'nested entry scope JSON',
-        mutate: (payload) => {
-          const entry = payload.find((line) => line.type === 'entry' && line.id === first.id);
-          assert.ok(entry);
-          entry.scope_json = canonicalJson({ nested: { token: secret } });
-          recomputeArchiveEntryHash(payload, first.id);
+        {
+          name: 'nested entry scope JSON',
+          mutate: (payload) => {
+            const entry = payload.find((line) => line.type === 'entry' && line.id === first.id);
+            assert.ok(entry);
+            entry.scope_json = canonicalJson({ nested: { token: secret } });
+            recomputeArchiveEntryHash(payload, first.id);
+          },
         },
-      },
-      {
-        name: 'entry provenance JSON',
-        mutate: (payload) => {
-          const entry = payload.find((line) => line.type === 'entry' && line.id === first.id);
-          assert.ok(entry);
-          entry.provenance_json = canonicalJson({ type: 'document', reference: secret });
-          recomputeArchiveEntryHash(payload, first.id);
+        {
+          name: 'entry provenance JSON',
+          mutate: (payload) => {
+            const entry = payload.find((line) => line.type === 'entry' && line.id === first.id);
+            assert.ok(entry);
+            entry.provenance_json = canonicalJson({ type: 'document', reference: secret });
+            recomputeArchiveEntryHash(payload, first.id);
+          },
         },
-      },
-    ];
+      ];
 
     for (const fixture of cases) {
       const input = path.join(source.directory, `secret-${fixture.name.replaceAll(' ', '-')}.jsonl`);
@@ -1563,39 +1563,6 @@ test('writeExport is create-only and concurrent failure leaves no partial artifa
     assert.deepEqual(await readdir(outputDirectory), ['archive.jsonl']);
   } finally {
     source.db.close();
-  }
-});
-
-test('doctor reports integrity, migration, FTS, and permissions checks', async () => {
-  const data = await database('doctor');
-  try {
-    const result = await runDoctorWithDatabase(data.databasePath, path.join(data.directory, 'runtime', 'server.json'));
-    assert.equal(result.ok, true);
-    assert.equal(result.checks.integrity.ok, true);
-    assert.equal(result.checks.migrations.ok, true);
-    assert.equal(result.checks.fts.ok, true);
-    assert.equal(result.checks.permissions.ok, true);
-    assert.deepEqual(result.checks.ennoOperations, {
-      ok: true,
-      count: 0,
-      detail: 'staleReceipts=0, staleVerifiers=0, recoveredReceipts=0, recoveredVerifiers=0',
-    });
-  } finally {
-    data.db.close();
-  }
-});
-
-test('doctor fails closed when the current Enno lease schema is incomplete', async () => {
-  const data = await database('doctor-enno-schema');
-  try {
-    data.db.exec('DROP TABLE enno_verifier_runs');
-    const result = await runDoctorWithDatabase(data.databasePath, path.join(data.directory, 'runtime', 'server.json'));
-    assert.equal(result.checks.ennoOperations.ok, false);
-    assert.equal(result.checks.ennoOperations.count, 1);
-    assert.match(result.checks.ennoOperations.detail ?? '', /schema is incomplete/iu);
-    assert.equal(result.ok, false);
-  } finally {
-    data.db.close();
   }
 });
 

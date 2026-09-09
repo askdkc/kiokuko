@@ -32,8 +32,8 @@ test('deadline utility validates policy and bounds child operations by the paren
   assert.throws(() => createMcpDeadlinePolicy({ hardMaxMs: 20, mutationMs: 21 }), /hard maximum/u);
 });
 
-test('enno_advice_read uses the read deadline class', () => {
-  assert.equal(operationDeadlineClass('enno_advice_read'), 'read');
+test('curator_check uses the read deadline class', () => {
+  assert.equal(operationDeadlineClass('curator_check'), 'read');
 });
 
 test('deadline utility aborts the operation and rejects with a stable timeout error', async () => {

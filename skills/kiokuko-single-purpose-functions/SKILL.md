@@ -1,6 +1,6 @@
 ---
 name: kiokuko-single-purpose-functions
-description: Use whenever writing, modifying, reviewing, debugging, or refactoring code. Apply compact function and problem-shaping contracts, then route each function or WorkUnit to one to three versioned expert fragments for its actual risks.
+description: Use whenever writing, modifying, reviewing, debugging, or refactoring code. Apply compact function and problem-shaping contracts, then route each function or task to one to three versioned expert fragments for its actual risks.
 ---
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-single-purpose-functions -->
@@ -31,7 +31,7 @@ Small is not the objective. Cohesion is. Keep operations together when splitting
 
 ## MoE selection contract
 
-For each new or materially changed function, or for the smallest WorkUnit that owns a cohesive use case:
+For each new or materially changed function, or for the smallest task that owns a cohesive use case:
 
 1. classify the dominant risk;
 2. select one expert ID from the table below;
@@ -39,13 +39,12 @@ For each new or materially changed function, or for the smallest WorkUnit that o
 4. record a concrete reason for every selection;
 5. read the selected files before implementation or review.
 
-Do not make a new Skill per function. The function contract is the execution envelope; `expertRefs` are its mixture-of-experts dispatch. If two functions need materially different expert sets or reasons to change, split the WorkUnit or record separate function contracts inside it.
+Do not make a new Skill per function. The function contract is the execution envelope; expert references identify the selected guidance. If two functions need materially different expert sets or reasons to change, record separate function contracts.
 
-In Enno-Oduno plans, every new WorkUnit declares one or more local routes from
-`code`, `ui`, `test`, `docs`, and `operations`. `expertRefs` is revision-bound:
-a code route requires `code.*`; a UI route requires both `code.*` and `ui.*`;
-test, docs, and operations routes do not inherit code experts. Outside
-Enno-Oduno, keep the same mapping in the working plan or review notes:
+For each task, record its code, UI, test, documentation, or operations scope.
+Code work requires code experts; interactive UI work requires code and UI
+experts. Select expertise from the actual risk, and record it in working plan
+or review notes:
 
 ```text
 target -> responsibility -> expert IDs -> focused verifier
@@ -79,4 +78,4 @@ Read [kiokuko-patterns.md](references/kiokuko-patterns.md) only when a selected 
 
 ## Completion report
 
-Report the function or WorkUnit contracts changed, selected expert IDs, focused verifier results, and anything not verified. A build alone does not prove boundary, failure, or interaction behavior.
+Report the function or task contracts changed, selected expert IDs, focused verifier results, and anything not verified. A build alone does not prove boundary, failure, or interaction behavior.

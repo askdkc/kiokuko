@@ -1,5 +1,6 @@
 import { KiokukoError } from '../errors.js';
-import { ENNO_CLIENT_KINDS, type EnnoClientKind } from './types.js';
+const CLIENT_KINDS = ['codex', 'claude', 'opencode'] as const;
+type ClientKind = (typeof CLIENT_KINDS)[number];
 
 export interface TaskClientHint {
   kind?: string;
@@ -19,7 +20,7 @@ export interface McpClientImplementation {
   version: string;
 }
 
-const CLIENT_ALIASES: Readonly<Record<EnnoClientKind, readonly string[]>> = {
+const CLIENT_ALIASES: Readonly<Record<ClientKind, readonly string[]>> = {
   codex: ['codex', 'codex-mcp-client'],
   claude: ['claude', 'claude-ai', 'claude-code'],
   opencode: ['opencode'],
@@ -37,16 +38,16 @@ function boundedVersion(value: unknown): string | undefined {
   return value;
 }
 
-export function identifyEnnoClientKind(value: unknown): EnnoClientKind | null {
+export function identifyClientKind(value: unknown): ClientKind | null {
   const normalized = normalizedClientName(value);
   if (normalized === null) return null;
-  return ENNO_CLIENT_KINDS.find((kind) => CLIENT_ALIASES[kind].includes(normalized)) ?? null;
+  return CLIENT_KINDS.find((kind) => CLIENT_ALIASES[kind].includes(normalized)) ?? null;
 }
 
-export function identifyMcpClientKind(client: McpClientImplementation | undefined): EnnoClientKind | null {
+export function identifyMcpClientKind(client: McpClientImplementation | undefined): ClientKind | null {
   if (client === undefined) return null;
-  const fromName = identifyEnnoClientKind(client.name);
-  const fromTitle = identifyEnnoClientKind(client.title);
+  const fromName = identifyClientKind(client.name);
+  const fromTitle = identifyClientKind(client.title);
   if (fromName !== null && fromTitle !== null && fromName !== fromTitle) {
     throw new KiokukoError('CONFLICT', 'MCP client identity is contradictory');
   }
@@ -58,7 +59,7 @@ export function resolveTaskPrepareClient(
   runtime: McpClientImplementation | undefined,
 ): TaskClientHint | undefined {
   const runtimeKind = identifyMcpClientKind(runtime);
-  const explicitKind = identifyEnnoClientKind(explicit?.kind);
+  const explicitKind = identifyClientKind(explicit?.kind);
   if (runtimeKind !== null && explicit?.kind !== undefined && explicitKind !== runtimeKind) {
     throw new KiokukoError('CONFLICT', 'Explicit client identity conflicts with the MCP client');
   }

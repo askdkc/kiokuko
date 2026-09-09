@@ -1,25 +1,24 @@
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
-import {
-  CONTEXT_RANKING_VERSION,
-  CONTEXT_RANKING_COMPONENTS,
-  CONTEXT_RANKING_COMPONENTS_V2,
-  CONTEXT_SELECTION_REASON_ORDER,
-  type ContextRankingComponent,
-  type ContextRankingV2Component,
-} from './ranking.js';
-import { canonicalContentHash, canonicalJson } from '../serialization/validate.js';
+import { RUN_STATUSES, type RunStatus } from '../ledger/types.js';
+import { readEntry, type EntryRecord } from '../memory/entries.js';
+import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
 import {
   effectiveRetrievalScope,
   hasExplicitApplicability,
 } from '../memory/structured-memory.js';
-import { readEntry, type EntryRecord } from '../memory/entries.js';
-import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
+import { canonicalContentHash, canonicalJson } from '../serialization/validate.js';
 import { entryOriginMatchesWorkspace, isContextEntryOrigin, type ContextEntryOrigin } from './origin.js';
-import { RUN_STATUSES, type RunStatus } from '../ledger/types.js';
+import {
+  CONTEXT_RANKING_COMPONENTS,
+  CONTEXT_RANKING_COMPONENTS_V2,
+  CONTEXT_RANKING_VERSION,
+  CONTEXT_SELECTION_REASON_ORDER,
+  type ContextRankingComponent,
+  type ContextRankingV2Component,
+} from './ranking.js';
 import { RECOMMENDATION_POLICY_VERSION } from './recommendations.js';
-import { readRunIntakeLink } from '../akinator/store.js';
 import { readContextRunProfileBinding } from './run-state.js';
 
 const MAX_IDENTIFIER_BYTES = 256;
@@ -33,15 +32,6 @@ const DELIVERY_CURSOR_VERSION = 1 as const;
 // broker contract and v2 is the scoped broker contract.
 const GENERIC_DELIVERY_POLICY_VERSION = `${CONTEXT_RANKING_VERSION}+${RECOMMENDATION_POLICY_VERSION}`;
 const SCOPED_DELIVERY_POLICY_VERSION = 'context-ranking-v6';
-// v2/v3 used the legacy identity and intake binding. Retired v4/v5 deliveries
-// retain the strict full identity and profile binding used when they were written,
-// but the scoped broker never reuses them after a policy advance.
-const LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS = new Set(['context-ranking-v2', 'context-ranking-v3']);
-const READABLE_SCOPED_DELIVERY_POLICY_VERSIONS = new Set([
-  ...LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS,
-  'context-ranking-v4',
-  'context-ranking-v5',
-]);
 
 const VALIDATION_MESSAGE = 'Context delivery input is invalid';
 const NOT_FOUND_MESSAGE = 'Context delivery target was not found';
@@ -325,8 +315,7 @@ function deliveryPolicyVersion(version: 1 | 2): string {
 }
 
 function storedDeliveryPolicyMatches(version: 1 | 2, policyVersion: string): boolean {
-  return policyVersion === deliveryPolicyVersion(version)
-    || version === 2 && READABLE_SCOPED_DELIVERY_POLICY_VERSIONS.has(policyVersion);
+  return policyVersion === deliveryPolicyVersion(version);
 }
 
 function storedNonNegativeSafeInteger(value: unknown): number {
@@ -599,14 +588,7 @@ export function scopedDeliveryId(input: ContextDeliveryInput): string {
   })}`;
 }
 
-export function legacyScopedDeliveryId(input: Pick<ContextDeliveryInput, 'runId' | 'queryHash'>): string {
-  return `context-${canonicalContentHash({ runId: input.runId, queryHash: input.queryHash })}`;
-}
-
 function storedScopedDeliveryIdentityMatches(input: ContextDeliveryInput): boolean {
-  if (LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(input.policyVersion)) {
-    return input.deliveryId === legacyScopedDeliveryId(input);
-  }
   return input.deliveryId === scopedDeliveryId(input);
 }
 
@@ -757,11 +739,7 @@ function selectDeliveryEntries(database: SqliteDatabase, deliveryId: string): De
 function validateStoredEntries(database: SqliteDatabase, header: ContextDeliveryInput): ContextDeliveryItemInput[] {
   const rows = selectDeliveryEntries(database, header.deliveryId);
   if (rows.length > MAX_ITEMS) integrity();
-  // Migration 009 may remove an invalid entry from a released delivery,
-  // leaving a historical rank gap. New writes still require contiguous ranks.
-  const allowsRankGaps = LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(header.policyVersion);
   const entryIds = new Set<string>();
-  let previousRank = 0;
   let expectedRank = 1;
   return rows.map((row) => {
     const deliveryId = boundedStoredIdentifier(row.delivery_id);
@@ -775,8 +753,7 @@ function validateStoredEntries(database: SqliteDatabase, header: ContextDelivery
     const revisionWorkspace = boundedStoredIdentifier(row.revision_workspace);
     if (revisionWorkspace !== entryWorkspace) integrity();
     const rank = storedPositiveSafeInteger(row.rank);
-    if (allowsRankGaps ? rank <= previousRank : rank !== expectedRank) integrity();
-    previousRank = rank;
+    if (rank !== expectedRank) integrity();
     expectedRank += 1;
     const scoreValue = validateStoredJson(row.score_components_json);
     const reasonValue = validateStoredJson(row.selection_reason_json);
@@ -800,23 +777,7 @@ function assertStoredProfileBinding(database: SqliteDatabase, header: ContextDel
     || header.taskProfileHash !== binding.profileHash) integrity();
 }
 
-function assertLegacyStoredIntakeBinding(database: SqliteDatabase, header: ContextDeliveryInput): void {
-  if (header.intakeSessionId === null) return;
-  let link: ReturnType<typeof readRunIntakeLink>;
-  try {
-    link = readRunIntakeLink(database, { workspace: header.workspace, runId: header.runId });
-  } catch (error) {
-    if (isKiokukoError(error) && (error.code === 'NOT_FOUND' || error.code === 'INTEGRITY_ERROR')) integrity();
-    throw error;
-  }
-  if (link.workspace !== header.workspace || link.sessionId !== header.intakeSessionId) integrity();
-}
-
 function assertStoredDeliveryBinding(database: SqliteDatabase, header: ContextDeliveryInput): void {
-  if (LEGACY_SCOPED_DELIVERY_POLICY_VERSIONS.has(header.policyVersion)) {
-    assertLegacyStoredIntakeBinding(database, header);
-    return;
-  }
   assertStoredProfileBinding(database, header);
 }
 

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile as execFileCallback } from 'node:child_process';
 import {
-  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -10,7 +9,7 @@ import {
   rename,
   stat,
   symlink,
-  writeFile,
+  writeFile
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,13 +17,12 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { createBackup } from '../../src/commands/backup.js';
 import { initializeDatabase } from '../../src/commands/init.js';
-import { migrateDatabase } from '../../src/db/migrate.js';
 import type { SqliteSerializationDatabase } from '../../src/db/adapter.js';
 import { openConnection } from '../../src/db/connection.js';
 import {
   createSerializedBackupArtifact,
   requirePosixBackupOpenFlags,
-} from '../../src/db/upgrade-backup.js';
+} from '../../src/db/serialized-backup.js';
 import { KiokukoError } from '../../src/errors.js';
 
 const execFile = promisify(execFileCallback);
@@ -145,26 +143,11 @@ test('backup command reads the current database without initializing or migratin
 
 test('backup command preserves a v0.1.17 schema-v8 database without running current migrations', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-backup-v017-'));
-  const migrationsDirectory = path.join(directory, 'migrations');
   const sourcePath = path.join(directory, 'source.sqlite3');
   const destinationPath = path.join(directory, 'destination.sqlite3');
-  const migrationNames = [
-    '001_initial.sql',
-    '002_fts.sql',
-    '003_akinator.sql',
-    '004_agent_gateway.sql',
-    '005_hybrid_search.sql',
-    '006_context_v2.sql',
-    '007_akinator_reasoning.sql',
-    '008_federated_memory.sql',
-  ];
-  await mkdir(migrationsDirectory);
-  for (const name of migrationNames) {
-    await cp(path.join('migrations', name), path.join(migrationsDirectory, name));
-  }
   const source = openConnection(sourcePath);
   try {
-    migrateDatabase(source, migrationsDirectory);
+    source.exec("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY); INSERT INTO schema_migrations VALUES (8);");
   } finally {
     source.close();
   }

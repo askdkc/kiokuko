@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdtemp } from 'node:fs/promises';
-import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
-import { CheckpointService } from '../../src/gateway/checkpoint-service.js';
 import { LedgerStore } from '../../src/ledger/store.js';
 
 const execFileAsync = promisify(execFile);
@@ -104,10 +103,10 @@ test('concurrent checkpoint nudge delivery persists one occurrence', async () =>
   }];
   const worker = `
     import { openConnection } from './src/db/connection.ts';
-    import { CheckpointService } from './src/gateway/checkpoint-service.ts';
+    import { NudgeDeliveryService } from './src/gateway/checkpoint-service.ts';
     const db = openConnection(process.env.KIOKUKO_DATABASE);
     try {
-      new CheckpointService(db, () => process.env.KIOKUKO_NOW).deliverNudge({
+      new NudgeDeliveryService(db, () => process.env.KIOKUKO_NOW).deliver({
         runId: 'run-nudge-concurrent',
         idempotencyKey: 'nudge-concurrent-checkpoint',
         throughSequence: 1,

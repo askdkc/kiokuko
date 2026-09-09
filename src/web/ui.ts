@@ -1167,7 +1167,7 @@ export const WEB_HTML = String.raw`<!doctype html>
     }
 
     async function loadCurator(append = false) {
-      // Keep the documented legacy URL shape recognizable for clients: /api/curator/candidates?limit=50
+      // Keep the documented operator URL shape recognizable for clients: /api/curator/candidates?limit=50
       if (!append) {
         openCurator();
         state.curatorCandidates = [];

@@ -7,9 +7,9 @@ import { claimAgentTaskSkillDiscoveryAttempt, completeAgentTaskSkillDiscoveryAtt
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { KiokukoError } from '../../src/errors.js';
+import { LedgerStore } from '../../src/ledger/store.js';
 import { SkillProviderError } from '../../src/skills/providers/schema.js';
 import type { SkillDiscoverySummary } from '../../src/skills/types.js';
-import { LedgerStore } from '../../src/ledger/store.js';
 
 async function temporaryDatabase(prefix: string) {
   const directory = await mkdtemp(path.join(tmpdir(), `kiokuko-${prefix}-`));
@@ -32,10 +32,9 @@ async function temporaryDatabase(prefix: string) {
   return database;
 }
 
-function identity(requestDigest: string, phase: 'intake' | 'zenki' = 'intake') {
+function identity(requestDigest: string) {
   return {
     runId: 'discovery-budget-run',
-    phase,
     requestDigest,
     mode: 'official' as const,
   };
@@ -77,16 +76,16 @@ test('discovery attempts distinguish digest replay, reserve active work, and con
     assert.deepEqual(claimAgentTaskSkillDiscoveryAttempt(database, first), { kind: 'replay', summary: firstSummary });
     assert.deepEqual(readAgentTaskSkillDiscoveryAttempt(database, first), { kind: 'replay', summary: firstSummary });
 
-    const second = identity('b'.repeat(64), 'zenki');
+    const second = identity('b'.repeat(64));
     assert.deepEqual(claimAgentTaskSkillDiscoveryAttempt(database, second), {
       kind: 'execute', queryBudget: 2, selectionBudget: 2,
     });
-    assert.throws(() => claimAgentTaskSkillDiscoveryAttempt(database, identity('c'.repeat(64), 'zenki')), /already in progress/iu);
+    assert.throws(() => claimAgentTaskSkillDiscoveryAttempt(database, identity('c'.repeat(64))), /already in progress/iu);
     assert.throws(() => claimAgentTaskSkillDiscoveryAttempt(database, second), /already in progress/iu);
 
     const secondSummary = summary(['svelte', 'sveltekit'], [selected('one'), selected('two')]);
     assert.deepEqual(completeAgentTaskSkillDiscoveryAttempt(database, second, secondSummary), secondSummary);
-    const exhausted = identity('c'.repeat(64), 'zenki');
+    const exhausted = identity('c'.repeat(64));
     assert.deepEqual(claimAgentTaskSkillDiscoveryAttempt(database, exhausted), {
       kind: 'execute', queryBudget: 0, selectionBudget: 0,
     });
@@ -94,22 +93,22 @@ test('discovery attempts distinguish digest replay, reserve active work, and con
     assert.deepEqual(completeAgentTaskSkillDiscoveryAttempt(database, exhausted, empty), empty);
     assert.deepEqual(readAgentTaskSkillDiscoveryAttempt(database, exhausted), { kind: 'replay', summary: empty });
     assert.deepEqual(database.prepare(`
-      SELECT phase, request_digest AS requestDigest,
+      SELECT request_digest AS requestDigest,
              reserved_query_count AS reservedQueries, reserved_selection_count AS reservedSelections,
              consumed_query_count AS consumedQueries, consumed_selection_count AS consumedSelections
       FROM agent_task_skill_discovery_attempts
       WHERE run_id = ? ORDER BY request_digest
     `).all('discovery-budget-run').map((row) => ({ ...row })), [
       {
-        phase: 'intake', requestDigest: 'a'.repeat(64),
+        requestDigest: 'a'.repeat(64),
         reservedQueries: 3, reservedSelections: 2, consumedQueries: 1, consumedSelections: 0,
       },
       {
-        phase: 'zenki', requestDigest: 'b'.repeat(64),
+        requestDigest: 'b'.repeat(64),
         reservedQueries: 2, reservedSelections: 2, consumedQueries: 2, consumedSelections: 2,
       },
       {
-        phase: 'zenki', requestDigest: 'c'.repeat(64),
+        requestDigest: 'c'.repeat(64),
         reservedQueries: 0, reservedSelections: 0, consumedQueries: 0, consumedSelections: 0,
       },
     ]);
@@ -121,7 +120,7 @@ test('discovery attempts distinguish digest replay, reserve active work, and con
 test('failed discovery consumes its reserved budget while a changed digest can use only what remains', async () => {
   const database = await temporaryDatabase('discovery-failure-budget');
   try {
-    const failed = identity('d'.repeat(64), 'zenki');
+    const failed = identity('d'.repeat(64));
     assert.deepEqual(claimAgentTaskSkillDiscoveryAttempt(database, failed, { queryBudget: 1, selectionBudget: 1 }), {
       kind: 'execute', queryBudget: 1, selectionBudget: 1,
     });
@@ -132,14 +131,14 @@ test('failed discovery consumes its reserved budget while a changed digest can u
     const failedRow = database.prepare(`
       SELECT state, reserved_query_count AS reservedQueries, reserved_selection_count AS reservedSelections,
              consumed_query_count AS consumedQueries, consumed_selection_count AS consumedSelections
-      FROM agent_task_skill_discovery_attempts WHERE run_id = ? AND phase = ?
-    `).get('discovery-budget-run', 'zenki');
+      FROM agent_task_skill_discovery_attempts WHERE run_id = ?
+    `).get('discovery-budget-run');
     assert.deepEqual(failedRow === undefined ? undefined : { ...failedRow }, {
       state: 'failed', reservedQueries: 1, reservedSelections: 1, consumedQueries: 1, consumedSelections: 1,
     });
     assert.throws(() => claimAgentTaskSkillDiscoveryAttempt(database, failed), /External Skill discovery failed closed/iu);
 
-    const retry = identity('e'.repeat(64), 'zenki');
+    const retry = identity('e'.repeat(64));
     assert.deepEqual(claimAgentTaskSkillDiscoveryAttempt(database, retry), {
       kind: 'execute', queryBudget: 2, selectionBudget: 1,
     });
@@ -152,7 +151,7 @@ test('failed discovery consumes its reserved budget while a changed digest can u
 test('generic attempt replay preserves typed provider failures and rejects unknown stored codes', async () => {
   const database = await temporaryDatabase('discovery-provider-failure-boundary');
   try {
-    const malformed = identity('f'.repeat(64), 'zenki');
+    const malformed = identity('f'.repeat(64));
     claimAgentTaskSkillDiscoveryAttempt(database, malformed, { queryBudget: 1, selectionBudget: 1 });
     assert.throws(
       () => failAgentTaskSkillDiscoveryAttempt(database, malformed, new SkillProviderError('registry_invalid_response')),
@@ -163,17 +162,16 @@ test('generic attempt replay preserves typed provider failures and rejects unkno
       (error: unknown) => error instanceof SkillProviderError && error.code === 'registry_invalid_response',
     );
 
-    const unknown = identity('0'.repeat(64), 'intake');
+    const unknown = identity('0'.repeat(64));
     database.prepare(`
       INSERT INTO agent_task_skill_discovery_attempts (
-        run_id, phase, request_digest,
+        run_id, request_digest,
         reserved_query_count, reserved_selection_count,
         consumed_query_count, consumed_selection_count,
         state, summary_json, failure_json, started_at, finished_at
-      ) VALUES (?, ?, ?, 0, 0, 0, 0, 'failed', NULL, ?, ?, ?)
+      ) VALUES (?, ?, 0, 0, 0, 0, 'failed', NULL, ?, ?, ?)
     `).run(
       unknown.runId,
-      unknown.phase,
       unknown.requestDigest,
       '{"code":"registry_future_failure","kind":"skill_provider","retryAfterSeconds":null}',
       '2026-08-28T00:00:00.000Z',

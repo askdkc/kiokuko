@@ -1,30 +1,28 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import path from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { AgentGatewayService } from '../../src/gateway/agent-service.js';
 import { queryScopedContext, queryScopedContextGated } from '../../src/context/scoped-broker.js';
-import { legacyScopedDeliveryId, readContextDelivery, scopedDeliveryId } from '../../src/context/delivery.js';
+import { CONTEXT_SELECTION_STATE_MAX_ENTRIES } from '../../src/context/selection-state.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
+import { AgentGatewayService } from '../../src/gateway/agent-service.js';
+import { hashLedgerEvent } from '../../src/ledger/hash.js';
+import { LedgerStore } from '../../src/ledger/store.js';
+import type { JsonValue, Redaction } from '../../src/ledger/types.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { supersedeEntry } from '../../src/memory/lifecycle.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
-import { canonicalContentHash, canonicalEntryRevisionContentHash, canonicalJson } from '../../src/serialization/validate.js';
-import { CONTEXT_SELECTION_STATE_MAX_ENTRIES } from '../../src/context/selection-state.js';
+import { canonicalEntryRevisionContentHash, canonicalJson } from '../../src/serialization/validate.js';
 import { documentsFromSkillSnapshot } from '../../src/skills/import-preparation.js';
-import { importSkillSnapshot, setExternalSkillState } from '../../src/skills/store.js';
-import { validateSkillSnapshot } from '../../src/skills/source/snapshot-validator.js';
-import type { SkillCandidate, SkillRequirement } from '../../src/skills/types.js';
-import { hashLedgerEvent } from '../../src/ledger/hash.js';
-import { LedgerStore } from '../../src/ledger/store.js';
-import type { JsonValue, Redaction } from '../../src/ledger/types.js';
 import { authorizeSkillMaterialization } from '../../src/skills/materialization-authority.js';
-import { readContextRunRetrievalState } from '../../src/context/run-state.js';
+import { validateSkillSnapshot } from '../../src/skills/source/snapshot-validator.js';
+import { importSkillSnapshot, setExternalSkillState } from '../../src/skills/store.js';
+import type { SkillCandidate, SkillRequirement } from '../../src/skills/types.js';
 
 const migrations = path.resolve(import.meta.dirname, '../../migrations');
 const now = '2026-08-25T00:00:00.000Z';
@@ -232,58 +230,6 @@ test('counts multibyte title, summary, and body preview exactly and gives each b
       (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR'
         && (error as Error).message === 'Stored scoped context character accounting is invalid',
     );
-  } finally {
-    database.close();
-  }
-});
-
-test('does not replay a legacy delivery even when its query hash matches the current scoped query', async () => {
-  const { database, project, runId } = await fixture('legacy replay policy boundary', 'new v4 delivery');
-  const query = {
-    project,
-    task: 'legacy replay policy boundary',
-    taskProfile: { taskType: 'build' as const, target: 'legacy replay policy boundary', expected: 'new v4 delivery', constraints: null },
-    runId,
-    limit: 10,
-    characterBudget: 1_000,
-  };
-  try {
-    let queryHash: string | undefined;
-    let taskProfileHash: string | undefined;
-    await queryScopedContextGated(database, query, (candidate) => {
-      queryHash = candidate.queryHash;
-      taskProfileHash = candidate.taskProfileHash;
-      return { persist: false, value: null };
-    });
-    assert.ok(queryHash);
-    assert.ok(taskProfileHash);
-    const state = readContextRunRetrievalState(database, runId);
-    const legacyDeliveryId = legacyScopedDeliveryId({ runId, queryHash });
-    const legacyTaskProfileHash = canonicalContentHash({ ...query.taskProfile, expected: 'legacy caller supplied profile' });
-    database.prepare(`
-      INSERT INTO context_deliveries (
-        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash,
-        query_hash, policy_version, external_sync_summary_json, char_budget, char_count,
-        truncated, created_at, score_schema_version
-      ) VALUES (?, ?, ?, ?, ?, ?, 'context-ranking-v3', '{}', ?, 0, 0, ?, 2)
-    `).run(
-      legacyDeliveryId,
-      runId,
-      state.run.lastSequence,
-      state.intakeSessionId,
-      legacyTaskProfileHash,
-      queryHash,
-      query.characterBudget,
-      state.run.createdAt,
-    );
-
-    const result = await queryScopedContext(database, query);
-    assert.notEqual(result.deliveryId, legacyDeliveryId);
-     assert.equal(result.policyVersion, 'context-ranking-v6');
-    assert.equal(result.items.length, 0);
-    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count, 2);
-    assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(legacyDeliveryId)?.policy_version, 'context-ranking-v3');
-    assert.doesNotThrow(() => readContextDelivery(database, { workspace: project.workspace, deliveryId: legacyDeliveryId }));
   } finally {
     database.close();
   }
@@ -628,25 +574,25 @@ test('scoped context binds full run title, coverage, and valid same-sequence eve
     name: string;
     apply: (database: Awaited<ReturnType<typeof openConnection>>, runId: string) => void;
   }> = [
-    {
-      name: 'title',
-      apply: (database, runId) => {
-        database.prepare('UPDATE ledger_runs SET title = ? WHERE run_id = ?').run('scoped title mutation', runId);
+      {
+        name: 'title',
+        apply: (database, runId) => {
+          database.prepare('UPDATE ledger_runs SET title = ? WHERE run_id = ?').run('scoped title mutation', runId);
+        },
       },
-    },
-    {
-      name: 'coverage',
-      apply: (database, runId) => {
-        database.prepare('UPDATE ledger_runs SET coverage_json = ? WHERE run_id = ?').run(canonicalJson({
-          run: 'complete', tool: 'complete', command: 'complete', file: 'complete', approval: 'complete',
-        }), runId);
+      {
+        name: 'coverage',
+        apply: (database, runId) => {
+          database.prepare('UPDATE ledger_runs SET coverage_json = ? WHERE run_id = ?').run(canonicalJson({
+            run: 'complete', tool: 'complete', command: 'complete', file: 'complete', approval: 'complete',
+          }), runId);
+        },
       },
-    },
-    {
-      name: 'event',
-      apply: (database, runId) => rewriteScopedLastEventPayload(database, runId, { scopedSameSequenceMutation: true }),
-    },
-  ];
+      {
+        name: 'event',
+        apply: (database, runId) => rewriteScopedLastEventPayload(database, runId, { scopedSameSequenceMutation: true }),
+      },
+    ];
   for (const mutation of mutations) {
     const { database, project, runId } = await fixture(`scoped run state ${mutation.name}`, 'fail closed');
     try {
@@ -786,97 +732,6 @@ test('replays a delivery truncated only by the item limit', async () => {
     assert.deepEqual(replayed.items, delivered.items);
     assert.equal(replayed.truncated, true);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count, 1);
-  } finally {
-    database.close();
-  }
-});
-
-test('does not replay a legacy scoped delivery as the current context', async () => {
-  const { database, project, runId } = await fixture('legacy scoped replay exclusion sentinel', 'bounded context');
-  const task = 'Use the legacy scoped replay exclusion sentinel workflow';
-  const taskProfile = {
-    taskType: 'build' as const,
-    target: 'legacy scoped replay exclusion sentinel',
-    expected: 'bounded context',
-    constraints: null,
-  };
-  const query = {
-    project,
-    task,
-    taskProfile,
-    runId,
-    limit: 1,
-    characterBudget: 300,
-  };
-  try {
-    const run = new LedgerStore(database).readRun(runId);
-    assert.ok(run);
-    const intakeSessionId = database.prepare('SELECT session_id AS value FROM run_intakes WHERE run_id = ?')
-      .get<{ value: string }>(runId)?.value;
-    assert.ok(intakeSessionId);
-    const retiredQueryHash = canonicalContentHash({
-      task,
-      taskProfile,
-      recommendedTags: [],
-      changedPaths: [],
-      errorSignatures: [],
-    });
-    const retiredBody = {
-      workspace: project.workspace,
-      runId,
-      throughSequence: run.lastSequence,
-      intakeSessionId,
-      taskProfileHash: canonicalContentHash(taskProfile),
-      queryHash: retiredQueryHash,
-      policyVersion: 'context-ranking-v4',
-      charBudget: query.characterBudget,
-      charCount: 0,
-      truncated: false,
-      createdAt: now,
-      scoreSchemaVersion: 2 as const,
-      items: [],
-    };
-    const deliveryId = scopedDeliveryId({ deliveryId: 'ignored', ...retiredBody });
-    database.prepare(`
-      INSERT INTO context_deliveries (
-        delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
-        score_schema_version
-      ) VALUES (?, ?, ?, ?, ?, ?, 'context-ranking-v4', '{}', ?, 0, 0, ?, 2)
-    `).run(
-      deliveryId,
-      runId,
-      run.lastSequence,
-      intakeSessionId,
-      canonicalContentHash(taskProfile),
-      retiredQueryHash,
-      query.characterBudget,
-      now,
-    );
-
-    const currentEntry = recordEntry(database, {
-      workspace: project.workspace,
-      kind: 'lesson',
-      status: 'verified',
-      title: 'legacy scoped replay exclusion sentinel current v5',
-      body: 'The current scoped context must be ranked instead of replaying a legacy delivery.',
-      tags: ['legacy', 'scoped', 'replay', 'current', 'v5'],
-    }, { idFactory: () => 'current-v5-context-sentinel', now });
-
-    const delivered = await queryScopedContext(database, query);
-    assert.notEqual(delivered.deliveryId, deliveryId);
-     assert.equal(delivered.policyVersion, 'context-ranking-v6');
-    assert.equal(delivered.items[0]?.entryId, currentEntry.id);
-    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
-      .get<{ count: number }>(runId)?.count, 2);
-
-    const historical = readContextDelivery(database, { workspace: project.workspace, deliveryId });
-    assert.equal(historical.policyVersion, 'context-ranking-v4');
-    assert.deepEqual(historical.items, []);
-
-    const replayed = await queryScopedContext(database, query);
-    assert.equal(replayed.deliveryId, delivered.deliveryId);
-    assert.deepEqual(replayed.items, delivered.items);
   } finally {
     database.close();
   }

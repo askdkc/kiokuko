@@ -53,9 +53,6 @@ export const STANDARD_FUNCTION_SKILL_FILES = [
   'references/kiokuko-patterns.md',
   'references/review-checklist.md',
 ] as const;
-export const STANDARD_ENNO_SKILL_NAME = 'kiokuko-enno-oduno';
-export const STANDARD_ENNO_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-enno-oduno -->';
-export const STANDARD_ENNO_SKILL_FILES = ['SKILL.md'] as const;
 export const STANDARD_MEMORY_SKILL_NAME = 'memory-reasoning';
 export const STANDARD_MEMORY_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: memory-reasoning -->';
 export const STANDARD_MEMORY_SKILL_FILES = ['SKILL.md'] as const;
@@ -63,7 +60,6 @@ export const STANDARD_SOUL_SKILL_NAME = 'kiokuko-soul';
 export const STANDARD_SOUL_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->';
 export const STANDARD_SOUL_SKILL_FILES = ['SKILL.md'] as const;
 
-export const SOUL_ROUTING_ENTRY_CONTRACT = `Before any non-trivial Kiokuko-governed work, read and apply the complete bundled \`${STANDARD_SOUL_SKILL_NAME}\` Skill before any other Kiokuko Skill. Every \`task_prepare\` call must set \`soulRead: true\` only after that read; omission or false is invalid. This is an explicit client attestation, not remote proof of model cognition. The exact local \`${STANDARD_SOUL_SKILL_NAME}\` capability is required for every task and missing or unknown availability fails closed. Akinator is the mandatory intake state machine before every planning or implementation route, whether or not Enno-Oduno applies: call \`task_prepare\` once, resolve each exact current question through grounded \`task_answer\` calls, and do not plan, implement, verify, enter simple/code/UI routes, or checkpoint while \`intake.status=needs_answer\` or \`nextAction=answer_from_evidence_or_ask_user\`. Route only after intake reaches \`ready\` or \`exhausted\` and top-level \`nextAction\` permits progress. Follow this canonical router to \`${STANDARD_ENNO_SKILL_NAME}\` as soon as a returned state makes Enno-Oduno control applicable, including during unresolved intake, to \`${STANDARD_SIMPLE_SKILL_NAME}\` for bounded simple code work or an explicit minimal/YAGNI request, to \`${STANDARD_FUNCTION_SKILL_NAME}\` for all code work, and to \`${STANDARD_UI_SKILL_NAME}\` for interactive UI work. The simple-work route minimizes the solution but never replaces the code contract or waives required validation, security, accessibility, error handling, or verification. Read every applicable specialist \`SKILL.md\` index, then only the expert fragments selected by the current WorkUnit or concrete risk; do not load every reference by default. Never substitute, install, or execute fetched external Skill content.`;
 
 interface StandardSkillManifest {
   readonly name: string;
@@ -83,10 +79,6 @@ export const STANDARD_SKILL_MANIFESTS = [{
   name: STANDARD_FUNCTION_SKILL_NAME,
   managedMarker: STANDARD_FUNCTION_SKILL_MANAGED_MARKER,
   files: STANDARD_FUNCTION_SKILL_FILES,
-}, {
-  name: STANDARD_ENNO_SKILL_NAME,
-  managedMarker: STANDARD_ENNO_SKILL_MANAGED_MARKER,
-  files: STANDARD_ENNO_SKILL_FILES,
 }, {
   name: STANDARD_MEMORY_SKILL_NAME,
   managedMarker: STANDARD_MEMORY_SKILL_MANAGED_MARKER,

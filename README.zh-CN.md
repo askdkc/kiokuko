@@ -1,5 +1,7 @@
 # Kiokuko（记忆库）
 
+1.0 不再支持旧数据库，请使用新数据库。参见[破坏性变更与旧配置清理](docs/breaking-changes-1.0.md)。
+
 [English](README.md) | [日本語](README.ja.md) | 简体中文 | [한국어](README.ko.md)
 
 **通过 MCP 连接，检索需要的记忆，并在工作后积累知识。**
@@ -31,7 +33,6 @@ kiokuko setup
 
 - RAG 记忆（默认 lexical，可选本地 semantic 检索）
 - Akinator 让模糊请求先变得具体
-- 役小角(enno-oduno) 负责计划、确认、验证和恢复
 - 本地 Web UI 用于检查和整理记忆
 - 外部 Skill 仅作为经过验证的参考，绝不自动执行
 
@@ -56,5 +57,5 @@ MCP 是否调用由客户端和模型决定，**不保证每一轮都会调用 K
 
 ## 详细文档
 
-请从[英文文档目录](docs/README.md)开始；其中链接到 Getting started、Concepts、Enno-Oduno、Semantic retrieval、Security and trust，
+请从[英文文档目录](docs/README.md)开始；其中链接到 Getting started、Concepts、Semantic retrieval、Security and trust，
 以及实现者用的 architecture、database、execution-ledger 和 client-compatibility 文档。

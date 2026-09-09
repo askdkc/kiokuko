@@ -13,16 +13,7 @@ export type McpToolOperation =
   | 'task_answer'
   | 'memory_checkpoint'
   | 'curator_check'
-  | 'curator_globalize'
-  | 'enno_advice_submit'
-  | 'enno_advice_read'
-  | 'enno_ideal_submit'
-  | 'enno_plan_submit'
-  | 'enno_answer'
-  | 'enno_work_report'
-  | 'enno_verify_prepare'
-  | 'enno_finish'
-  | 'enno_meditation_submit';
+  | 'curator_globalize';
 
 export type McpDeadlineClass = 'read' | 'external' | 'mutation';
 
@@ -90,14 +81,6 @@ const EXTERNAL_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
 const MUTATION_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
   'memory_checkpoint',
   'curator_globalize',
-  'enno_advice_submit',
-  'enno_ideal_submit',
-  'enno_plan_submit',
-  'enno_answer',
-  'enno_work_report',
-  'enno_verify_prepare',
-  'enno_finish',
-  'enno_meditation_submit',
 ]);
 
 function assertTimeoutMs(value: number, label: string): number {

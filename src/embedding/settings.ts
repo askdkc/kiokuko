@@ -1,5 +1,5 @@
-import { KiokukoError } from '../errors.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
+import { KiokukoError } from '../errors.js';
 import type { EmbeddingConfig, VectorBackendPreference } from './types.js';
 
 const DISABLED_CONFIG: EmbeddingConfig = Object.freeze({
@@ -25,11 +25,6 @@ function invalid(message: string): never {
   throw new KiokukoError('INTEGRITY_ERROR', message);
 }
 
-function tableExists(database: SqliteDatabase): boolean {
-  return Boolean(database.prepare(`
-    SELECT 1 AS present FROM sqlite_schema WHERE type = 'table' AND name = 'embedding_settings'
-  `).get());
-}
 
 function vectorBackend(value: unknown): VectorBackendPreference {
   if (value !== 'auto' && value !== 'javascript' && value !== 'sqlite-vec') invalid('Persisted embedding vector backend is invalid');
@@ -45,7 +40,6 @@ function integer(value: unknown, minimum: number, maximum: number, field: string
 
 /** Read durable embedding settings without consulting embedding environment variables. */
 export function readPersistedEmbeddingSettings(database: SqliteDatabase): EmbeddingConfig {
-  if (!tableExists(database)) return DISABLED_CONFIG;
   const row = database.prepare(`
     SELECT singleton, mode, provider_kind, vector_backend, batch_size, timeout_ms, setup_state
       FROM embedding_settings
@@ -58,9 +52,7 @@ export function readPersistedEmbeddingSettings(database: SqliteDatabase): Embedd
   if (row.setup_state !== 'disabled' && row.setup_state !== 'requires_setup' && row.setup_state !== 'installing'
     && row.setup_state !== 'ready' && row.setup_state !== 'degraded') invalid('Persisted embedding setup state is invalid');
 
-  // v1 remote profiles intentionally cannot be reconstructed and local v2
-  // loading is supplied by the local provider work unit. Until a verified
-  // provider is available, fail closed to lexical retrieval.
+  // Only a verified ready provider enables semantic retrieval.
   if (row.mode === 'off' || row.provider_kind !== 'local-transformers' || row.setup_state !== 'ready') {
     return Object.freeze({ ...DISABLED_CONFIG, vectorBackend: backend, batchSize, timeoutMs });
   }

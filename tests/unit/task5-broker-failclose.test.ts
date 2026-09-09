@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bindCapabilityCatalog } from '../../src/akinator/capability-binding.js';
-import { KiokukoError } from '../../src/errors.js';
 import type { ContextBroker } from '../../src/context/broker.js';
+import { buildRecommendations } from '../../src/context/recommendations.js';
+import { KiokukoError } from '../../src/errors.js';
+import { AgentCheckpointUseCase } from '../../src/server/agent-checkpoint-use-case.js';
 import type { AgentRouteContext } from '../../src/server/routes/agent-runs.js';
-import { createTask5Route } from '../../src/server/routes/task5.js';
+import { createTask5Route as createRoute } from '../../src/server/routes/task5.js';
 
 const SOUL_CAPABILITIES = [{ kind: 'skill', name: 'kiokuko-soul' }] as const;
 
@@ -15,7 +17,7 @@ function routeContext(failure: unknown, taskType: unknown = 'build', intakeStatu
         throw failure;
       },
     } as unknown as ContextBroker,
-    checkpointService: {
+    checkpointMutation: {
       async checkpoint() {
         return {
           characterBudget: 8_000,
@@ -49,7 +51,7 @@ const brokerFailures = () => [
 
 test('checkpoint enrichment propagates broker integrity and programmer failures unchanged', async () => {
   for (const failure of brokerFailures()) {
-    const route = createTask5Route(routeContext(failure));
+    const route = testRoute(routeContext(failure));
     await assert.rejects(
       async () => route({
         method: 'POST',
@@ -82,13 +84,13 @@ test('checkpoint enrichment ignores stale acknowledgement profile fields and use
         return { broker: brokerResult, value: decision.value };
       },
     },
-    checkpointService: {
+    checkpointMutation: {
       async checkpoint() {
         return {
           characterBudget: 8_000,
           intakeStatus: 'active',
           taskProfile: {
-            taskType: 'deployment',
+            taskType: 'devops',
             target: 'src/server/routes/task5.ts',
             expected: 'tests pass',
             constraints: null,
@@ -112,7 +114,7 @@ test('checkpoint enrichment ignores stale acknowledgement profile fields and use
     },
     enqueueWrite: async <T>(operation: () => T | PromiseLike<T>): Promise<T> => operation(),
   } as unknown as AgentRouteContext;
-  const route = createTask5Route(context);
+  const route = testRoute(context);
   const response = await route({
     method: 'POST',
     url: new URL('http://127.0.0.1/api/v1/agent/runs/run-current/checkpoints'),
@@ -137,7 +139,7 @@ test('checkpoint exact replay rejects a terminal run before invoking the stale m
         return { title: 'Closed run', status: 'completed', lastSequence: 2, metadata: bindCapabilityCatalog({}, []) };
       },
     },
-    checkpointService: {
+    checkpointMutation: {
       checkpoint() {
         checkpointCalled = true;
         throw new Error('checkpoint must not run');
@@ -151,7 +153,7 @@ test('checkpoint exact replay rejects a terminal run before invoking the stale m
     },
     enqueueWrite: async <T>(operation: () => T | PromiseLike<T>): Promise<T> => operation(),
   } as unknown as AgentRouteContext;
-  const route = createTask5Route(context);
+  const route = testRoute(context);
   await assert.rejects(async () => route({
     method: 'POST',
     url: new URL('http://127.0.0.1/api/v1/agent/runs/run-terminal/checkpoints'),
@@ -184,7 +186,7 @@ test('checkpoint preserves exhausted intake and does not apply the ready-only me
         return { broker: brokerResult, value: decision.value };
       },
     },
-    checkpointService: {
+    checkpointMutation: {
       async checkpoint() {
         return {
           characterBudget: 8_000,
@@ -210,7 +212,7 @@ test('checkpoint preserves exhausted intake and does not apply the ready-only me
     database: {},
     enqueueWrite: async <T>(operation: () => T | PromiseLike<T>): Promise<T> => operation(),
   } as unknown as AgentRouteContext;
-  const route = createTask5Route(context);
+  const route = testRoute(context);
   const response = await route({
     method: 'POST',
     url: new URL('http://127.0.0.1/api/v1/agent/runs/run-exhausted/checkpoints'),
@@ -225,3 +227,28 @@ test('checkpoint preserves exhausted intake and does not apply the ready-only me
   assert.equal(response.data.context, null);
   assert.equal(response.data.capabilities.recommendations.some((item: { name: string }) => item.name === 'memory-reasoning'), false);
 });
+
+function testRoute(context: AgentRouteContext) {
+  const fixture = context as unknown as { checkpointMutation: { checkpoint(input: unknown): Promise<any> } };
+  const checkpointMutation = {
+    async checkpoint(input: any) {
+      const value = await fixture.checkpointMutation.checkpoint(input);
+      const { source: _source, ...taskProfile } = value.taskProfile;
+      const projection = {
+        taskProfile, throughSequence: 1, profileHash: 'a'.repeat(64),
+        intakeIncomplete: false, missingProfileFields: [], evidenceState: 'none',
+        unresolvedFailureEventIds: [], unknownOutcomeEventIds: [], coverage: 'complete',
+      };
+      return {
+        ...value, runId: input.runId, acceptedThrough: 1,
+        profileHash: projection.profileHash, projection,
+        preliminaryRecommendations: buildRecommendations({ projection, broker: {} }),
+      };
+    },
+  };
+  return createRoute({
+    ...context, agentCheckpoint: new AgentCheckpointUseCase({
+      ...context, checkpointMutation, nudgeDelivery: { deliver: () => null },
+    })
+  });
+}

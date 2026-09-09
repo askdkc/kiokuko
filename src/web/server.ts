@@ -1,34 +1,34 @@
 import { randomBytes } from 'node:crypto';
 import { type IncomingMessage, type RequestListener, type Server, type ServerResponse } from 'node:http';
-import { KiokukoError } from '../errors.js';
-import type { SqliteDatabase } from '../db/adapter.js';
-import { rollbackFailedTransaction } from '../db/transaction.js';
-import { readEntry, updateCandidateEntry, type EntryRecord } from '../memory/entries.js';
-import { searchEntries } from '../memory/retrieval.js';
-import { compareCanonicalStrings, ENTRY_KINDS, ENTRY_STATUSES, requireWorkspace, type EntryKind, type EntryStatus } from '../serialization/validate.js';
-import { AgentGatewayService } from '../gateway/agent-service.js';
+import type { KnowledgeEvidenceTier } from '../akinator/knowledge-path.js';
+import { readAkinatorSession, readRunIntakeLink } from '../akinator/store.js';
 import { ContextBroker } from '../context/broker.js';
 import { listContextFeedback, listIntakeFeedback, listRunFeedback } from '../context/feedback.js';
+import type { SqliteDatabase } from '../db/adapter.js';
+import { rollbackFailedTransaction } from '../db/transaction.js';
+import { KiokukoError } from '../errors.js';
+import { AgentGatewayService } from '../gateway/agent-service.js';
 import { projectLedger } from '../ledger/projection.js';
-import { readAkinatorSession, readRunIntakeLink } from '../akinator/store.js';
-import { startHttpServer, type HttpApplicationContext, type HttpServerOptions } from '../server/http.js';
-import { createAgentV1Handler } from '../server/agent-application.js';
-import { WEB_HTML } from './ui.js';
 import { curateMemoryCandidates, curatorFacets, globalizeCuratorCandidate } from '../memory/curator.js';
-import { MEMORY_CLASSES } from '../memory/structured-memory.js';
-import type { KnowledgeEvidenceTier } from '../akinator/knowledge-path.js';
-import { GLOBAL_WORKSPACE } from '../memory/workspaces.js';
+import { readEntry, updateCandidateEntry, type EntryRecord } from '../memory/entries.js';
+import { searchEntries } from '../memory/retrieval.js';
 import { recallScopedMemory } from '../memory/scoped-memory.js';
+import { MEMORY_CLASSES } from '../memory/structured-memory.js';
 import type { ResolvedProjectWorkspace } from '../memory/workspaces.js';
-import { documentsFromSkillSnapshot } from '../skills/import-preparation.js';
+import { GLOBAL_WORKSPACE } from '../memory/workspaces.js';
+import { compareCanonicalStrings, ENTRY_KINDS, ENTRY_STATUSES, requireWorkspace, type EntryKind, type EntryStatus } from '../serialization/validate.js';
+import { createAgentV1Handler } from '../server/agent-application.js';
+import { startHttpServer, type HttpApplicationContext, type HttpServerOptions } from '../server/http.js';
+import { parseStrictJson } from '../setup/strict-json.js';
 import { readSkillDiscoveryConfig } from '../skills/config.js';
-import { GitHubSkillSourceFetcher } from '../skills/source/github-fetcher.js';
+import { createSkillRegistryProvider } from '../skills/find.js';
+import { documentsFromSkillSnapshot } from '../skills/import-preparation.js';
+import { fetchMaterializableSkillSnapshot } from '../skills/materialization-service.js';
 import { SkillSourceError } from '../skills/source/errors.js';
+import { GitHubSkillSourceFetcher } from '../skills/source/github-fetcher.js';
 import { externalSkillRequirement, externalSkillSourceFetchRequest, listExternalSkills, listExternalSkillsPage, markExternalSkillRefreshFailure, readExternalSkill, refreshExternalSkillSnapshot, setExternalSkillState, type ExternalSkillRecord, type ExternalSkillState } from '../skills/store.js';
 import type { SkillCandidate } from '../skills/types.js';
-import { createSkillRegistryProvider } from '../skills/find.js';
-import { parseStrictJson } from '../setup/strict-json.js';
-import { fetchMaterializableSkillSnapshot } from '../skills/materialization-service.js';
+import { WEB_HTML } from './ui.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 4173;
@@ -796,11 +796,13 @@ async function handleRequest(
     const workspaceParam = url.searchParams.get('workspace');
     const projects = listQuery(url, 'project');
     const includeGlobalized = booleanQuery(url.searchParams.get('includeGlobalized'), 'includeGlobalized') ?? false;
-    jsonResponse(response, 200, { facets: curatorFacets(context.database, {
-      ...(workspaceParam !== null && workspaceParam !== 'all' ? { workspace: requireWorkspace(workspaceParam) } : {}),
-      ...(projects.length > 0 ? { workspaces: projects } : {}),
-      includeGlobalized,
-    }) });
+    jsonResponse(response, 200, {
+      facets: curatorFacets(context.database, {
+        ...(workspaceParam !== null && workspaceParam !== 'all' ? { workspace: requireWorkspace(workspaceParam) } : {}),
+        ...(projects.length > 0 ? { workspaces: projects } : {}),
+        includeGlobalized,
+      })
+    });
     return;
   }
   if (request.method === 'POST' && url.pathname === '/api/curator/globalize') {
@@ -862,7 +864,7 @@ function isSharedServerPath(pathname: string): boolean {
   return pathname.startsWith('/health/') || pathname === '/api/v1' || pathname.startsWith('/api/v1/');
 }
 
-function createLegacyApplication(context: HttpApplicationContext, trustedOrigin: () => string | undefined): RequestListener {
+function createWebApplication(context: HttpApplicationContext, trustedOrigin: () => string | undefined): RequestListener {
   const sharedApplication = context.createAuthenticatedApp(createAgentV1Handler(context));
   const sessionToken = randomBytes(32).toString('base64url');
   const externalSkillRefreshFlights: ExternalSkillRefreshFlights = {
@@ -895,7 +897,7 @@ export async function startWebServer(options: WebServerOptions = {}): Promise<We
     ...(options.databasePath === undefined ? {} : { databasePath: options.databasePath }),
     host: options.host ?? DEFAULT_HOST,
     port: options.port ?? DEFAULT_PORT,
-    applicationFactory: (context) => createLegacyApplication(context, () => trustedOrigin),
+    applicationFactory: (context) => createWebApplication(context, () => trustedOrigin),
   });
   trustedOrigin = new URL(runtime.url).origin;
   return {

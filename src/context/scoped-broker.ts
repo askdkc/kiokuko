@@ -1,29 +1,29 @@
-import type { SqliteDatabase } from '../db/adapter.js';
-import { KiokukoError } from '../errors.js';
-import { canonicalContentHash, compareCanonicalStrings } from '../serialization/validate.js';
-import { readEntry, type EntryRecord } from '../memory/entries.js';
-import { decodeStoredStructuredScope, readEntryRevision } from '../memory/revisions.js';
-import { ensureGlobalWorkspace, GLOBAL_WORKSPACE, resolveProjectWorkspace, type ResolvedProjectWorkspace } from '../memory/workspaces.js';
-import { federatedEntries, type FederatedOrigin } from '../memory/federated-retrieval.js';
-import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
-import { effectiveRetrievalScope, hasExplicitApplicability } from '../memory/structured-memory.js';
 import type { TaskProfile } from '../akinator/types.js';
-import { readContextDelivery, recordContextDeliveryInTransaction, type ContextDeliveryInput, type ContextDeliveryView } from './delivery.js';
-import { CONTEXT_SELECTION_REASON_ORDER } from './ranking.js';
+import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
-import { contextFeedbackSignals } from './feedback.js';
+import type { PreparedSemanticQuery } from '../embedding/types.js';
+import { KiokukoError } from '../errors.js';
+import type { RunStatus } from '../ledger/types.js';
+import { readEntry, type EntryRecord } from '../memory/entries.js';
+import { federatedEntries, type FederatedOrigin } from '../memory/federated-retrieval.js';
+import type { HybridSearchRuntime } from '../memory/hybrid-retrieval.js';
+import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
+import { decodeStoredStructuredScope, readEntryRevision } from '../memory/revisions.js';
+import { effectiveRetrievalScope, hasExplicitApplicability } from '../memory/structured-memory.js';
+import { ensureGlobalWorkspace, GLOBAL_WORKSPACE, resolveProjectWorkspace, type ResolvedProjectWorkspace } from '../memory/workspaces.js';
 import {
   captureProjectManifestSnapshot,
   resolveProjectFingerprint,
   type ProjectFingerprint,
 } from '../repository/project-fingerprint.js';
-import { entryOriginMatchesWorkspace } from './origin.js';
-import type { RunStatus } from '../ledger/types.js';
+import { canonicalContentHash, compareCanonicalStrings } from '../serialization/validate.js';
 import { isExternalSkillReference } from '../skills/store.js';
-import { contextRetrievalStateHash, ordinaryContextSelectionStateHash } from './selection-state.js';
+import { readContextDelivery, recordContextDeliveryInTransaction, type ContextDeliveryInput, type ContextDeliveryView } from './delivery.js';
+import { contextFeedbackSignals } from './feedback.js';
+import { entryOriginMatchesWorkspace } from './origin.js';
+import { CONTEXT_SELECTION_REASON_ORDER } from './ranking.js';
 import { readContextRunRetrievalState } from './run-state.js';
-import type { PreparedSemanticQuery } from '../embedding/types.js';
-import type { HybridSearchRuntime } from '../memory/hybrid-retrieval.js';
+import { contextRetrievalStateHash, ordinaryContextSelectionStateHash } from './selection-state.js';
 
 export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v6' as const;
 export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
@@ -121,7 +121,7 @@ function normalizedScopedGateDecision<T>(value: unknown): ScopedContextGateDecis
     || resultDescriptor === undefined
     || !Object.hasOwn(resultDescriptor, 'value')
     || assertionDescriptor !== undefined
-      && (!Object.hasOwn(assertionDescriptor, 'value') || typeof assertionDescriptor.value !== 'function')) {
+    && (!Object.hasOwn(assertionDescriptor, 'value') || typeof assertionDescriptor.value !== 'function')) {
     throw new TypeError('Scoped context gate returned an invalid decision');
   }
   return {
@@ -534,7 +534,7 @@ function replayableDelivery(
 
 function storedScopedItems(database: SqliteDatabase, delivery: ContextDeliveryView): ScopedContextItem[] {
   if (delivery.policyVersion !== SCOPED_CONTEXT_POLICY_VERSION) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Legacy context delivery cannot be replayed');
+    throw new KiokukoError('INTEGRITY_ERROR', 'Unsupported context delivery cannot be replayed');
   }
   assertScopedDeliveryIdentity(delivery);
   const fullItems = delivery.items.map((item): ScopedContextItem => {

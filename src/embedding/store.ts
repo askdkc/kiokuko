@@ -4,13 +4,13 @@ import { KiokukoError } from '../errors.js';
 import { validateTimestamp } from '../ledger/validate.js';
 import { requireWorkspace } from '../serialization/validate.js';
 import { embeddingProfileId } from './profile.js';
-import { decodeVector, encodeVector, hashVectorBytes } from './vector.js';
 import type {
   EmbeddingProfile,
   EmbeddingProfileIdentity,
   LocalEmbeddingProfile,
   LocalEmbeddingProfileIdentity,
 } from './types.js';
+import { decodeVector, encodeVector, hashVectorBytes } from './vector.js';
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const EMBEDDING_TABLES = [
@@ -319,17 +319,6 @@ function requireEmbeddingSchema(database: SqliteDatabase): void {
   if (missing.length > 0) integrity(`Embedding projection schema is incomplete: missing ${missing.join(', ')}`);
 }
 
-function embeddingSchemaInstalled(database: SqliteDatabase): boolean {
-  const tables = schemaTables(database);
-  const present = EMBEDDING_TABLES.filter((table) => tables.has(table));
-  if (present.length === 0) return false;
-  if (present.length !== EMBEDDING_TABLES.length) {
-    const missing = EMBEDDING_TABLES.filter((table) => !tables.has(table));
-    integrity(`Embedding projection schema is incomplete: missing ${missing.join(', ')}`);
-  }
-  return true;
-}
-
 function readProfileRow(database: SqliteDatabase, profileId: string): EmbeddingProfile | undefined {
   const row = database.prepare(`
     SELECT profile_id, schema_version, provider_kind, endpoint_fingerprint, model, dimensions,
@@ -346,7 +335,7 @@ function readProfileRow(database: SqliteDatabase, profileId: string): EmbeddingP
 
 export function readEmbeddingProfile(database: SqliteDatabase, profileId: string): EmbeddingProfile | undefined {
   hashValue(profileId, 'profileId');
-  if (!embeddingSchemaInstalled(database)) return undefined;
+  requireEmbeddingSchema(database);
   return readProfileRow(database, profileId);
 }
 
@@ -438,7 +427,6 @@ export function enqueueCurrentEntryEmbeddingInTransaction(
   const revision = positiveInteger(input.revision, 'revision');
   const contentHash = hashValue(input.contentHash, 'contentHash');
   const now = validateTimestamp(input.now, 'now');
-  if (!embeddingSchemaInstalled(database)) return;
   const runtime = readEmbeddingRuntimeState(database);
   if (runtime.activeProfileId === null) return;
   enqueueForProfile(database, runtime.activeProfileId, { entryId: input.entryId, revision, contentHash, now });
@@ -450,7 +438,6 @@ export function enqueueAllCurrentEntryEmbeddingsInTransaction(
   requestedNow?: string,
   requestedWorkspace?: string,
 ): number {
-  if (!embeddingSchemaInstalled(database)) return 0;
   const runtime = readEmbeddingRuntimeState(database);
   if (runtime.activeProfileId === null) return 0;
   const now = validateTimestamp(requestedNow ?? new Date().toISOString(), 'now');
@@ -478,7 +465,7 @@ export function activateEmbeddingProfileInTransaction(
   options: ActivateEmbeddingProfileOptions,
 ): EmbeddingProfileActivation {
   requireProfile(profile);
-  if (profile.identity.schemaVersion !== 1) invalid('Legacy embedding activation requires a v1 profile identity');
+  if (profile.identity.schemaVersion !== 1) invalid('Remote embedding activation requires a remote profile identity');
   if (typeof options.replace !== 'boolean') invalid('replace must be a boolean');
   const now = validateTimestamp(options.now ?? new Date().toISOString(), 'now');
   requireEmbeddingSchema(database);

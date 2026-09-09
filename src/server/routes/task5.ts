@@ -1,11 +1,4 @@
-import { KiokukoError } from '../../errors.js';
 import { successEnvelope } from '../../serialization/envelope.js';
-import {
-  type CheckpointMutationPort,
-  type CheckpointMutationResult,
-} from '../../gateway/checkpoint-mutation-service.js';
-import type { NudgeDeliveryPort, ValidatedNudgeDeliveryRequest } from '../../gateway/nudge-delivery-service.js';
-import { AgentCheckpointUseCase } from '../agent-checkpoint-use-case.js';
 import type { V1RouteHandler } from '../router.js';
 import {
   decodeRunId,
@@ -19,36 +12,8 @@ import { agentRequestBindingHash } from './request-binding.js';
 const CHECKPOINTS_SUFFIX = 'checkpoints';
 const FEEDBACK_SUFFIX = 'feedback';
 
-function legacyCheckpointUseCase(context: AgentRouteContext): AgentCheckpointUseCase {
-  const legacy = context.checkpointService;
-  if (legacy === undefined) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Agent checkpoint use case is not configured');
-  }
-  const checkpointMutation: CheckpointMutationPort = {
-    checkpoint: (input: unknown): CheckpointMutationResult => {
-      const value = legacy.checkpoint(input);
-      return {
-        ...value,
-        preliminaryRecommendations: [...(value.recommendations ?? [])],
-      };
-    },
-  };
-  const nudgeDelivery: NudgeDeliveryPort = {
-    deliver: (input: ValidatedNudgeDeliveryRequest) => legacy.deliverNudge(input),
-  };
-  return new AgentCheckpointUseCase({
-    database: context.database,
-    service: context.service,
-    checkpointMutation,
-    validateMutationAcknowledgement: false,
-    nudgeDelivery,
-    broker: context.broker,
-    enqueueWrite: context.enqueueWrite,
-  });
-}
-
 export function createTask5Route(context: AgentRouteContext): V1RouteHandler {
-  const checkpoint = context.agentCheckpoint ?? legacyCheckpointUseCase(context);
+  const checkpoint = context.agentCheckpoint;
   return async (request) => {
     if (request.method === 'POST') {
       const rawCheckpointRunId = runIdSegment(request.url.pathname, CHECKPOINTS_SUFFIX);

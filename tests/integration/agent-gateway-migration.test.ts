@@ -210,7 +210,7 @@ test('gateway foreign keys prevent orphaned child rows', async () => {
 });
 
 test('migration asset is present and checksum remains file-based', async () => {
-  const sql = await readFile(path.join(migrationsDirectory, '004_agent_gateway.sql'), 'utf8');
+  const sql = await readFile(path.join(migrationsDirectory, '001_baseline.sql'), 'utf8');
   assert.match(sql, /CREATE TABLE ledger_runs/);
   assert.match(sql, /CREATE TABLE ledger_events/);
 });

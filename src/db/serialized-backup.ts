@@ -1,31 +1,12 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, realpath, type FileHandle } from 'node:fs/promises';
+import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { KiokukoError } from '../errors.js';
 import { isWellFormedUnicode } from '../serialization/boundary-json.js';
 import type { SqliteSerializationDatabase } from './adapter.js';
-
-function portableDatabaseLabel(databasePath: string): string {
-  const basename = path.basename(databasePath);
-  const sanitized = basename
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/gu, '-')
-    .replace(/^-+|-+$/gu, '')
-    .slice(0, 32) || 'file';
-  const hash = createHash('sha256').update(basename, 'utf8').digest('hex').slice(0, 16);
-  // The fixed `db-` prefix prevents Windows device-name collisions even when
-  // the source basename is a valid POSIX name such as CON or NUL.
-  return `db-${sanitized}-${hash}`;
-}
-
-function backupName(databasePath: string, fromVersion: number, toVersion: number): string {
-  const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 17);
-  const nonce = randomBytes(8).toString('hex');
-  return `${portableDatabaseLabel(databasePath)}.pre-upgrade-v${fromVersion}-to-v${toVersion}-${timestamp}-${nonce}.sqlite3`;
-}
 
 interface BackupDirectoryBinding {
   readonly directory: string;
@@ -58,7 +39,7 @@ export interface BackupDirectoryAttestation {
   readonly mode: bigint;
 }
 
-export interface PreMigrationBackup {
+export interface SerializedBackupArtifact {
   readonly path: string;
   readonly directory: BackupDirectoryAttestation;
   readonly artifact: BackupArtifactAttestation;
@@ -119,12 +100,6 @@ export function requirePosixBackupOpenFlags(
   });
 }
 
-function isAlreadyExists(error: unknown): boolean {
-  return error instanceof Error
-    && 'code' in error
-    && (error as NodeJS.ErrnoException).code === 'EEXIST';
-}
-
 async function requireCanonicalDirectoryChain(directory: string): Promise<void> {
   const parsed = path.parse(directory);
   const relative = path.relative(parsed.root, directory);
@@ -135,70 +110,6 @@ async function requireCanonicalDirectoryChain(directory: string): Promise<void> 
     if (!status.isDirectory() || status.isSymbolicLink()) {
       throw new KiokukoError('INTEGRITY_ERROR', 'Backup directory path contains a non-directory or symbolic link');
     }
-  }
-}
-
-async function bindBackupDirectory(
-  databasePath: string,
-  posixFlags: PosixBackupOpenFlags | undefined,
-): Promise<BackupDirectoryBinding> {
-  const databaseDirectory = await realpath(path.dirname(databasePath));
-  await requireCanonicalDirectoryChain(databaseDirectory);
-  const directory = path.join(databaseDirectory, 'backups');
-  try {
-    await mkdir(directory, { mode: 0o700 });
-  } catch (error) {
-    if (!isAlreadyExists(error)) throw error;
-  }
-  const before = await lstat(directory, { bigint: true });
-  if (!before.isDirectory() || before.isSymbolicLink()) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Backup directory must be a non-symbolic-link directory');
-  }
-
-  let handle: FileHandle | undefined;
-  try {
-    if (posixFlags !== undefined) {
-      handle = await open(
-        directory,
-        constants.O_RDONLY | posixFlags.directory | posixFlags.noFollow,
-      );
-      const opened = await handle.stat({ bigint: true });
-      if (!opened.isDirectory() || opened.dev !== before.dev || opened.ino !== before.ino) {
-        throw new KiokukoError('CONFLICT', 'Backup directory changed while it was being opened');
-      }
-      await handle.chmod(0o700);
-    }
-    const secured = handle === undefined
-      ? await lstat(directory, { bigint: true })
-      : await handle.stat({ bigint: true });
-    if (!secured.isDirectory() || secured.dev !== before.dev || secured.ino !== before.ino) {
-      throw new KiokukoError('CONFLICT', 'Backup directory changed while it was being secured');
-    }
-    const binding = {
-      directory,
-      device: secured.dev,
-      inode: secured.ino,
-      owner: secured.uid,
-      group: secured.gid,
-      mode: secured.mode,
-      privateDirectory: true,
-      ...(handle === undefined ? {} : { handle }),
-    };
-    await requireBackupDirectory(binding);
-    return binding;
-  } catch (error) {
-    if (handle === undefined) throw error;
-    const pendingHandle = handle;
-    handle = undefined;
-    try {
-      await pendingHandle.close();
-    } catch (closeError) {
-      throw new AggregateError(
-        [error, closeError],
-        'Backup directory binding failed and closing it also failed',
-      );
-    }
-    throw error;
   }
 }
 
@@ -821,7 +732,7 @@ export async function createSerializedBackupArtifact(
   database: SqliteSerializationDatabase,
   destination: string,
   hooks: SerializedBackupCreationHooks = {},
-): Promise<PreMigrationBackup> {
+): Promise<SerializedBackupArtifact> {
   const posixFlags = requirePosixBackupOpenFlags();
   const { output, fileName } = await normalizedDestination(destination);
   await hooks.validateDestination?.(output);
@@ -858,62 +769,6 @@ export async function createSerializedBackupArtifact(
           throw new AggregateError(
             [operationError, closeError],
             'Serialized backup creation failed and closing its directory also failed',
-          );
-        }
-        throw closeError;
-      }
-    }
-  }
-}
-
-export async function createPreMigrationBackup(
-  database: SqliteSerializationDatabase,
-  databasePath: string,
-  fromVersion: number,
-  toVersion: number,
-  hooks: BackupCreationHooks = {},
-): Promise<PreMigrationBackup> {
-  const posixFlags = requirePosixBackupOpenFlags();
-  let directoryBinding: BackupDirectoryBinding | undefined;
-  let operationFailed = false;
-  let operationError: unknown;
-  try {
-    await hooks.beforeSerialization?.();
-    const bytes = normalizedSerializedSnapshot(database);
-    directoryBinding = await bindBackupDirectory(databasePath, posixFlags);
-    const fileName = backupName(databasePath, fromVersion, toVersion);
-    const output = path.join(directoryBinding.directory, fileName);
-    await hooks.afterDirectoryBound?.();
-    await hooks.beforeArtifactWrite?.(output);
-    const artifact = writeBoundArtifact(directoryBinding, fileName, bytes, posixFlags);
-    await requireBoundArtifact(output, artifact, posixFlags);
-    await hooks.afterArtifactWritten?.(output);
-    await requireBoundArtifact(output, artifact, posixFlags);
-    await requireBackupDirectory(directoryBinding);
-    await syncBackupDirectory(directoryBinding);
-    return Object.freeze({
-      path: output,
-      directory: directoryAttestation(directoryBinding),
-      artifact,
-    });
-  } catch (error) {
-    const failure = new KiokukoError(
-      'DATABASE_ERROR',
-      'Could not create and verify the pre-migration backup; the database was not migrated',
-    );
-    Object.defineProperty(failure, 'cause', { value: error });
-    operationFailed = true;
-    operationError = failure;
-    throw failure;
-  } finally {
-    if (directoryBinding?.handle !== undefined) {
-      try {
-        await directoryBinding.handle.close();
-      } catch (closeError) {
-        if (operationFailed) {
-          throw new AggregateError(
-            [operationError, closeError],
-            'Pre-migration backup failed and closing its directory also failed',
           );
         }
         throw closeError;

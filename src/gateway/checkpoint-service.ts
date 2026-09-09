@@ -1,39 +1,23 @@
 import { isProxy } from 'node:util/types';
-import type { SqliteDatabase } from '../db/adapter.js';
-import { withImmediateTransaction } from '../db/transaction.js';
-import { KiokukoError } from '../errors.js';
 import { readRunIntakeLink } from '../akinator/store.js';
-import { LedgerStore } from '../ledger/store.js';
-import { validateTimestamp } from '../ledger/validate.js';
-import type { JsonValue } from '../ledger/types.js';
-import { executeIdempotentInTransaction } from '../server/idempotency.js';
-import type { Recommendation } from '../context/recommendations.js';
-import type { DeliveredNudge } from '../context/nudges.js';
 import {
   recordContextFeedbackInTransaction,
   recordIntakeFeedbackInTransaction,
   recordRunFeedbackInTransaction,
   validateFeedbackTimestamp,
 } from '../context/feedback.js';
-import { CheckpointMutationService, type CheckpointMutationResult } from './checkpoint-mutation-service.js';
-import { NudgeDeliveryService, type ValidatedNudgeDeliveryRequest } from './nudge-delivery-service.js';
+import type { SqliteDatabase } from '../db/adapter.js';
+import { withImmediateTransaction } from '../db/transaction.js';
+import { KiokukoError } from '../errors.js';
+import { LedgerStore } from '../ledger/store.js';
+import type { JsonValue } from '../ledger/types.js';
+import { validateTimestamp } from '../ledger/validate.js';
+import { executeIdempotentInTransaction } from '../server/idempotency.js';
 
 export { CheckpointMutationService } from './checkpoint-mutation-service.js';
 export type { CheckpointMutationResult } from './checkpoint-mutation-service.js';
 export { NudgeDeliveryService } from './nudge-delivery-service.js';
 export type { ValidatedNudgeDeliveryRequest } from './nudge-delivery-service.js';
-
-export interface CheckpointResponse extends Omit<CheckpointMutationResult, 'preliminaryRecommendations'> {
-  readonly recommendations: readonly Recommendation[];
-  readonly nudge: DeliveredNudge | null;
-  readonly context: null;
-  readonly untrusted: true;
-}
-
-export interface LegacyCheckpointServicePort {
-  checkpoint(input: unknown): CheckpointResponse;
-  deliverNudge(input: ValidatedNudgeDeliveryRequest): DeliveredNudge | null;
-}
 
 function validation(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Invalid gateway request');
@@ -49,34 +33,6 @@ function assertPlainObject(value: unknown): Record<string, unknown> {
 function boundedString(value: unknown, max = 4_096): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > max || /\p{Cc}/u.test(value)) validation();
   return value;
-}
-
-export class CheckpointService {
-  private readonly mutation: CheckpointMutationService;
-  private readonly nudgeDelivery: NudgeDeliveryService;
-
-  constructor(database: SqliteDatabase, now: () => string = () => new Date().toISOString()) {
-    this.mutation = new CheckpointMutationService(database, now);
-    this.nudgeDelivery = new NudgeDeliveryService(database, now);
-  }
-
-  /** @deprecated Use CheckpointMutationService and NudgeDeliveryService directly. */
-  checkpoint(input: unknown): CheckpointResponse {
-    const result = this.mutation.checkpoint(input);
-    const { preliminaryRecommendations: _preliminaryRecommendations, ...mutation } = result;
-    return {
-      ...mutation,
-      recommendations: [...result.preliminaryRecommendations],
-      nudge: null,
-      context: null,
-      untrusted: true,
-    };
-  }
-
-  /** @deprecated Use NudgeDeliveryService directly. */
-  deliverNudge(input: ValidatedNudgeDeliveryRequest): DeliveredNudge | null {
-    return this.nudgeDelivery.deliver(input);
-  }
 }
 
 export interface FeedbackResponse {
@@ -157,7 +113,7 @@ function feedbackValue(database: SqliteDatabase, runId: string, key: string, val
 }
 
 export class FeedbackService {
-  constructor(private readonly database: SqliteDatabase, private readonly now: () => string = () => new Date().toISOString()) {}
+  constructor(private readonly database: SqliteDatabase, private readonly now: () => string = () => new Date().toISOString()) { }
 
   feedback(input: unknown): FeedbackResponse {
     const value = assertPlainObject(input);

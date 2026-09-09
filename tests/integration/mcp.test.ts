@@ -1,21 +1,21 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { access, mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { createKiokukoMcpServer } from '../../src/mcp/server.js';
-import { BoundedStdioServerTransport } from '../../src/mcp/bounded-stdio-transport.js';
+import { MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS, MAX_RAW_CAPABILITY_DESCRIPTION_CHARS } from '../../src/akinator/capabilities.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
+import { KiokukoError, type ErrorCode } from '../../src/errors.js';
+import { BoundedStdioServerTransport } from '../../src/mcp/bounded-stdio-transport.js';
+import { createKiokukoMcpServer } from '../../src/mcp/server.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
-import { MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS, MAX_RAW_CAPABILITY_DESCRIPTION_CHARS } from '../../src/akinator/capabilities.js';
-import { KiokukoError, type ErrorCode } from '../../src/errors.js';
 import { PACKAGE_VERSION } from '../../src/package-version.js';
 
 const SOUL_CAPABILITY = {
@@ -40,6 +40,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
   await client.connect(clientTransport);
   try {
     assert.deepEqual(client.getServerVersion(), { name: 'kiokuko', version: PACKAGE_VERSION });
+    const removed = await client.callTool({ name: 'enno_status', arguments: {} });
+    assert.equal(removed.isError, true);
     const instructions = client.getInstructions() ?? '';
     assert.match(instructions, /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(instructions, /Every descriptor must include its kind and canonical name/u);
@@ -52,39 +54,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /Every `task_prepare` call must set `soulRead: true` only after that read/iu);
     assert.match(instructions, /exact local `kiokuko-soul` capability is required for every task/iu);
     assert.match(instructions, /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
-    assert.match(instructions, /whether or not Enno-Oduno applies/iu);
     assert.match(instructions, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
     assert.match(instructions, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
-    assert.match(instructions, /`task_prepare` is the Enno-Oduno orchestration entry point/u);
-    assert.match(instructions, /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
-    assert.match(instructions, /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
-    assert.match(instructions, /While Akinator still needs information, only Enno-Oduno is active/u);
-    assert.match(instructions, /structured handoff.*Oduno ideal.*every Akinator-discovered Skill.*harness-specific Zenki directive/u);
-    assert.match(instructions, /Zenki must read the master SOUL and then the compact `kiokuko-single-purpose-functions` index/u);
-    assert.match(instructions, /focused runnable test target/u);
-    assert.match(instructions, /one to three versioned `expertRefs`/u);
-    assert.match(instructions, /Goki receives only approved, already-decomposed WorkUnits/u);
-    assert.match(instructions, /Goki can start only after Zenki submits a complete WorkPlan/u);
-    assert.match(instructions, /A failed review never returns directly to Goki/u);
-    assert.match(instructions, /Oduno meditation.*obsolete tests or functions.*without mutating the repository/iu);
-    assert.match(instructions, /never select a repository-wide latest run/iu);
-    assert.match(instructions, /ask_user_confirmation.*userFacingConfirmation.*never output raw directive JSON/isu);
-    assert.match(instructions, /userFacingRecovery.*whenToChoose.*whatHappens.*explicit choice/isu);
-    assert.match(instructions, /Do not retry, cancel, or create a new task automatically/iu);
-    assert.match(instructions, /never ask the user to locate or construct that catalog/iu);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'curator_check',
       'curator_globalize',
-      'enno_advice_read',
-      'enno_advice_submit',
-      'enno_answer',
-      'enno_finish',
-      'enno_ideal_submit',
-      'enno_meditation_submit',
-      'enno_plan_submit',
-      'enno_verify_prepare',
-      'enno_work_report',
       'memory_checkpoint',
       'task_answer',
       'task_prepare',
@@ -95,22 +70,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_globalize')?.annotations?.idempotentHint, true);
     assert.match(tools.tools.find((tool) => tool.name === 'curator_globalize')?.description ?? '', /stored as verified\/system_verified memory created by kiokuko-curator/);
-    const planDescription = tools.tools.find((tool) => tool.name === 'enno_plan_submit')?.description ?? '';
-    assert.match(planDescription, /label and recommendation.*whenToChoose.*whatHappens/isu);
-    assert.match(planDescription, /Never display the machine action.*reason code.*raw JSON/isu);
-    assert.match(planDescription, /without retrying, cancelling, or starting a replacement automatically/iu);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, false);
-    const adviceReadTool = tools.tools.find((tool) => tool.name === 'enno_advice_read');
-    assert.equal(adviceReadTool?.annotations?.readOnlyHint, true);
-    assert.equal(adviceReadTool?.annotations?.destructiveHint, false);
-    assert.equal(adviceReadTool?.annotations?.idempotentHint, true);
-    assert.equal(adviceReadTool?.annotations?.openWorldHint, false);
-    assert.match(adviceReadTool?.description ?? '', /recovery only/iu);
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
-    const ennoFinishTool = tools.tools.find((tool) => tool.name === 'enno_finish');
-    const ennoIdealTool = tools.tools.find((tool) => tool.name === 'enno_ideal_submit');
-    const ennoMeditationTool = tools.tools.find((tool) => tool.name === 'enno_meditation_submit');
     assert.match(taskPrepareTool?.description ?? '', /once for one logical user request/);
     assert.match(taskPrepareTool?.description ?? '', /create a new bounded opaque value for each logical request/);
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
@@ -125,12 +87,6 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /read and apply local memory-reasoning before using it and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
     assert.match(taskPrepareTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
     assert.match(taskPrepareTool?.description ?? '', /never use ~, \$HOME, or HOME-relative path fragments/u);
-    assert.match(taskPrepareTool?.description ?? '', /first identifies Codex, Claude Code, or OpenCode from MCP `clientInfo`/u);
-    assert.match(taskPrepareTool?.description ?? '', /Every Enno-Oduno directive requires the bundled `kiokuko-soul` Skill first/u);
-    assert.match(taskPrepareTool?.description ?? '', /do not start Zenki or Goki/u);
-    assert.match(taskPrepareTool?.description ?? '', /structured handoff.*Oduno ideal.*every Akinator-discovered Skill.*harness-specific Zenki directive/u);
-    assert.match(taskPrepareTool?.description ?? '', /failed review never returns directly to Goki/u);
-    assert.match(taskPrepareTool?.description ?? '', /ennoOduno\.orchestrationId/u);
     assert.match(taskAnswerTool?.description ?? '', /required run ID returned by task_prepare/);
     assert.match(taskAnswerTool?.description ?? '', /Repeat the same capability catalog and context budget/);
     assert.match(taskAnswerTool?.description ?? '', /changed context budget conflicts before intake mutation/);
@@ -139,18 +95,6 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskAnswerTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskAnswerTool?.description ?? '', /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u);
     assert.match(taskAnswerTool?.description ?? '', /read and apply local memory-reasoning before using it and convert recalled claims that affect the task into verified premises, falsifiable invariants, concrete counterexamples, and regression tests/);
-    assert.match(ennoFinishTool?.description ?? '', /returns Review feedback to Zenki for a new plan/u);
-    assert.match(ennoFinishTool?.description ?? '', /advances a new run to Oduno meditation instead of completing it directly/iu);
-    const ennoPlanTool = tools.tools.find((tool) => tool.name === 'enno_plan_submit');
-    const ennoAnswerTool = tools.tools.find((tool) => tool.name === 'enno_answer');
-    assert.match(ennoPlanTool?.description ?? '', /needs_confirmation response carries the decided ennoOduno\.directive\.userFacingConfirmation projection/u);
-    assert.match(ennoPlanTool?.description ?? '', /without raw directive JSON or internal identifiers/u);
-    assert.match(ennoPlanTool?.description ?? '', /automatic-continuation pause.*wait for the user's explicit choice/iu);
-    assert.match(ennoPlanTool?.description ?? '', /same-run retry must pass the selected recoveryAction/iu);
-    assert.match(ennoAnswerTool?.description ?? '', /only the action the user explicitly chose after seeing the user-facing confirmation or plan-start recovery choices/iu);
-    assert.match(ennoAnswerTool?.description ?? '', /During planning, only explicit cancellation is accepted/iu);
-    assert.match(ennoIdealTool?.description ?? '', /optimal goal.*task_prepare handoff.*every Akinator-discovered Skill.*before Zenki planning/iu);
-    assert.match(ennoMeditationTool?.description ?? '', /obsolete test or function deletion candidates.*without mutating the repository/iu);
     assert.match(taskAnswerTool?.description ?? '', /successful task_prepare or task_answer response includes executionContext/u);
     type JsonSchema = {
       type?: string;
@@ -166,15 +110,13 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     type ToolInputSchema = JsonSchema;
     const taskAnswerSchema = taskAnswerTool?.inputSchema as ToolInputSchema;
     const taskPrepareSchema = taskPrepareTool?.inputSchema as ToolInputSchema;
-    const ennoPlanSchema = ennoPlanTool?.inputSchema as ToolInputSchema;
     assert.ok(taskPrepareSchema.required?.includes('soulRead'));
     assert.equal(taskPrepareSchema.properties?.soulRead?.const, true);
     assert.match(taskPrepareSchema.properties?.soulRead?.description ?? '', /self-attestation.*complete exact local kiokuko-soul/iu);
     assert.ok(taskPrepareSchema.required?.includes('requestId'));
     assert.ok(taskAnswerSchema.required?.includes('runId'));
-    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /normally identifies Codex, Claude Code, or OpenCode from the MCP initialize clientInfo/u);
-    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /host session ID is not authorization ownership/u);
-    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /single unambiguous active run in the canonical repository/u);
+    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /Known client names are normalized against MCP initialize clientInfo/u);
+    assert.match(taskPrepareSchema.properties?.client?.description ?? '', /session ID is metadata, not authorization ownership/u);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /Use the exact current question/);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /value must be exactly one returned option/);
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /options is null, provide grounded non-empty text/);
@@ -185,27 +127,6 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
         /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u,
       );
       assert.match(schema.properties?.capabilities?.description ?? '', /kind and canonical name/u);
-    }
-    assert.equal(ennoPlanSchema.properties?.capabilities?.type, 'array');
-    assert.match(ennoPlanSchema.properties?.capabilities?.description ?? '', /transport-optional.*user-facing recovery choice/iu);
-    for (const toolName of [
-      'enno_advice_submit',
-      'enno_advice_read',
-      'enno_ideal_submit',
-      'enno_plan_submit',
-      'enno_answer',
-      'enno_verify_prepare',
-      'enno_work_report',
-      'enno_finish',
-      'enno_meditation_submit',
-    ]) {
-      const tool = tools.tools.find((candidate) => candidate.name === toolName);
-      const schema = tool?.inputSchema as ToolInputSchema;
-      assert.match(tool?.description ?? '', /resumeToken.*workspace.*orchestrationId/iu);
-      assert.equal(schema.required?.includes('orchestrationId'), false);
-      assert.equal(schema.required?.includes('clientSessionId'), false);
-      assert.match(schema.properties?.orchestrationId?.description ?? '', /Exact ennoOduno\.orchestrationId returned by task_prepare or task_answer/u);
-      assert.ok(schema.properties?.resumeToken);
     }
     assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /call no more tools/);
     const checkpointTool = tools.tools.find((tool) => tool.name === 'memory_checkpoint');
@@ -304,40 +225,14 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       capabilities: { availability: string; recommendations: Array<{ kind: string; name: string; availability: string }> };
       memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
       executionContext: { canonicalCwd: string; repositoryRoot: string; cwdIsRepositoryRoot: boolean; pathPolicy: string };
-      ennoOduno: {
-        applicable: boolean;
-        status: string;
-        orchestrationId: string | null;
-        clientBinding: { status: string; clientKind: string | null; clientVersion: string | null; identified: boolean } | null;
-        directive: {
-          role: string;
-          harness: { kind: string | null; continuation: string };
-          handoff: { sourceRole: string; objective: string } | null;
-        } | null;
-        nextAction: string;
-      };
       nextAction: string;
     } & Record<string, unknown>;
+    assert.equal(Object.hasOwn(preparedContent, 'ennoOduno'), false);
     assert.equal(preparedContent.intake.status, 'ready');
     assert.equal(preparedContent.intake.reasoning.stage, 'actionable');
     assert.match(preparedContent.intake.reasoning.selectedAction, /src\/beacon\.ts/u);
     assert.equal(preparedContent.intake.reasoning.silo.completeness, 1);
     assert.equal(preparedContent.nextAction, 'proceed');
-    assert.equal(preparedContent.ennoOduno.applicable, true);
-    assert.equal(preparedContent.ennoOduno.status, 'oduno_ideal');
-    assert.equal(preparedContent.ennoOduno.orchestrationId, preparedContent.intake.sessionId);
-    assert.deepEqual(preparedContent.ennoOduno.clientBinding, {
-      status: 'pending',
-      clientKind: null,
-      clientVersion: null,
-      identified: false,
-    });
-    assert.equal(preparedContent.ennoOduno.directive?.role, 'enno-oduno');
-    assert.equal(preparedContent.ennoOduno.directive?.handoff?.sourceRole, 'enno-oduno');
-    assert.match(preparedContent.ennoOduno.directive?.handoff?.objective ?? '', /src\/beacon\.ts/u);
-    assert.equal(preparedContent.ennoOduno.directive?.harness.kind, null);
-    assert.equal(preparedContent.ennoOduno.directive?.harness.continuation, 'unidentified');
-    assert.equal(preparedContent.ennoOduno.nextAction, 'submit_ideal');
     assert.equal(preparedContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(preparedContent.memoryPolicy, {
       memoryReasoningRequired: true,
@@ -367,45 +262,22 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       name: 'task_prepare',
       arguments: {
         soulRead: true,
-        requestId: 'mcp-unclassified-enno-intake-request',
+        requestId: 'mcp-unclassified-intake-request',
         task: 'Help me with this request',
         capabilities: answerCapabilities,
       },
     });
     const unclassifiedContent = unclassified.structuredContent as {
       intake: { status: string; sessionId: string; question: { id: string } };
-      ennoOduno: {
-        applicable: boolean;
-        status: string;
-        orchestrationId: string | null;
-        clientBinding: { status: string; clientKind: string | null; clientVersion: string | null; identified: boolean };
-        contractRevision: number | null;
-        currentRole: string | null;
-        directive: { role: string; handoff: null; objective: string; requiredSkills: string[] } | null;
-        nextAction: string;
-      };
     };
     assert.equal(unclassifiedContent.intake.status, 'needs_answer');
     assert.equal(unclassifiedContent.intake.question.id, 'taskType');
-    assert.equal(unclassifiedContent.ennoOduno.applicable, true);
-    assert.equal(unclassifiedContent.ennoOduno.status, 'intake');
-    assert.equal(unclassifiedContent.ennoOduno.orchestrationId, unclassifiedContent.intake.sessionId);
-    assert.deepEqual(unclassifiedContent.ennoOduno.clientBinding, {
-      status: 'pending', clientKind: null, clientVersion: null, identified: false,
-    });
-    assert.equal(unclassifiedContent.ennoOduno.contractRevision, null);
-    assert.equal(unclassifiedContent.ennoOduno.currentRole, 'enno-oduno');
-    assert.equal(unclassifiedContent.ennoOduno.directive?.role, 'enno-oduno');
-    assert.equal(unclassifiedContent.ennoOduno.directive?.handoff, null);
-    assert.deepEqual(unclassifiedContent.ennoOduno.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-enno-oduno']);
-    assert.match(unclassifiedContent.ennoOduno.directive?.objective ?? '', /exact question.*user/iu);
-    assert.equal(unclassifiedContent.ennoOduno.nextAction, 'answer_intake');
 
     const research = await client.callTool({
       name: 'task_prepare',
       arguments: {
         soulRead: true,
-        requestId: 'mcp-non-enno-research-request',
+        requestId: 'mcp-research-request',
         task: 'Research the durable beacon contract',
         profileHints: {
           taskType: 'research',
@@ -417,11 +289,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       },
     });
     const researchContent = research.structuredContent as {
-      ennoOduno: { applicable: boolean };
       nextAction: string;
       capabilities: { recommendations: Array<{ name: string; availability: string; required?: boolean }> };
     };
-    assert.equal(researchContent.ennoOduno.applicable, false);
     assert.equal(researchContent.nextAction, 'required_capability_unavailable');
     assert.ok(researchContent.capabilities.recommendations.some((item) => item.name === 'kiokuko-soul'
       && item.availability === 'missing'
@@ -442,14 +312,6 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       context: unknown;
       run: { runId: string };
       nextAction: string;
-      ennoOduno: {
-        applicable: boolean;
-        status: string;
-        orchestrationId: string | null;
-        currentRole: string | null;
-        directive: { role: string; handoff: null; objective: string; requiredSkills: string[] } | null;
-        nextAction: string;
-      };
     } & Record<string, unknown>;
     assert.equal(incompleteContent.intake.status, 'needs_answer');
     assert.equal(incompleteContent.intake.question.id, 'target');
@@ -457,15 +319,6 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal('memory' in incompleteContent, false);
     assert.equal('references' in incompleteContent, false);
     assert.equal(incompleteContent.nextAction, 'answer_from_evidence_or_ask_user');
-    assert.equal(incompleteContent.ennoOduno.applicable, true);
-    assert.equal(incompleteContent.ennoOduno.status, 'intake');
-    assert.equal(incompleteContent.ennoOduno.orchestrationId, incompleteContent.intake.sessionId);
-    assert.equal(incompleteContent.ennoOduno.currentRole, 'enno-oduno');
-    assert.equal(incompleteContent.ennoOduno.directive?.role, 'enno-oduno');
-    assert.equal(incompleteContent.ennoOduno.directive?.handoff, null);
-    assert.deepEqual(incompleteContent.ennoOduno.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-enno-oduno']);
-    assert.match(incompleteContent.ennoOduno.directive?.objective ?? '', /exact question.*user/iu);
-    assert.equal(incompleteContent.ennoOduno.nextAction, 'answer_intake');
 
     const missingRunId = await client.callTool({
       name: 'task_answer',
@@ -504,6 +357,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
         capabilities: answerCapabilities,
       },
     });
+    assert.equal(Object.hasOwn(completed.structuredContent!, 'ennoOduno'), false);
     const completedContent = completed.structuredContent as {
       intake: { status: string };
       executionContext: { canonicalCwd: string; repositoryRoot: string; cwdIsRepositoryRoot: boolean; pathPolicy: string };
@@ -620,843 +474,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
   }
 });
 
-test('MCP transport projects non-Enno input validation failures to the stable public envelope', async () => {
-  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-validation-'));
-  const server = createKiokukoMcpServer({ databasePath: path.join(data, 'kiokuko.sqlite3') });
-  const client = new Client({ name: 'kiokuko-validation-test', version: '1.0.0' });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  try {
-    const calls = [
-      { name: 'task_prepare', arguments: { requestId: 'missing-soul', task: 'review' } },
-      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'relative-cwd', task: 'review', cwd: 'relative/path' } },
-      { name: 'task_answer', arguments: { sessionId: 'session', runId: 'run', questionId: 'wrong', value: 'answer' } },
-      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'extra-field', task: 'review', unexpected: true } },
-    ];
-    for (const call of calls) {
-      const result = await client.callTool(call);
-      assert.equal(result.isError, true);
-      assert.deepEqual(result.structuredContent, { code: 'VALIDATION_ERROR', retryable: false });
-      const serialized = JSON.stringify(result);
-      assert.match(serialized, /Request is invalid/u);
-      assert.doesNotMatch(serialized, /Input validation error|invalid_type|unrecognized_keys/iu);
-    }
-  } finally {
-    await client.close();
-    if (server.isConnected()) await server.close();
-  }
-});
-
-test('task_prepare identifies Codex, Claude Code, and OpenCode before Oduno derives the ideal', async () => {
-  const clients = [
-    { name: 'codex-mcp-client', expectedKind: 'codex', continuation: 'stop_hook' },
-    { name: 'claude-ai', expectedKind: 'claude', continuation: 'stop_hook' },
-    { name: 'opencode', expectedKind: 'opencode', continuation: 'session_idle_plugin' },
-  ] as const;
-
-  for (const clientFixture of clients) {
-    const root = await mkdtemp(path.join(tmpdir(), `kiokuko-mcp-${clientFixture.expectedKind}-repo-`));
-    execFileSync('git', ['init', '-q', root]);
-    const data = await mkdtemp(path.join(tmpdir(), `kiokuko-mcp-${clientFixture.expectedKind}-data-`));
-    const databasePath = path.join(data, 'kiokuko.sqlite3');
-    const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
-    const client = new Client({ name: clientFixture.name, version: 'fixture-version' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await server.connect(serverTransport);
-    await client.connect(clientTransport);
-    try {
-      const prepared = await client.callTool({
-        name: 'task_prepare',
-        arguments: {
-          soulRead: true,
-          requestId: `mcp-client-info-${clientFixture.expectedKind}`,
-          task: 'Repair the add function and make tests pass',
-          profileHints: {
-            taskType: 'debug',
-            target: 'src/add.js',
-            expected: 'node --test passes',
-          },
-          capabilities: [SOUL_CAPABILITY, {
-            kind: 'skill',
-            name: 'kiokuko-single-purpose-functions',
-            description: 'Focused code contracts and tests.',
-          }],
-        },
-      });
-      assert.equal(prepared.isError, undefined);
-      const content = prepared.structuredContent as {
-        ennoOduno: {
-          status: string;
-          currentRole: string | null;
-          clientBinding: {
-            status: string;
-            clientKind: string | null;
-            clientVersion: string | null;
-            identified: boolean;
-          } | null;
-          directive: {
-            role: string;
-            objective: string;
-            requiredSkills: string[];
-            harness: { kind: string | null; version: string | null; continuation: string; instructions: string[] };
-            handoff: { sourceRole: string; taskType: string } | null;
-          } | null;
-        };
-      };
-      assert.equal(content.ennoOduno.status, 'oduno_ideal');
-      assert.equal(content.ennoOduno.currentRole, 'enno-oduno');
-      assert.deepEqual(content.ennoOduno.clientBinding, {
-        status: 'pending',
-        clientKind: clientFixture.expectedKind,
-        clientVersion: 'fixture-version',
-        identified: true,
-      });
-      assert.equal(content.ennoOduno.directive?.role, 'enno-oduno');
-      assert.equal(content.ennoOduno.directive?.harness.kind, clientFixture.expectedKind);
-      assert.equal(content.ennoOduno.directive?.harness.version, 'fixture-version');
-      assert.equal(content.ennoOduno.directive?.harness.continuation, clientFixture.continuation);
-      assert.ok(content.ennoOduno.directive?.harness.instructions.some((instruction) => /Own intake.*state transitions/iu.test(instruction)));
-      assert.ok(content.ennoOduno.directive?.harness.instructions.some((instruction) => /kiokuko-enno-oduno/iu.test(instruction)));
-      assert.deepEqual(content.ennoOduno.directive?.requiredSkills, ['kiokuko-soul', 'kiokuko-enno-oduno']);
-      assert.match(content.ennoOduno.directive?.objective ?? '', /optimal goal.*task_prepare handoff/iu);
-      assert.match(content.ennoOduno.directive?.objective ?? '', /call enno_ideal_submit/iu);
-      assert.equal(content.ennoOduno.directive?.handoff?.sourceRole, 'enno-oduno');
-      assert.equal(content.ennoOduno.directive?.handoff?.taskType, 'debug');
-
-      if (clientFixture.expectedKind === 'codex') {
-        const conflict = await client.callTool({
-          name: 'task_prepare',
-          arguments: {
-            soulRead: true,
-            requestId: 'mcp-client-info-conflict',
-            task: 'Repair another function',
-            profileHints: { taskType: 'debug', target: 'src/other.js', expected: 'tests pass' },
-            capabilities: [],
-            client: { kind: 'claude' },
-          },
-        });
-        assert.equal(conflict.isError, true);
-        assert.match(JSON.stringify(conflict.content), /conflict/iu);
-      }
-    } finally {
-      await client.close();
-      if (server.isConnected()) await server.close();
-    }
-  }
-});
-
-test('enno_plan_submit returns the userFacingConfirmation projection over the MCP boundary', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-confirmation-repo-'));
-  execFileSync('git', ['init', '-q', root]);
-  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-confirmation-data-'));
-  const databasePath = path.join(data, 'kiokuko.sqlite3');
-  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
-  const client = new Client({ name: 'kiokuko-confirmation-test', version: '1.0.0' });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  try {
-    const capabilities = [SOUL_CAPABILITY, {
-      kind: 'skill',
-      name: 'kiokuko-single-purpose-functions',
-      description: 'Focused code contracts and tests.',
-    }];
-    const prepared = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-confirmation-request',
-        task: 'Repair the add function and make tests pass',
-        profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'node --test passes' },
-        capabilities,
-      },
-    });
-    const preparedContent = prepared.structuredContent as {
-      run: { runId: string };
-      project: { workspace: string };
-      intake: { sessionId: string };
-      ennoOduno: { status: string };
-    };
-    assert.equal(preparedContent.ennoOduno.status, 'oduno_ideal');
-    const identity = {
-      runId: preparedContent.run.runId,
-      workspace: preparedContent.project.workspace,
-      orchestrationId: preparedContent.intake.sessionId,
-    };
-    const ideal = await client.callTool({
-      name: 'enno_ideal_submit',
-      arguments: {
-        ...identity,
-        expectedRevision: 1,
-        idempotencyKey: 'mcp-confirmation-ideal',
-        ideal: {
-          objective: 'Repair the add function with focused verification',
-          principles: ['Preserve the public API'],
-          skillContributions: [],
-          successSignals: ['node --test passes'],
-        },
-      },
-    });
-    const idealContent = ideal.structuredContent as { ennoOduno: { status: string } };
-    assert.equal(idealContent.ennoOduno.status, 'zenki_planning');
-    const plan = await client.callTool({
-      name: 'enno_plan_submit',
-      arguments: {
-        ...identity,
-        expectedRevision: 1,
-        idempotencyKey: 'mcp-confirmation-plan',
-        scope: ['src/add.js'],
-        exclusions: [],
-        acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
-        workPlan: {
-          objective: 'Repair add behind the confirmation',
-          units: [{
-            id: 'repair-add',
-            objective: 'Repair the add implementation',
-            scope: ['src/add.js'],
-            dependencies: [],
-            routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
-            expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the add regression with focused tests' }],
-            acceptanceCriteria: ['node --test passes'],
-            focusedVerifiers: [],
-          }],
-        },
-        skillRequirements: [],
-        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
-        maxAttempts: 5,
-        provenance: {
-          scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
-          workPlan: 'inferred', skillSet: 'repository_evidence', finalVerifiers: 'explicit_user', maxAttempts: 'inferred',
-        },
-        capabilities,
-      },
-    });
-    assert.equal(plan.isError, undefined);
-    const planContent = plan.structuredContent as {
-      ennoOduno: {
-        status: string;
-        contractRevision: number;
-        directive: {
-          objective: string;
-          userFacingConfirmation?: {
-            presentationVersion: number;
-            summary: { basis: string; text: string };
-            scope: { basis: string; paths: string[] };
-            workItems: Array<{ number: number; summary: string; expertise: Array<{ area: string; reason: string }> }>;
-            finalChecks: { checks: Array<{ executable: string; arguments: string[]; directory: string; timeoutMs: number }> };
-            attemptLimit: { basis: string; maxAttempts: number };
-            actions: string[];
-          };
-        } | null;
-      };
-    };
-    assert.equal(planContent.ennoOduno.status, 'needs_confirmation');
-    assert.equal(planContent.ennoOduno.contractRevision, 2);
-    assert.match(planContent.ennoOduno.directive?.objective ?? '', /Return every item in userFacingConfirmation/iu);
-    const projection = planContent.ennoOduno.directive?.userFacingConfirmation;
-    assert.ok(projection !== undefined);
-    assert.equal(projection.presentationVersion, 1);
-    assert.equal(projection.summary.basis, 'proposal');
-    assert.equal(projection.scope.basis, 'user');
-    assert.equal(projection.workItems[0]?.number, 1);
-    assert.equal(projection.workItems[0]?.expertise[0]?.area, 'Regression prevention and verification design');
-    assert.deepEqual(projection.finalChecks.checks[0], {
-      category: 'test', executable: process.execPath, arguments: ['--eval', 'process.exit(0)'], directory: '.', timeoutMs: 5000,
-    });
-    assert.deepEqual(projection.actions, ['approve', 'revise', 'cancel']);
-    const rendered = JSON.stringify(projection);
-    for (const forbidden of ['repair-add', 'final-test', 'code.verification.v1', 'expertRefs', 'focusedVerifiers', 'finalVerifiers', 'provenance']) {
-      assert.equal(rendered.includes(forbidden), false, `MCP projection leaked internal token: ${forbidden}`);
-    }
-  } finally {
-    await client.close();
-    if (server.isConnected()) await server.close();
-  }
-});
-
-test('MCP transports advisory submission and final verification preparation with replay and conflict boundaries', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-advisory-repo-'));
-  execFileSync('git', ['init', '-q', root]);
-  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-advisory-data-'));
-  const databasePath = path.join(data, 'kiokuko.sqlite3');
-  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
-  const client = new Client({ name: 'kiokuko-advisory-test', version: '1.0.0' });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  try {
-    const capabilities = [SOUL_CAPABILITY, {
-      kind: 'skill',
-      name: 'kiokuko-single-purpose-functions',
-      description: 'Focused code contracts and tests.',
-    }];
-    const prepared = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-advisory-request',
-        cwd: root,
-        task: 'Repair the add function and make tests pass',
-        profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'node --test passes' },
-        capabilities,
-      },
-    });
-    assert.equal(prepared.isError, undefined);
-    const preparedContent = prepared.structuredContent as {
-      run: { runId: string };
-      project: { workspace: string };
-      intake: { sessionId: string };
-      ennoOduno: {
-        status: string;
-        directive: { advisoryRound?: { phase: string; context: Record<string, unknown>; slots: unknown[] } };
-      };
-    };
-    assert.equal(preparedContent.ennoOduno.status, 'oduno_ideal');
-    const identity = {
-      runId: preparedContent.run.runId,
-      workspace: preparedContent.project.workspace,
-      orchestrationId: preparedContent.intake.sessionId,
-    };
-    const idealRound = preparedContent.ennoOduno.directive.advisoryRound;
-    assert.ok(idealRound);
-    assert.equal(idealRound.phase, 'ideal');
-    assert.equal(idealRound.slots.length, 3);
-    const serializedAdvisorContext = JSON.stringify(idealRound.context);
-    for (const forbidden of [identity.runId, identity.workspace, identity.orchestrationId, 'idempotencyKey', 'contractRevision', 'mutationRevision']) {
-      assert.equal(serializedAdvisorContext.includes(forbidden), false, `MCP advisor context leaked ${forbidden}`);
-    }
-    const contributions = [
-      { slotId: 'constraint_guardian', outcome: 'completed', summary: 'Preserve constraints', recommendations: [], risks: [], evidence: [] },
-      { slotId: 'skill_trust_analyst', outcome: 'completed', summary: 'Use only trusted local guidance', recommendations: [], risks: [], evidence: [] },
-      { slotId: 'success_signal_critic', outcome: 'completed', summary: 'Require passing tests', recommendations: [], risks: [], evidence: [] },
-    ];
-    const adviceArguments = {
-      ...identity,
-      expectedRevision: 1,
-      mutationRevision: 0,
-      idempotencyKey: 'mcp-advice-1',
-      phase: 'ideal',
-      allowlistedContext: idealRound.context,
-      contributions,
-    };
-    const advice = await client.callTool({ name: 'enno_advice_submit', arguments: adviceArguments });
-    assert.equal(advice.isError, undefined);
-    const adviceContent = advice.structuredContent as { ennoOduno: { status: string }; advisoryRound: { inputDigest: string } };
-    assert.equal(adviceContent.ennoOduno.status, 'oduno_ideal');
-    assert.match(adviceContent.advisoryRound.inputDigest, /^[0-9a-f]{64}$/u);
-    const adviceRead = await client.callTool({
-      name: 'enno_advice_read',
-      arguments: {
-        ...identity,
-        expectedRevision: 1,
-        advisoryRoundDigest: adviceContent.advisoryRound.inputDigest,
-      },
-    });
-    assert.equal(adviceRead.isError, undefined);
-    const adviceReadContent = adviceRead.structuredContent as {
-      protocolVersion: number;
-      advisoryRound: { inputDigest: string; contributions: unknown[] };
-      allowlistedContext: Record<string, unknown>;
-    };
-    assert.equal(adviceReadContent.protocolVersion, 1);
-    assert.equal(adviceReadContent.advisoryRound.inputDigest, adviceContent.advisoryRound.inputDigest);
-    assert.equal(adviceReadContent.advisoryRound.contributions.length, 3);
-    assert.deepEqual(adviceReadContent.allowlistedContext, idealRound.context);
-    const adviceReplay = await client.callTool({ name: 'enno_advice_submit', arguments: adviceArguments });
-    assert.deepEqual(adviceReplay.structuredContent, advice.structuredContent);
-    const adviceConflict = await client.callTool({
-      name: 'enno_advice_submit',
-      arguments: {
-        ...adviceArguments,
-        contributions: [{ ...contributions[0], summary: 'Changed input' }, contributions[1], contributions[2]],
-      },
-    });
-    assert.equal(adviceConflict.isError, true);
-    assert.match(JSON.stringify(adviceConflict.content), /conflict/iu);
-
-    const ideal = await client.callTool({
-      name: 'enno_ideal_submit',
-      arguments: {
-        ...identity,
-        expectedRevision: 1,
-        idempotencyKey: 'mcp-advisory-ideal',
-        advisoryRoundDigest: adviceContent.advisoryRound.inputDigest,
-        advisoryDisposition: [
-          { slotId: 'constraint_guardian', disposition: 'adopted', rationale: 'Preserve constraints' },
-          { slotId: 'skill_trust_analyst', disposition: 'adopted', rationale: 'Use bounded guidance' },
-          { slotId: 'success_signal_critic', disposition: 'adopted', rationale: 'Require tests' },
-        ],
-        ideal: {
-          objective: 'Repair the add function with focused verification',
-          principles: ['Preserve the public API'],
-          skillContributions: [],
-          successSignals: ['node --test passes'],
-        },
-      },
-    });
-    assert.equal(ideal.isError, undefined);
-    const idealContent = ideal.structuredContent as { ennoOduno: { status: string; directive: { advisoryRound?: { context: Record<string, unknown> } } } };
-    assert.equal(idealContent.ennoOduno.status, 'zenki_planning');
-    const planningContext = idealContent.ennoOduno.directive.advisoryRound?.context;
-    assert.ok(planningContext);
-    const plan = await client.callTool({
-      name: 'enno_plan_submit',
-      arguments: {
-        ...identity,
-        expectedRevision: 1,
-        idempotencyKey: 'mcp-advisory-plan',
-        scope: ['src/add.js'],
-        exclusions: [],
-        acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
-        workPlan: {
-          objective: 'Repair add',
-          units: [{
-            id: 'repair-add', objective: 'Repair add', scope: ['src/add.js'], dependencies: [],
-            routes: ['code'], skillNames: [], expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the repair with focused verification' }],
-            acceptanceCriteria: ['node --test passes'], focusedVerifiers: [],
-          }],
-        },
-        skillRequirements: [],
-        finalVerifiers: [{ id: 'mcp-final', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
-        maxAttempts: 3,
-        provenance: {
-          scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
-          workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
-        },
-        capabilities,
-      },
-    });
-    assert.equal(plan.isError, undefined, JSON.stringify(plan.content));
-    const planContent = plan.structuredContent as { ennoOduno: { status: string } };
-    assert.equal(planContent.ennoOduno.status, 'goki_executing');
-    const worked = await client.callTool({
-      name: 'enno_work_report',
-      arguments: {
-        ...identity,
-        expectedRevision: 2,
-        idempotencyKey: 'mcp-advisory-work',
-        workUnitId: 'repair-add',
-        result: { outcome: 'completed', summary: 'Repair completed', mutated: false, changedPaths: [] },
-      },
-    });
-    assert.equal(worked.isError, undefined);
-    const workedContent = worked.structuredContent as { ennoOduno: { status: string; nextAction: string; directive: { advisoryRound?: unknown } } };
-    assert.equal(workedContent.ennoOduno.status, 'enno_verifying');
-    assert.equal(workedContent.ennoOduno.nextAction, 'run_final_verification');
-    assert.equal(workedContent.ennoOduno.directive.advisoryRound, undefined);
-
-    const verifyArguments = {
-      ...identity,
-      expectedRevision: 2,
-      idempotencyKey: 'mcp-verify-prepare-1',
-    };
-    const verified = await client.callTool({ name: 'enno_verify_prepare', arguments: verifyArguments });
-    assert.equal(verified.isError, undefined);
-    const verifiedContent = verified.structuredContent as {
-      ennoOduno: { status: string; nextAction: string; directive: { advisoryRound?: { phase: string; context: Record<string, unknown> } } };
-      verifierResults: Array<{ status: string }>;
-    };
-    assert.equal(verifiedContent.ennoOduno.status, 'enno_verifying');
-    assert.equal(verifiedContent.ennoOduno.nextAction, 'submit_final_review');
-    assert.equal(verifiedContent.verifierResults[0]?.status, 'passed');
-    assert.equal(verifiedContent.ennoOduno.directive.advisoryRound?.phase, 'final_review');
-    const verifyReplay = await client.callTool({ name: 'enno_verify_prepare', arguments: verifyArguments });
-    assert.deepEqual(verifyReplay.structuredContent, verified.structuredContent);
-    const verifyConflict = await client.callTool({
-      name: 'enno_verify_prepare',
-      arguments: { ...verifyArguments, expectedRevision: 99 },
-    });
-    assert.equal(verifyConflict.isError, true);
-    assert.match(JSON.stringify(verifyConflict.content), /conflict/iu);
-  } finally {
-    await client.close();
-    if (server.isConnected()) await server.close();
-  }
-});
-
-test('plan-start recovery exposes only concise user choices and leaves the same run reusable', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-plan-recovery-repo-'));
-  execFileSync('git', ['init', '-q', root]);
-  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-plan-recovery-data-'));
-  const databasePath = path.join(data, 'kiokuko.sqlite3');
-  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
-  const client = new Client({ name: 'kiokuko-plan-recovery-test', version: '1.0.0' });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  try {
-    const capabilities = [SOUL_CAPABILITY, {
-      kind: 'skill',
-      name: 'kiokuko-single-purpose-functions',
-      description: 'Focused code contracts and tests.',
-    }];
-    const prepared = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-plan-recovery-request',
-        task: 'Repair the add function',
-        profileHints: { taskType: 'debug', target: 'src/add.js', expected: 'tests pass' },
-        capabilities,
-      },
-    });
-    const preparedContent = prepared.structuredContent as {
-      run: { runId: string };
-      project: { workspace: string; repositoryRoot: string };
-      intake: { sessionId: string };
-    };
-    const identity = {
-      runId: preparedContent.run.runId,
-      workspace: preparedContent.project.workspace,
-      orchestrationId: preparedContent.intake.sessionId,
-    };
-    await client.callTool({
-      name: 'enno_ideal_submit',
-      arguments: {
-        ...identity,
-        expectedRevision: 1,
-        idempotencyKey: 'mcp-plan-recovery-ideal',
-        ideal: {
-          objective: 'Repair the add function with focused verification',
-          principles: ['Preserve the public API'],
-          skillContributions: [],
-          successSignals: ['tests pass'],
-        },
-      },
-    });
-    const plan = {
-      ...identity,
-      expectedRevision: 1,
-      scope: ['src/add.js'],
-      exclusions: [],
-      acceptanceCriteria: [{ id: 'tests', description: 'tests pass' }],
-      workPlan: {
-        objective: 'Repair add with a reusable plan',
-        units: [{
-          id: 'repair-add',
-          objective: 'Repair the add implementation',
-          scope: ['src/add.js'],
-          dependencies: [],
-          routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
-          expertRefs: [{ id: 'code.verification.v1', reason: 'Prove the regression with focused evidence' }],
-          acceptanceCriteria: ['tests pass'],
-          focusedVerifiers: [],
-        }],
-      },
-      skillRequirements: [],
-      finalVerifiers: [{
-        id: 'final-test', kind: 'test', executable: process.execPath,
-        args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000,
-      }],
-      maxAttempts: 5,
-      provenance: {
-        scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
-        workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
-      },
-    };
-
-    const invalidPlan = await client.callTool({
-      name: 'enno_plan_submit',
-      arguments: {
-        ...plan,
-        idempotencyKey: 'mcp-plan-structured-invalid',
-        capabilities,
-        workPlan: {
-          ...plan.workPlan,
-          units: [{
-            ...plan.workPlan.units[0],
-            expertRefs: [
-              { id: 'code.boundary.v1', reason: 'Boundary' },
-              { id: 'code.domain.v1', reason: 'Domain' },
-              { id: 'code.effects.v1', reason: 'Effects' },
-              { id: 'code.protocol.v1', reason: 'Protocol' },
-            ],
-          }],
-        },
-      },
-    });
-    assert.equal(invalidPlan.isError, true);
-    assert.deepEqual(invalidPlan.content, [{ type: 'text', text: 'Request is invalid' }]);
-    assert.deepEqual(invalidPlan.structuredContent, {
-      code: 'ENNO_INPUT_INVALID',
-      operation: 'plan_submit',
-      presentationVersion: 1,
-      issues: [{
-        path: ['workPlan', 'units', 0, 'expertRefs'],
-        reasonCode: 'too_many_items',
-        expected: { maxItems: 3 },
-      }],
-      retry: 'correct_input',
-      mutationApplied: false,
-    });
-
-    const recovery = await client.callTool({
-      name: 'enno_plan_submit',
-      arguments: { ...plan, idempotencyKey: 'mcp-plan-recovery-missing' },
-    });
-    assert.equal(recovery.isError, true);
-    const recoveryContent = recovery.structuredContent as {
-      code: string;
-      reason: string;
-      effect: {
-        mutationApplied: boolean;
-        continuationPaused: boolean;
-        planPersisted: boolean;
-        advisoryConsumed: boolean;
-        operationReceiptCreated: boolean;
-        implementationStarted: boolean;
-      };
-      retry: { sameRunAllowed: boolean; requiresUserChoice: boolean };
-      userFacingRecovery: {
-        presentationVersion: number;
-        whatHappened: string;
-        workState: string;
-        resolution: string;
-        options: Array<{
-          action: string;
-          label: string;
-          recommended: boolean;
-          whenToChoose: string;
-          whatHappens: string;
-        }>;
-      };
-    };
-    assert.equal(recoveryContent.code, 'PLAN_START_RECOVERY_REQUIRED');
-    assert.equal(recoveryContent.reason, 'environment_information_missing');
-    assert.deepEqual(recoveryContent.effect, {
-      mutationApplied: false,
-      continuationPaused: true,
-      planPersisted: false,
-      advisoryConsumed: false,
-      operationReceiptCreated: false,
-      implementationStarted: false,
-    });
-    assert.deepEqual(recoveryContent.retry, { sameRunAllowed: true, requiresUserChoice: true });
-    assert.equal(recoveryContent.userFacingRecovery.presentationVersion, 1);
-    assert.match(recoveryContent.userFacingRecovery.whatHappened, /features available in this environment.*not carried into the plan/iu);
-    assert.match(recoveryContent.userFacingRecovery.workState, /did not begin new work or make additional code changes/iu);
-    assert.match(recoveryContent.userFacingRecovery.resolution, /continue with the same plan/iu);
-    assert.deepEqual(recoveryContent.userFacingRecovery.options, [
-      {
-        action: 'continue_same_plan',
-        label: 'Continue with the same plan',
-        recommended: true,
-        whenToChoose: 'The plan is still correct and only the current environment information needs to be attached.',
-        whatHappens: 'The current environment information is attached automatically, and the same attempt continues.',
-      },
-      {
-        action: 'revise_plan',
-        label: 'Review the plan',
-        recommended: false,
-        whenToChoose: 'You want to change the scope, work items, or verification before continuing.',
-        whatHappens: 'You are asked what to change, and implementation does not start until you answer.',
-      },
-      {
-        action: 'cancel',
-        label: 'Cancel',
-        recommended: false,
-        whenToChoose: 'You no longer want this work to continue.',
-        whatHappens: 'The current attempt is cancelled, and no replacement attempt is created.',
-      },
-    ]);
-    const visible = JSON.stringify(recovery.content);
-    for (const option of recoveryContent.userFacingRecovery.options) {
-      assert.match(visible, new RegExp(option.label, 'u'));
-      assert.match(visible, new RegExp(option.whenToChoose, 'u'));
-      assert.match(visible, new RegExp(option.whatHappens, 'u'));
-    }
-    assert.equal((visible.match(/Recommended/gu) ?? []).length, 1);
-    for (const forbidden of [
-      'enno_', 'capabilities', 'catalog', 'digest', 'revision', identity.runId,
-      'continue_same_plan', 'whenToChoose', 'whatHappens', 'presentationVersion',
-    ]) {
-      assert.equal(visible.toLowerCase().includes(forbidden.toLowerCase()), false, `recovery display leaked internal token: ${forbidden}`);
-    }
-    const inspection = openConnection(databasePath);
-    try {
-      assert.equal(inspection.prepare('SELECT status FROM ledger_runs WHERE run_id = ?')
-        .get<{ status: string }>(identity.runId)?.status, 'active');
-      const contract = inspection.prepare('SELECT status, revision FROM enno_contracts WHERE run_id = ?')
-        .get<{ status: string; revision: number }>(identity.runId);
-      assert.deepEqual(contract === undefined ? undefined : { ...contract }, { status: 'zenki_planning', revision: 1 });
-      assert.equal(inspection.prepare("SELECT COUNT(*) AS count FROM enno_operation_receipts WHERE run_id = ? AND operation = 'plan_submit'")
-        .get<{ count: number }>(identity.runId)?.count, 0);
-    } finally {
-      inspection.close();
-    }
-    await assert.rejects(access(path.join(root, 'src', 'add.js')));
-
-    const continued = await client.callTool({
-      name: 'enno_plan_submit',
-      arguments: {
-        ...plan,
-        idempotencyKey: 'mcp-plan-recovery-continued',
-        capabilities,
-        recoveryAction: 'continue_same_plan',
-      },
-    });
-    assert.equal(continued.isError, undefined);
-    assert.equal((continued.structuredContent as { ennoOduno: { status: string } }).ennoOduno.status, 'goki_executing');
-  } finally {
-    await client.close();
-    if (server.isConnected()) await server.close();
-  }
-});
-
-test('malformed compatibility discovery degrades across task_prepare and enno_plan_submit without an integrity error', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-malformed-discovery-repo-'));
-  execFileSync('git', ['init', '-q', root]);
-  await writeFile(path.join(root, 'package.json'), JSON.stringify({ dependencies: { svelte: '^5.0.0' } }));
-  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-malformed-discovery-data-'));
-  const databasePath = path.join(data, 'kiokuko.sqlite3');
-  let registryCalls = 0;
-  let sourceCalls = 0;
-  const fetchImpl: typeof fetch = async (input) => {
-    const url = new URL(String(input));
-    if (url.hostname !== 'skills.sh') {
-      sourceCalls += 1;
-      throw new Error(`unexpected source fetch: ${url.origin}${url.pathname}`);
-    }
-    registryCalls += 1;
-    const query = url.searchParams.get('q') ?? '';
-    return new Response(JSON.stringify({
-      skills: [],
-      query,
-      searchType: query.includes(' ') ? 'semantic' : 'fuzzy',
-      count: 0,
-      duration_ms: 1,
-      searchVersion: 'undocumented-fixture',
-    }), { status: 200, headers: { 'content-type': 'application/json' } });
-  };
-  const server = createKiokukoMcpServer({ databasePath, cwd: () => root, fetchImpl });
-  const client = new Client({ name: 'codex-malformed-discovery-test', version: '1.0.0' });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  try {
-    const capabilities = [SOUL_CAPABILITY, {
-      kind: 'skill',
-      name: 'kiokuko-single-purpose-functions',
-      description: 'Focused code contracts and tests.',
-    }];
-    const prepared = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-malformed-discovery-request',
-        task: 'Repair the Svelte component and make tests pass',
-        profileHints: { taskType: 'debug', target: 'src/component.ts', expected: 'node --test passes' },
-        capabilities,
-      },
-    });
-    assert.equal(prepared.isError, undefined);
-    assert.doesNotMatch(JSON.stringify(prepared), /Internal integrity error/u);
-    const preparedContent = prepared.structuredContent as {
-      run: { runId: string };
-      project: { workspace: string };
-      intake: { sessionId: string };
-      ennoOduno: { status: string };
-      skillDiscovery: { selected: unknown[]; failures: Array<{ stage: string; code: string }> };
-    };
-    assert.equal(preparedContent.ennoOduno.status, 'oduno_ideal');
-    assert.deepEqual(preparedContent.skillDiscovery.selected, []);
-    assert.deepEqual(preparedContent.skillDiscovery.failures, [{ stage: 'search', code: 'registry_invalid_response' }]);
-    const identity = {
-      runId: preparedContent.run.runId,
-      workspace: preparedContent.project.workspace,
-      orchestrationId: preparedContent.intake.sessionId,
-    };
-    const ideal = await client.callTool({
-      name: 'enno_ideal_submit',
-      arguments: {
-        ...identity,
-        expectedRevision: 1,
-        idempotencyKey: 'mcp-malformed-discovery-ideal',
-        ideal: {
-          objective: 'Repair the Svelte component with focused verification',
-          principles: ['Preserve the public API'],
-          skillContributions: [],
-          successSignals: ['node --test passes'],
-        },
-      },
-    });
-    assert.equal(ideal.isError, undefined);
-    const plan = await client.callTool({
-      name: 'enno_plan_submit',
-      arguments: {
-        ...identity,
-        expectedRevision: 1,
-        idempotencyKey: 'mcp-malformed-discovery-plan',
-        scope: ['src/component.ts'],
-        exclusions: [],
-        acceptanceCriteria: [{ id: 'tests', description: 'node --test passes' }],
-        workPlan: {
-          objective: 'Repair the Svelte component',
-          units: [{
-            id: 'repair-component',
-            objective: 'Repair the Svelte component',
-            scope: ['src/component.ts'],
-            dependencies: [],
-            routes: ['code'], skillNames: ['kiokuko-single-purpose-functions'],
-            expertRefs: [
-              { id: 'code.boundary.v1', reason: 'Keep malformed provider data outside the planning boundary' },
-              { id: 'code.protocol.v1', reason: 'Preserve replay and idempotency contracts' },
-              { id: 'code.verification.v1', reason: 'Prove the MCP regression with focused evidence' },
-            ],
-            acceptanceCriteria: ['node --test passes'],
-            focusedVerifiers: [],
-          }],
-        },
-        skillRequirements: [],
-        finalVerifiers: [{ id: 'final-test', kind: 'test', executable: process.execPath, args: ['--eval', 'process.exit(0)'], cwd: '.', timeoutMs: 5000 }],
-        maxAttempts: 1,
-        provenance: {
-          scope: 'explicit_user', exclusions: 'explicit_user', acceptanceCriteria: 'explicit_user',
-          workPlan: 'explicit_user', skillSet: 'explicit_user', finalVerifiers: 'explicit_user', maxAttempts: 'explicit_user',
-        },
-        capabilities,
-      },
-    });
-    assert.equal(plan.isError, undefined);
-    assert.doesNotMatch(JSON.stringify(plan), /Internal integrity error/u);
-    const planContent = plan.structuredContent as { ennoOduno: { status: string } };
-    assert.equal(planContent.ennoOduno.status, 'goki_executing');
-    assert.equal(registryCalls, 2);
-    assert.equal(sourceCalls, 0);
-
-    const database = openConnection(databasePath);
-    try {
-      const contractRow = database.prepare('SELECT contract_json AS contractJson FROM enno_contracts WHERE run_id = ?')
-        .get<{ contractJson: string }>(identity.runId);
-      assert.ok(contractRow !== undefined);
-      const contract = JSON.parse(contractRow.contractJson) as {
-        skillSet: { zenkiDiscovery: { selected: unknown[]; failures: Array<{ stage: string; code: string }> } };
-      };
-      assert.deepEqual(contract.skillSet.zenkiDiscovery.selected, []);
-      assert.deepEqual(contract.skillSet.zenkiDiscovery.failures, [{ stage: 'search', code: 'registry_invalid_response' }]);
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM skill_discovery_cache').get<{ count: number }>()?.count, 0);
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM skill_audit_failure_cache').get<{ count: number }>()?.count, 0);
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM external_skills').get<{ count: number }>()?.count, 0);
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM external_skill_entries').get<{ count: number }>()?.count, 0);
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count, 0);
-      assert.deepEqual(database.prepare(`
-        SELECT phase, state FROM agent_task_skill_discovery_attempts
-        WHERE run_id = ? ORDER BY phase
-      `).all(identity.runId).map((row) => ({ ...row })), [
-        { phase: 'intake', state: 'completed' },
-        { phase: 'zenki', state: 'completed' },
-      ]);
-    } finally {
-      database.close();
-    }
-  } finally {
-    await client.close();
-    if (server.isConnected()) await server.close();
-  }
-});
-
-test('memory_checkpoint returns actionable MCP guidance during intake and succeeds after task_answer finalizes the run', async () => {  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-repo-'));
+test('memory_checkpoint returns actionable MCP guidance during intake and succeeds after task_answer finalizes the run', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-repo-'));
   execFileSync('git', ['init', '-q', root]);
   const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-recovery-data-'));
   const databasePath = path.join(data, 'kiokuko.sqlite3');
@@ -1724,7 +743,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     });
     assert.equal(availableContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(availableContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
-     assert.equal(availableContent.context.policyVersion, 'context-ranking-v6');
+    assert.equal(availableContent.context.policyVersion, 'context-ranking-v6');
 
     const exactBoundary = await client.callTool({
       name: 'task_prepare',
@@ -1833,7 +852,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       });
       assert.equal(persisted.includes(sentinel), false);
       assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(content.run.runId)?.count, 0);
-       assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v6');
+      assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v6');
       const storedReasons = database.prepare(`
         SELECT selection_reason_json
           FROM context_delivery_entries

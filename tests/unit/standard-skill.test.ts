@@ -1,12 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { SOUL_ROUTING_ENTRY_CONTRACT } from '../../src/akinator/instructions.js';
 import {
   loadBundledStandardSkillFiles,
-  SOUL_ROUTING_ENTRY_CONTRACT,
-  STANDARD_ENNO_SKILL_FILES,
-  STANDARD_ENNO_SKILL_MANAGED_MARKER,
-  STANDARD_ENNO_SKILL_NAME,
   STANDARD_FUNCTION_EXPERT_FILES,
   STANDARD_FUNCTION_EXPERT_IDS,
   STANDARD_FUNCTION_SKILL_FILES,
@@ -82,7 +79,7 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(functionSkill, /references\/review-checklist\.md/);
   assert.match(functionSkill, /one cohesive externally observable responsibility/);
   assert.match(functionSkill, /across languages, frameworks, and repositories/);
-  assert.match(functionSkill, /mixture-of-experts dispatch/iu);
+  assert.match(functionSkill, /expert references identify the selected guidance/iu);
   for (const [index, expertId] of STANDARD_FUNCTION_EXPERT_IDS.entries()) {
     assert.match(functionSkill, new RegExp(expertId.replaceAll('.', '\\.')));
     assert.equal(functionFiles.some((file) => file.relativePath === STANDARD_FUNCTION_EXPERT_FILES[index]), true);
@@ -108,24 +105,6 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(simpleSkill, /Stop at the first rung that holds/);
   assert.match(simpleSkill, /Never simplify away: input validation at trust boundaries/);
 
-  const ennoFiles = files.filter((file) => file.skillName === STANDARD_ENNO_SKILL_NAME);
-  assert.deepEqual(ennoFiles.map((file) => file.relativePath), [...STANDARD_ENNO_SKILL_FILES]);
-  assert.ok(ennoFiles.every((file) => file.managedMarker === STANDARD_ENNO_SKILL_MANAGED_MARKER));
-  const ennoSkill = ennoFiles.find((file) => file.relativePath === 'SKILL.md')?.content ?? '';
-  assert.match(ennoSkill, new RegExp(`^---\\nname: ${STANDARD_ENNO_SKILL_NAME}\\ndescription: [^\\n]+\\n---\\n`));
-  assert.match(ennoSkill, /Enno-Oduno alone owns this state machine/);
-  assert.match(ennoSkill, /Do not start Zenki or Goki/);
-  assert.match(ennoSkill, /Never select a repository-wide latest run/);
-  assert.match(ennoSkill, /optional routing metadata, not authorization ownership/u);
-  assert.match(ennoSkill, /leaves the run active for another local project client/u);
-  assert.match(ennoSkill, /accepted review advances to `oduno_meditation`/iu);
-  assert.match(ennoSkill, /enno_meditation_submit.*completion follows persistence, not deletion/iu);
-  assert.match(ennoSkill, /one to three versioned `expertRefs`/u);
-  assert.match(ennoSkill, /local routes from `code`, `ui`, `test`, `docs`, and `operations`/u);
-  assert.match(ennoSkill, /opaque resume token.*route epoch/iu);
-  assert.match(ennoSkill, /execution lease blocks rerouting/iu);
-  assert.match(ennoSkill, /Before the Final Review advisory fanout.*`enno_verify_prepare`/iu);
-  assert.match(ennoSkill, /`enno_finish`.*never spawns a subprocess.*full stored passing evidence/iu);
 
   const memoryFiles = files.filter((file) => file.skillName === STANDARD_MEMORY_SKILL_NAME);
   assert.deepEqual(memoryFiles.map((file) => file.relativePath), [...STANDARD_MEMORY_SKILL_FILES]);
@@ -146,18 +125,16 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, new RegExp(`^---\\nname: ${STANDARD_SOUL_SKILL_NAME}\\ndescription: [^\\n]+\\n---\\n`));
   assert.match(soulSkill, /Read this Skill before any other bundled Kiokuko Skill/);
   assert.match(soulSkill, /Akinator is the mandatory state machine between this SOUL read and every planning or implementation route/);
-  assert.match(soulSkill, /It applies whether or not Enno-Oduno is applicable/);
   assert.match(soulSkill, /Call `task_prepare` at most once.*complete capability catalog available in the current client/su);
   assert.match(soulSkill, /`needs_answer`.*Akinator controls progress.*Do not plan, implement, verify, enter the simple\/code\/UI routes, or call `memory_checkpoint` while unresolved/su);
   assert.match(soulSkill, /Repeat the same capability catalog and context budget.*continue until `ready` or `exhausted`/su);
-  assert.match(soulSkill, /If `ennoOduno\.applicable=true`, read `kiokuko-enno-oduno` now.*do not start Zenki or Goki/su);
   assert.match(soulSkill, /`exhausted`.*`intake\.missingFields` may remain.*do not invent the missing answers/su);
   assert.match(soulSkill, /Enter planning and implementation routes only after the Akinator gate reaches `ready` or `exhausted` and top-level `nextAction` permits progress/);
-  assert.match(soulSkill, /Do not invent a run, role, revision, WorkUnit, or state transition/);
+  assert.match(soulSkill, /Keep each route within the user-approved task scope/);
   assert.match(soulSkill, /Read and apply `kiokuko-simple-work` when either condition is true/u);
   assert.match(soulSkill, /introduces no new architecture, dependency, data migration, public protocol, security or authorization policy, or cross-system orchestration/u);
   assert.match(soulSkill, /does not replace the code contract below or waive required understanding, boundary validation, error handling, security, accessibility, or focused verification/u);
-  for (const routedSkill of [STANDARD_ENNO_SKILL_NAME, STANDARD_SIMPLE_SKILL_NAME, STANDARD_FUNCTION_SKILL_NAME, STANDARD_UI_SKILL_NAME]) {
+  for (const routedSkill of [STANDARD_SIMPLE_SKILL_NAME, STANDARD_FUNCTION_SKILL_NAME, STANDARD_UI_SKILL_NAME]) {
     assert.ok(soulSkill.includes('`' + routedSkill + '`'));
   }
   assert.match(soulSkill, /Routes compose\. Read every applicable specialist index/);
@@ -165,20 +142,18 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, /Never install or execute external Skill content automatically/);
   assert.match(
     soulSkill,
-    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `kiokuko-enno-oduno`[\s\S]*4\. `kiokuko-simple-work`[\s\S]*5\. `kiokuko-single-purpose-functions`[\s\S]*6\. `kiokuko-ui-design-soul`/u,
+    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `kiokuko-simple-work`[\s\S]*4\. `kiokuko-single-purpose-functions`[\s\S]*5\. `kiokuko-ui-design-soul`/u,
   );
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Akinator is the mandatory intake state machine before every planning or implementation route/);
-  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /whether or not Enno-Oduno applies/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/);
 });
 
 test('the packaged skill sources remain readable at their repository locations', async () => {
-  const [uiSkill, simpleSkill, functionSkill, ennoSkill, memorySkill, soulSkill, bundledFiles] = await Promise.all([
+  const [uiSkill, simpleSkill, functionSkill, memorySkill, soulSkill, bundledFiles] = await Promise.all([
     readFile(new URL('../../skills/kiokuko-ui-design-soul/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-simple-work/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-single-purpose-functions/SKILL.md', import.meta.url), 'utf8'),
-    readFile(new URL('../../skills/kiokuko-enno-oduno/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/memory-reasoning/SKILL.md', import.meta.url), 'utf8'),
     readFile(new URL('../../skills/kiokuko-soul/SKILL.md', import.meta.url), 'utf8'),
     loadBundledStandardSkillFiles(),
@@ -186,13 +161,8 @@ test('the packaged skill sources remain readable at their repository locations',
   assert.match(uiSkill, /^---\nname: kiokuko-ui-design-soul\n/);
   assert.match(simpleSkill, /^---\nname: kiokuko-simple-work\n/);
   assert.match(functionSkill, /^---\nname: kiokuko-single-purpose-functions\n/);
-  assert.match(ennoSkill, /^---\nname: kiokuko-enno-oduno\n/);
   assert.match(memorySkill, /^---\nname: memory-reasoning\n/);
   assert.match(soulSkill, /^---\nname: kiokuko-soul\n/);
-  assert.equal(
-    bundledFiles.find((file) => file.skillName === STANDARD_ENNO_SKILL_NAME && file.relativePath === 'SKILL.md')?.content,
-    ennoSkill,
-  );
   assert.equal(
     bundledFiles.find((file) => file.skillName === STANDARD_SIMPLE_SKILL_NAME && file.relativePath === 'SKILL.md')?.content,
     simpleSkill,

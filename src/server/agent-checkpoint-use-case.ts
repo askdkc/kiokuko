@@ -1,17 +1,17 @@
-import { KiokukoError } from '../errors.js';
-import { checkpointEligibility } from '../ledger/checkpoint-eligibility.js';
-import type { RunStatus } from '../ledger/types.js';
-import type { AgentGatewayService } from '../gateway/agent-service.js';
-import type { CheckpointMutationPort, CheckpointMutationResult } from '../gateway/checkpoint-mutation-service.js';
-import type { NudgeDeliveryPort } from '../gateway/nudge-delivery-service.js';
+import { assertCapabilityCatalogBinding } from '../akinator/capability-binding.js';
 import type { ContextBroker, ContextBrokerResult } from '../context/broker.js';
 import type { DeliveredNudge } from '../context/nudges.js';
 import type { Recommendation } from '../context/recommendations.js';
 import { buildRecommendations } from '../context/recommendations.js';
-import { canonicalJson } from '../serialization/validate.js';
-import { successEnvelope } from '../serialization/envelope.js';
-import { assertCapabilityCatalogBinding } from '../akinator/capability-binding.js';
+import { KiokukoError } from '../errors.js';
+import type { AgentGatewayService } from '../gateway/agent-service.js';
+import type { CheckpointMutationPort, CheckpointMutationResult } from '../gateway/checkpoint-mutation-service.js';
+import type { NudgeDeliveryPort } from '../gateway/nudge-delivery-service.js';
+import { checkpointEligibility } from '../ledger/checkpoint-eligibility.js';
+import type { RunStatus } from '../ledger/types.js';
 import { retrievableWorkspaceEntryCount } from '../memory/hybrid-retrieval.js';
+import { successEnvelope } from '../serialization/envelope.js';
+import { canonicalJson } from '../serialization/validate.js';
 import type { CapabilityGatedIntakeResponse } from './routes/agent-capability-gate.js';
 import {
   applyAgentCapabilityGateWithDeliveryObservation,
@@ -25,7 +25,6 @@ export interface AgentCheckpointUseCaseDependencies {
   readonly database: import('../db/adapter.js').SqliteDatabase;
   readonly service: AgentGatewayService;
   readonly checkpointMutation: CheckpointMutationPort;
-  readonly validateMutationAcknowledgement?: boolean;
   readonly nudgeDelivery: NudgeDeliveryPort;
   readonly broker: ContextBroker;
   readonly enqueueWrite: <T>(operation: () => T | PromiseLike<T>) => Promise<T>;
@@ -127,7 +126,7 @@ function assertMutationAcknowledgement(
 }
 
 export class AgentCheckpointUseCase {
-  constructor(private readonly dependencies: AgentCheckpointUseCaseDependencies) {}
+  constructor(private readonly dependencies: AgentCheckpointUseCaseDependencies) { }
 
   async execute(input: AgentCheckpointInput): Promise<AgentCheckpointResponse> {
     const catalog = requestCapabilityCatalog(input.body);
@@ -141,9 +140,7 @@ export class AgentCheckpointUseCase {
       idempotencyKey: input.idempotencyKey,
       request: serviceRequest,
     }));
-    if (this.dependencies.validateMutationAcknowledgement !== false) {
-      assertMutationAcknowledgement(mutation, input.runId);
-    }
+    assertMutationAcknowledgement(mutation, input.runId);
     const signals = checkpointSignals(serviceRequest);
     const gated = await this.dependencies.broker.queryGated({
       workspace: 'run-bound',

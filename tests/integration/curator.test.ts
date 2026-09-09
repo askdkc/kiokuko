@@ -3,16 +3,16 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { initializeDatabase } from '../../src/commands/init.js';
 import { runCuratorCommand } from '../../src/commands/curator.js';
+import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
-import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { CURATOR_DRAFT_VERSION, curateMemoryCandidates, globalizeCuratorCandidate } from '../../src/memory/curator.js';
 import { recordEntry } from '../../src/memory/entries.js';
+import { recallEntries } from '../../src/memory/retrieval.js';
+import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import { canonicalEntryRevisionContentHash, canonicalJson, type JsonObject, type JsonValue } from '../../src/serialization/validate.js';
 import { startWebServer } from '../../src/web/server.js';
-import { recallEntries } from '../../src/memory/retrieval.js';
 
 async function fixture() {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-curator-'));
@@ -97,12 +97,6 @@ test('curator identifies reusable candidates and globalizes only after explicit 
     assert.doesNotMatch(JSON.stringify({ title: result.global.title, summary: result.global.summary, body: result.global.body }), /(?:This project|\/Users\/example|repo_curator_test|project:curator-test)/u);
     assert.ok(result.global.tags.includes('skill:curated'));
     assert.ok(result.global.tags.includes(`curator:${CURATOR_DRAFT_VERSION}`));
-
-    data.database.prepare(`
-      UPDATE entries
-         SET status = 'candidate', trust_level = 'untrusted', verified_at = NULL
-       WHERE id = ?
-    `).run(result.global.id);
     const replay = globalizeCuratorCandidate(data.database, {
       workspace: 'project:curator-test',
       entryId: data.reusable.id,

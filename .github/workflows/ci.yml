@@ -39,7 +39,7 @@ jobs:
         env:
           KIOKUKO_REQUIRE_SQLITE_VEC_SMOKE: "1"
 
-      - name: Verify sample database migration and Web API
+      - name: Verify sample database baseline and Web API
         run: npm run test:sampledb
 
       - name: Verify package contents

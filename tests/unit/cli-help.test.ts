@@ -6,7 +6,6 @@ import path from 'node:path';
 import { PassThrough, Readable, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
-import { KiokukoError } from '../../src/errors.js';
 import {
   parseSetupSkillDiscoveryMode,
   promptCommunitySkillDiscovery,
@@ -14,6 +13,7 @@ import {
   promptSetupClients,
   promptSetupConfiguration,
 } from '../../src/commands/setup.js';
+import { KiokukoError } from '../../src/errors.js';
 
 function interactiveAnswers(...answers: string[]): PassThrough & { isTTY?: boolean } {
   const input = new PassThrough() as PassThrough & { isTTY?: boolean };
@@ -737,4 +737,15 @@ test('exposes exactly server status in the server command group', () => {
   const status = server.commands[0];
   assert.ok(status);
   assert.match(status.helpInformation(), /--json/);
+});
+
+test('major version refuses removed commands and flags as unsupported operations', async () => {
+  for (const args of [['enno'], ['setup', '--enno-oduno'], ['embeddings', 'setup', '--enno-oduno']]) {
+    const cli = buildCli().exitOverride().configureOutput({ writeErr: () => { }, writeOut: () => { } });
+    await assert.rejects(cli.parseAsync(args, { from: 'user' }), (error: unknown) =>
+      error instanceof Error && 'code' in error && ['commander.unknownCommand', 'commander.unknownOption'].includes(String(error.code)));
+  }
+  const cli = buildCli();
+  assert.doesNotMatch(cli.helpInformation(), /enno|oduno|zenki|goki/i);
+  assert.doesNotMatch(cli.commands.find(command => command.name() === 'setup')!.helpInformation(), /enno|oduno|zenki|goki/i);
 });

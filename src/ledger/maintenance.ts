@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { parseStoredIdentifier, parseStoredNudgeDelivery, validateStoredNudgeHistory, type StoredNudgeDelivery } from '../context/nudge-validation.js';
+import { DEFAULT_NUDGE_RATE_LIMIT } from '../context/nudges.js';
+import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { isSqliteCorruptionError } from '../db/sqlite-retry.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -6,9 +9,6 @@ import { KiokukoError } from '../errors.js';
 import { findSecret } from '../memory/secrets.js';
 import { sanitizeJson } from '../security/sanitize.js';
 import { canonicalJson, GENESIS_HASH, hashLedgerEvent } from './hash.js';
-import { entryOriginMatchesWorkspace, isContextEntryOrigin } from '../context/origin.js';
-import { DEFAULT_NUDGE_RATE_LIMIT } from '../context/nudges.js';
-import { parseStoredIdentifier, parseStoredNudgeDelivery, validateStoredNudgeHistory, type StoredNudgeDelivery } from '../context/nudge-validation.js';
 import {
   CAPTURE_PROFILES,
   COVERAGE_LEVELS,
@@ -113,15 +113,6 @@ function hasTable(database: SqliteDatabase, table: string): boolean {
   `).get(table));
 }
 
-function migrationApplied(database: SqliteDatabase, version: number): boolean {
-  return hasTable(database, 'schema_migrations')
-    && Boolean(database.prepare(`
-      SELECT 1 AS present
-        FROM schema_migrations
-       WHERE version = ?
-    `).get(version));
-}
-
 function emptyChecks(): LedgerIntegrityChecks {
   return Object.fromEntries(LEDGER_CHECK_NAMES.map((name) => [name, { ok: true, count: 0, findingCount: 0, findings: [], truncated: false }])) as unknown as LedgerIntegrityChecks;
 }
@@ -130,7 +121,7 @@ class FindingCollector {
   readonly findings: LedgerFinding[] = [];
   findingCount = 0;
   findingsTruncated = false;
-  constructor(readonly checks: LedgerIntegrityChecks) {}
+  constructor(readonly checks: LedgerIntegrityChecks) { }
   add(checkName: LedgerCheckName, kind: string, category: string, value?: unknown): void {
     const check = this.checks[checkName];
     check.ok = false;
@@ -531,7 +522,6 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
   try {
     const workspace = options.workspace;
     const nudgeDeliveriesAvailable = hasTable(database, 'nudge_deliveries');
-    const nudgeDeliveriesRequired = migrationApplied(database, 10);
     const reportCounts = counts(database, workspace, nudgeDeliveriesAvailable);
     const checks = emptyChecks();
     const findings = new FindingCollector(checks);
@@ -542,7 +532,7 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
     inspectIntakes(database, workspace, runs, findings);
     inspectReferences(database, workspace, findings);
     inspectContext(database, workspace, runs, findings);
-    if (nudgeDeliveriesRequired && !nudgeDeliveriesAvailable) {
+    if (!nudgeDeliveriesAvailable) {
       findings.add('nudgeDeliveries', 'missing_table', 'nudge_deliveries');
     }
     if (nudgeDeliveriesAvailable) inspectNudgeDeliveries(database, workspace, findings);

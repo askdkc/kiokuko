@@ -1,19 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
+import type { PathEnvironment } from '../config/paths.js';
+import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry } from '../memory/entries.js';
 import { buildCanonicalEmbeddingDocument, renderEmbeddingProviderInput } from './document.js';
 import { claimEmbeddingJobs, failEmbeddingJob, finalizeEmbeddingJob, listEmbeddingJobs } from './jobs.js';
-import { acquireEmbeddingSetupLock } from './setup-lock.js';
+import type { ModelDownloader, ModelDownloadProgress } from './model-download.js';
 import { installEmbeddingModel, type InstalledModel } from './model-installation.js';
 import { LOCAL_SMALL_PRESET } from './presets/local-small.js';
 import { createLocalEmbeddingProfile } from './profile.js';
+import { acquireEmbeddingSetupLock } from './setup-lock.js';
 import { activateLocalEmbeddingProfileInTransaction } from './store.js';
-import type { ModelDownloader, ModelDownloadProgress } from './model-download.js';
-import type { SqliteDatabase } from '../db/adapter.js';
 import type { EmbeddingProvider } from './types.js';
-import type { PathEnvironment } from '../config/paths.js';
 
 export interface EmbeddingSetupInput {
   readonly presetId: string;
@@ -26,7 +26,6 @@ export interface EmbeddingSetupInput {
 export interface EmbeddingSetupResult {
   readonly presetId: string;
   readonly model: { readonly repository: string; readonly revision: string; readonly installation: 'installed' | 'reused'; readonly bytes: number };
-  readonly migration: { readonly fromVersion: number; readonly toVersion: number; readonly backupPath: string | null; readonly applied: readonly number[] };
   readonly profile: { readonly profileId: string; readonly generation: number; readonly activated: boolean };
   readonly embeddings: { readonly eligible: number; readonly completed: number; readonly failed: number; readonly blocked: number; readonly remaining: number };
   readonly backend: string;
@@ -71,7 +70,7 @@ function activateSettings(database: SqliteDatabase, input: { installationId: str
     UPDATE embedding_settings
        SET mode = 'optional', provider_kind = 'local-transformers', preset_id = ?,
            model_installation_id = ?, vector_backend = 'auto', batch_size = 16,
-           timeout_ms = 30000, legacy_profile_id = NULL, setup_state = ?, updated_at = ?
+           timeout_ms = 30000, setup_state = ?, updated_at = ?
      WHERE singleton = 1
   `).run(LOCAL_SMALL_PRESET.id, input.installationId, input.setupState, input.now);
 }
@@ -147,12 +146,10 @@ export async function runEmbeddingSetup(
     throw new KiokukoError('VALIDATION_ERROR', 'Embedding setup options are invalid');
   }
   const eligible = Number(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count ?? 0);
-  const fromVersion = Number(database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get<{ version: number }>()?.version ?? 0);
   if (input.dryRun) {
     return {
       presetId: LOCAL_SMALL_PRESET.id,
       model: { repository: LOCAL_SMALL_PRESET.artifactRepository, revision: LOCAL_SMALL_PRESET.revision, installation: 'reused', bytes: LOCAL_SMALL_PRESET.files.reduce((sum, file) => sum + file.size, 0) },
-      migration: { fromVersion, toVersion: fromVersion, backupPath: null, applied: [] },
       profile: { profileId: createLocalEmbeddingProfile(LOCAL_SMALL_PRESET).profileId, generation: 0, activated: false },
       embeddings: { eligible, completed: 0, failed: 0, blocked: 0, remaining: eligible },
       backend: options.backendId ?? 'javascript',
@@ -205,7 +202,6 @@ export async function runEmbeddingSetup(
     return {
       presetId: LOCAL_SMALL_PRESET.id,
       model: { repository: LOCAL_SMALL_PRESET.artifactRepository, revision: LOCAL_SMALL_PRESET.revision, installation: installed.installation, bytes: installed.totalBytes },
-      migration: { fromVersion, toVersion: fromVersion, backupPath: null, applied: [] },
       profile: { profileId: profile.profileId, generation: activation.generation, activated: activation.activated },
       embeddings: { eligible, completed: drain.completed, failed: drain.failed, blocked: drain.blocked, remaining: drain.remaining },
       backend: options.backendId ?? 'javascript',

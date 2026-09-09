@@ -1,5 +1,7 @@
 import type { SqliteDatabase } from '../db/adapter.js';
+import { readActiveEmbeddingProfile, readEmbeddingRuntimeState, readEntryEmbedding, type ActiveEmbeddingProfile } from '../embedding/store.js';
 import { KiokukoError } from '../errors.js';
+import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { readEntry } from '../memory/entries.js';
 import {
   activeExternalSkillReferenceCandidateSql,
@@ -9,9 +11,7 @@ import {
 import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
 import { canonicalContentHash, compareCanonicalStrings } from '../serialization/validate.js';
 import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
-import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { contextFeedbackSignals } from './feedback.js';
-import { readActiveEmbeddingProfile, readEmbeddingRuntimeState, readEntryEmbedding, type ActiveEmbeddingProfile } from '../embedding/store.js';
 
 export const CONTEXT_SELECTION_STATE_MAX_ENTRIES = 10_000;
 const MAX_SELECTION_WORKSPACES = 2;
@@ -136,23 +136,7 @@ interface SemanticProjectionState {
   activeProfile: ActiveEmbeddingProfile | null;
 }
 
-function embeddingProjectionInstalled(database: SqliteDatabase): boolean {
-  const row = database.prepare(`
-    SELECT COUNT(*) AS count
-      FROM sqlite_master
-     WHERE type = 'table'
-       AND name IN ('embedding_profiles', 'embedding_runtime', 'entry_embeddings', 'embedding_jobs', 'query_embeddings')
-  `).get<{ count: unknown }>();
-  if (row === undefined || typeof row.count !== 'number' || !Number.isSafeInteger(row.count) || row.count < 0 || row.count > 5) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Stored embedding projection schema is invalid');
-  }
-  return row.count > 0;
-}
-
 function semanticProjectionState(database: SqliteDatabase): SemanticProjectionState {
-  if (!embeddingProjectionInstalled(database)) {
-    return { activeProfileId: null, generation: null, profile: null, activeProfile: null };
-  }
   const runtime = readEmbeddingRuntimeState(database);
   const activeProfile = readActiveEmbeddingProfile(database);
   return {
@@ -274,11 +258,13 @@ function contextCandidateState(
   const semanticState = options.includeSemantic ? semanticProjectionState(database) : null;
   const emptySemantic = { activeProfileId: null, generation: null, profile: null } as const;
   if (workspaces.length === 0 && !options.includeEcosystem) {
-    return { workspaces, entries: [], semantic: semanticState === null ? emptySemantic : {
-      activeProfileId: semanticState.activeProfileId,
-      generation: semanticState.generation,
-      profile: semanticState.profile,
-    } };
+    return {
+      workspaces, entries: [], semantic: semanticState === null ? emptySemantic : {
+        activeProfileId: semanticState.activeProfileId,
+        generation: semanticState.generation,
+        profile: semanticState.profile,
+      }
+    };
   }
   const workspacePredicate = workspaces.map(() => '?').join(', ');
   const externalMarker = externalSkillReferenceCandidateSql();
@@ -347,11 +333,13 @@ function contextCandidateState(
       parameters.push(semanticState!.activeProfileId!);
     }
   }
-  if (clauses.length === 0) return { workspaces, entries: [], semantic: semanticState === null ? emptySemantic : {
-    activeProfileId: semanticState.activeProfileId,
-    generation: semanticState.generation,
-    profile: semanticState.profile,
-  } };
+  if (clauses.length === 0) return {
+    workspaces, entries: [], semantic: semanticState === null ? emptySemantic : {
+      activeProfileId: semanticState.activeProfileId,
+      generation: semanticState.generation,
+      profile: semanticState.profile,
+    }
+  };
   const rows = database.prepare(`
     SELECT e.id, e.workspace, CASE WHEN ${externalMarker} THEN 1 ELSE 0 END AS isExternal
       FROM entries AS e
@@ -390,7 +378,7 @@ function contextCandidateState(
       ? isRetrievableEntry(database, entry)
       : options.includeEcosystem && isFederatedEcosystemCandidate(database, entry);
     if (!retrievable) return [];
-     return [selectionEntrySnapshot(database, entry, semanticState)];
+    return [selectionEntrySnapshot(database, entry, semanticState)];
   });
   return {
     workspaces,

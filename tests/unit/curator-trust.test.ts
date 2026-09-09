@@ -3,7 +3,6 @@ import test from 'node:test';
 import {
   CURATOR_DRAFT_VERSION,
   CURATOR_MEMORY_ACTOR,
-  isLegacyCuratorGlobalMemory,
   isTrustedCuratorGlobalMemory,
 } from '../../src/memory/curator-trust.js';
 
@@ -44,5 +43,4 @@ test('recognizes only the complete deterministic Curator global identity without
   assert.equal(isTrustedCuratorGlobalMemory({ ...memory, revision: 2 }), false);
   assert.equal(isTrustedCuratorGlobalMemory({ ...memory, tags: ['global'] }), false);
   assert.equal(isTrustedCuratorGlobalMemory({ ...memory, status: 'candidate', trustLevel: 'untrusted', verifiedAt: null }), false);
-  assert.equal(isLegacyCuratorGlobalMemory({ ...memory, status: 'candidate', trustLevel: 'untrusted', verifiedAt: null }), true);
 });

@@ -1,13 +1,13 @@
-import path from 'node:path';
 import { mkdir, rmdir } from 'node:fs/promises';
-import { createInterface } from 'node:readline/promises';
+import path from 'node:path';
 import { stdin, stdout } from 'node:process';
+import { createInterface } from 'node:readline/promises';
 import {
-  atomicWriteTextIfUnchanged,
   assertAtomicCleanupComplete,
+  assertFileExpectation,
   AtomicCommittedMutationError,
   AtomicCommittedUnlinkError,
-  assertFileExpectation,
+  atomicWriteTextIfUnchanged,
   readDirectoryIdentity,
   readRegularFile,
   unlinkRegularFileIfUnchanged,
@@ -20,56 +20,42 @@ import {
   getClaudeMcpConfigPath,
   getClaudeSkillsDirectory,
   getCodexConfigPath,
-  getCodexHooksPath,
   getCodexInstructionsPath,
   getCodexSkillsDirectory,
   getGlobalDatabasePath,
-  getLegacyClaudePromptHookSettingsPath,
-  getLegacyOpenCodeLoopGuardPath,
   getOpenCodeConfigDirectory,
-  getOpenCodeEnnoPluginPath,
   getOpenCodeInstructionsPath,
   getOpenCodeSkillsDirectory,
   resolveHermesProfilePaths,
   type HermesProfilePaths,
   type PathEnvironment,
 } from '../config/paths.js';
-import { initializeDatabase } from './init.js';
 import { databaseFileIdentity, openConnection } from '../db/connection.js';
-import { ensureGlobalWorkspace } from '../memory/workspaces.js';
 import { KiokukoError } from '../errors.js';
-import { isSkillDiscoveryMode, normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
-import type { SkillDiscoveryMode } from '../skills/types.js';
-import { hasCanonicalOpenCodeMcpConfig, renderOpenCodeConfig } from '../setup/opencode-config.js';
-import { setupMcpIdentityConflictClient } from '../setup/mcp-conflict.js';
-import { hasCanonicalCodexMcpConfig, renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
-import { hasCanonicalClaudeMcpConfig, renderClaudeConfig } from '../setup/claude-config.js';
-import { renderHermesConfig } from '../setup/hermes-config.js';
+import { ensureGlobalWorkspace } from '../memory/workspaces.js';
+import {
+  findMissingRepositoryLocations,
+  removeMissingRepositoryLocations,
+} from '../repository/binding.js';
+import { renderClaudeConfig } from '../setup/claude-config.js';
 import { detectInstalledClients } from '../setup/client-detection.js';
-import {
-  assertExactLegacyOpenCodeLoopGuard,
-  cleanupLegacyClaudePromptHook,
-} from '../setup/legacy-client-cleanup.js';
-import {
-  loadBundledStandardSkillFiles,
-  renderStandardSkillFile,
-} from '../setup/standard-skills.js';
+import { renderHermesConfig } from '../setup/hermes-config.js';
+import { setupMcpIdentityConflictClient } from '../setup/mcp-conflict.js';
+import { renderOpenCodeConfig } from '../setup/opencode-config.js';
 import {
   listRegisteredProjectLocations,
   refreshRegisteredProjectAgentFiles,
   type ProjectAgentRefreshResult,
   type RegisteredProjectLocation,
 } from '../setup/project-agent-refresh.js';
+import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
 import {
-  findMissingRepositoryLocations,
-  removeMissingRepositoryLocations,
-} from '../repository/binding.js';
-import {
-  renderEnnoStopHook,
-  renderOpenCodeEnnoPlugin,
-  type EnnoSetupMode,
-  type OptionalRenderedFile,
-} from '../setup/enno-client-config.js';
+  loadBundledStandardSkillFiles,
+  renderStandardSkillFile,
+} from '../setup/standard-skills.js';
+import { isSkillDiscoveryMode, normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
+import type { SkillDiscoveryMode } from '../skills/types.js';
+import { initializeDatabase } from './init.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
@@ -99,7 +85,7 @@ interface PlannedFile {
   original: RegularFileSnapshot | undefined;
   mustRemainAbsent?: readonly string[];
   action: SetupAction;
-  purpose: 'mcp-config' | 'instructions' | 'standard-skill' | 'legacy-cleanup' | 'enno-hook';
+  purpose: 'mcp-config' | 'instructions' | 'standard-skill';
   client: SetupClient;
   report: boolean;
 }
@@ -113,7 +99,6 @@ export interface SetupOptions extends PathEnvironment {
   standardSkills?: boolean;
   skillDiscoveryMode?: SkillDiscoveryMode;
   replaceConflictingMcpServers?: readonly SetupClient[];
-  ennoOduno?: EnnoSetupMode;
 }
 
 export interface SetupCommandDependencies {
@@ -129,13 +114,10 @@ export interface SetupResult {
   clients: SetupClient[];
   databasePath: string;
   databaseAction: 'initialized' | 'planned';
-  databaseBackupPath: string | null;
   appliedMigrations: number[];
-  recoveredEntries: number;
   files: Array<Pick<PlannedFile, 'path' | 'action' | 'purpose' | 'client'>>;
   projectAgentFiles: ProjectAgentRefreshResult[];
   standardSkills: boolean;
-  ennoOduno: EnnoSetupMode | 'new-installs-only';
   dryRun: boolean;
   nextStep: string;
 }
@@ -156,13 +138,6 @@ export function parseSetupClients(value: string): SetupClient[] {
 export function parseSetupSkillDiscoveryMode(value: string): SkillDiscoveryMode {
   if (!isSkillDiscoveryMode(value)) {
     throw new KiokukoError('VALIDATION_ERROR', 'skill discovery must be off, official, or community');
-  }
-  return value;
-}
-
-export function parseEnnoSetupMode(value: string): EnnoSetupMode {
-  if (value !== 'on' && value !== 'off') {
-    throw new KiokukoError('VALIDATION_ERROR', 'enno-oduno must be on or off');
   }
   return value;
 }
@@ -275,7 +250,6 @@ export interface SetupFlowOptions {
   readonly dryRun?: boolean;
   readonly standardSkills?: boolean;
   readonly skillDiscoveryMode?: SkillDiscoveryMode;
-  readonly ennoOduno?: EnnoSetupMode;
   readonly json?: boolean;
   readonly input?: NodeJS.ReadableStream;
   readonly output?: NodeJS.WritableStream;
@@ -325,12 +299,11 @@ export async function runSetupFlow<T extends { clients: SetupClient[]; projectAg
     dryRun: options.dryRun === true,
     standardSkills: options.standardSkills ?? true,
     ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
-    ...(options.ennoOduno === undefined ? {} : { ennoOduno: options.ennoOduno }),
   };
   const runSetup = dependencyOverrides.setupGlobalClients
     ?? (setupGlobalClients as unknown as (options: SetupOptions) => Promise<T>);
   const replacementClients = new Set<SetupClient>();
-  for (;;) {
+  for (; ;) {
     try {
       return await runSetup({
         ...setupOptions,
@@ -360,16 +333,6 @@ function replacementClientSet(value: readonly SetupClient[] | undefined): Readon
     );
   }
   return new Set(value);
-}
-
-function wasManagedBeforeSetup(
-  original: string | undefined,
-  replacementAuthorized: boolean,
-  isCanonical: (source: string | undefined) => boolean,
-): boolean {
-  if (original === undefined) return false;
-  if (replacementAuthorized) return true;
-  return isCanonical(original);
 }
 
 /** Ask both setup questions through one readline session so buffered input remains intact. */
@@ -554,81 +517,6 @@ async function planFile(
   };
 }
 
-async function planOptionalFile(
-  planning: SetupPlanningContext,
-  filePath: string,
-  client: SetupClient,
-  purpose: PlannedFile['purpose'],
-  render: (existing: string | undefined) => OptionalRenderedFile,
-): Promise<PlannedFile> {
-  const { parentDirectory, snapshot: original } = await readPlannedRegularFile(planning, filePath);
-  const rendered = render(original?.content);
-  const action: SetupAction = original === undefined
-    ? rendered.content === undefined ? 'unchanged' : 'created'
-    : rendered.content === undefined ? 'deleted'
-      : rendered.content === original.content ? 'unchanged' : 'updated';
-  return {
-    path: filePath,
-    parentDirectory,
-    content: rendered.content,
-    mode: original?.mode ?? 0o600,
-    original,
-    action,
-    purpose,
-    client,
-    report: action !== 'unchanged',
-  };
-}
-
-async function planClaudeEnnoHooks(
-  planning: SetupPlanningContext,
-  options: PathEnvironment,
-  command: string,
-  mode: EnnoSetupMode | undefined,
-): Promise<PlannedFile> {
-  const filePath = getLegacyClaudePromptHookSettingsPath(options);
-  const { parentDirectory, snapshot: original } = await readPlannedRegularFile(planning, filePath);
-  const cleaned = original === undefined ? undefined : cleanupLegacyClaudePromptHook(original.content);
-  const rendered = mode === undefined
-    ? { content: cleaned, action: cleaned === original?.content ? 'unchanged' as const : 'updated' as const }
-    : renderEnnoStopHook(cleaned, 'claude', command, mode);
-  const action: SetupAction = original === undefined
-    ? rendered.content === undefined ? 'unchanged' : 'created'
-    : rendered.content === undefined ? 'deleted'
-      : rendered.content === original.content ? 'unchanged' : 'updated';
-  return {
-    path: filePath,
-    parentDirectory,
-    content: rendered.content,
-    mode: original?.mode ?? 0o600,
-    original,
-    action,
-    purpose: mode === undefined ? 'legacy-cleanup' : 'enno-hook',
-    client: 'claude',
-    report: action !== 'unchanged',
-  };
-}
-
-async function planLegacyOpenCodeGuardCleanup(
-  planning: SetupPlanningContext,
-  options: PathEnvironment,
-): Promise<PlannedFile> {
-  const filePath = getLegacyOpenCodeLoopGuardPath(options);
-  const { parentDirectory, snapshot: original } = await readPlannedRegularFile(planning, filePath);
-  if (original !== undefined) assertExactLegacyOpenCodeLoopGuard(original.content);
-  return {
-    path: filePath,
-    parentDirectory,
-    content: undefined,
-    mode: original?.mode ?? 0o600,
-    original,
-    action: original === undefined ? 'unchanged' : 'deleted',
-    purpose: 'legacy-cleanup',
-    client: 'opencode',
-    report: original !== undefined,
-  };
-}
-
 async function openCodeConfigPath(
   planning: SetupPlanningContext,
   options: PathEnvironment,
@@ -677,13 +565,7 @@ async function restoreFiles(
   return failures;
 }
 
-function setupNextStep(clients: SetupClient[], standardSkills: boolean, files: readonly PlannedFile[]): string {
-  const codexHookNeedsTrust = files.some((file) => (
-    file.client === 'codex'
-    && file.purpose === 'enno-hook'
-    && (file.action === 'created' || file.action === 'updated')
-    && file.content?.includes('enno hook --client codex') === true
-  ));
+function setupNextStep(clients: SetupClient[], standardSkills: boolean): string {
   return clients.map((client) => {
     if (client === 'hermes') {
       return standardSkills
@@ -692,9 +574,7 @@ function setupNextStep(clients: SetupClient[], standardSkills: boolean, files: r
     }
     const label = client === 'codex' ? 'Codex' : client === 'opencode' ? 'OpenCode' : 'Claude Code';
     const reload = `Restart ${label} so it reloads global MCP and instruction configuration${standardSkills ? ' and standard skills' : ''}.`;
-    return client === 'codex' && codexHookNeedsTrust
-      ? `${reload} Then run /hooks in Codex and trust the new Kiokuko Stop hook.`
-      : reload;
+    return reload;
   }).join(' ');
 }
 
@@ -830,9 +710,6 @@ export async function setupGlobalClients(
   if (options.skillDiscoveryMode !== undefined && !isSkillDiscoveryMode(options.skillDiscoveryMode)) {
     throw new KiokukoError('VALIDATION_ERROR', 'skill discovery must be off, official, or community');
   }
-  if (options.ennoOduno !== undefined && options.ennoOduno !== 'on' && options.ennoOduno !== 'off') {
-    throw new KiokukoError('VALIDATION_ERROR', 'ennoOduno must be on or off');
-  }
   const replaceConflictingMcpServers = replacementClientSet(options.replaceConflictingMcpServers);
   const clients = options.clients ?? await detectInstalledClients(pathEnvironment);
   if (!Array.isArray(clients) || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
@@ -870,21 +747,6 @@ export async function setupGlobalClients(
       ),
     );
     files.push(mcpFile);
-    const ennoMode = options.ennoOduno
-      ?? (wasManagedBeforeSetup(
-        mcpFile.original?.content,
-        replaceConflictingMcpServers.has('codex'),
-        hasCanonicalCodexMcpConfig,
-      ) ? undefined : 'on');
-    if (ennoMode !== undefined) {
-      files.push(await planOptionalFile(
-        planning,
-        getCodexHooksPath(pathEnvironment),
-        'codex',
-        'enno-hook',
-        (existing) => renderEnnoStopHook(existing, 'codex', command, ennoMode),
-      ));
-    }
     files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
   }
   if (clients.includes('opencode')) {
@@ -903,23 +765,7 @@ export async function setupGlobalClients(
       selectedConfig.mustRemainAbsent,
     );
     files.push(mcpFile);
-    const ennoMode = options.ennoOduno
-      ?? (wasManagedBeforeSetup(
-        mcpFile.original?.content,
-        replaceConflictingMcpServers.has('opencode'),
-        hasCanonicalOpenCodeMcpConfig,
-      ) ? undefined : 'on');
-    if (ennoMode !== undefined) {
-      files.push(await planOptionalFile(
-        planning,
-        getOpenCodeEnnoPluginPath(pathEnvironment),
-        'opencode',
-        'enno-hook',
-        (existing) => renderOpenCodeEnnoPlugin(existing, command, ennoMode),
-      ));
-    }
     files.push(await planFile(planning, getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
-    files.push(await planLegacyOpenCodeGuardCleanup(planning, pathEnvironment));
   }
   if (clients.includes('claude')) {
     const mcpFile = await planFile(
@@ -935,14 +781,7 @@ export async function setupGlobalClients(
       ),
     );
     files.push(mcpFile);
-    const ennoMode = options.ennoOduno
-      ?? (wasManagedBeforeSetup(
-        mcpFile.original?.content,
-        replaceConflictingMcpServers.has('claude'),
-        hasCanonicalClaudeMcpConfig,
-      ) ? undefined : 'on');
     files.push(await planFile(planning, getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
-    files.push(await planClaudeEnnoHooks(planning, pathEnvironment, command, ennoMode));
   }
   if (clients.includes('hermes')) {
     if (hermesProfile === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Hermes profile was not bound during setup planning');
@@ -986,17 +825,14 @@ export async function setupGlobalClients(
     clients,
     databasePath,
     databaseAction: options.dryRun ? 'planned' : 'initialized',
-    databaseBackupPath: null,
     appliedMigrations: [],
-    recoveredEntries: 0,
     files: files
       .filter((file) => file.report)
       .map(({ path: filePath, action, purpose, client }) => ({ path: filePath, action, purpose, client })),
     projectAgentFiles: [],
     standardSkills,
-    ennoOduno: options.ennoOduno ?? 'new-installs-only',
     dryRun: options.dryRun ?? false,
-    nextStep: setupNextStep(clients, standardSkills, files),
+    nextStep: setupNextStep(clients, standardSkills),
   };
   if (options.dryRun) {
     const registeredProjectLocations = readDryRunProjectLocations(
@@ -1021,9 +857,7 @@ export async function setupGlobalClients(
     databasePath,
     ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
   });
-  result.databaseBackupPath = initialized.backupPath;
   result.appliedMigrations = initialized.applied;
-  result.recoveredEntries = initialized.recoveredEntries;
   const database = dependencies.openConnection(databasePath);
   let registeredProjectLocations: RegisteredProjectLocation[] = [];
   let workspaceInitializationFailed = false;

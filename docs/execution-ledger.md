@@ -4,7 +4,7 @@ The execution ledger is an append-oriented audit of agent runs. It is separate f
 
 ## Storage model
 
-Migration `004_agent_gateway.sql` adds:
+The baseline adds:
 
 - `ledger_runs`: immutable workspace/client/protocol/capture/coverage identity and mutable lifecycle cursor/status.
 - `run_intakes`: one-to-one link from a run to an existing Akinator session, including policy/schema versions, field sources, initial profile hash, and recommended tags.
@@ -16,32 +16,11 @@ Migration `004_agent_gateway.sql` adds:
 - `ledger_memory_links`: provenance from run/event/delivery to promoted candidate memory.
 - `ledger_purge_audit`: content-free tombstones after privacy purge.
 
-Migration `010_nudge_deliveries.sql` adds:
+The baseline includes:
 
 - `nudge_deliveries`: presentation history for selected advisory nudges. It stores the run, policy version, checkpoint identity, logical occurrence, code, sequence, priority, and bounded evidence/reference ID snapshots, but not rendered message text.
 
-Migration `011_nudge_integrity.sql` adds database guards for the supported nudge policy, code/priority pairs, and bounded JSON snapshots.
-
-Enno client routing writes `enno.client_bound` for the first session route and
-`enno.client_rebound` for later route changes. The payload records the previous
-and current client kind, session ID, and version projection; a rebound clears
-the old version. These events audit routing changes and do not confer ownership
-or advance the Enno contract state.
-
-The Enno execution ledger also uses database-backed ownership rows rather than
-process memory. Resume tokens are stored only as hashes and bind a route epoch;
-rerouting invalidates old epochs. A WorkUnit execution lease prevents two local
-clients from reporting the same unit and blocks rerouting while current.
-Operation receipts and verifier runs have `started`, `completed`, `failed`, and
-`abandoned` states with bounded leases and owner nonces. Recovery atomically
-abandons an expired owner before one new owner claims the exact operation; a
-losing or stale nonce cannot complete it.
-
-Final evidence binds contract revision, mutation revision, verifier
-specification digest, and complete repository-state digests captured before and
-after verifier execution. A verifier-caused repository mutation marks the run
-unacceptable, and any later HEAD/index/worktree/untracked/symlink change makes
-the evidence stale before `enno_finish` can commit.
+The baseline includes database guards for the supported nudge policy, code/priority pairs, and bounded JSON snapshots.
 
 ## Invariants
 

@@ -1,34 +1,29 @@
-import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { KiokukoError } from '../../src/errors.js';
 import {
   getClaudeConfigDirectory,
   getClaudeInstructionsPath,
   getClaudeMcpConfigPath,
   getClaudeSkillsDirectory,
-  getClaudeSettingsPath,
   getCodexConfigPath,
-  getCodexHooksPath,
   getCodexInstructionsPath,
   getCodexSkillsDirectory,
   getDatabaseLockPath,
   getGlobalDatabasePath,
   getHermesConfigPath,
   getHermesHome,
-  getLegacyClaudePromptHookSettingsPath,
-  getLegacyOpenCodeLoopGuardPath,
+  getHermesSkillsDirectory,
   getOpenCodeConfigDirectory,
-  getOpenCodeEnnoPluginPath,
   getOpenCodeInstructionsPath,
   getOpenCodeSkillsDirectory,
-  getHermesSkillsDirectory,
   getRuntimeDescriptorPath,
   getRuntimeDirectory,
 } from '../../src/config/paths.js';
+import { KiokukoError } from '../../src/errors.js';
 
 test('derives a per-database lock path from the resolved database path', () => {
   const databasePath = '/tmp/kiokuko-relative/../kiokuko.sqlite3';
@@ -173,20 +168,15 @@ test('derives documented global Codex, OpenCode, and Claude paths without touchi
     env: { HOME: '/tmp/fake-home', XDG_CONFIG_HOME: '/tmp/fake-config' },
   };
   assert.equal(getCodexConfigPath(options), '/tmp/fake-home/.codex/config.toml');
-  assert.equal(getCodexHooksPath(options), '/tmp/fake-home/.codex/hooks.json');
   assert.equal(getCodexInstructionsPath(options), '/tmp/fake-home/.codex/AGENTS.md');
   assert.equal(getCodexSkillsDirectory(options), '/tmp/fake-home/.agents/skills');
   assert.equal(getOpenCodeConfigDirectory(options), '/tmp/fake-config/opencode');
   assert.equal(getOpenCodeInstructionsPath(options), '/tmp/fake-config/opencode/AGENTS.md');
   assert.equal(getOpenCodeSkillsDirectory(options), '/tmp/fake-config/opencode/skills');
-  assert.equal(getOpenCodeEnnoPluginPath(options), '/tmp/fake-config/opencode/plugins/kiokuko-enno-oduno.js');
   assert.equal(getClaudeConfigDirectory(options), '/tmp/fake-home/.claude');
   assert.equal(getClaudeMcpConfigPath(options), '/tmp/fake-home/.claude.json');
   assert.equal(getClaudeInstructionsPath(options), '/tmp/fake-home/.claude/CLAUDE.md');
   assert.equal(getClaudeSkillsDirectory(options), '/tmp/fake-home/.claude/skills');
-  assert.equal(getLegacyClaudePromptHookSettingsPath(options), '/tmp/fake-home/.claude/settings.json');
-  assert.equal(getClaudeSettingsPath(options), '/tmp/fake-home/.claude/settings.json');
-  assert.equal(getLegacyOpenCodeLoopGuardPath(options), '/tmp/fake-config/opencode/plugins/kiokuko-loop-guard.js');
   assert.equal(getCodexConfigPath({ ...options, env: { ...options.env, CODEX_HOME: '/tmp/custom-codex' } }), '/tmp/custom-codex/config.toml');
   assert.equal(getClaudeMcpConfigPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/.claude.json');
   assert.equal(getClaudeInstructionsPath({ ...options, env: { ...options.env, CLAUDE_CONFIG_DIR: '/tmp/custom-claude' } }), '/tmp/custom-claude/CLAUDE.md');
@@ -213,8 +203,6 @@ test('derives native standard-skill directories on macOS, Linux, and Windows', a
   assert.equal(getOpenCodeInstructionsPath({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.config\opencode\AGENTS.md`);
   assert.equal(getOpenCodeSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.config\opencode\skills`);
   assert.equal(getClaudeSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Claude\skills`);
-  assert.equal(getLegacyClaudePromptHookSettingsPath({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Claude\settings.json`);
-  assert.equal(getLegacyOpenCodeLoopGuardPath({ platform: 'win32', env: windowsEnvironment }), String.raw`C:\Users\test\.config\opencode\plugins\kiokuko-loop-guard.js`);
   assert.equal(await getHermesSkillsDirectory({ platform: 'win32', env: windowsEnvironment }), String.raw`D:\Hermes\profiles\work\skills`);
 });
 

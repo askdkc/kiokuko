@@ -1,18 +1,15 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
 import { KiokukoError } from '../errors.js';
-import { canonicalizeEntryRevisionHashesInMigration } from '../memory/revisions.js';
-import { migrateLegacyContextDeliveries } from '../context/delivery-migration.js';
 import type { SqliteDatabase, SqliteRow } from './adapter.js';
 import { withImmediateTransaction } from './transaction.js';
 
 export interface MigrationResult {
   applied: number[];
   currentVersion: number;
-  recoveredEntries: number;
 }
 
 export interface MigrationPlan {
@@ -43,31 +40,12 @@ export interface MigrationHooks {
    * written. The hook is inside the same SQLite transaction as both steps.
    */
   readonly beforeMarkApplied?: (database: SqliteDatabase, migration: MigrationIdentity) => void;
-  /** Allows setup to remove unreadable memory while preserving the pre-upgrade backup. */
-  readonly recoverInvalidStoredMemory?: boolean;
 }
 
 interface AppliedMigrationRow extends SqliteRow {
   version: unknown;
   name: unknown;
   checksum: unknown;
-}
-
-function applyBuiltInMigrationOperation(
-  database: SqliteDatabase,
-  migration: MigrationIdentity,
-  hooks: MigrationHooks,
-): number {
-  if (migration.version === 9 && migration.name === '009_external_skill_discovery.sql') {
-    return canonicalizeEntryRevisionHashesInMigration(database, hooks.recoverInvalidStoredMemory === undefined
-      ? {}
-      : { recoverInvalidStoredMemory: hooks.recoverInvalidStoredMemory }).recoveredEntries;
-  }
-  if (migration.version === 12 && migration.name === '012_context_delivery_v4.sql') {
-    migrateLegacyContextDeliveries(database);
-    return 0;
-  }
-  return 0;
 }
 
 const MIGRATION_FILE = /^([0-9]{3})_([a-z0-9_-]+)\.sql$/;
@@ -192,6 +170,12 @@ function migrationPlan(database: SqliteDatabase, migrations: readonly MigrationS
   const currentVersion = migrations.at(-1)?.version ?? 0;
   const byVersion = new Map(migrations.map((migration) => [migration.version, migration]));
   const rows = appliedMigrationRows(database);
+  if (rows.length === 0 && database.prepare("SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get()) {
+    // The migration table itself is created only after this check. An empty
+    // history on an existing non-empty database is not a fresh installation.
+    const other = database.prepare("SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND name != 'schema_migrations' LIMIT 1").get();
+    if (other || hasMigrationTable(database)) throw new KiokukoError('INTEGRITY_ERROR', 'Database has no supported migration history; initialize a new database');
+  }
   const applied: number[] = [];
   const seenVersions = new Set<number>();
 
@@ -258,13 +242,8 @@ export function inspectMigrationSnapshot(database: SqliteDatabase, snapshot: Mig
 function applyOneInTransaction(
   database: SqliteDatabase,
   migration: MigrationSource,
-  migrations: readonly MigrationSource[],
   hooks: MigrationHooks,
-): { applied: boolean; recoveredEntries: number } {
-  // Revalidate while the caller's write lock is held. No other migrator can
-  // advance the history between this check, the SQL, the application hook,
-  // and the marker write.
-  migrationPlan(database, migrations);
+): { applied: boolean; } {
   const existing = database
     .prepare('SELECT checksum FROM schema_migrations WHERE version = ?')
     .get<{ checksum: unknown }>(migration.version);
@@ -276,16 +255,15 @@ function applyOneInTransaction(
         { version: migration.version, name: migration.name },
       );
     }
-    return { applied: false, recoveredEntries: 0 };
+    return { applied: false };
   }
 
   database.exec(migration.sql);
-  const recoveredEntries = applyBuiltInMigrationOperation(database, migration, hooks);
   hooks.beforeMarkApplied?.(database, { version: migration.version, name: migration.name });
   database
     .prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
     .run(migration.version, migration.name, migration.checksum, new Date().toISOString());
-  return { applied: true, recoveredEntries };
+  return { applied: true };
 }
 
 function applyMigrationSetInTransaction(
@@ -305,14 +283,12 @@ function applyMigrationSetInTransaction(
   `);
 
   const applied: number[] = [];
-  let recoveredEntries = 0;
   for (const migration of migrations) {
-    const result = applyOneInTransaction(database, migration, migrations, hooks);
+    const result = applyOneInTransaction(database, migration, hooks);
     if (result.applied) applied.push(migration.version);
-    recoveredEntries += result.recoveredEntries;
   }
   const currentVersion = migrations.at(-1)?.version ?? 0;
-  return { applied, currentVersion, recoveredEntries };
+  return { applied, currentVersion };
 }
 
 /** Apply an already-loaded migration snapshot inside a transaction owned by the caller. */

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeEmbeddingBaseUrl, parseEmbeddingConfig, requireEnabledEmbeddingConfig, findDeprecatedEmbeddingEnvironmentVariables } from '../../src/embedding/config.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
+import { normalizeEmbeddingBaseUrl, parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
 import { readPersistedEmbeddingSettings } from '../../src/embedding/settings.js';
 
 function enabledEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -91,13 +91,4 @@ test('reads persisted off settings without consulting embedding environment valu
   } finally {
     database.close();
   }
-});
-
-test('detects deprecated embedding setting names without returning values', () => {
-  const names = findDeprecatedEmbeddingEnvironmentVariables({
-    KIOKUKO_EMBEDDING_API_KEY: 'do-not-return',
-    KIOKUKO_EMBEDDINGS: 'optional',
-  });
-  assert.deepEqual(names, ['KIOKUKO_EMBEDDINGS', 'KIOKUKO_EMBEDDING_API_KEY']);
-  assert.equal(JSON.stringify(names).includes('do-not-return'), false);
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -41,8 +41,9 @@ function migrationDatabase(
     },
     prepare(sql): SqliteStatement {
       return {
-        run() {},
+        run() { },
         get<T extends SqliteRow>() {
+          if (/SELECT 1 FROM sqlite_schema/u.test(sql)) return undefined;
           if (/FROM sqlite_master/u.test(sql)) return (hasMigrationTable ? { present: 1 } : undefined) as T | undefined;
           if (/SELECT checksum FROM schema_migrations/u.test(sql)) return undefined;
           throw new Error(`Unexpected mock get statement: ${sql}`);
@@ -53,7 +54,7 @@ function migrationDatabase(
         },
       };
     },
-    close() {},
+    close() { },
   };
   return { database, statements };
 }
@@ -103,7 +104,7 @@ test('migration surfaces both its operation failure and a rollback failure', asy
 test('rejects a non-contiguous migration file set before touching the database', async () => {
   const directory = await migrationDirectory();
   await writeFile(path.join(directory, '003_gap.sql'), MIGRATION_SQL);
-  const { database, statements } = migrationDatabase(() => {});
+  const { database, statements } = migrationDatabase(() => { });
 
   assert.throws(
     () => migrateDatabase(database, directory),
@@ -120,7 +121,7 @@ test('rejects an empty migration directory before touching the database', async 
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-empty-migration-failclose-'));
   const directory = path.join(root, 'migrations');
   await mkdir(directory);
-  const { database, statements } = migrationDatabase(() => {});
+  const { database, statements } = migrationDatabase(() => { });
 
   assert.throws(
     () => migrateDatabase(database, directory),
@@ -136,7 +137,7 @@ test('rejects invalid UTF-8 migration bytes before touching the database', async
   const directory = path.join(root, 'migrations');
   await mkdir(directory);
   await writeFile(path.join(directory, '001_invalid.sql'), Buffer.from([0x53, 0x45, 0xff, 0x4c]));
-  const { database, statements } = migrationDatabase(() => {});
+  const { database, statements } = migrationDatabase(() => { });
 
   assert.throws(
     () => migrateDatabase(database, directory),
@@ -155,7 +156,7 @@ test('rejects a UTF-8 BOM in migration SQL before touching the database', async 
     path.join(directory, '001_bom.sql'),
     Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(MIGRATION_SQL)]),
   );
-  const { database, statements } = migrationDatabase(() => {});
+  const { database, statements } = migrationDatabase(() => { });
 
   assert.throws(
     () => migrateDatabase(database, directory),
@@ -171,7 +172,7 @@ test('rejects CRLF migration SQL before checksum or database effects', async () 
   const directory = path.join(root, 'migrations');
   await mkdir(directory);
   await writeFile(path.join(directory, '001_crlf.sql'), MIGRATION_SQL.replaceAll('\n', '\r\n'));
-  const { database, statements } = migrationDatabase(() => {});
+  const { database, statements } = migrationDatabase(() => { });
 
   assert.throws(
     () => migrateDatabase(database, directory),
@@ -195,7 +196,7 @@ test('rejects every non-canonical SQL migration basename before touching the dat
     await mkdir(directory);
     await writeFile(path.join(directory, '001_fixture.sql'), MIGRATION_SQL);
     await writeFile(path.join(directory, name), MIGRATION_SQL);
-    const { database, statements } = migrationDatabase(() => {});
+    const { database, statements } = migrationDatabase(() => { });
 
     assert.throws(
       () => migrateDatabase(database, directory),
@@ -220,7 +221,7 @@ test('rejects wrong-type, non-integer, and unsafe migration-history versions bef
     BigInt(Number.MAX_SAFE_INTEGER) + 1n,
     null,
   ]) {
-    const { database, statements } = migrationDatabase(() => {}, [{
+    const { database, statements } = migrationDatabase(() => { }, [{
       version,
       name: '001_fixture.sql',
       checksum: checksum(MIGRATION_SQL),
@@ -243,7 +244,7 @@ test('rejects duplicate migration-history versions before any write', async () =
     name: '001_fixture.sql',
     checksum: checksum(MIGRATION_SQL),
   };
-  const { database, statements } = migrationDatabase(() => {}, [row, row]);
+  const { database, statements } = migrationDatabase(() => { }, [row, row]);
 
   assert.throws(
     () => migrateDatabase(database, directory),
@@ -258,7 +259,7 @@ test('rejects migration history that is not an exact contiguous prefix before an
   const directory = await migrationDirectory();
   const secondSql = 'SELECT 2;\n';
   await writeFile(path.join(directory, '002_second.sql'), secondSql);
-  const { database, statements } = migrationDatabase(() => {}, [{
+  const { database, statements } = migrationDatabase(() => { }, [{
     version: 2,
     name: '002_second.sql',
     checksum: checksum(secondSql),
@@ -282,7 +283,7 @@ test('rejects a structurally forged migration snapshot before touching the datab
       sql: 'CREATE TABLE forged (id INTEGER PRIMARY KEY);',
     }],
   } as unknown as MigrationSnapshot;
-  const { database, statements } = migrationDatabase(() => {});
+  const { database, statements } = migrationDatabase(() => { });
 
   assert.throws(
     () => migrateDatabaseSnapshotInTransaction(database, forged),

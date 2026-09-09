@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   databaseBackupIntegrityError,
-  KiokukoError,
   exitCodeFor,
+  KiokukoError,
   storedMemoryIntegrityError,
   type ErrorCode,
 } from '../../src/errors.js';
@@ -60,13 +60,9 @@ test('redacts arbitrary errors from the public JSON envelope', () => {
 
 test('provides recovery guidance for stored memory and backup integrity failures', () => {
   const memory = errorEnvelope('setup', storedMemoryIntegrityError());
-  assert.match(memory.error.message, /could not automatically recover existing saved memory/u);
-  assert.match(memory.error.message, /setup creates one automatically/u);
-  assert.match(memory.error.message, /move the current database and any -wal, -shm, or -journal sidecar files aside/u);
-  assert.match(memory.error.message, /cp .*<new-backup\.sqlite3>/u);
-  assert.match(memory.error.message, /kiokuko setup/u);
-  assert.match(memory.error.message, /-wal, -shm, or -journal/u);
-  assert.match(memory.error.message, /Do not delete database rows manually/u);
+  assert.match(memory.error.message, /does not automatically repair or convert/);
+  assert.match(memory.error.message, /KIOKUKO_DATA_DIR=\/absolute\/new-directory kiokuko init/);
+  assert.match(memory.error.message, /Keep the database and its WAL\/SHM files unchanged/);
 
   const backup = errorEnvelope('backup', databaseBackupIntegrityError(new Error('private cause')));
   assert.match(backup.error.message, /source database was not changed/u);

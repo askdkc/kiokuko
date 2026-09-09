@@ -1,52 +1,50 @@
+import { Command, CommanderError } from 'commander';
 import { constants as fsConstants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { TextDecoder } from 'node:util';
 import { isProxy } from 'node:util/types';
-import { Command, CommanderError } from 'commander';
-import { initializeDatabase } from './commands/init.js';
-import { useRepository, type UseOptions } from './commands/use.js';
-import { searchEntries, recallEntries } from './memory/retrieval.js';
-import { readEntry, recordEntry, type RecordEntryInput } from './memory/entries.js';
-import { recallScopedMemory } from './memory/scoped-memory.js';
-import type { ScopedRecallResult } from './memory/scoped-memory.js';
-import type { RecallResult } from './memory/retrieval.js';
-import { promoteEntry, supersedeEntry, linkEntries } from './memory/lifecycle.js';
-import { purgeEntry } from './commands/purge.js';
+import { answerAkinator, startAkinator } from './akinator/orchestrator.js';
+import { registerAgentCommand, type AgentCommandDependencies } from './commands/agent.js';
 import { createBackup } from './commands/backup.js';
-import { findMissingRepositoryLocations, removeMissingRepositoryLocations } from './repository/binding.js';
+import { runCuratorCommand } from './commands/curator.js';
 import { promptRemoveMissingRepositoryLocations, runDoctor } from './commands/doctor.js';
+import { registerEmbeddingsCommands } from './commands/embeddings.js';
 import { writeExport } from './commands/export.js';
 import { importWorkspace } from './commands/import.js';
-import { openConnection } from './db/connection.js';
-import { errorEnvelope, successEnvelope } from './serialization/envelope.js';
-import { KiokukoError, exitCodeFor } from './errors.js';
-import { startWebServer } from './web/server.js';
-import { registerServerCommands, type ServerCommandDependencies } from './commands/server.js';
-import { registerAgentCommand, type AgentCommandDependencies } from './commands/agent.js';
+import { initializeDatabase } from './commands/init.js';
 import { registerLedgerCommands } from './commands/ledger.js';
-import type { SqliteDatabase } from './db/adapter.js';
-import { answerAkinator, startAkinator } from './akinator/orchestrator.js';
+import { purgeEntry } from './commands/purge.js';
+import { registerServerCommands, type ServerCommandDependencies } from './commands/server.js';
 import {
   parseSetupClients,
-  parseEnnoSetupMode,
   parseSetupSkillDiscoveryMode,
   runSetupFlow,
 } from './commands/setup.js';
-import { runMcpServer } from './mcp/server.js';
-import { runCuratorCommand } from './commands/curator.js';
-import { globalizeCuratorCandidate } from './memory/curator.js';
-import type { PathEnvironment } from './config/paths.js';
 import { registerSkillsCommands, type SkillsCommandDependencies } from './commands/skills.js';
-import { registerEnnoCommand } from './commands/enno.js';
-import { PACKAGE_VERSION } from './package-version.js';
-import { parseStrictJson } from './setup/strict-json.js';
-import { validateRecordInput } from './serialization/validate.js';
-import { registerEmbeddingsCommands } from './commands/embeddings.js';
-import type { EmbeddingProvider, VectorSearchBackend } from './embedding/types.js';
+import { useRepository, type UseOptions } from './commands/use.js';
+import type { PathEnvironment } from './config/paths.js';
+import type { SqliteDatabase } from './db/adapter.js';
+import { openConnection } from './db/connection.js';
 import { openEmbeddingDatabase } from './embedding/backend.js';
 import { parseEmbeddingConfig } from './embedding/config.js';
 import { createEmbeddingRuntime, prepareEmbeddingSearchRuntime } from './embedding/runtime.js';
+import type { EmbeddingProvider, VectorSearchBackend } from './embedding/types.js';
+import { KiokukoError, exitCodeFor } from './errors.js';
+import { runMcpServer } from './mcp/server.js';
+import { globalizeCuratorCandidate } from './memory/curator.js';
+import { readEntry, recordEntry, type RecordEntryInput } from './memory/entries.js';
 import type { HybridSearchRuntime } from './memory/hybrid-retrieval.js';
+import { linkEntries, promoteEntry, supersedeEntry } from './memory/lifecycle.js';
+import type { RecallResult } from './memory/retrieval.js';
+import { recallEntries, searchEntries } from './memory/retrieval.js';
+import type { ScopedRecallResult } from './memory/scoped-memory.js';
+import { recallScopedMemory } from './memory/scoped-memory.js';
+import { PACKAGE_VERSION } from './package-version.js';
+import { findMissingRepositoryLocations, removeMissingRepositoryLocations } from './repository/binding.js';
+import { errorEnvelope, successEnvelope } from './serialization/envelope.js';
+import { validateRecordInput } from './serialization/validate.js';
+import { parseStrictJson } from './setup/strict-json.js';
+import { startWebServer } from './web/server.js';
 
 const MAX_CLI_JSON_INPUT_BYTES = 2 * 1024 * 1024;
 const MAX_CALL_PATH_BYTES = 4 * 1024;
@@ -857,8 +855,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
   cli.command('init').description('Initialize the global Kiokuko database').option('--json').action(async (options: { json?: boolean }) => {
     const result = await initializeDatabase();
-    const backupNotice = result.backupPath === null ? '' : ` Pre-migration backup: ${result.backupPath}`;
-    humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion}).${backupNotice}`);
+    humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion}).`);
   });
 
   cli.command('setup').description('Configure global Kiokuko memory and refresh managed instructions in registered projects for Codex, OpenCode, Claude Code, and Hermes Agent')
@@ -867,9 +864,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option('--dry-run', 'Validate and show planned changes without writing')
     .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
     .option('--skill-discovery <mode>', 'External Skill discovery: off,official,community')
-    .option('--enno-oduno <mode>', 'Enno-Oduno agent loop: on,off')
     .option('--json', 'Emit a JSON response')
-    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; standardSkills: boolean; skillDiscovery?: string; ennoOduno?: string }) => {
+    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; standardSkills: boolean; skillDiscovery?: string; }) => {
       const optionSkillDiscoveryMode = options.skillDiscovery === undefined
         ? undefined
         : parseSetupSkillDiscoveryMode(options.skillDiscovery);
@@ -884,7 +880,6 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         dryRun: options.dryRun === true,
         standardSkills: options.standardSkills,
         ...(optionSkillDiscoveryMode === undefined ? {} : { skillDiscoveryMode: optionSkillDiscoveryMode }),
-        ...(options.ennoOduno === undefined ? {} : { ennoOduno: parseEnnoSetupMode(options.ennoOduno) }),
         json: options.json === true,
         input: setupInput,
         output: setupOutput,
@@ -902,7 +897,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         ? `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.${projectSummary}`
         : data.clients.length === 0
           ? `Kiokuko database initialized; no supported client executable was detected. Use --clients codex,opencode,claude,hermes to configure clients.${projectSummary}`
-          : `Now you are ready to use Kiokuko! Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${data.databaseBackupPath === null ? '' : ` Pre-migration backup: ${data.databaseBackupPath}.`}${data.recoveredEntries === 0 ? '' : ` Recovered by excluding ${data.recoveredEntries} unreadable memor${data.recoveredEntries === 1 ? 'y' : 'ies'}; the pre-migration backup retains the original data.`}${projectSummary} ${data.nextStep}`;
+          : `Now you are ready to use Kiokuko! Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${projectSummary} ${data.nextStep}`;
       humanOrJson(options.json, 'setup', data, message);
     });
 
@@ -1072,7 +1067,6 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerAgentCommand(cli, dependencies.agent);
   registerLedgerCommands(cli, { withDatabase });
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });
-  registerEnnoCommand(cli, { withDatabase });
   registerEmbeddingsCommands(cli, {
     withDatabase: (operation) => withEmbeddingDatabase(dependencies, operation),
     ...(dependencies.embeddingEnvironment === undefined ? {} : { environment: dependencies.embeddingEnvironment }),

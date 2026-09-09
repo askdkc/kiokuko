@@ -41,23 +41,16 @@ export class KiokukoError extends Error {
   }
 }
 
-export const STORED_MEMORY_RECOVERY_MESSAGE = [
+export const STORED_MEMORY_INTEGRITY_MESSAGE = [
   'Stored entry or revision is invalid.',
-  'Kiokuko setup could not automatically recover existing saved memory.',
-  'Recovery:',
-  '1. Keep the latest verified SQLite backup; setup creates one automatically before a pending database upgrade.',
-  '2. If the memory is needed, keep the backup and do not delete database rows manually.',
-  '3. Restore the backup as one SQLite snapshot: move the current database and any -wal, -shm, or -journal sidecar files aside, copy the backup to the original database path, and rerun: kiokuko setup.',
-  '   macOS database path: "$HOME/Library/Application Support/kiokuko/kiokuko.sqlite3"',
-  '   Linux database path: "${XDG_DATA_HOME:-$HOME/.local/share}/kiokuko/kiokuko.sqlite3"',
-  '   Example (replace <new-backup.sqlite3> and choose an unused <timestamp>):',
-  '   DB="$HOME/Library/Application Support/kiokuko/kiokuko.sqlite3"; for SUFFIX in "" -wal -shm -journal; do [ -e "$DB$SUFFIX" ] && mv "$DB$SUFFIX" "$DB$SUFFIX.before-restore-<timestamp>"; done; cp "<new-backup.sqlite3>" "$DB"; kiokuko setup',
-  '4. If the old memory is disposable, moving the database file aside and rerunning kiokuko setup creates a new database.',
-  '5. Keep the .before-restore file until the restored memory has been verified. Do not delete database rows manually.',
+  'Kiokuko does not automatically repair or convert stored memory.',
+  'Keep the database and its WAL/SHM files unchanged. Do not delete database rows manually.',
+  'To start with a new database, choose a new absolute directory and run:',
+  'KIOKUKO_DATA_DIR=/absolute/new-directory kiokuko init',
 ].join('\n');
 
 export function storedMemoryIntegrityError(): KiokukoError {
-  return new KiokukoError('INTEGRITY_ERROR', STORED_MEMORY_RECOVERY_MESSAGE);
+  return new KiokukoError('INTEGRITY_ERROR', STORED_MEMORY_INTEGRITY_MESSAGE);
 }
 
 export const DATABASE_BACKUP_RECOVERY_MESSAGE = [

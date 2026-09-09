@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
-import { chmod, copyFile, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
@@ -8,6 +8,12 @@ import { promisify } from 'node:util';
 import { getGlobalDatabasePath } from '../../src/config/paths.js';
 import { openConnection } from '../../src/db/connection.js';
 import { inspectMigrationSnapshot } from '../../src/db/migrate.js';
+import {
+  CURRENT_MIGRATION_SNAPSHOT,
+  CURRENT_MIGRATION_VERSIONS,
+  CURRENT_SCHEMA_VERSION,
+  migrationVersionsAfter,
+} from '../fixtures/current-migrations.js';
 import {
   SAMPLE_DATABASE_BASELINE_VERSION,
   SAMPLE_EXTERNAL_SKILL_DOCUMENT_COUNT,
@@ -19,12 +25,6 @@ import {
   SAMPLE_PROJECT_UNICODE_BODY,
   SAMPLE_PROJECT_WORKSPACE,
 } from '../fixtures/sample-database.js';
-import {
-  CURRENT_MIGRATION_SNAPSHOT,
-  CURRENT_MIGRATION_VERSIONS,
-  CURRENT_SCHEMA_VERSION,
-  migrationVersionsAfter,
-} from '../fixtures/current-migrations.js';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, '../..');
@@ -86,10 +86,10 @@ async function runCliJson(args: string[], operation: string, environment: NodeJS
   return parseCliEnvelope(result.stdout, operation);
 }
 
-function assertLegacyFixture(): void {
+function assertCurrentFixture(): void {
   assert.ok(
-    CURRENT_SCHEMA_VERSION > SAMPLE_DATABASE_BASELINE_VERSION,
-    'The sample database baseline must remain older than the current schema',
+    CURRENT_SCHEMA_VERSION === SAMPLE_DATABASE_BASELINE_VERSION,
+    'The sample database baseline must use the current schema',
   );
   const database = openConnection(sampleDatabasePath, { readOnly: true });
   try {
@@ -99,7 +99,7 @@ function assertLegacyFixture(): void {
     assert.deepEqual(
       versions,
       CURRENT_MIGRATION_VERSIONS.slice(0, SAMPLE_DATABASE_BASELINE_VERSION),
-      'The committed sample database must remain on the legacy baseline',
+      'The committed sample database must remain on the current baseline',
     );
   } finally {
     database.close();
@@ -146,16 +146,14 @@ async function verifySetup(environment: NodeJS.ProcessEnv, databasePath: string)
   );
   assert.equal(setup.data.databasePath, databasePath);
   assert.equal(setup.data.databaseAction, 'initialized');
-  assert.equal(setup.data.recoveredEntries, 0);
+  assert.equal(Object.hasOwn(setup.data, 'recoveredEntries'), false);
   const applied = migrationVersions(setup.data.appliedMigrations);
   assert.deepEqual(
     applied,
     migrationVersionsAfter(SAMPLE_DATABASE_BASELINE_VERSION),
     'setup must apply every migration after the committed sample database baseline',
   );
-  const backupPath = setup.data.databaseBackupPath;
-  assert.equal(typeof backupPath, 'string', 'migration must create a pre-migration backup');
-  assert.ok((await stat(backupPath as string)).isFile(), 'pre-migration backup must exist');
+  assert.equal(Object.hasOwn(setup.data, 'databaseBackupPath'), false);
 }
 
 async function verifyDoctor(environment: NodeJS.ProcessEnv): Promise<void> {
@@ -343,7 +341,7 @@ async function verifyWeb(environment: NodeJS.ProcessEnv): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  assertLegacyFixture();
+  assertCurrentFixture();
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'kiokuko-sampledb-ci-'));
   try {
     const isolated = await isolatedEnvironment(temporaryRoot);
@@ -355,7 +353,7 @@ async function main(): Promise<void> {
     await verifyDoctor(isolated.env);
     await verifyWeb(isolated.env);
     await verifyDoctor(isolated.env);
-    process.stdout.write('Sample database migration and Web API verification passed.\n');
+    process.stdout.write('Sample database baseline and Web API verification passed.\n');
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

@@ -14,7 +14,6 @@ test('initializes an isolated database and applies migrations', async () => {
   assert.equal(result.databasePath, databasePath);
   await access(databasePath);
   assert.equal(result.currentVersion, CURRENT_SCHEMA_VERSION);
-  assert.equal(result.backupPath, null);
   assert.equal(result.capabilities.driver, 'node:sqlite');
   assert.equal(result.capabilities.foreignKeys, true);
   assert.equal(result.capabilities.journalMode, 'wal');
@@ -32,6 +31,6 @@ test('rejects an in-memory database before loading or applying migrations', asyn
     }),
     (error: unknown) => error instanceof KiokukoError
       && error.code === 'VALIDATION_ERROR'
-      && /persistent WAL mode/u.test(error.message),
+      && /persistent database path/u.test(error.message),
   );
 });

@@ -1,6 +1,6 @@
 ---
 name: kiokuko-ui-design-soul
-description: Prevent common UI and UX failures when designing, implementing, or reviewing interactive interfaces. Apply a compact universal interaction contract, then route each UI WorkUnit to one to three versioned expert fragments.
+description: Prevent common UI and UX failures when designing, implementing, or reviewing interactive interfaces. Apply a compact universal interaction contract, then route each UI task to one to three versioned expert fragments.
 ---
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-ui-design-soul -->
@@ -13,7 +13,7 @@ Make every interactive action discoverable, operable, perceivable, recoverable, 
 
 Use this Skill for Web, desktop, mobile, touch, keyboard, screen-reader, form, navigation, async, destructive, permission, or other user-facing interaction work. Do not use it for backend-only work.
 
-This file is the mandatory compact UI index. Read it completely, then read only the expert fragments selected for the current component, flow, design decision, or WorkUnit.
+This file is the mandatory compact UI index. Read it completely, then read only the expert fragments selected for the current component, flow, design decision, or task.
 
 ## Universal core
 
@@ -38,15 +38,13 @@ When requirements compete, prioritize safety and data preservation, accessibilit
 
 ## MoE selection contract
 
-Select one dominant expert for each UI component or cohesive user flow. Add at most two more only when the same WorkUnit genuinely crosses those risks. Record a concrete reason for each selection.
+Select one dominant expert for each UI component or cohesive user flow. Add at most two more only when the same task genuinely crosses those risks. Record a concrete reason for each selection.
 
-In Enno-Oduno plans, declare the `ui` route locally on each interactive
-WorkUnit. That route requires at least one `ui.*` expert and one `code.*` expert
-because UI behavior is also code behavior; it must not infect sibling test,
-docs, or operations units with UI/code requirements. Goki reads the indexes and
-only the approved fragment files by default.
+Interactive UI work requires at least one `ui.*` expert and one `code.*`
+expert. Test, documentation, and operations tasks select expertise from their
+own risks. Read the indexes and selected fragment files before implementation.
 
-Do not read every UI reference “for completeness.” If implementation exposes a new risk, return the WorkUnit for an explicit selection or update the non-Enno working plan before reading the additional fragment.
+If implementation exposes a new risk, update the working plan and expert selection before reading another fragment.
 
 ## Expert index
 

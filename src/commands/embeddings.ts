@@ -1,32 +1,31 @@
+import type { Command } from 'commander';
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Command } from 'commander';
-import { KiokukoError } from '../errors.js';
+import type { PathEnvironment } from '../config/paths.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { parseEmbeddingConfig } from '../embedding/config.js';
 import { readEmbeddingStatus } from '../embedding/diagnostics.js';
+import type { ModelDownloader } from '../embedding/model-download.js';
+import type { InstalledModel } from '../embedding/model-installation.js';
 import { createEmbeddingProfile } from '../embedding/profile.js';
+import { createEmbeddingRuntime } from '../embedding/runtime.js';
+import { runEmbeddingSetup } from '../embedding/setup-service.js';
 import {
   activateEmbeddingProfile,
   enqueueAllCurrentEntryEmbeddingsInTransaction,
   readActiveEmbeddingProfile,
 } from '../embedding/store.js';
-import { createEmbeddingRuntime } from '../embedding/runtime.js';
 import type {
   EmbeddingConfig,
   EmbeddingProvider,
   EmbeddingRuntime,
   VectorSearchBackend,
 } from '../embedding/types.js';
+import { KiokukoError } from '../errors.js';
 import { successEnvelope } from '../serialization/envelope.js';
-import { runEmbeddingSetup } from '../embedding/setup-service.js';
-import type { ModelDownloader } from '../embedding/model-download.js';
-import type { InstalledModel } from '../embedding/model-installation.js';
-import type { PathEnvironment } from '../config/paths.js';
 import {
-  parseEnnoSetupMode,
   parseSetupClients,
   parseSetupSkillDiscoveryMode,
   runSetupFlow,
@@ -279,7 +278,7 @@ async function drainAll(
   workspace: string | undefined,
 ): Promise<DrainSummary> {
   let total: DrainSummary = { claimed: 0, completed: 0, failed: 0, blocked: 0, remaining: 0 };
-  for (;;) {
+  for (; ;) {
     const result = await drainOnce(runtime, workspace, MAX_SYNC_JOBS);
     total = {
       claimed: total.claimed + result.claimed,
@@ -364,7 +363,6 @@ export function registerEmbeddingsCommands(cli: Command, dependencies: Embedding
     .option('--dry-run', 'Plan setup without downloading or mutating anything')
     .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
     .option('--skill-discovery <mode>', 'External Skill discovery: off,official,community')
-    .option('--enno-oduno <mode>', 'Enno-Oduno agent loop: on,off')
     .option('--offline', 'Use only an already verified local installation')
     .option('--replace', 'Replace a different active embedding profile')
     .option('--json', 'Emit one JSON response')
@@ -375,7 +373,6 @@ export function registerEmbeddingsCommands(cli: Command, dependencies: Embedding
       dryRun?: boolean;
       standardSkills: boolean;
       skillDiscovery?: string;
-      ennoOduno?: string;
       offline?: boolean;
       replace?: boolean;
       json?: boolean;
@@ -394,7 +391,6 @@ export function registerEmbeddingsCommands(cli: Command, dependencies: Embedding
         dryRun,
         standardSkills: options.standardSkills,
         ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
-        ...(options.ennoOduno === undefined ? {} : { ennoOduno: parseEnnoSetupMode(options.ennoOduno) }),
         json: options.json === true,
         ...(dependencies.setupInput === undefined ? {} : { input: dependencies.setupInput }),
         ...(dependencies.setupOutput === undefined ? {} : { output: dependencies.setupOutput }),

@@ -33,26 +33,7 @@ The generated instructions describe the high-level `task_prepare`,
 `task_answer`, Curator, and `memory_checkpoint` MCP lifecycle. The first two are
 the only model-facing task-memory entry points. Human/operator CLI and Web
 inspection remain management-only and are not a fallback for a client that
-cannot satisfy the task capability gate. When Enno-Oduno is enabled, setup may
-install a bounded Codex or Claude Code Stop hook, or an OpenCode
-`session.idle` plugin. Hermes receives no continuation adapter. These adapters
-only gate the existing run-bound continuation; they do not recall memory,
-launch advisors, bypass planning or confirmation, or select a latest run. A
-client session is routing metadata, not authorization ownership. Continuation
-prefers the exact short-lived opaque resume token bound to the route epoch;
-otherwise the adapter may atomically reroute
-the single unambiguous active run in the canonical repository across Codex,
-Claude Code, and OpenCode. Rerouting increments the epoch and invalidates old
-tokens. An active WorkUnit execution lease blocks rerouting and only its holder
-may report. Multiple candidates remain unchanged. Exhausting one
-session's continuation budget leaves the run and ledger active for another
-local project client.
-
-Template version 20 also documents bounded `ENNO_INPUT_INVALID` diagnostics,
-the explicit advisory lifecycle and dynamic report schema, WorkUnit-local
-`code`/`ui`/`test`/`docs`/`operations` routes, repository-relative verifier
-directories, continuation-pausing plan recovery, pre-persistence sanitization,
-crash-recoverable receipts, and repository-state-bound Final Review evidence.
+cannot satisfy the task capability gate.
 
 The instructions require one new bounded opaque `requestId` per logical user
 request and permit reusing it only for an exact transport retry. Identical task

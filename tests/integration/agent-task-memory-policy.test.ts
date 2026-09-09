@@ -10,9 +10,9 @@ import { setupGlobalClients } from '../../src/commands/setup.js';
 import { recordContextFeedback } from '../../src/context/feedback.js';
 import type { SqliteDatabase } from '../../src/db/adapter.js';
 import { openConnection } from '../../src/db/connection.js';
-import { CheckpointService } from '../../src/gateway/checkpoint-service.js';
-import { checkpointScopedMemory } from '../../src/memory/scoped-memory.js';
+import { CheckpointMutationService } from '../../src/gateway/checkpoint-service.js';
 import { recordEntry } from '../../src/memory/entries.js';
+import { checkpointScopedMemory } from '../../src/memory/scoped-memory.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { GLOBAL_WORKSPACE, resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 
@@ -109,12 +109,14 @@ function svelteDiscoveryFetch(onRequest?: (url: URL) => void | Promise<void>): t
     const url = new URL(String(raw));
     await onRequest?.(url);
     if (url.hostname === 'skills.sh') {
-      return jsonResponse({ skills: [{
-        id: 'sveltejs/ai-tools/svelte-code-writer',
-        source: 'sveltejs/ai-tools',
-        name: 'svelte-code-writer',
-        installs: 3,
-      }] });
+      return jsonResponse({
+        skills: [{
+          id: 'sveltejs/ai-tools/svelte-code-writer',
+          source: 'sveltejs/ai-tools',
+          name: 'svelte-code-writer',
+          installs: 3,
+        }]
+      });
     }
     if (url.pathname === '/repos/sveltejs/ai-tools') return jsonResponse({ default_branch: 'main' });
     if (url.pathname.endsWith('/commits/main')) return jsonResponse({ sha: commit });
@@ -413,7 +415,7 @@ test('pre-discovery memory gate rejects a concurrent ledger profile revision ins
                     .get<{ runId: string }>();
                   assert.ok(row);
                   revised = true;
-                  new CheckpointService(concurrent, () => '2026-08-25T00:00:00.000Z').checkpoint({
+                  new CheckpointMutationService(concurrent, () => '2026-08-25T00:00:00.000Z').checkpoint({
                     runId: row.runId,
                     idempotencyKey: 'preview-profile-race-revision',
                     request: {
@@ -1216,7 +1218,7 @@ test('exact task_prepare replay gates the current ledger-revised profile', async
     assert.equal(first.nextAction, 'proceed');
     assert.ok(first.context?.deliveryId);
 
-    new CheckpointService(database, () => '2026-08-25T00:00:00.000Z').checkpoint({
+    new CheckpointMutationService(database, () => '2026-08-25T00:00:00.000Z').checkpoint({
       runId: first.run.runId,
       idempotencyKey: 'current-profile-replay-revision',
       request: {
@@ -1296,12 +1298,14 @@ test('missing memory-reasoning still discovers reference-only external skills wh
     networkCalls += 1;
     const url = new URL(String(raw));
     if (url.hostname === 'skills.sh') {
-      return jsonResponse({ skills: [{
-        id: 'sveltejs/ai-tools/svelte-code-writer',
-        source: 'sveltejs/ai-tools',
-        name: 'svelte-code-writer',
-        installs: 3,
-      }] });
+      return jsonResponse({
+        skills: [{
+          id: 'sveltejs/ai-tools/svelte-code-writer',
+          source: 'sveltejs/ai-tools',
+          name: 'svelte-code-writer',
+          installs: 3,
+        }]
+      });
     }
     if (url.pathname === '/repos/sveltejs/ai-tools') return jsonResponse({ default_branch: 'main' });
     if (url.pathname.endsWith('/commits/main')) return jsonResponse({ sha: commit });

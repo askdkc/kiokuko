@@ -9,10 +9,7 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-Use `--clients codex,opencode,claude,hermes` to select clients explicitly. Without
-it, setup detects installed clients. `--dry-run --json` validates and reports planned
-changes without writing. `--no-standard-skills`, `--skill-discovery off|official|community`,
-and `--enno-oduno on|off` control optional setup behavior.
+Optional setup flags: `--no-standard-skills`, `--skill-discovery off|official|community`, and `--dry-run --json`.
 
 For Codex, setup owns one exact managed block:
 
@@ -24,15 +21,13 @@ enabled = true
 required = true
 ```
 
-The discovery environment line is managed with that block. Rerunning setup upgrades
-only the exact previous managed block that omitted `required`. Changed values,
+The discovery environment line is managed with that block. Missing `required`, changed values,
 ordering, duplicate keys, extra fields, or an explicit `required = false` are
 user-managed conflicts and are never silently overwritten. Interactive setup asks
 whether to replace a conflicting identity; JSON, non-interactive, and dry-run calls
 return `CONFLICT` without mutation. The same rule applies to other supported clients.
 
-Restart a running client after setup. If a Codex Stop hook is created or updated,
-open `/hooks` and explicitly trust it. Use `kiokuko doctor --json` to inspect runtime,
+Restart a running client after setup. Use `kiokuko doctor --json` to inspect runtime,
 database, and Codex MCP health; doctor is read-only.
 
 ## Embeddings setup
@@ -52,8 +47,3 @@ download or mutation; `--json` is suitable for automation and fails closed on an
 unmanaged MCP identity.
 
 ## Web UI and clients
-
-Run `kiokuko web` and open `http://127.0.0.1:4173`. The UI is local-only and is a
-human/operator management surface, not a substitute for model task-entry MCP calls.
-Codex, OpenCode, and Claude Code have bounded continuation adapters when Enno-Oduno
-is enabled; Hermes uses native stdio MCP and bundled Skills without an adapter.

@@ -1,5 +1,7 @@
 # Kiokuko 0.1.18
 
+Historical release notes. Database upgrade and recovery behavior below does not apply to Kiokuko 1.0; see [1.0 breaking changes](breaking-changes-1.0.md).
+
 ## External Skills
 
 - Added bounded provider search, commit-pinned source validation, chunk limits, snapshot idempotency, and shared discovery single-flight.

@@ -1,7 +1,22 @@
+import { readContextBrokerRunState } from '../context/broker.js';
+import { contextFeedbackSignals } from '../context/feedback.js';
+import { entryOriginMatchesWorkspace } from '../context/origin.js';
+import {
+  queryScopedContextGated,
+  SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET,
+  SCOPED_CONTEXT_MAX_CHARACTER_BUDGET,
+  type ScopedContextItem,
+  type ScopedContextResult,
+} from '../context/scoped-broker.js';
+import { ordinaryContextSelectionStateHash } from '../context/selection-state.js';
 import type { SqliteDatabase } from '../db/adapter.js';
+import { prepareEmbeddingSearchRuntime } from '../embedding/runtime.js';
+import type { EmbeddingRuntime } from '../embedding/types.js';
 import { KiokukoError } from '../errors.js';
+import { AgentGatewayService } from '../gateway/agent-service.js';
 import { LedgerStore } from '../ledger/store.js';
 import type { RunRecord } from '../ledger/types.js';
+import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { readEntry } from '../memory/entries.js';
 import { isRetrievableEntry, retrievableWorkspaceEntryCount } from '../memory/hybrid-retrieval.js';
 import { effectiveRetrievalScope, hasExplicitApplicability } from '../memory/structured-memory.js';
@@ -11,10 +26,21 @@ import {
   resolveProjectWorkspaceReadOnly,
   type ResolvedProjectWorkspace,
 } from '../memory/workspaces.js';
-import { getAkinatorContextService } from './service.js';
+import { canonicalDirectory } from '../repository/detect-root.js';
 import {
-  deriveMemoryUseSignal,
+  assertProjectManifestSnapshotBinding,
+  bindProjectManifestSnapshot,
+  captureProjectManifestSnapshot,
+  resolveProjectFingerprint,
+} from '../repository/project-fingerprint.js';
+import { canonicalContentHash, type JsonObject } from '../serialization/validate.js';
+import { readSkillDiscoveryConfig } from '../skills/config.js';
+import { discoverSkills } from '../skills/discovery-service.js';
+import { isExternalSkillReference } from '../skills/store.js';
+import type { SkillDiscoveryMode, SkillDiscoverySummary } from '../skills/types.js';
+import {
   deriveMemoryPolicy,
+  deriveMemoryUseSignal,
   hasActionableMemorySelection,
   hasBlockingRequiredCapability,
   memoryReasoningCapabilityAvailability,
@@ -26,6 +52,9 @@ import {
   type MemoryUseSignal,
 } from './capabilities.js';
 import { capabilityCatalogDigest } from './capability-binding.js';
+import { MAX_EXTERNAL_SKILLS, MAX_TOTAL_SKILL_QUERIES } from './discovery-policy.js';
+import { deriveAkinatorReasoning } from './reasoning.js';
+import { getAkinatorContextService } from './service.js';
 import {
   claimAgentTaskSkillDiscoveryAttempt,
   completeAgentTaskSkillDiscoveryAttempt,
@@ -33,40 +62,6 @@ import {
   readAgentTaskSkillDiscoveryAttempt,
 } from './skill-discovery-attempt.js';
 import type { AkinatorContext, AkinatorReasoning, TaskProfile } from './types.js';
-import { AgentGatewayService } from '../gateway/agent-service.js';
-import { canonicalContentHash, type JsonObject } from '../serialization/validate.js';
-import {
-  queryScopedContextGated,
-  SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET,
-  SCOPED_CONTEXT_MAX_CHARACTER_BUDGET,
-  type ScopedContextItem,
-  type ScopedContextResult,
-} from '../context/scoped-broker.js';
-import { contextFeedbackSignals } from '../context/feedback.js';
-import { entryOriginMatchesWorkspace } from '../context/origin.js';
-import { readContextBrokerRunState } from '../context/broker.js';
-import { ordinaryContextSelectionStateHash } from '../context/selection-state.js';
-import { deriveAkinatorReasoning } from './reasoning.js';
-import {
-  assertProjectManifestSnapshotBinding,
-  bindProjectManifestSnapshot,
-  captureProjectManifestSnapshot,
-  resolveProjectFingerprint,
-} from '../repository/project-fingerprint.js';
-import { readSkillDiscoveryConfig } from '../skills/config.js';
-import { discoverSkills } from '../skills/discovery-service.js';
-import { isExternalSkillReference } from '../skills/store.js';
-import type { SkillDiscoverySummary, SkillDiscoveryMode } from '../skills/types.js';
-import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
-import { canonicalDirectory } from '../repository/detect-root.js';
-import { ennoStateForPreparedTask } from '../enno-oduno/service.js';
-import { prepareEmbeddingSearchRuntime } from '../embedding/runtime.js';
-import type { EmbeddingRuntime } from '../embedding/types.js';
-import {
-  ENNO_MAX_EXTERNAL_SKILLS,
-  ENNO_MAX_TOTAL_SKILL_QUERIES,
-  type EnnoOdunoState,
-} from '../enno-oduno/types.js';
 
 export interface PrepareAgentTaskInput {
   requestId: string;
@@ -116,7 +111,6 @@ export interface PreparedAgentTask {
   warnings: CapabilityWarning[];
   nextAction: 'proceed' | 'answer_from_evidence_or_ask_user' | 'required_capability_unavailable';
   securityNotice: string;
-  ennoOduno: EnnoOdunoState;
 }
 
 export interface AgentTaskExecutionContext {
@@ -345,7 +339,7 @@ function scopedMemoryUseSignal(
   const items = capabilityGatedScopedItems(database, runWorkspace, scopedContext);
   if (hasActionableMemorySelection(items)) return 'actionable';
   return items.some((item) => contextFeedbackSignals(database, item.entryId)
-      .some((signal) => signal.verdict === 'helpful'))
+    .some((signal) => signal.verdict === 'helpful'))
     ? 'actionable'
     : 'none';
 }
@@ -461,7 +455,7 @@ function buildPreparedTaskBase(
   scopedContext: ScopedContextResult | null,
   skillDiscovery: SkillDiscoverySummary,
   memoryUseOverride?: MemoryUseSignal,
-): Omit<PreparedAgentTask, 'ennoOduno'> {
+): PreparedAgentTask {
   const memoryUse = context.status === 'ready'
     ? memoryUseOverride ?? deriveMemoryUseSignal(scopedContext)
     : 'none';
@@ -536,7 +530,6 @@ interface PreparedTaskContextQuery {
   };
   readonly discoveryAttemptIdentity: {
     runId: string;
-    phase: 'intake';
     mode: SkillDiscoveryMode;
     requestDigest: string;
   };
@@ -592,7 +585,6 @@ function prepareTaskContextQuery(
   });
   const discoveryAttemptIdentity = {
     runId: input.runId,
-    phase: 'intake' as const,
     mode: input.discoveryMode,
     requestDigest: canonicalContentHash({
       version: 1,
@@ -675,8 +667,8 @@ async function resolveSkillDiscovery(
     }
   };
   const claimed = claimAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity, {
-    queryBudget: ENNO_MAX_TOTAL_SKILL_QUERIES,
-    selectionBudget: ENNO_MAX_EXTERNAL_SKILLS,
+    queryBudget: MAX_TOTAL_SKILL_QUERIES,
+    selectionBudget: MAX_EXTERNAL_SKILLS,
   });
   if (claimed.kind === 'replay') return claimed.summary;
   if (claimed.queryBudget === 0 || claimed.selectionBudget === 0) {
@@ -778,10 +770,10 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
   let context = currentAgentTaskContext(input.database, input.runId, input.context);
   let run = authoritativeTaskRun(input.database, input.runId, context.status);
   if (context.status === 'needs_answer') {
-    return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
+    return buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
       runId: input.runId,
       status: run.status,
-    }, null, emptySkillDiscovery(input.discoveryMode), 'none'));
+    }, null, emptySkillDiscovery(input.discoveryMode), 'none');
   }
 
   const prepared = prepareTaskContextQuery(input, context);
@@ -800,10 +792,10 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
       if (preview.candidate.taskProfileHash !== canonicalContentHash(context.session.profile)) {
         throw new KiokukoError('CONFLICT', 'Task profile changed while scoped context was being prepared');
       }
-      return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
+      return buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
         runId: input.runId,
         status: run.status,
-      }, null, emptySkillDiscovery(input.discoveryMode), preview.memoryUse));
+      }, null, emptySkillDiscovery(input.discoveryMode), preview.memoryUse);
     }
   }
 
@@ -819,38 +811,13 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
   context = currentAgentTaskContext(input.database, input.runId, context);
   run = authoritativeTaskRun(input.database, input.runId, context.status);
   missingMemoryCapability = memoryCapabilityUnavailableForTask(context, input.capabilities);
-  // Enno's start event is part of the run projection used by scoped-context
-  // selection. Materialize it before selection so an exact task_prepare retry
-  // observes the same projection and replays the same delivery.
-  preparedEnnoState(input.database, {
-    project: input.project,
-    intake: {
-      status: context.status,
-      sessionId: context.session.id,
-      profile: context.session.profile,
-      question: context.question,
-      reasoning: deriveAkinatorReasoning(context.session.task, context.session.profile),
-    },
-    run: { runId: input.runId, status: run.status },
-    skillDiscovery,
-  });
   const selected = await selectFinalTaskContext({ input, prepared, context, missingMemoryCapability });
   context = selected.context;
   run = selected.run;
-  return withPreparedEnno(input.database, buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
+  return buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities, {
     runId: input.runId,
     status: run.status,
-  }, selected.scopedContext, skillDiscovery, selected.memoryUse));
-}
-
-function withPreparedEnno(
-  database: SqliteDatabase,
-  prepared: Omit<PreparedAgentTask, 'ennoOduno'>,
-): PreparedAgentTask {
-  return {
-    ...prepared,
-    ennoOduno: preparedEnnoState(database, prepared),
-  };
+  }, selected.scopedContext, skillDiscovery, selected.memoryUse);
 }
 
 function failTaskRunAfterAbort(database: SqliteDatabase, runId: string, cause: unknown): never {
@@ -860,18 +827,6 @@ function failTaskRunAfterAbort(database: SqliteDatabase, runId: string, cause: u
     throw new AggregateError([cause, recoveryError], 'Task timeout recovery could not finalize the run state');
   }
   throw cause;
-}
-
-type PreparedEnnoInput = Pick<PreparedAgentTask, 'project' | 'run' | 'skillDiscovery'> & {
-  intake: Pick<PreparedAgentTask['intake'], 'status' | 'sessionId' | 'profile' | 'question' | 'reasoning'>;
-};
-
-function preparedEnnoState(
-  database: SqliteDatabase,
-  prepared: PreparedEnnoInput,
-): EnnoOdunoState {
-  const run = new LedgerStore(database).readRun(prepared.run.runId, prepared.project.workspace);
-  return ennoStateForPreparedTask(database, prepared, run?.client);
 }
 
 export async function prepareAgentTask(database: SqliteDatabase, input: PrepareAgentTaskInput): Promise<PreparedAgentTask> {
