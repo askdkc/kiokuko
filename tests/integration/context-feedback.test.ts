@@ -48,8 +48,8 @@ function seedLedgerContext(database: ReturnType<typeof openConnection>): void {
   database.prepare(`
     INSERT INTO context_deliveries (
       delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-      policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at
-    ) VALUES (?, ?, 0, NULL, 'profile-hash-1', 'query-hash-1', 'policy-v1', '{}', 8000, 24, 0, ?)
+      policy_version, char_budget, char_count, truncated, created_at
+    ) VALUES (?, ?, 0, NULL, 'profile-hash-1', 'query-hash-1', 'policy-v1', 8000, 24, 0, ?)
   `).run('delivery-feedback-1', 'run-feedback-1', now);
   database.prepare(`
     INSERT INTO context_delivery_entries (

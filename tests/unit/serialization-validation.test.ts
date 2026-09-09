@@ -114,7 +114,7 @@ test('canonical persisted tags and revision hashes do not depend on the process 
 
 test('the canonical revision hash has no locale-order compatibility verifier', () => {
   const legacyTagOrder = [...new Set(TAGS)].sort((left, right) => left.localeCompare(right, 'zh-CN'));
-  const versioned = revisionHashInput({ schemaVersion: 2, visibility: 'project' });
+  const versioned = revisionHashInput({ schemaVersion: 3, visibility: 'project' });
   const legacyHash = canonicalContentHash({
     kind: versioned.kind,
     title: versioned.title,

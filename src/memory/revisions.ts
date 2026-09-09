@@ -199,24 +199,18 @@ export function normalizeStructuredScopeInput(scope: JsonObject): JsonObject {
   if (Object.keys(scope).some((field) => !allowed.has(field))) {
     throw new KiokukoError('VALIDATION_ERROR', 'Structured memory scope contains an unknown field');
   }
-  if (scope.schemaVersion !== 2 && scope.schemaVersion !== 3) {
+  if (scope.schemaVersion !== 3) {
     throw new KiokukoError('VALIDATION_ERROR', 'Structured memory scope schemaVersion is unsupported');
   }
-  const schemaVersion = scope.schemaVersion;
-  if (schemaVersion === 2 && hasOwn(scope, 'retrievalScope')) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Structured memory scope schemaVersion 2 cannot contain retrievalScope');
-  }
-  let normalized = buildStructuredScope({
+  return buildStructuredScope({
     visibility: scope.visibility as 'project' | 'global',
-    ...(schemaVersion === 3 && hasOwn(scope, 'retrievalScope') ? { retrievalScope: scope.retrievalScope as RetrievalScope } : {}),
+    ...(hasOwn(scope, 'retrievalScope') ? { retrievalScope: scope.retrievalScope as RetrievalScope } : {}),
     ...(hasOwn(scope, 'repositoryId') ? { repositoryId: scope.repositoryId as string } : {}),
     ...(hasOwn(scope, 'memoryClass') ? { memoryClass: scope.memoryClass as MemoryClass } : {}),
     ...(hasOwn(scope, 'applicability') ? { applicability: scope.applicability as Applicability } : {}),
     ...(hasOwn(scope, 'signals') ? { signals: scope.signals as MemorySignals } : {}),
     ...(hasOwn(scope, 'portableReason') ? { portableReason: scope.portableReason as string } : {}),
   });
-  if (schemaVersion === 2) normalized = { ...normalized, schemaVersion: 2 };
-  return normalized;
 }
 
 function normalizeStoredStructuredScope(scope: JsonObject, required: boolean): JsonObject {

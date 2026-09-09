@@ -86,12 +86,12 @@ async function runCliJson(args: string[], operation: string, environment: NodeJS
   return parseCliEnvelope(result.stdout, operation);
 }
 
-function assertCurrentFixture(): void {
+function assertCurrentFixture(databasePath: string): void {
   assert.ok(
     CURRENT_SCHEMA_VERSION === SAMPLE_DATABASE_BASELINE_VERSION,
     'The sample database baseline must use the current schema',
   );
-  const database = openConnection(sampleDatabasePath, { readOnly: true });
+  const database = openConnection(databasePath, { readOnly: true });
   try {
     const versions = database.prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all<{ version: number }>()
@@ -341,13 +341,13 @@ async function verifyWeb(environment: NodeJS.ProcessEnv): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  assertCurrentFixture();
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'kiokuko-sampledb-ci-'));
   try {
     const isolated = await isolatedEnvironment(temporaryRoot);
     await mkdir(path.dirname(isolated.databasePath), { recursive: true });
     await copyFile(sampleDatabasePath, isolated.databasePath);
     await chmod(isolated.databasePath, 0o600);
+    assertCurrentFixture(isolated.databasePath);
     await verifySetup(isolated.env, isolated.databasePath);
     verifyCurrentMigrationHistory(isolated.databasePath);
     await verifyDoctor(isolated.env);

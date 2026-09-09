@@ -229,12 +229,7 @@ test("delivery smoke: a stored Japanese policy is delivered to the next build ta
 });
 
 test(
-  "cjk retrieval smoke: japanese query terms hit a Japanese-only entry through every retrieval lane",
-  {
-    skip: !process.env.KIOKUKO_CJK_FIX
-      ? "pending PLAN Task 1 (parseRetrievalQuery JP-run split); set KIOKUKO_CJK_FIX=1 after implementing the fix"
-      : false,
-  },
+  "cjk retrieval smoke: Japanese task text recalls a Japanese-only policy",
   async () => {
     const repo = await scratchRepository("cjk");
     const data = await mkdtemp(path.join(tmpdir(), "kiokuko-smoke-data-cjk-"));
@@ -286,7 +281,7 @@ test(
   },
 );
 
-test("scope isolation smoke: writes under KIOKUKO_DATA_DIR never touch the user-global database", async (t) => {
+test("scope isolation smoke: writes under KIOKUKO_DATA_DIR never touch the user-global database", async () => {
   const repo = await scratchRepository("scope");
   const runData = await mkdtemp(
     path.join(tmpdir(), "kiokuko-smoke-scope-run-"),

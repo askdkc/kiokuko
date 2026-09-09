@@ -22,6 +22,15 @@ does not configure an already-running desktop client. Keep the old database
 with its WAL/SHM files together and use the previous binary to inspect it.
 There is no automatic import, reset, downgrade, or cross-major data conversion.
 
+The baseline no longer contains `context_deliveries.external_sync_summary_json`.
+Databases initialized from an earlier baseline, including the initially published
+1.0.0 baseline, fail checksum validation and require a new data directory.
+
+Structured memory scope accepts only `schemaVersion: 3`. The removed v2 shape
+is rejected on writes and stored-memory reads; search rebuild does not convert
+it. Unversioned scope remains arbitrary user JSON and does not authorize
+structured filtering or cross-project retrieval.
+
 ## Removed interfaces
 
 - `kiokuko enno` and setup's `--enno-oduno` option.

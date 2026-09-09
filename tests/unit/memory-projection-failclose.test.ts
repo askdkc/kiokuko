@@ -4,7 +4,7 @@ import test from 'node:test';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { KiokukoError } from '../../src/errors.js';
-import { recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
+import { readEntry, recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
 import { hybridSearchProjectionStatus, rebuildHybridSearch } from '../../src/memory/rebuild-search.js';
 import { buildStructuredScope, effectiveRetrievalScope, extractEntrySearchSignals } from '../../src/memory/structured-memory.js';
 import { canonicalEntryRevisionContentHash, canonicalJson } from '../../src/serialization/validate.js';
@@ -125,6 +125,31 @@ test('uses canonical code-unit ordering for persisted structured frameworks and 
   );
 });
 
+test('stored scope v2 is rejected without converting revisions or rebuilding projections', () => {
+  const database = openConnection(':memory:');
+  try {
+    migrateDatabase(database);
+    const entry = recordEntry(database, {
+      workspace: 'project:scope-version-rejection', kind: 'lesson', title: 'Current scope', body: 'Preserve projection state.',
+      scope: { schemaVersion: 3, visibility: 'project', signals: { symbols: ['ScopeSentinel'] } },
+    });
+    const removedScope = { ...entry.scope, schemaVersion: 2 };
+    const forgedHash = canonicalEntryRevisionContentHash({ ...entry, scope: removedScope });
+    database.exec('DROP TRIGGER entry_revisions_immutable_update');
+    database.prepare('UPDATE entry_revisions SET scope_json = ?, content_hash = ? WHERE entry_id = ?')
+      .run(canonicalJson(removedScope), forgedHash, entry.id);
+    const projections = projectionSnapshot(database);
+    const revision = database.prepare('SELECT * FROM entry_revisions WHERE entry_id = ?').get(entry.id);
+
+    assert.throws(() => readEntry(database, { workspace: entry.workspace, entryId: entry.id }), isIntegrityError);
+    assert.throws(() => rebuildHybridSearch(database), isIntegrityError);
+    assert.deepEqual(projectionSnapshot(database), projections);
+    assert.deepEqual(database.prepare('SELECT * FROM entry_revisions WHERE entry_id = ?').get(entry.id), revision);
+  } finally {
+    database.close();
+  }
+});
+
 test('rejects malformed stored scope JSON without clearing existing projections', () => {
   const database = openConnection(':memory:');
   try {
@@ -185,12 +210,12 @@ test('rejects canonical duplicate typed signals with a matching forged hash befo
       kind: 'lesson',
       title: 'Duplicate typed signal',
       body: 'A matching content hash must not legitimize noncanonical metadata.',
-      scope: { schemaVersion: 2, visibility: 'project', signals: { symbols: ['Duplicated'] } },
+      scope: { schemaVersion: 3, visibility: 'project', signals: { symbols: ['Duplicated'] } },
       tags: ['duplicate-signal'],
     });
     const before = projectionSnapshot(database);
     const corruptScope = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       visibility: 'project',
       signals: { symbols: ['Duplicated', 'Duplicated'] },
     };
@@ -301,50 +326,6 @@ test('does not reinterpret unversioned scope key collisions as structured projec
     assert.equal(signalCount(), 0);
     assert.doesNotThrow(() => rebuildHybridSearch(database));
     assert.equal(signalCount(), 0);
-  } finally {
-    database.close();
-  }
-});
-
-test('rebuilds exact released project and global schema v2 projections', () => {
-  const database = openConnection(':memory:');
-  try {
-    migrateDatabase(database, migrationsDirectory);
-    const entry = recordEntry(database, {
-      workspace: 'project:released-v2-projection',
-      kind: 'lesson',
-      title: 'Released v2 projection',
-      body: 'The bounded released schema remains readable during rebuild.',
-      scope: {
-        schemaVersion: 2,
-        visibility: 'project',
-        signals: { symbols: ['ReleasedV2ProjectionSentinel'] },
-      },
-    });
-    const globalEntry = recordEntry(database, {
-      workspace: 'global',
-      kind: 'lesson',
-      title: 'Released global v2 projection',
-      body: 'Published global v2 memory remains rebuildable.',
-      scope: {
-        schemaVersion: 2,
-        visibility: 'global',
-        portableReason: 'Published portable global projection',
-        signals: { symbols: ['ReleasedGlobalV2ProjectionSentinel'] },
-      },
-    });
-
-    assert.doesNotThrow(() => rebuildHybridSearch(database));
-    assert.equal(database.prepare(`
-      SELECT COUNT(*) AS count
-        FROM entry_search_signals
-       WHERE entry_id = ? AND signal_type = 'symbol' AND normalized_value = ?
-    `).get<{ count: number }>(entry.id, 'releasedv2projectionsentinel')?.count, 1);
-    assert.equal(database.prepare(`
-      SELECT COUNT(*) AS count
-        FROM entry_search_signals
-       WHERE entry_id = ? AND signal_type = 'symbol' AND normalized_value = ?
-    `).get<{ count: number }>(globalEntry.id, 'releasedglobalv2projectionsentinel')?.count, 1);
   } finally {
     database.close();
   }

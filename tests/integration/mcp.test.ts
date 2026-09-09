@@ -872,67 +872,6 @@ test('task_prepare degrades safely for oversized and malformed capability items'
   }
 });
 
-test('task_prepare accepts stored v2 curator memory whose legacy tag is not managed external identity', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-legacy-curator-repo-'));
-  execFileSync('git', ['init', '-q', root]);
-  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-legacy-curator-data-'));
-  const databasePath = path.join(data, 'kiokuko.sqlite3');
-  const database = openConnection(databasePath);
-  migrateDatabase(database);
-  const legacy = recordEntry(database, {
-    workspace: GLOBAL_WORKSPACE,
-    kind: 'lesson',
-    status: 'candidate',
-    title: 'Legacy curator task intake guidance',
-    body: 'Reproduce task intake failures against the stored context selection state.',
-    scope: {
-      schemaVersion: 2,
-      visibility: 'global',
-      memoryClass: 'troubleshooting',
-      portableReason: 'This diagnostic workflow applies across Kiokuko repositories.',
-    },
-    provenance: { type: 'curator_globalize', reference: 'project:legacy-curator-source' },
-    tags: ['external:skill', 'kiokuko'],
-    createdBy: 'kiokuko-curator',
-    actor: 'kiokuko-curator',
-  }, { now: '2026-08-22T15:20:49.813Z' });
-  database.close();
-
-  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
-  const client = new Client({ name: 'kiokuko-legacy-curator-test', version: '1.0.0' });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  try {
-    const result = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-legacy-curator-task-prepare',
-        task: 'Fix the Kiokuko task intake integrity error',
-        profileHints: {
-          taskType: 'debug',
-          target: 'Kiokuko task intake',
-          expected: 'The focused regression passes',
-        },
-        capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
-      },
-    });
-    assert.equal(result.isError, undefined);
-    const content = result.structuredContent as {
-      run: { status: string };
-      nextAction: string;
-      context: { items: Array<{ entryId: string }> };
-    };
-    assert.equal(content.run.status, 'active');
-    assert.equal(content.nextAction, 'proceed');
-    assert.equal(content.context.items.some((item) => item.entryId === legacy.id), false);
-  } finally {
-    await client.close();
-    if (server.isConnected()) await server.close();
-  }
-});
-
 test('task_prepare proceeds without memory-reasoning for managed curator global memory', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-curator-trust-repo-'));
   execFileSync('git', ['init', '-q', root]);

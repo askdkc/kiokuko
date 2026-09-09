@@ -161,8 +161,7 @@ function storedMetadataIntegrityError(error: unknown, entry: EntryRecord, field:
 
 function readStructuredMetadata(entry: EntryRecord): StructuredMetadata {
   const raw = entry.scope as Record<string, unknown>;
-  // Released schema v2 remains readable, including published global rows, but
-  // Curator's current structured filters require an explicit v3 contract.
+  // Arbitrary unversioned user JSON does not authorize structured filtering.
   if (raw.schemaVersion !== 3) return {};
   const metadata: StructuredMetadata = {};
   if (typeof raw.memoryClass === 'string' && MEMORY_CLASSES.includes(raw.memoryClass as MemoryClass)) {

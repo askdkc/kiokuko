@@ -237,9 +237,9 @@ test('records same-run delivery provenance without duplicating the memory body',
     database.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at
-      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('delivery-1', 'run-1', 1, 'profile-hash', 'query-hash', 'policy-v1', '{}', 8000, 0, 0, now);
+        policy_version, char_budget, char_count, truncated, created_at
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+    `).run('delivery-1', 'run-1', 1, 'profile-hash', 'query-hash', 'policy-v1', 8000, 0, 0, now);
 
     const result = promoteLedgerProposal(database, {
       workspace: 'workspace-1', runId: 'run-1', proposalEventId: 'proposal-1', deliveryId: 'delivery-1', actor: 'explicit-user', createdAt: now, confirmed: true,
@@ -267,9 +267,9 @@ test('rejects delivery provenance from another run before writing a candidate', 
     database.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at
-      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('foreign-delivery', 'run-2', 1, 'profile-hash', 'query-hash', 'policy-v1', '{}', 8000, 0, 0, now);
+        policy_version, char_budget, char_count, truncated, created_at
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+    `).run('foreign-delivery', 'run-2', 1, 'profile-hash', 'query-hash', 'policy-v1', 8000, 0, 0, now);
 
     assert.throws(() => promoteLedgerProposal(database, {
       workspace: 'workspace-1', runId: 'run-1', proposalEventId: 'proposal-1', deliveryId: 'foreign-delivery', actor: 'explicit-user', createdAt: now, confirmed: true,
@@ -292,9 +292,9 @@ test('rejects a same-run delivery that predates the selected proposal', async ()
     database.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at
-      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('old-delivery', 'run-1', 0, 'profile-hash', 'query-hash', 'policy-v1', '{}', 8000, 0, 0, now);
+        policy_version, char_budget, char_count, truncated, created_at
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+    `).run('old-delivery', 'run-1', 0, 'profile-hash', 'query-hash', 'policy-v1', 8000, 0, 0, now);
 
     assert.throws(() => promoteLedgerProposal(database, {
       workspace: 'workspace-1', runId: 'run-1', proposalEventId: 'proposal-1', deliveryId: 'old-delivery', actor: 'explicit-user', createdAt: now, confirmed: true,

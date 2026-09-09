@@ -3,6 +3,8 @@ PLAN.md
 node_modules
 /dist/
 .kiokuko-dev/
+tests/sampledb/*.sqlite3-wal
+tests/sampledb/*.sqlite3-shm
 
 # AI assistant local state and configuration
 .codex/*

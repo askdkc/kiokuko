@@ -258,64 +258,40 @@ test('stored timestamps are canonical and chronologically consistent', async () 
   }
 });
 
-test('released project/global schema v2 remains bounded while unversioned scope keys stay unstructured', async () => {
+test('record and update reject removed structured scope v2 without writing entries or revisions', async () => {
   const db = await database();
   try {
-    const v2 = recordEntry(db, {
-      workspace: 'project:legacy-v2',
-      kind: 'lesson',
-      title: 'Released v2 scope',
-      body: 'legacy project memory',
-      scope: {
-        schemaVersion: 2,
-        visibility: 'project',
-        memoryClass: 'workflow',
-        applicability: { languages: ['TypeScript'] },
-      },
+    const entry = recordEntry(db, {
+      workspace: 'project:scope-version-rejection', kind: 'lesson', title: 'Current memory', body: 'Keep this revision.',
+      scope: { schemaVersion: 3, visibility: 'project' },
     });
-    assert.equal(readEntry(db, { workspace: v2.workspace, entryId: v2.id }).scope.schemaVersion, 2);
-    assert.throws(
-      () => readEntry(db, { workspace: v2.workspace, entryId: v2.id }, { requireStructuredScope: true }),
-      (error) => code(error) === 'INTEGRITY_ERROR',
-    );
-    const globalV2 = recordEntry(db, {
-      workspace: 'global',
-      kind: 'lesson',
-      title: 'Released global v2 scope',
-      body: 'Published global memory remains readable after the schema v3 cutover.',
-      scope: { schemaVersion: 2, visibility: 'global', portableReason: 'Published portable global memory' },
-    });
-    assert.deepEqual(readEntry(db, { workspace: globalV2.workspace, entryId: globalV2.id }).scope, {
-      portableReason: 'Published portable global memory',
-      schemaVersion: 2,
-      visibility: 'global',
-    });
-    assert.throws(
-      () => recordEntry(db, {
-        workspace: 'global',
-        kind: 'lesson',
-        title: 'Invalid unbounded global v2 scope',
-        body: 'Global v2 still requires explicit portability evidence.',
-        scope: { schemaVersion: 2, visibility: 'global' },
-      }),
-      (error) => code(error) === 'VALIDATION_ERROR',
-    );
-    assert.throws(
-      () => recordEntry(db, {
-        workspace: v2.workspace,
-        kind: 'lesson',
-        title: 'Invalid v2 retrieval scope',
-        body: 'The v3 retrievalScope field cannot be smuggled into v2.',
-        scope: { schemaVersion: 2, visibility: 'project', retrievalScope: 'ecosystem' },
-      }),
-      (error) => code(error) === 'VALIDATION_ERROR',
-    );
+    for (const visibility of ['project', 'global']) {
+      const scope = { schemaVersion: 2, visibility, portableReason: 'Previously valid portable scope' };
+      assert.throws(() => recordEntry(db, {
+        workspace: visibility === 'global' ? 'global' : entry.workspace,
+        kind: 'lesson', title: 'Rejected memory', body: 'Removed version must not be saved.', scope,
+      }), (error) => code(error) === 'VALIDATION_ERROR');
+      assert.throws(() => updateCandidateEntry(db, {
+        workspace: entry.workspace, entryId: entry.id, expectedRevision: 1,
+        kind: 'lesson', title: entry.title, body: 'Rejected update', scope,
+      }), (error) => code(error) === 'VALIDATION_ERROR');
+    }
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM entries').get()?.count, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM entry_revisions').get()?.count, 1);
+    assert.deepEqual(readEntry(db, { workspace: entry.workspace, entryId: entry.id }), entry);
+  } finally {
+    db.close();
+  }
+});
 
+test('unversioned scope keys remain arbitrary user JSON', async () => {
+  const db = await database();
+  try {
     const unstructured = recordEntry(db, {
-      workspace: v2.workspace,
+      workspace: 'project:unstructured-scope',
       kind: 'fact',
       title: 'Unstructured collision',
-      body: 'legacy arbitrary JSON',
+      body: 'Arbitrary JSON remains opaque to structured scope readers.',
       scope: { visibility: 7, applicability: 'not structured metadata' },
     });
     assert.deepEqual(readEntry(db, { workspace: unstructured.workspace, entryId: unstructured.id }).scope, {

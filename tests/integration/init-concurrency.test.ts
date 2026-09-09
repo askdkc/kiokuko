@@ -9,51 +9,51 @@ import { migrateDatabase } from '../../src/db/migrate.js';
 import { KiokukoError } from '../../src/errors.js';
 
 async function temporaryDirectory(prefix: string): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), `kiokuko-init-upgrade-${prefix}-`));
+  return mkdtemp(path.join(tmpdir(), `kiokuko-init-concurrency-${prefix}-`));
 }
 
 async function migrationDirectory(root: string, includeSecond: boolean): Promise<string> {
-  const directory = path.join(root, includeSecond ? 'new-migrations' : 'old-migrations');
+  const directory = path.join(root, includeSecond ? 'extended-migrations' : 'baseline-migrations');
   await mkdir(directory);
-  await writeFile(path.join(directory, '001_initial.sql'), `
+  await writeFile(path.join(directory, '001_baseline.sql'), `
     CREATE TABLE preserved_data (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
   `);
   if (includeSecond) {
-    await writeFile(path.join(directory, '002_upgrade.sql'), `
-      CREATE TABLE upgraded_data (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+    await writeFile(path.join(directory, '002_additional.sql'), `
+      CREATE TABLE additional_data (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
     `);
   }
   return directory;
 }
 
-async function createVersionOneDatabase(root: string): Promise<{ databasePath: string; oldMigrations: string }> {
-  const oldMigrations = await migrationDirectory(root, false);
+async function createVersionOneDatabase(root: string): Promise<{ databasePath: string; baselineMigrations: string }> {
+  const baselineMigrations = await migrationDirectory(root, false);
   const databasePath = path.join(root, 'data.sqlite3');
   const database = openConnection(databasePath);
   try {
-    migrateDatabase(database, oldMigrations);
+    migrateDatabase(database, baselineMigrations);
     database.prepare('INSERT INTO preserved_data (id, value) VALUES (1, ?)').run('keep me');
   } finally {
     database.close();
   }
-  return { databasePath, oldMigrations };
+  return { databasePath, baselineMigrations };
 }
 
 test('initializeDatabase rejects a database that appears after an absent preflight without mutation', async () => {
   const root = await temporaryDirectory('database-appearance');
   const databasePath = path.join(root, 'data.sqlite3');
-  const oldMigrations = await migrationDirectory(root, false);
-  const newMigrations = await migrationDirectory(root, true);
+  const baselineMigrations = await migrationDirectory(root, false);
+  const extendedMigrations = await migrationDirectory(root, true);
   let before: Buffer | undefined;
 
   await assert.rejects(
     initializeDatabase(
-      { databasePath, migrationsDirectory: newMigrations },
+      { databasePath, migrationsDirectory: extendedMigrations },
       {
         async afterPreflight() {
           const appeared = openConnection(databasePath);
           try {
-            assert.deepEqual(migrateDatabase(appeared, oldMigrations).applied, [1]);
+            assert.deepEqual(migrateDatabase(appeared, baselineMigrations).applied, [1]);
             appeared.prepare('INSERT INTO preserved_data (id, value) VALUES (1, ?)').run('appeared intact');
             appeared.exec('PRAGMA journal_mode = DELETE');
           } finally {
@@ -78,11 +78,11 @@ test('initializeDatabase rejects a database that appears after an absent preflig
       unchanged.prepare('SELECT version, name FROM schema_migrations ORDER BY version')
         .all<Record<string, unknown>>()
         .map((row) => ({ ...row })),
-      [{ version: 1, name: '001_initial.sql' }],
+      [{ version: 1, name: '001_baseline.sql' }],
     );
     assert.equal(unchanged.prepare('SELECT value FROM preserved_data WHERE id = 1').get<{ value: string }>()?.value, 'appeared intact');
     assert.equal(unchanged.prepare(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'upgraded_data'",
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'additional_data'",
     ).get(), undefined);
   } finally {
     unchanged.close();
@@ -93,19 +93,19 @@ test('initializeDatabase rejects replacement of its reserved fresh path before S
   const root = await temporaryDirectory('reserved-path-replacement');
   const databasePath = path.join(root, 'data.sqlite3');
   const reservedPath = path.join(root, 'reserved-empty.sqlite3');
-  const oldMigrations = await migrationDirectory(root, false);
-  const newMigrations = await migrationDirectory(root, true);
+  const baselineMigrations = await migrationDirectory(root, false);
+  const extendedMigrations = await migrationDirectory(root, true);
   let replacementBefore: Buffer | undefined;
 
   await assert.rejects(
     initializeDatabase(
-      { databasePath, migrationsDirectory: newMigrations },
+      { databasePath, migrationsDirectory: extendedMigrations },
       {
         async afterPathReserved() {
           await rename(databasePath, reservedPath);
           const replacement = openConnection(databasePath);
           try {
-            assert.deepEqual(migrateDatabase(replacement, oldMigrations).applied, [1]);
+            assert.deepEqual(migrateDatabase(replacement, baselineMigrations).applied, [1]);
             replacement.prepare('INSERT INTO preserved_data (id, value) VALUES (1, ?)').run('reserved replacement intact');
             replacement.exec('PRAGMA journal_mode = DELETE');
           } finally {
@@ -128,7 +128,7 @@ test('initializeDatabase rejects replacement of its reserved fresh path before S
     assert.equal(live.prepare('PRAGMA journal_mode').get<{ journal_mode: string }>()?.journal_mode, 'delete');
     assert.equal(live.prepare('SELECT value FROM preserved_data WHERE id = 1').get<{ value: string }>()?.value, 'reserved replacement intact');
     assert.equal(live.prepare(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'upgraded_data'",
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'additional_data'",
     ).get(), undefined);
   } finally {
     live.close();
@@ -258,7 +258,7 @@ test('expected database identity fails before writable chmod or journal configur
 
 test('initializeDatabase rejects a future-version database before opening it for writes', async () => {
   const root = await temporaryDirectory('future-version');
-  const { databasePath, oldMigrations } = await createVersionOneDatabase(root);
+  const { databasePath, baselineMigrations } = await createVersionOneDatabase(root);
   const database = openConnection(databasePath);
   try {
     database.prepare(`
@@ -271,7 +271,7 @@ test('initializeDatabase rejects a future-version database before opening it for
   const before = await readFile(databasePath);
 
   await assert.rejects(
-    initializeDatabase({ databasePath, migrationsDirectory: oldMigrations }),
+    initializeDatabase({ databasePath, migrationsDirectory: baselineMigrations }),
     (error: unknown) => (error as { code?: string }).code === 'INTEGRITY_ERROR' && /newer/i.test((error as Error).message),
   );
   assert.deepEqual(await readFile(databasePath), before);
@@ -279,8 +279,8 @@ test('initializeDatabase rejects a future-version database before opening it for
 
 test('current-schema initialization tolerates concurrent data writes after revalidating history under the lock', async () => {
   const root = await temporaryDirectory('no-op-concurrent-write');
-  const { databasePath, oldMigrations } = await createVersionOneDatabase(root);
-  const result = await initializeDatabase({ databasePath, migrationsDirectory: oldMigrations }, {
+  const { databasePath, baselineMigrations } = await createVersionOneDatabase(root);
+  const result = await initializeDatabase({ databasePath, migrationsDirectory: baselineMigrations }, {
     afterWritableOpen() {
       const writer = openConnection(databasePath);
       try { writer.prepare('UPDATE preserved_data SET value = ? WHERE id = 1').run('concurrent update'); }
@@ -297,8 +297,8 @@ test('current-schema initialization tolerates concurrent data writes after reval
 
 test('no-op initialization still rejects concurrent migration history tampering', async () => {
   const root = await temporaryDirectory('no-op-history-tampering');
-  const { databasePath, oldMigrations } = await createVersionOneDatabase(root);
-  await assert.rejects(initializeDatabase({ databasePath, migrationsDirectory: oldMigrations }, {
+  const { databasePath, baselineMigrations } = await createVersionOneDatabase(root);
+  await assert.rejects(initializeDatabase({ databasePath, migrationsDirectory: baselineMigrations }, {
     afterWritableOpen() {
       const writer = openConnection(databasePath);
       try { writer.exec("UPDATE schema_migrations SET checksum = 'tampered'"); }

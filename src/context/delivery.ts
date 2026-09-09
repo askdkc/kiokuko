@@ -820,8 +820,8 @@ function writeContextDelivery(
   database.prepare(`
     INSERT INTO context_deliveries (
       delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-      policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at, score_schema_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      policy_version, char_budget, char_count, truncated, created_at, score_schema_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.deliveryId,
     input.runId,
@@ -830,7 +830,6 @@ function writeContextDelivery(
     input.taskProfileHash,
     input.queryHash,
     input.policyVersion,
-    '{}',
     input.charBudget,
     input.charCount,
     input.truncated ? 1 : 0,

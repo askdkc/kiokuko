@@ -86,8 +86,8 @@ function seedCompleteGraph(database: ReturnType<typeof openConnection>, workspac
     .run(`${workspace}-intake-feedback`, runId, sessionId, 'target', null, 'helpful', 'clear question', 'user', digest('intake-key'), fixedNow);
   database.prepare(`INSERT INTO ledger_evidence (evidence_id, run_id, event_id, kind, locator, digest_algorithm, digest, byte_size, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(`${workspace}-evidence`, runId, eventId, 'test', 'tests/archive.test.ts', 'sha256', 'b'.repeat(64), 10, 'passed', fixedNow);
-  database.prepare(`INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(deliveryId, runId, 1, sessionId, taskProfileHash, 'd'.repeat(64), genericDeliveryPolicyVersion, '{"legacy_marker":"must-not-export"}', 1000, 100, 0, fixedNow);
+  database.prepare(`INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, char_budget, char_count, truncated, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(deliveryId, runId, 1, sessionId, taskProfileHash, 'd'.repeat(64), genericDeliveryPolicyVersion, 1000, 100, 0, fixedNow);
   database.prepare(`INSERT INTO context_delivery_entries (delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(deliveryId, entryId, 1, 1, '{"semantic":0.9,"trust":0.8}', '["matching_task"]');
   database.prepare(`INSERT INTO context_feedback (feedback_id, delivery_id, entry_id, run_id, verdict, comment, actor, idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -369,8 +369,6 @@ test('archives the complete linked ledger graph without curated memory bodies or
     assert.equal(memoryAfter.includes('ledger_runs'), false);
     assert.equal(archive.content.includes(memoryBody), false);
     assert.equal(archive.content.includes('curated-title-must-not-be-archived'), false);
-    assert.equal(archive.content.includes('must-not-export'), false);
-    assert.equal(archive.content.includes('external_sync_summary_json'), false);
     assert.equal(archive.content.includes('unrelated-run'), false);
     assert.deepEqual(archive.counts, {
       runs: 1, sessions: 1, answers: 1, runIntakes: 1, intakeFeedback: 1, events: 1, evidence: 1,
@@ -379,7 +377,6 @@ test('archives the complete linked ledger graph without curated memory bodies or
     const lines = archive.content.trimEnd().split('\n').map((line: string) => JSON.parse(line) as Record<string, unknown>);
     const delivery = lines.find((line: Record<string, unknown>) => line.type === 'delivery');
     assert.ok(delivery);
-    assert.equal('external_sync_summary_json' in delivery, false);
     assert.equal(delivery.score_schema_version, 1);
     const nudge = lines.find((line: Record<string, unknown>) => line.type === 'nudge_delivery');
     assert.ok(nudge);
@@ -403,7 +400,6 @@ test('archives the complete linked ledger graph without curated memory bodies or
     assert.equal(exportLedgerArchive(target, { workspace }).content, archive.content);
     assert.equal(target.prepare('SELECT COUNT(*) AS count FROM ledger_runs WHERE workspace = ?').get<{ count: number }>(workspace)?.count, 1);
     assert.equal(target.prepare('SELECT COUNT(*) AS count FROM akinator_answers').get<{ count: number }>()?.count, 1);
-    assert.equal(target.prepare('SELECT external_sync_summary_json FROM context_deliveries WHERE delivery_id = ?').get<{ external_sync_summary_json: string }>(graph.deliveryId)?.external_sync_summary_json, '{}');
     assert.equal(target.prepare('SELECT score_schema_version FROM context_deliveries WHERE delivery_id = ?').get<{ score_schema_version: number }>(graph.deliveryId)?.score_schema_version, 1);
     assert.equal(graph.runId, `${workspace}-run`);
   } finally {

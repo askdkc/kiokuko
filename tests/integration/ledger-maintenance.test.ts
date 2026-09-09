@@ -97,8 +97,8 @@ test('accepts context delivery selection reasons as a JSON array', async () => {
       actor: 'test',
     }, { now: '2026-08-20T00:00:00.000Z', idFactory: () => 'entry-selection-reasons' });
     database.prepare(`
-      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at)
-      VALUES ('delivery-selection-reasons', 'run-1', 1, NULL, ?, ?, 'v1', 'not-json-legacy-artifact', 100, 10, 0, ?)
+      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, char_budget, char_count, truncated, created_at)
+      VALUES ('delivery-selection-reasons', 'run-1', 1, NULL, ?, ?, 'v1', 100, 10, 0, ?)
     `).run('a'.repeat(64), 'b'.repeat(64), '2026-08-20T00:00:00.000Z');
     database.prepare(`
       INSERT INTO context_delivery_entries (delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json)
@@ -126,9 +126,9 @@ test('reports an unknown delivery origin as corruption instead of treating it as
     database.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash,
-        query_hash, policy_version, external_sync_summary_json, char_budget,
+        query_hash, policy_version, char_budget,
         char_count, truncated, created_at
-      ) VALUES ('delivery-origin-corruption', 'run-1', 0, NULL, ?, ?, 'v3', '{}', 100, 0, 0, ?)
+      ) VALUES ('delivery-origin-corruption', 'run-1', 0, NULL, ?, ?, 'v3', 100, 0, 0, ?)
     `).run('a'.repeat(64), 'b'.repeat(64), '2026-08-20T00:00:00.000Z');
     database.prepare(`
       INSERT INTO context_delivery_entries (
@@ -197,8 +197,8 @@ test('reports invalid child enum, timestamp, rating, and context hash values wit
       VALUES ('evidence-child-1', 'run-1', 'event-child-1', 'test', 'tests/x', 'safe', ?)
     `).run('2026-08-20T00:00:00.000Z');
     database.prepare(`
-      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at)
-      VALUES ('delivery-child-1', 'run-1', 1, NULL, ?, ?, 'v1', '{}', 100, 10, 0, ?)
+      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, char_budget, char_count, truncated, created_at)
+      VALUES ('delivery-child-1', 'run-1', 1, NULL, ?, ?, 'v1', 100, 10, 0, ?)
     `).run('a'.repeat(64), 'b'.repeat(64), '2026-08-20T00:00:00.000Z');
     database.prepare(`
       INSERT INTO context_delivery_entries (delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json)
@@ -349,8 +349,8 @@ test('run purge removes ledger and intake graph but preserves curated memory and
       VALUES ('evidence-1', 'run-1', 'event-1', 'test', 'tests/x', 'safe evidence', ?)
     `).run('2026-08-20T00:00:00.000Z');
     database.prepare(`
-      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at)
-      VALUES ('delivery-1', 'run-1', 1, 'session-1', ?, ?, 'v1', '{}', 100, 10, 0, ?)
+      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, char_budget, char_count, truncated, created_at)
+      VALUES ('delivery-1', 'run-1', 1, 'session-1', ?, ?, 'v1', 100, 10, 0, ?)
     `).run('a'.repeat(64), 'b'.repeat(64), '2026-08-20T00:00:00.000Z');
     database.prepare(`
       INSERT INTO context_delivery_entries (delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json)
@@ -444,8 +444,8 @@ test('delivery purge removes delivery-owned ledger rows but preserves curated me
     store.appendBatch('run-1', { events: [{ eventId: 'event-1', eventType: 'run.started', actor: 'agent', payload: {} }] });
     const entry = recordEntry(database, { workspace: 'workspace-a', kind: 'lesson', title: 'Keep title', body: 'Keep body', createdBy: 'test', actor: 'test' }, { now: '2026-08-20T00:00:00.000Z', idFactory: () => 'entry-delivery-1' });
     database.prepare(`
-      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at)
-      VALUES ('delivery-purge-1', 'run-1', 1, NULL, ?, ?, 'v1', '{}', 100, 10, 0, ?)
+      INSERT INTO context_deliveries (delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash, policy_version, char_budget, char_count, truncated, created_at)
+      VALUES ('delivery-purge-1', 'run-1', 1, NULL, ?, ?, 'v1', 100, 10, 0, ?)
     `).run('a'.repeat(64), 'b'.repeat(64), '2026-08-20T00:00:00.000Z');
     database.prepare(`
       INSERT INTO context_delivery_entries (delivery_id, entry_id, entry_revision, rank, score_components_json, selection_reason_json)

@@ -40,7 +40,21 @@ function inspectSnapshot<T>(
   let database: ReturnType<typeof openConnection> | undefined;
   try {
     copyFileSync(source, target);
-    if (before[1] !== undefined) copyFileSync(`${source}-wal`, `${target}-wal`);
+    if (before[1] !== undefined) {
+      try {
+        copyFileSync(`${source}-wal`, `${target}-wal`);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+          requireDatabaseFileIdentity(source, identity);
+          if (!unchanged(before[1], fileState(`${source}-wal`))) {
+            // Closing the last writer can checkpoint and remove the WAL after
+            // stat. The main copy may predate that checkpoint, so retry both.
+            throw new KiokukoError('CONFLICT', 'Database changed during read-only inspection; retry', { retryInspection: true });
+          }
+        }
+        throw error;
+      }
+    }
     requireDatabaseFileIdentity(source, identity);
     const after = [fileState(source), fileState(`${source}-wal`)];
     if (!before.every((state, index) => unchanged(state, after[index]))) {

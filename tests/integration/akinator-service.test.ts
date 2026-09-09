@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { answerAkinatorService, getAkinatorContextService, startAkinatorService } from '../../src/akinator/service.js';
 import { openConnection } from '../../src/db/connection.js';
@@ -388,15 +387,4 @@ test('returns empty stored context when no local entry is available', async () =
   } finally {
     database.close();
   }
-});
-
-test('keeps the orchestrator limited to intake mutation without a task-memory compatibility facade', () => {
-  const source = readFileSync(new URL('../../src/akinator/orchestrator.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /database\.prepare|TASK_TYPES|inferTaskType|nextQuestion|recommendedTags|searchEntries|getAkinatorContextService|withImmediateTransaction|Akinator is waiting/u);
-  assert.match(source, /startAkinatorService/);
-  assert.match(source, /answerAkinatorService/);
-});
-
-test('removes the fixed-source compatibility adapter', () => {
-  assert.equal(existsSync(new URL('../../src/knowledge/sources.ts', import.meta.url)), false);
 });

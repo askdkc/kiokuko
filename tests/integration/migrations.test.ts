@@ -20,6 +20,10 @@ test('one baseline creates current schema and is idempotent', () => {
     const names = database.prepare('SELECT name FROM sqlite_schema').all<{ name: string }>().map(r => r.name);
     assert.ok(names.includes('entry_search_documents'));
     assert.ok(names.includes('embedding_settings'));
+    assert.deepEqual(database.prepare('PRAGMA table_info(context_deliveries)').all<{ name: string }>().map(row => row.name), [
+      'delivery_id', 'run_id', 'through_sequence', 'intake_session_id', 'task_profile_hash', 'query_hash',
+      'policy_version', 'char_budget', 'char_count', 'truncated', 'created_at', 'score_schema_version',
+    ]);
     assert.ok(!names.some(name => /enno|oduno|zenki|goki/i.test(name)));
     assert.ok(!database.prepare('PRAGMA table_info(agent_task_skill_discovery_attempts)').all<{ name: string }>().some(r => r.name === 'phase'));
   } finally { database.close(); }
@@ -131,4 +135,49 @@ test('refuses a rollback journal without invoking SQLite recovery', async () => 
   await assert.rejects(initializeDatabase({ databasePath }), invalid);
   assert.deepEqual(await readFile(databasePath), before);
   assert.equal(await readFile(`${databasePath}-journal`, 'utf8'), 'preserve journal');
+});
+
+const embeddingTables = [
+  'embedding_profiles',
+  'embedding_runtime',
+  'entry_embeddings',
+  'embedding_jobs',
+  'query_embeddings',
+] as const;
+
+test('baseline installs the derived embedding schema without provider I/O', () => {
+  const database = openConnection(':memory:');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    throw new Error('provider I/O is forbidden during migration');
+  }) as typeof fetch;
+  try {
+    const result = migrateDatabase(database);
+    assert.equal(result.currentVersion, 1);
+    assert.deepEqual(result.applied, [1]);
+    for (const table of embeddingTables) {
+      assert.equal(
+        database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.present,
+        1,
+        `missing ${table}`,
+      );
+    }
+    const runtime = database.prepare('SELECT singleton, active_profile_id, generation, activated_at FROM embedding_runtime').get();
+    assert.deepEqual(runtime === undefined ? undefined : { ...runtime }, {
+      singleton: 1,
+      active_profile_id: null,
+      generation: 1,
+      activated_at: null,
+    });
+    assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
+    assert.deepEqual({ ...(database.prepare('SELECT mode, provider_kind, setup_state FROM embedding_settings').get() as object) }, {
+      mode: 'off',
+      provider_kind: null,
+      setup_state: 'disabled',
+    });
+    assert.deepEqual(migrateDatabase(database).applied, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    database.close();
+  }
 });

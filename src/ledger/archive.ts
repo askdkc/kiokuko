@@ -1095,10 +1095,6 @@ function compareExisting(database: SqliteDatabase, type: ArchiveRecordType, reco
 function insertRecord(database: SqliteDatabase, type: ArchiveRecordType, record: ArchiveRecord): void {
   const fields = [...TABLE_FIELDS[type]];
   const values = fields.map((field) => record[field] as SqliteValue);
-  if (type === 'deliveries') {
-    fields.push('external_sync_summary_json');
-    values.push('{}');
-  }
   const placeholders = fields.map(() => '?').join(', ');
   try {
     database.prepare(`INSERT INTO ${TABLE_NAMES[type]} (${fields.join(', ')}) VALUES (${placeholders})`).run(...values);

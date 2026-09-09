@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -101,7 +101,7 @@ function seedGateway(database: ReturnType<typeof openConnection>, workspace = 'w
   insertIntake(database);
 }
 
-test('fresh migration applies the current schema and every gateway table and index', async () => {
+test('baseline creates every gateway table and index', async () => {
   const directory = await temporaryDirectory('gateway-fresh');
   const database = openConnection(path.join(directory, 'data.sqlite3'));
   try {
@@ -119,7 +119,7 @@ test('fresh migration applies the current schema and every gateway table and ind
   }
 });
 
-test('fresh migration uses immutable revisions instead of the legacy mutable entry shape', async () => {
+test('baseline stores entry content in immutable revisions', async () => {
   const directory = await temporaryDirectory('gateway-revision-schema');
   const database = openConnection(path.join(directory, 'data.sqlite3'));
   try {
@@ -196,8 +196,8 @@ test('gateway foreign keys prevent orphaned child rows', async () => {
     assert.throws(() => database.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at
-      ) VALUES ('delivery-1', 'missing-run', 0, NULL, 'hash', 'query', 'v1', '{}', 8000, 0, 0, ?)
+        policy_version, char_budget, char_count, truncated, created_at
+      ) VALUES ('delivery-1', 'missing-run', 0, NULL, 'hash', 'query', 'v1', 8000, 0, 0, ?)
     `).run(now), /FOREIGN KEY|constraint/i);
     assert.throws(() => database.prepare(`
       INSERT INTO context_delivery_entries (
@@ -207,12 +207,6 @@ test('gateway foreign keys prevent orphaned child rows', async () => {
   } finally {
     database.close();
   }
-});
-
-test('migration asset is present and checksum remains file-based', async () => {
-  const sql = await readFile(path.join(migrationsDirectory, '001_baseline.sql'), 'utf8');
-  assert.match(sql, /CREATE TABLE ledger_runs/);
-  assert.match(sql, /CREATE TABLE ledger_events/);
 });
 
 test('idempotency schema has composite uniqueness, bounded hash checks, and no raw key/request columns', async () => {

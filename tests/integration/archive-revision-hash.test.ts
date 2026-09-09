@@ -9,7 +9,8 @@ import { exportWorkspace } from '../../src/commands/export.js';
 import { importWorkspace } from '../../src/commands/import.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
-import { recordEntry, type EntryRecord } from '../../src/memory/entries.js';
+import { readEntry, recordEntry, type EntryRecord } from '../../src/memory/entries.js';
+import { readEntryRevision } from '../../src/memory/revisions.js';
 import {
   canonicalContentHash,
   canonicalJson,
@@ -30,10 +31,6 @@ async function database(prefix: string) {
   const db = openConnection(databasePath);
   migrateDatabase(db);
   return { db, databasePath, directory };
-}
-
-function structuredV2Scope(): JsonObject {
-  return { schemaVersion: 2, visibility: 'project' };
 }
 
 function structuredV3Scope(): JsonObject {
@@ -193,7 +190,7 @@ test('memory archive rejects noncanonical revision hashes without a legacy branc
       kind: 'lesson',
       title: 'Legacy archive hash',
       body: 'Noncanonical revision hashes are rejected at every runtime boundary.',
-      scope: structuredV2Scope(),
+      scope: structuredV3Scope(),
       tags: LEGACY_TAG_ORDER,
     });
     const canonicalArchive = exportWorkspace(source.db, { workspace: entry.workspace }).content;
@@ -207,6 +204,12 @@ test('memory archive rejects noncanonical revision hashes without a legacy branc
     );
 
     installLegacyRevisionHash(source.db, entry, LEGACY_TAG_ORDER);
+    for (const read of [
+      () => readEntry(source.db, { workspace: entry.workspace, entryId: entry.id }),
+      () => readEntryRevision(source.db, { workspace: entry.workspace, entryId: entry.id, revision: entry.revision }),
+    ]) {
+      assert.throws(read, (error: unknown) => error instanceof Error && 'code' in error && error.code === 'INTEGRITY_ERROR');
+    }
     assert.throws(
       () => exportWorkspace(source.db, { workspace: entry.workspace }),
       (error: unknown) => typeof error === 'object'

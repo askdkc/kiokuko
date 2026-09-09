@@ -521,8 +521,8 @@ test('does not mutate Akinator, ledger, memory, delivery, or existing feedback s
     database.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at
-      ) VALUES (?, ?, 0, ?, ?, ?, ?, '{}', 8000, 20, 0, ?)
+        policy_version, char_budget, char_count, truncated, created_at
+      ) VALUES (?, ?, 0, ?, ?, ?, ?, 8000, 20, 0, ?)
     `).run('delivery-intake-1', 'run-intake-feedback-1', 'session-intake-feedback-1', 'profile-hash', 'query-hash', 'policy-v1', now);
     database.prepare(`
       INSERT INTO context_delivery_entries (

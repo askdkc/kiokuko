@@ -307,7 +307,6 @@ CREATE TABLE context_deliveries (
     task_profile_hash TEXT NOT NULL,
     query_hash TEXT NOT NULL,
     policy_version TEXT NOT NULL,
-    external_sync_summary_json TEXT NOT NULL,
     char_budget INTEGER NOT NULL CHECK (char_budget >= 0),
     char_count INTEGER NOT NULL CHECK (char_count >= 0 AND char_count <= char_budget),
     truncated INTEGER NOT NULL CHECK (truncated IN (0, 1)),

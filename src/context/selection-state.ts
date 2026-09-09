@@ -364,9 +364,8 @@ function contextCandidateState(
     const entry = readEntry(
       database,
       { workspace: row.workspace, entryId: row.id },
-      // Released v2 global scopes remain valid stored records, but retrieval
-      // policy excludes them because they lack an explicit v3 global scope.
-      // Managed external entries still require the current structured shape.
+      // Managed external entries require structured scope; ordinary memory
+      // may also carry unversioned user JSON.
       { requireStructuredScope: row.isExternal === 1 },
     );
     if (entry.status === 'superseded') return [];

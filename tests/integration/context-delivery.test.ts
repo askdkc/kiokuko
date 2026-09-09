@@ -486,11 +486,11 @@ test('classifies only exact native delivery failures and never infers from error
       BEGIN
         INSERT INTO context_deliveries (
           delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-          policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+          policy_version, char_budget, char_count, truncated, created_at,
           score_schema_version
         ) VALUES (
           NEW.delivery_id, NEW.run_id, NEW.through_sequence, NEW.intake_session_id,
-          NEW.task_profile_hash, NEW.query_hash, NEW.policy_version, NEW.external_sync_summary_json,
+          NEW.task_profile_hash, NEW.query_hash, NEW.policy_version,
           NEW.char_budget, NEW.char_count, NEW.truncated, NEW.created_at, NEW.score_schema_version
         );
       END;
@@ -535,38 +535,6 @@ test('classifies only exact native delivery failures and never infers from error
       () => readContextDelivery(failingDatabase, { workspace, deliveryId: 'delivery-any' }),
       (error: unknown) => error === programmerFailure,
     );
-  } finally {
-    database.close();
-  }
-});
-
-test('rejects the removed external sync contract and ignores the legacy storage column', async () => {
-  const database = await temporaryDatabase('context-delivery-legacy-sync-column');
-  try {
-    seedDeliveryTarget(database);
-    const input = deliveryInput('delivery-legacy-sync-column-1');
-    const record = recordContextDelivery(database, input);
-    assert.equal('externalSyncSummary' in record, false);
-    assert.equal(
-      database.prepare('SELECT external_sync_summary_json FROM context_deliveries WHERE delivery_id = ?').get<{ external_sync_summary_json: string }>(input.deliveryId)?.external_sync_summary_json,
-      '{}',
-    );
-
-    database.prepare('UPDATE context_deliveries SET external_sync_summary_json = ? WHERE delivery_id = ?')
-      .run('not-json-and-not-a-summary', input.deliveryId);
-    const reread = readContextDelivery(database, { workspace, deliveryId: input.deliveryId });
-    assert.equal(reread.deliveryId, input.deliveryId);
-    assert.equal('externalSyncSummary' in reread, false);
-    assert.deepEqual(recordContextDelivery(database, input), reread);
-
-    assert.throws(
-      () => recordContextDelivery(database, {
-        ...deliveryInput('delivery-removed-sync-contract'),
-        externalSyncSummary: { attempted: false, imported: 0, sources: [] },
-      }),
-      (error: unknown) => (error as { code?: string }).code === 'VALIDATION_ERROR' && (error as Error).message === 'Context delivery input is invalid',
-    );
-    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries').get<{ count: number }>()?.count, 1);
   } finally {
     database.close();
   }

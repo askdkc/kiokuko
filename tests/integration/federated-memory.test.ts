@@ -248,34 +248,22 @@ test('keeps path-bearing tags project-local for automatic and explicit ecosystem
   }
 });
 
-test('keeps released project v2 and unversioned structured-looking scope out of ecosystem retrieval', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-federated-legacy-scope-db-'));
+test('keeps unversioned structured-looking scope out of ecosystem retrieval', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-federated-unstructured-scope-db-'));
   const databasePath = path.join(directory, 'kiokuko.sqlite3');
-  const sourceRoot = await repository('legacy-scope-source', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
-  const targetRoot = await repository('legacy-scope-target', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
+  const sourceRoot = await repository('unstructured-scope-source', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
+  const targetRoot = await repository('unstructured-scope-target', { file: 'package.json', value: { devDependencies: { typescript: '^5.9' } } });
   await initializeDatabase({ databasePath });
   const database = openConnection(databasePath);
   try {
     const source = await resolveProjectWorkspace(database, sourceRoot);
     assert.ok(source);
     await resolveProjectWorkspace(database, targetRoot);
-    const v2 = recordEntry(database, {
-      workspace: source.workspace,
-      kind: 'lesson',
-      title: 'Released v2 TypeScript workflow',
-      body: 'This released schema remains readable only in its source project.',
-      scope: {
-        schemaVersion: 2,
-        visibility: 'project',
-        applicability: { languages: ['TypeScript'] },
-        signals: { packages: ['typescript'] },
-      },
-    });
     const unversioned = recordEntry(database, {
       workspace: source.workspace,
       kind: 'lesson',
       title: 'Unversioned TypeScript workflow',
-      body: 'Colliding legacy keys do not opt this row into ecosystem retrieval.',
+      body: 'Unversioned keys do not opt this row into ecosystem retrieval.',
       scope: {
         retrievalScope: 'ecosystem',
         applicability: { languages: ['TypeScript'] },
@@ -284,11 +272,9 @@ test('keeps released project v2 and unversioned structured-looking scope out of 
     });
 
     const crossProject = await recallScopedMemory(database, { cwd: targetRoot, query: 'typescript workflow', limit: 20 });
-    assert.equal(crossProject.ecosystem?.items.some((item) => item.id === v2.id) ?? false, false);
     assert.equal(crossProject.ecosystem?.items.some((item) => item.id === unversioned.id) ?? false, false);
 
     const sameProject = await recallScopedMemory(database, { cwd: sourceRoot, query: 'typescript workflow', scope: 'project', limit: 20 });
-    assert.equal(sameProject.project?.memory.items.some((item) => item.id === v2.id), true);
     assert.equal(sameProject.project?.memory.items.some((item) => item.id === unversioned.id), true);
   } finally {
     database.close();

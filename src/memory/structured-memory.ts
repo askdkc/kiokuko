@@ -181,7 +181,7 @@ export function extractEntrySearchSignals(input: {
   const scope = input.scope as Record<string, unknown>;
   // Unversioned scope is arbitrary user JSON. Do not reinterpret
   // colliding property names as structured search metadata.
-  const structuredScope = scope.schemaVersion === 2 || scope.schemaVersion === 3 ? scope : {};
+  const structuredScope = scope.schemaVersion === 3 ? scope : {};
   const applicability = (structuredScope.applicability ?? {}) as Record<string, unknown>;
   const signals = (structuredScope.signals ?? {}) as Record<string, unknown>;
   collect(input.tags, 'tag', result);

@@ -766,11 +766,11 @@ test('fails closed when prior delivery history exceeds the broker policy bound',
     const insert = db.prepare(`
       INSERT INTO context_deliveries (
         delivery_id, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-        policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+        policy_version, char_budget, char_count, truncated, created_at,
         score_schema_version
       )
       SELECT ?, run_id, through_sequence, intake_session_id, task_profile_hash, query_hash,
-             policy_version, external_sync_summary_json, char_budget, char_count, truncated, created_at,
+             policy_version, char_budget, char_count, truncated, created_at,
              score_schema_version
         FROM context_deliveries
        WHERE delivery_id = ?
