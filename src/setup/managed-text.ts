@@ -60,3 +60,19 @@ export function upsertDelimitedBlock(
     action: 'updated',
   };
 }
+
+/** Remove a validated managed region while preserving text outside its markers. */
+export function removeDelimitedBlock(
+  existing: string,
+  beginMarker: string,
+  endMarker: string,
+  label: string,
+): string | undefined {
+  // Share setup's marker validation, including duplicate and reversed markers.
+  upsertDelimitedBlock(existing, '', beginMarker, endMarker, label);
+  const begin = existing.indexOf(beginMarker);
+  if (begin < 0) return existing;
+  const end = existing.indexOf(endMarker) + endMarker.length;
+  const content = existing.slice(0, begin) + existing.slice(end);
+  return content.trim().length === 0 ? undefined : content;
+}

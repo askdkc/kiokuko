@@ -188,7 +188,7 @@ export function getOpenCodeSkillsDirectory(options: PathEnvironment = {}): strin
   return join(getOpenCodeConfigDirectory(options), 'skills');
 }
 
-function getHermesRoot(options: PathEnvironment): string {
+export function getHermesRoot(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   if (env.HERMES_HOME) return env.HERMES_HOME;

@@ -26,21 +26,42 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-`setup`은 데이터베이스를 초기화하고 지원 클라이언트를 감지하며 표준 Skill과 MCP를 설정합니다. 이미 실행 중인 클라이언트는
+`setup`은 데이터베이스, 표준 Skill, MCP 연결과 로컬 semantic 검색을 설정합니다.
+처음 실행할 때 임베딩 런타임과 모델을 설치합니다. 이미 실행 중인 클라이언트는
 설정 후 재시작하십시오. 정확한 규칙은 [영문 Getting started](docs/getting-started.md)를 참조하십시오.
+
+임베딩 런타임과 모델을 설치하지 않고 클라이언트만 설정하려면:
+
+```bash
+kiokuko setup --no-embeddings
+```
+
+임베딩 설정 단계를 건너뛰며 기존 임베딩 설정은 변경하지 않습니다.
+
+## 제거
+
+Kiokuko를 사용하는 클라이언트와 `kiokuko serve`를 먼저 종료하세요.
+
+```bash
+kiokuko uninstall --dry-run
+kiokuko uninstall
+# 모든 에이전트를 선택하고 정리가 완료되면 표시된 명령을 실행합니다:
+npm uninstall --global kiokuko
+```
+
+↑↓로 이동하고 Space로 선택을 전환하며 Enter로 확정하고 Esc로 취소합니다. 처음에는 모두 선택 해제되어 있습니다.
+선택한 에이전트의 관리 설정과 Skill을 제거합니다. **4개 에이전트를 모두 선택하면 기억 DB, 임베딩 모델, 프로젝트 연결도 삭제**하고 npm 제거 명령을 표시합니다. 일부만 선택하면 공유 데이터와 npm 패키지를 유지합니다. 사용자 내용은 보존합니다.
+스크립트에서는 `kiokuko uninstall --clients opencode,claude`, 완전 제거에는 `kiokuko uninstall --all`을 사용하세요. 사용자 지정 경로는 setup과 같은 환경 변수로 실행하세요.
+[삭제 범위](docs/cli-contract.md#uninstall)를 참고하세요.
 
 ## 주요 기능
 
-- RAG 기억（기본 lexical, 선택적 로컬 semantic 검색）
+- RAG 기억（lexical 검색과 `setup`으로 구성하는 로컬 semantic 검색）
 - 모호한 요청을 구체화하는 Akinator
 - 기억을 검토하는 로컬 Web UI
 - 자동 실행하지 않는 검증된 참조 전용 External Skill
 
-선택적 semantic 검색도 `setup`과 같은 클라이언트 설정 흐름을 사용합니다.
-
-```bash
-kiokuko embeddings setup
-```
+`kiokuko embeddings setup`은 `kiokuko setup`과 동일한 처리를 하는 호환 명령으로 유지됩니다.
 
 managed MCP block과 프로젝트 instructions를 갱신합니다. unmanaged identity 교체는 대화형 확인 후에만 수행되며,
 비대화형 또는 `--dry-run --json` 실행은 변경 없이 fail closed합니다. 자세한 내용은 [영문 semantic retrieval](docs/semantic-retrieval.md)을 보십시오.

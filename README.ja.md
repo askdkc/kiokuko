@@ -28,22 +28,43 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-`setup`はローカルDBを初期化し、対応クライアントを検出し、標準SkillとMCP接続を設定します。
+`setup`はローカルDB・標準Skill・MCP接続に加えて、ローカルsemantic検索も設定します。
+初回は埋め込みランタイムとモデルを導入します。
 起動中のクライアントは、設定後に一度再起動してください。正確な設定規則は
 [導入ガイド](docs/getting-started.ja.md)を参照してください。
 
+埋め込みランタイムとモデルを導入せず、クライアント設定だけ行う場合:
+
+```bash
+kiokuko setup --no-embeddings
+```
+
+埋め込みのセットアップを省略します。既存の埋め込み設定は変更しません。
+
+## アンインストール
+
+Kiokukoを使うクライアントと`kiokuko serve`を終了してから実行します。
+
+```bash
+kiokuko uninstall --dry-run
+kiokuko uninstall
+# 全エージェントを選択して正常終了後、最後に表示されたコマンドを実行
+npm uninstall --global kiokuko
+```
+
+↑↓で移動、Spaceで選択を切り替え、Enterで確定、Escで中止します。初期状態は未選択です。
+選択したエージェントの管理設定・Skillだけを削除します。**全4エージェントを選ぶと記憶DB・埋め込みモデル・登録済みプロジェクトの管理部分も削除**し、最後にnpmの削除コマンドを表示します。一部だけを選んだ場合は共有データとnpmパッケージを残します。ユーザーが書いた内容は保持します。
+スクリプトでは `kiokuko uninstall --clients opencode,claude`、完全削除には `kiokuko uninstall --all` を使います。
+独自の配置先を指定していた場合は、セットアップ時と同じ環境変数で実行してください。[削除範囲と失敗時の扱い](docs/cli-contract.md#uninstall)
+
 ## 主な機能
 
-- **RAGメモリ**: 標準はlexical検索、任意でローカルsemantic検索。
+- **RAGメモリ**: lexical検索に加え、`setup`でローカルsemantic検索を設定。
 - **Akinator**: 曖昧な依頼を作業前に具体化。
 - **ローカルWeb UI**: 保存した記憶の確認と整理。
 - **参照専用Skill**: 外部Skillは検証して保存するが、自動実行しない。
 
-semantic検索を有効にする場合も、通常のclient設定フローを使います。
-
-```bash
-kiokuko embeddings setup
-```
+`kiokuko embeddings setup`は、`kiokuko setup`と同じ処理を行う互換コマンドとして利用できます。
 
 managed MCP blockと登録済みプロジェクトのinstructionsを更新します。unmanaged identityの置換は対話確認後だけ行い、
 非対話または`--dry-run --json`では変更せずfail closedします。詳細は

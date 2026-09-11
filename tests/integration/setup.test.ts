@@ -137,7 +137,7 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     await chmod(hermes, 0o755);
     const env = { ...temporary.env, PATH: bin, HERMES_CONFIG_PATH: path.join(hermesHome, 'config.yaml') };
 
-    const dryRun = await runCliJson(platform, env, ['setup', '--dry-run', '--json']);
+    const dryRun = await runCliJson(platform, env, ['setup', '--no-embeddings', '--dry-run', '--json']);
     assert.equal(dryRun.ok, true);
     assert.deepEqual(dryRun.data.clients, ['hermes']);
     assert.equal(dryRun.data.databaseAction, 'planned');
@@ -151,7 +151,7 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-enno-oduno', 'SKILL.md')));
     await assert.rejects(access(path.join(hermesHome, 'skills', 'kiokuko-soul', 'SKILL.md')));
 
-    const first = await runCliJson(platform, env, ['setup', '--json']);
+    const first = await runCliJson(platform, env, ['setup', '--no-embeddings', '--json']);
     assert.equal(first.ok, true);
     assert.deepEqual(first.data.clients, ['hermes']);
     assert.equal(first.data.databaseAction, 'initialized');
@@ -167,7 +167,7 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     await assert.rejects(access(path.join(temporary.config, 'opencode', 'opencode.json')));
     await assert.rejects(access(path.join(temporary.home, '.claude.json')));
 
-    const migrated = await runCliJson(platform, env, ['setup', '--clients', 'hermes', '--command', '/opt/homebrew/bin/kiokuko', '--json']);
+    const migrated = await runCliJson(platform, env, ['setup', '--no-embeddings', '--clients', 'hermes', '--command', '/opt/homebrew/bin/kiokuko', '--json']);
     const migratedFiles = migrated.data.files as Array<{ path: string; action: string; purpose: string }>;
     assert.equal(migrated.data.databaseAction, 'initialized');
     assert.equal(migratedFiles.find((file) => file.purpose === 'mcp-config')?.action, 'updated');
@@ -176,7 +176,7 @@ test('CLI no-argument setup configures only the detected Hermes profile when the
     assert.match(migratedConfig, /command: \/opt\/homebrew\/bin\/kiokuko/);
     assert.match(migratedConfig, /command: other/);
 
-    const second = await runCliJson(platform, env, ['setup', '--clients', 'hermes', '--command', '/opt/homebrew/bin/kiokuko', '--json']);
+    const second = await runCliJson(platform, env, ['setup', '--no-embeddings', '--clients', 'hermes', '--command', '/opt/homebrew/bin/kiokuko', '--json']);
     const secondFiles = second.data.files as Array<{ action: string }>;
     assert.ok(secondFiles.every((file) => file.action === 'unchanged'));
   }
@@ -197,7 +197,7 @@ test('CLI uses hermes config path to select a profile when active_profile is una
     ...temporary.env,
     PATH: bin,
     HERMES_CONFIG_PATH: configPath,
-  }, ['setup', '--json']);
+  }, ['setup', '--no-embeddings', '--json']);
 
   assert.deepEqual(result.data.clients, ['hermes']);
   const files = result.data.files as Array<{ path: string; client: string }>;
@@ -210,7 +210,7 @@ test('CLI uses hermes config path to select a profile when active_profile is una
 test('CLI batch setup persists an explicit community discovery choice', async () => {
   const temporary = await temporaryEnvironment('cli-community-discovery');
   const result = await runCliJson('linux', temporary.env, [
-    'setup', '--clients', 'codex', '--no-standard-skills', '--skill-discovery', 'community', '--json',
+    'setup', '--no-embeddings', '--clients', 'codex', '--no-standard-skills', '--skill-discovery', 'community', '--json',
   ]);
   assert.equal(result.ok, true);
   assert.match(
@@ -224,7 +224,7 @@ test('CLI setup preserves an explicit discovery environment override', async () 
   const result = await runCliJson('linux', {
     ...temporary.env,
     KIOKUKO_SKILL_DISCOVERY: 'off',
-  }, ['setup', '--clients', 'codex', '--no-standard-skills', '--json']);
+  }, ['setup', '--no-embeddings', '--clients', 'codex', '--no-standard-skills', '--json']);
   assert.equal(result.ok, true);
   assert.match(
     await readFile(path.join(temporary.home, '.codex', 'config.toml'), 'utf8'),
@@ -503,7 +503,7 @@ test('explicit setup discovery mode outranks an invalid lower-priority environme
     PATH: '',
     KIOKUKO_SKILL_DISCOVERY: 'invalid-lower-priority-value',
   }, [
-    'setup',
+    'setup', '--no-embeddings',
     '--clients', 'codex',
     '--skill-discovery', 'community',
     '--no-standard-skills',

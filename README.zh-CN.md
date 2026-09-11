@@ -26,21 +26,42 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-`setup` 会初始化数据库、检测支持的客户端、安装标准 Skill 并配置 MCP。已运行的客户端请在设置后重启。
+`setup` 会初始化数据库、安装标准 Skill、配置 MCP 和本地 semantic 检索。
+首次运行会安装嵌入运行时并下载模型。已运行的客户端请在设置后重启。
 精确配置和恢复规则请参阅[英文 Getting started](docs/getting-started.md)。
+
+只配置客户端，不安装嵌入运行时和模型：
+
+```bash
+kiokuko setup --no-embeddings
+```
+
+此选项跳过嵌入设置步骤，不更改已有的嵌入配置。
+
+## 卸载
+
+先退出使用 Kiokuko 的客户端和 `kiokuko serve`。
+
+```bash
+kiokuko uninstall --dry-run
+kiokuko uninstall
+# 选中全部代理并完成清理后，执行最后显示的命令：
+npm uninstall --global kiokuko
+```
+
+↑↓ 移动，Space 切换选择，Enter 确认，Esc 取消。默认全部未选中。
+仅删除所选代理的受管理配置和 Skill。**选中全部四个代理时，还会删除共享记忆数据库、嵌入模型和项目绑定**，最后显示 npm 卸载命令。部分选择会保留共享数据和 npm 包。用户内容保持不变。
+脚本中使用 `kiokuko uninstall --clients opencode,claude`，完全清理使用 `kiokuko uninstall --all`。自定义路径需要使用与 setup 相同的环境变量。
+详见[清理范围](docs/cli-contract.md#uninstall)。
 
 ## 主要功能
 
-- RAG 记忆（默认 lexical，可选本地 semantic 检索）
+- RAG 记忆（lexical 检索，以及通过 `setup` 配置的本地 semantic 检索）
 - Akinator 让模糊请求先变得具体
 - 本地 Web UI 用于检查和整理记忆
 - 外部 Skill 仅作为经过验证的参考，绝不自动执行
 
-可选的 semantic 检索使用与 `setup` 相同的客户端配置流程：
-
-```bash
-kiokuko embeddings setup
-```
+`kiokuko embeddings setup` 保留为兼容入口，与 `kiokuko setup` 执行相同流程。
 
 它会更新 managed MCP block 和项目 instructions。替换 unmanaged identity 需要交互确认；非交互或 `--dry-run --json`
 执行会在不修改配置的情况下 fail closed。详见[英文 semantic retrieval](docs/semantic-retrieval.md)。

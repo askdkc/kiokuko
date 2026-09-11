@@ -4,6 +4,13 @@ Kiokuko 1.0 removes enno-oduno, zenki, and goki. There is no replacement
 orchestrator. Akinator intake, memory, Skill discovery, Curator, and the normal
 CLI, MCP, and Web interfaces remain available.
 
+## Setup defaults
+
+`kiokuko setup` now also installs and configures local semantic retrieval. For the
+previous client-only behavior, use `kiokuko setup --no-embeddings`. Existing
+embedding settings and models are preserved when this flag is used.
+`kiokuko embeddings setup` remains a compatible entrypoint for the same setup flow.
+
 ## Database
 
 Older databases cannot be upgraded or opened by 1.0. They are rejected without
@@ -44,6 +51,12 @@ The JSON envelope remains `apiVersion: "1"`. Its operation payloads follow the
 new package major. Removed commands and tools fail as unsupported operations.
 
 ## Remove previously installed automation
+
+To remove Kiokuko completely, including these retired integrations, use
+[`kiokuko uninstall`](cli-contract.md#uninstall) and select all four agents,
+or use `kiokuko uninstall --all`. Complete cleanup also deletes stored memory
+and embedding models. Selecting only some agents retains shared data and the
+npm package. The manual steps below are for retaining Kiokuko 1.0.
 
 Stop affected clients before editing their configuration. Remove only these
 old Kiokuko entries, preserving other hooks and user content:

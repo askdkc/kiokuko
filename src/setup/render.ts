@@ -3,7 +3,7 @@ import { KiokukoError } from '../errors.js';
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
 import { isSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
 import type { SkillDiscoveryMode } from '../skills/types.js';
-import { upsertDelimitedBlock, type DelimitedBlockResult } from './managed-text.js';
+import { removeDelimitedBlock, upsertDelimitedBlock, type DelimitedBlockResult } from './managed-text.js';
 import { setupMcpIdentityConflict, setupMcpIdentityConflictClient } from './mcp-conflict.js';
 import { parseStrictTomlDefinitions, parseStrictTomlDocument } from './strict-toml.js';
 
@@ -291,6 +291,22 @@ function parseCanonicalCodexBlock(existing: string): SkillDiscoveryMode | undefi
     codexConflict();
   }
   return modeMatch[1] as SkillDiscoveryMode;
+}
+
+/** Remove only the marked MCP table, including blocks from older setup versions. */
+export function removeCodexMcpConfig(existing: string): string | undefined {
+  const remaining = removeDelimitedBlock(existing, CODEX_MCP_BEGIN, CODEX_MCP_END, 'Codex config.toml');
+  const target = ['mcp_servers', 'kiokuko'];
+  const begin = existing.indexOf(CODEX_MCP_BEGIN);
+  const end = existing.indexOf(CODEX_MCP_END);
+  const definitions = parseStrictTomlDefinitions(existing);
+  if (definitions.some((definition) => {
+    const inside = begin >= 0 && definition.offset >= begin && definition.offset < end;
+    return inside ? !startsWithPath(definition.path, target) : startsWithPath(definition.path, target);
+  })) codexConflict();
+  // Removing a table must not change the interpretation of the remaining TOML.
+  parseStrictTomlDocument(remaining ?? '');
+  return remaining;
 }
 
 export function renderCodexMcpConfig(

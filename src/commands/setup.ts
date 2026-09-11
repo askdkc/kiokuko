@@ -32,6 +32,7 @@ import {
 } from '../config/paths.js';
 import { databaseFileIdentity, openConnection } from '../db/connection.js';
 import { KiokukoError } from '../errors.js';
+import { promptCheckboxes, supportsKeyboardSelection, type TerminalInput } from '../terminal/checkbox.js';
 import { ensureGlobalWorkspace } from '../memory/workspaces.js';
 import {
   findMissingRepositoryLocations,
@@ -142,7 +143,7 @@ export function parseSetupSkillDiscoveryMode(value: string): SkillDiscoveryMode 
   return value;
 }
 
-function setupClientLabel(client: SetupClient): string {
+export function setupClientLabel(client: SetupClient): string {
   if (client === 'codex') return 'Codex';
   if (client === 'opencode') return 'OpenCode';
   if (client === 'claude') return 'Claude Code';
@@ -151,6 +152,18 @@ function setupClientLabel(client: SetupClient): string {
 
 interface SetupQuestion {
   question(query: string): Promise<string>;
+}
+
+/** Share terminal handling with uninstall while preserving setup defaults. */
+function askKeyboardSetupClients(input: TerminalInput, output: NodeJS.WritableStream, detected: SetupClient[]): Promise<SetupClient[]> {
+  return promptCheckboxes(input, output, SETUP_CLIENTS.map(client => ({
+    value: client,
+    label: `${setupClientLabel(client)} (${detected.includes(client) ? 'detected' : 'not detected'})`,
+  })), {
+    selected: detected,
+    heading: 'Select clients to configure (detected clients are preselected):',
+    cancelMessage: 'Setup selection cancelled.',
+  });
 }
 
 async function askSetupClients(prompt: SetupQuestion, output: NodeJS.WritableStream, detected: SetupClient[]): Promise<SetupClient[]> {
@@ -208,6 +221,7 @@ async function askReplaceConflictingMcp(
 export async function promptSetupClients(detected: SetupClient[], options: SetupPromptOptions = {}): Promise<SetupClient[]> {
   const input = options.input ?? stdin;
   const output = options.output ?? stdout;
+  if (supportsKeyboardSelection(input, output)) return askKeyboardSetupClients(input, output, detected);
   const prompt = createInterface({ input, output });
   try {
     return await askSetupClients(prompt, output, detected);
@@ -335,10 +349,17 @@ function replacementClientSet(value: readonly SetupClient[] | undefined): Readon
   return new Set(value);
 }
 
-/** Ask both setup questions through one readline session so buffered input remains intact. */
+/** Use keyboard selection on terminals; keep one readline session for line-based input. */
 export async function promptSetupConfiguration(detected: SetupClient[], options: SetupPromptOptions = {}): Promise<{ clients: SetupClient[]; skillDiscoveryMode: SkillDiscoveryMode }> {
   const input = options.input ?? stdin;
   const output = options.output ?? stdout;
+  if (supportsKeyboardSelection(input, output)) {
+    const clients = await askKeyboardSetupClients(input, output, detected);
+    const skillDiscoveryMode = clients.length === 0
+      ? 'official'
+      : await promptCommunitySkillDiscovery({ input, output });
+    return { clients, skillDiscoveryMode };
+  }
   const prompt = createInterface({ input, output });
   try {
     const clients = await askSetupClients(prompt, output, detected);

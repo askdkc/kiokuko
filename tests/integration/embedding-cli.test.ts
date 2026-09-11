@@ -204,6 +204,80 @@ test('embedding setup confirms and replaces a conflicting client MCP identity', 
   }
 });
 
+for (const action of ['confirm', 'cancel'] as const) {
+  test(`embedding setup keyboard selection can ${action} through the command entrypoint`, { timeout: 3000 }, async () => {
+    const database = await temporaryDatabase('embedding-cli-keyboard');
+    const input = Object.assign(new PassThrough(), {
+      isTTY: true,
+      isRaw: false,
+      setRawMode(mode: boolean) { this.isRaw = mode; return this; },
+    });
+    const setupCalls: SetupOptions[] = [];
+    let promptText = '';
+    let answeredClients = false;
+    let answeredCommunity = false;
+    let runtimeChecks = 0;
+    let modelInstalls = 0;
+    const setupOutput = Object.assign(new Writable({
+      write(chunk, _encoding, callback) {
+        const text = chunk.toString();
+        promptText += text;
+        if (!answeredClients && text.includes('> 1. [ ] Codex')) {
+          answeredClients = true;
+          setImmediate(() => {
+            input.write('\x1b[B 4');
+            assert.equal(setupCalls.length, 0);
+            input.write(action === 'confirm' ? '\r' : '\x03');
+          });
+        }
+        if (!answeredCommunity && text.includes('Enable community Skill discovery?')) {
+          answeredCommunity = true;
+          setImmediate(() => input.write('n\r'));
+        }
+        callback();
+      },
+    }), { isTTY: true, columns: 80, rows: 24 });
+    const output: string[] = [];
+    try {
+      const operation = command(database, output, {
+        pathEnvironment: { env: { PATH: '' } },
+        setupInput: input,
+        setupOutput,
+        optionalRuntimeChecker: async () => { runtimeChecks += 1; },
+        modelInstaller: async () => {
+          modelInstalls += 1;
+          throw new Error('model installation must not run');
+        },
+        setupGlobalClients: async (options) => {
+          setupCalls.push(options);
+          return { clients: options.clients ?? [], projectAgentFiles: [] };
+        },
+      }).parseAsync(['node', 'kiokuko', 'embeddings', 'setup', ...(action === 'confirm' ? ['--dry-run'] : [])]);
+      if (action === 'confirm') {
+        await operation;
+        assert.equal(setupCalls.length, 1);
+        assert.deepEqual(setupCalls[0]?.clients, ['opencode', 'hermes']);
+        assert.equal(setupCalls[0]?.skillDiscoveryMode, 'official');
+        assert.deepEqual(output, ['Embedding setup plan created.']);
+        assert.equal(runtimeChecks, 0);
+      } else {
+        await assert.rejects(operation, /Setup selection cancelled/);
+        assert.deepEqual(setupCalls, []);
+        assert.deepEqual(output, []);
+        assert.equal(runtimeChecks, 1);
+      }
+      assert.equal(modelInstalls, 0);
+      assert.match(promptText, /> 2\. \[x\] OpenCode/);
+      assert.match(promptText, /> 4\. \[x\] Hermes Agent/);
+      assert.equal(input.isRaw, false);
+      assert.equal(input.isPaused(), true);
+    } finally {
+      input.destroy();
+      database.close();
+    }
+  });
+}
+
 test('embedding setup does not require a confirmation flag', async () => {
   const database = await temporaryDatabase('embedding-cli-no-confirmation-flag');
   const dataDirectory = await mkdtemp(path.join(tmpdir(), 'kiokuko-embedding-cli-data-'));
