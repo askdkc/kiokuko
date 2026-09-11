@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { access, mkdtemp, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { Command } from 'commander';
 import { buildCli } from '../../src/cli.js';
@@ -29,7 +30,9 @@ for (const entrypoint of entrypoints) {
     const calls: string[] = [];
     let result: Record<string, unknown> = {};
     let operation = '';
+    let progress = '';
     const dependencies: EmbeddingsCommandDependencies = {
+      setupOutput: new Writable({ write(chunk, _encoding, done) { progress += chunk.toString(); done(); } }),
       pathEnvironment: { env: { HOME: root, KIOKUKO_DATA_DIR: root, PATH: '' } },
       optionalRuntimeChecker: async () => { calls.push('runtime'); },
       optionalRuntimeInstaller: async () => { assert.fail('runtime is already available'); },
@@ -69,8 +72,51 @@ for (const entrypoint of entrypoints) {
       assert.equal('semanticEnabled' in result, false);
       assert.deepEqual(database.prepare('SELECT * FROM embedding_settings').all(), settings);
       assert.deepEqual(database.prepare('SELECT * FROM embedding_profiles').all(), profiles);
+      assert.equal(progress, '', '--json must not contain progress messages');
     } finally {
       database.close();
+    }
+  });
+
+  test(`${entrypoint.join(' ')} acknowledges discovery completion before starting client and embedding work`, async () => {
+    const input = Object.assign(new PassThrough(), { isTTY: true });
+    let progress = '';
+    let answered = false;
+    const failure = new Error('model preparation failed');
+    const setupOutput = Object.assign(new Writable({
+      write(chunk, _encoding, done) {
+        progress += chunk.toString();
+        if (!answered && progress.includes('Enable community Skill discovery?')) {
+          answered = true;
+          assert.doesNotMatch(progress, /Configuring Kiokuko|Preparing local semantic search/);
+          setImmediate(() => input.write('n\r'));
+        }
+        done();
+      },
+    }), { isTTY: true });
+    try {
+      await assert.rejects(command({
+        pathEnvironment: { env: { PATH: '' } },
+        setupInput: input,
+        setupOutput,
+        optionalRuntimeChecker: async () => { assert.match(progress, /Checking local embedding runtime/); },
+        setupGlobalClients: async () => {
+          assert.equal(answered, true);
+          assert.match(progress, /Configuring Kiokuko.*Please wait/);
+          assert.doesNotMatch(progress, /Preparing local semantic search/);
+          return { clients: ['codex'], projectAgentFiles: [] };
+        },
+        withDatabase: async () => {
+          assert.match(progress, /Preparing local semantic search/);
+          assert.match(progress, /may take several minutes.*first run/);
+          throw failure;
+        },
+        output: () => assert.fail('failed setup must not report success'),
+      }).parseAsync(['node', 'kiokuko', ...entrypoint, '--clients', 'codex']), error => error === failure);
+      assert.doesNotMatch(progress, /Semantic retrieval enabled/);
+    } finally {
+      input.destroy();
+      setupOutput.destroy();
     }
   });
 
