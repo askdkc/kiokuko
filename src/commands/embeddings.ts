@@ -406,7 +406,11 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
       if (options.embeddings && options.preset !== LOCAL_SMALL_PRESET.id) {
         throw new KiokukoError('VALIDATION_ERROR', 'Only the local-small embedding preset is supported');
       }
-      if (options.embeddings && !dryRun) await ensureOptionalRuntime(dependencies, options.offline === true);
+      const setupOutput = dependencies.setupOutput ?? process.stdout;
+      if (options.embeddings && !dryRun) {
+        if (!options.json) setupOutput.write('Checking local embedding runtime and installing missing dependencies if needed... This may take a few minutes on first run. Please wait.\n');
+        await ensureOptionalRuntime(dependencies, options.offline === true);
+      }
       const setup = await runSetupFlow<ClientSetupResult>({
         ...(dependencies.pathEnvironment === undefined ? {} : { environment: dependencies.pathEnvironment }),
         ...(clients === undefined ? {} : { clients }),
@@ -423,6 +427,9 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
       if (!options.embeddings) {
         output(options.json, operation, { ...setup, embeddingsSkipped: true }, `${setupResultMessage(setup, dryRun)} Embedding setup skipped; existing embedding settings unchanged.`);
         return;
+      }
+      if (!dryRun && !options.json) {
+        setupOutput.write('Preparing local semantic search (model verification/download and embedding generation)...\nThis may take several minutes, especially on first run. Please wait.\n');
       }
       const embeddingData = dryRun
         ? await planEmbeddingSetup(setup.databasePath, dependencies.backend?.id)

@@ -319,6 +319,11 @@ export async function runSetupFlow<T extends { clients: SetupClient[]; projectAg
   const replacementClients = new Set<SetupClient>();
   for (; ;) {
     try {
+      if (options.json !== true) {
+        output.write(options.dryRun
+          ? 'Checking planned Kiokuko configuration changes... Please wait.\n'
+          : 'Configuring Kiokuko and refreshing client/project settings... Please wait.\n');
+      }
       return await runSetup({
         ...setupOptions,
         replaceConflictingMcpServers: [...replacementClients],
