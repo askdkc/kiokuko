@@ -396,6 +396,7 @@ test('interactive setup replaces an orphaned Codex MCP marker after accepting th
       'node',
       'kiokuko',
       'setup',
+      '--no-embeddings',
       '--no-standard-skills',
     ]);
   } finally {
@@ -495,6 +496,7 @@ test('interactive setup confirms and replaces conflicts for every selected clien
       'node',
       'kiokuko',
       'setup',
+      '--no-embeddings',
       '--clients',
       'codex,opencode,claude,hermes',
       '--skill-discovery',
@@ -563,6 +565,7 @@ test('interactive setup preserves an unmanaged Codex MCP identity when replaceme
     'node',
     'kiokuko',
     'setup',
+    '--no-embeddings',
     '--clients',
     'codex',
     '--skill-discovery',
@@ -627,6 +630,7 @@ test('declining a later client conflict preserves every earlier approved client 
     'node',
     'kiokuko',
     'setup',
+    '--no-embeddings',
     '--clients',
     'codex,opencode',
     '--skill-discovery',

@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
 import type { PathEnvironment } from '../config/paths.js';
 import type { SqliteDatabase } from '../db/adapter.js';
+import { databaseFileIdentity } from '../db/connection.js';
+import { inspectDatabaseWithoutSideEffects } from '../db/inspection-snapshot.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry } from '../memory/entries.js';
@@ -44,6 +46,34 @@ export interface EmbeddingSetupOptions extends PathEnvironment {
 
 function now(options: EmbeddingSetupOptions): string {
   return options.now?.() ?? new Date().toISOString();
+}
+
+function embeddingSetupPlan(eligible: number, backend = 'javascript'): EmbeddingSetupResult {
+  return {
+    presetId: LOCAL_SMALL_PRESET.id,
+    model: { repository: LOCAL_SMALL_PRESET.artifactRepository, revision: LOCAL_SMALL_PRESET.revision, installation: 'reused', bytes: LOCAL_SMALL_PRESET.files.reduce((sum, file) => sum + file.size, 0) },
+    profile: { profileId: createLocalEmbeddingProfile(LOCAL_SMALL_PRESET).profileId, generation: 0, activated: false },
+    embeddings: { eligible, completed: 0, failed: 0, blocked: 0, remaining: eligible },
+    backend,
+    semanticEnabled: false,
+    restartRequired: false,
+  };
+}
+
+/** Plan without initializing a database, selecting a native backend, or loading a model. */
+export async function planEmbeddingSetup(databasePath?: string, backend?: string): Promise<EmbeddingSetupResult> {
+  if (databasePath === undefined) return embeddingSetupPlan(0, backend);
+  let identity;
+  try {
+    identity = databaseFileIdentity(databasePath);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return embeddingSetupPlan(0, backend);
+    throw error;
+  }
+  return inspectDatabaseWithoutSideEffects(databasePath, identity, (database) => {
+    const eligible = Number(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count ?? 0);
+    return embeddingSetupPlan(eligible, backend);
+  });
 }
 
 function setupFailureCode(error: unknown): 'timeout' | 'provider_unavailable' | 'dimension_mismatch' {
@@ -147,15 +177,7 @@ export async function runEmbeddingSetup(
   }
   const eligible = Number(database.prepare('SELECT COUNT(*) AS count FROM entries').get<{ count: number }>()?.count ?? 0);
   if (input.dryRun) {
-    return {
-      presetId: LOCAL_SMALL_PRESET.id,
-      model: { repository: LOCAL_SMALL_PRESET.artifactRepository, revision: LOCAL_SMALL_PRESET.revision, installation: 'reused', bytes: LOCAL_SMALL_PRESET.files.reduce((sum, file) => sum + file.size, 0) },
-      profile: { profileId: createLocalEmbeddingProfile(LOCAL_SMALL_PRESET).profileId, generation: 0, activated: false },
-      embeddings: { eligible, completed: 0, failed: 0, blocked: 0, remaining: eligible },
-      backend: options.backendId ?? 'javascript',
-      semanticEnabled: false,
-      restartRequired: false,
-    };
+    return embeddingSetupPlan(eligible, options.backendId);
   }
   if (!input.confirmed) throw new KiokukoError('USAGE_ERROR', 'Embedding setup requires explicit confirmation');
   const lock = await acquireEmbeddingSetupLock(options);

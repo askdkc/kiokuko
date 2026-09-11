@@ -1,11 +1,13 @@
 # Semantic retrieval
 
-軽量インストールではlexical検索が動きます。semantic検索は任意のlocal `local-small` embedding profileです。
+`kiokuko setup`でlexical検索とlocal `local-small` semantic profileを設定します。
+埋め込みの導入を省略する場合は`kiokuko setup --no-embeddings`を使います。既存の埋め込み設定は保持します。
+`kiokuko embeddings setup`も互換入口として利用できます。
 
 ```bash
-kiokuko embeddings setup
+kiokuko setup
 kiokuko embeddings status --json
-kiokuko embeddings repair
+kiokuko setup --offline
 ```
 
 固定runtimeを導入し、load前にartifactを検証します。`--offline`は検証済みlocal installationを要求し、`--dry-run`はdownload・書き込み・profile変更を行いません。

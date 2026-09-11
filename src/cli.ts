@@ -15,14 +15,10 @@ import { initializeDatabase } from './commands/init.js';
 import { registerLedgerCommands } from './commands/ledger.js';
 import { purgeEntry } from './commands/purge.js';
 import { registerServerCommands, type ServerCommandDependencies } from './commands/server.js';
-import {
-  parseSetupClients,
-  parseSetupSkillDiscoveryMode,
-  runSetupFlow,
-} from './commands/setup.js';
 import { registerSkillsCommands, type SkillsCommandDependencies } from './commands/skills.js';
 import { useRepository, type UseOptions } from './commands/use.js';
-import type { PathEnvironment } from './config/paths.js';
+import { registerUninstallCommand } from './commands/uninstall.js';
+import { getGlobalDatabasePath, type PathEnvironment } from './config/paths.js';
 import type { SqliteDatabase } from './db/adapter.js';
 import { openConnection } from './db/connection.js';
 import { openEmbeddingDatabase } from './embedding/backend.js';
@@ -345,6 +341,8 @@ export interface CliDependencies {
   readonly setupEnvironment?: PathEnvironment;
   readonly setupInput?: NodeJS.ReadableStream;
   readonly setupOutput?: NodeJS.WritableStream;
+  readonly uninstallInput?: NodeJS.ReadableStream;
+  readonly uninstallOutput?: NodeJS.WritableStream;
   readonly doctorInput?: NodeJS.ReadableStream;
   readonly doctorOutput?: NodeJS.WritableStream;
   readonly doctorDatabasePath?: string;
@@ -858,48 +856,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'init', result, `Kiokuko database initialized (version ${result.currentVersion}).`);
   });
 
-  cli.command('setup').description('Configure global Kiokuko memory and refresh managed instructions in registered projects for Codex, OpenCode, Claude Code, and Hermes Agent')
-    .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes')
-    .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
-    .option('--dry-run', 'Validate and show planned changes without writing')
-    .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
-    .option('--skill-discovery <mode>', 'External Skill discovery: off,official,community')
-    .option('--json', 'Emit a JSON response')
-    .action(async (options: { clients?: string; command: string; dryRun?: boolean; json?: boolean; standardSkills: boolean; skillDiscovery?: string; }) => {
-      const optionSkillDiscoveryMode = options.skillDiscovery === undefined
-        ? undefined
-        : parseSetupSkillDiscoveryMode(options.skillDiscovery);
-      const setupEnvironment = dependencies.setupEnvironment ?? {};
-      const setupInput = dependencies.setupInput ?? process.stdin;
-      const setupOutput = dependencies.setupOutput ?? process.stdout;
-      const clients = options.clients === undefined ? undefined : parseSetupClients(options.clients);
-      const data = await runSetupFlow({
-        environment: setupEnvironment,
-        ...(clients === undefined ? {} : { clients }),
-        command: options.command,
-        dryRun: options.dryRun === true,
-        standardSkills: options.standardSkills,
-        ...(optionSkillDiscoveryMode === undefined ? {} : { skillDiscoveryMode: optionSkillDiscoveryMode }),
-        json: options.json === true,
-        input: setupInput,
-        output: setupOutput,
-      });
-      const changed = data.files.filter((file) => file.action !== 'unchanged').length;
-      const projectChanged = data.projectAgentFiles.filter((file) => file.status === 'created' || file.status === 'updated').length;
-      const projectUnchanged = data.projectAgentFiles.filter((file) => file.status === 'unchanged').length;
-      const projectSkipped = data.projectAgentFiles.filter((file) => file.status === 'skipped').length;
-      const projectFailed = data.projectAgentFiles.filter((file) => file.status === 'failed').length;
-      const projectSummary = data.projectAgentFiles.length === 0
-        ? ''
-        : ` Registered project instructions: ${projectChanged} changed, ${projectUnchanged} unchanged, ${projectSkipped} skipped, ${projectFailed} failed.`;
-      const clientLabel = data.clients.length === 0 ? 'no detected clients' : data.clients.join(', ');
-      const message = options.dryRun
-        ? `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.${projectSummary}`
-        : data.clients.length === 0
-          ? `Kiokuko database initialized; no supported client executable was detected. Use --clients codex,opencode,claude,hermes to configure clients.${projectSummary}`
-          : `Now you are ready to use Kiokuko! Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${projectSummary} ${data.nextStep}`;
-      humanOrJson(options.json, 'setup', data, message);
-    });
+  registerUninstallCommand(cli, dependencies.setupEnvironment, {
+    ...(dependencies.uninstallInput === undefined ? {} : { input: dependencies.uninstallInput }),
+    ...(dependencies.uninstallOutput === undefined ? {} : { output: dependencies.uninstallOutput }),
+  });
 
   cli.command('mcp').description('Run the Kiokuko MCP server over stdio').action(async () => {
     await runMcpServer();
@@ -1068,7 +1028,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerLedgerCommands(cli, { withDatabase });
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });
   registerEmbeddingsCommands(cli, {
-    withDatabase: (operation) => withEmbeddingDatabase(dependencies, operation),
+    withDatabase: (operation) => withEmbeddingDatabase(dependencies, operation, { databasePath: getGlobalDatabasePath(dependencies.setupEnvironment) }),
     ...(dependencies.embeddingEnvironment === undefined ? {} : { environment: dependencies.embeddingEnvironment }),
     ...(dependencies.embeddingProvider === undefined ? {} : { provider: dependencies.embeddingProvider }),
     ...(dependencies.embeddingBackend === undefined ? {} : { backend: dependencies.embeddingBackend }),

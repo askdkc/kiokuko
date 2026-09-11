@@ -9,7 +9,19 @@ npm install --global @askdkc/kiokuko
 kiokuko setup
 ```
 
-Optional setup flags: `--no-standard-skills`, `--skill-discovery off|official|community`, and `--dry-run --json`.
+`setup`はクライアント設定とローカルsemantic検索の導入を行います。
+埋め込みランタイムの導入・モデル取得・埋め込み生成を省略する場合:
+
+```bash
+kiokuko setup --no-embeddings
+```
+
+既存の埋め込み設定とモデルは保持します。設定済みsemantic検索を無効化するフラグではありません。
+ほかに`--no-standard-skills`、`--skill-discovery off|official|community`、`--dry-run --json`が使えます。
+
+Terminalでは、↑↓でエージェント間を移動し、Spaceでチェックを切り替え、Enterで確定します。
+数字キー1〜4でも各エージェントのチェックを切り替えられます。検出済みのエージェントは選択済みで、複数選択できます。
+EscまたはCtrl+Cで選択を中断します。自動実行では`--clients codex,opencode`のように対象を指定してください。
 
 Codexでは次のmanaged blockを所有します。
 
@@ -30,12 +42,13 @@ required = true
 
 ## Embeddings
 
-`kiokuko embeddings setup`は固定semantic runtimeを導入し、`kiokuko setup`と同じclient設定フロー（conflict確認、managed MCP更新、
-登録済みプロジェクトのinstructions更新）を実行します。
+`kiokuko setup`は固定semantic runtimeの導入とclient設定（conflict確認、managed MCP更新、
+登録済みプロジェクトのinstructions更新）を実行します。`kiokuko embeddings setup`は同じ実装への
+互換入口で、こちらでも`--no-embeddings`を指定できます。
 
 ```bash
-kiokuko embeddings setup --clients codex
-kiokuko embeddings setup --preset local-small --offline
+kiokuko setup --clients codex
+kiokuko setup --preset local-small --offline
 kiokuko embeddings status --json
 ```
 

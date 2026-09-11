@@ -31,22 +31,43 @@ kiokuko setup
 ```
 
 `setup` initializes the local database, detects supported clients, installs the
-bundled standard Skills, and configures their MCP connection. Restart a client that
+bundled standard Skills, configures their MCP connection, and enables local semantic
+retrieval. The first run installs the embedding runtime and model. Restart a client that
 was already running after setup. Exact configuration rules and recovery procedures
 are in the [Getting started guide](docs/getting-started.md).
 
+To configure clients without installing the embedding runtime or model:
+
+```bash
+kiokuko setup --no-embeddings
+```
+
+This skips embedding setup and preserves any existing embedding settings.
+
+## Uninstall
+
+Stop clients using Kiokuko and any `kiokuko serve` process first.
+
+```bash
+kiokuko uninstall --dry-run
+kiokuko uninstall
+# After selecting all agents and completing cleanup, run the printed command:
+npm uninstall --global kiokuko
+```
+
+Use Up/Down to move, Space to toggle, Enter to submit, and Esc to cancel. All choices start unchecked.
+Only selected agents' managed settings and Skills are removed. **Selecting all four also deletes shared memory, embedding models, and managed project bindings**, then prints the npm removal command. Partial selection retains shared data and the npm package. User content is preserved.
+For scripts, use `kiokuko uninstall --clients opencode,claude` or `kiokuko uninstall --all` for complete cleanup.
+Use the same environment overrides as setup for custom locations. See [cleanup scope and failures](docs/cli-contract.md#uninstall).
+
 ## Main features
 
-- **RAG memory**: lexical retrieval by default, with optional local semantic retrieval.
+- **RAG memory**: lexical retrieval plus local semantic retrieval configured by `setup`.
 - **Akinator**: clarifies vague requests before work begins.
 - **Local Web UI**: review and curate saved memories.
 - **Reference-only Skills**: discovered external Skills are verified and never executed automatically.
 
-Enable optional semantic retrieval with the same client setup flow:
-
-```bash
-kiokuko embeddings setup
-```
+`kiokuko embeddings setup` remains a compatibility entrypoint for `kiokuko setup`.
 
 Managed MCP blocks are updated and registered-project instructions are refreshed.
 An unmanaged identity is replaced only after interactive confirmation; non-interactive
