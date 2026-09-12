@@ -24,10 +24,12 @@ Apply these invariants to every created or changed function:
 5. Do not mutate caller-owned input unless mutation is the explicit API contract.
 6. Make domain decisions deterministic. Keep persistence, network, filesystem, process, clock, randomness, UI, and logging effects explicit.
 7. Return or throw failures intentionally. Do not silently swallow, partially succeed, or leak lower-layer accidents as the public contract.
-8. Add the smallest runnable test that proves success, the important failure, and the regression being changed.
+8. Verify changed behavior with the smallest meaningful runnable check. Add or modify a test when it protects a material behavior, failure boundary, or regression; reuse existing coverage when sufficient, and skip implementation-mirroring tests for trivial, reversible, low-impact changes.
 9. Preserve unrelated code and existing public behavior unless the task explicitly changes it.
 
 Small is not the objective. Cohesion is. Keep operations together when splitting them would hide sequencing, duplicate policy, or weaken a transaction.
+
+When a change spans setup, delivery, persisted state, or runtime handoffs, also apply the available `veteran-programmer-skill` before and after implementation. An isolated edit needs no additional audit.
 
 ## MoE selection contract
 
@@ -42,8 +44,9 @@ For each new or materially changed function, or for the smallest task that owns 
 Do not make a new Skill per function. The function contract is the execution envelope; expert references identify the selected guidance. If two functions need materially different expert sets or reasons to change, record separate function contracts.
 
 For each task, record its code, UI, test, documentation, or operations scope.
-Code work requires code experts; interactive UI work requires code and UI
-experts. Select expertise from the actual risk, and record it in working plan
+Code work requires code experts; interactive UI code work requires code and UI
+experts. Design-only, test, documentation, and operations tasks select expertise
+from their actual risks. Record the selection in working plan
 or review notes:
 
 ```text
@@ -74,7 +77,7 @@ Typical selections:
 
 ## Escalation references
 
-Read [kiokuko-patterns.md](references/kiokuko-patterns.md) only when a selected fragment needs a fuller TypeScript example. Read [review-checklist.md](references/review-checklist.md) for comprehensive code review or final verification, not for every function edit.
+Read [kiokuko-patterns.md](references/kiokuko-patterns.md) only when a selected fragment needs a fuller TypeScript example. Read [review-checklist.md](references/review-checklist.md) for comprehensive review or final verification across several code contracts. An ordinary edit inside one cohesive contract uses the focused [verification.md](references/verification.md) sequence.
 
 ## Completion report
 

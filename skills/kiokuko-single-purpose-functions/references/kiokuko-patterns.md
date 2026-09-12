@@ -224,7 +224,7 @@ Do not copy unknown exception messages, submitted values, credentials, URLs with
 
 ## 9. Preserve operation and cleanup failures
 
-When both fail, retain both failures without replacing the primary one.
+Close the resource on success and failure. When both operation and cleanup fail, retain both failures without replacing the primary one. JavaScript can throw `undefined`, so track failure separately from its value.
 
 ```ts
 async function useResource<T>(
@@ -232,19 +232,21 @@ async function useResource<T>(
   operation: (resource: { close: () => Promise<void> }) => Promise<T>,
 ): Promise<T> {
   const resource = await open();
+  let operationFailed = false;
   let operationFailure: unknown;
   let result: { value: T } | undefined;
 
   try {
     result = { value: await operation(resource) };
   } catch (error) {
+    operationFailed = true;
     operationFailure = error;
   }
 
   try {
     await resource.close();
   } catch (cleanupFailure) {
-    if (operationFailure !== undefined) {
+    if (operationFailed) {
       throw new AggregateError(
         [operationFailure, cleanupFailure],
         'Resource operation and cleanup failed',
@@ -253,7 +255,7 @@ async function useResource<T>(
     throw cleanupFailure;
   }
 
-  if (operationFailure !== undefined) throw operationFailure;
+  if (operationFailed) throw operationFailure;
   if (result === undefined) throw new Error('Resource operation produced no result');
   return result.value;
 }

@@ -4,6 +4,8 @@
 
 Use this checklist while implementing, debugging, refactoring, or reviewing code in any language or repository. Apply only the sections relevant to the change.
 
+Read this file for a comprehensive code review or final verification, especially when the change crosses several code contracts. For an ordinary edit inside one cohesive contract, use the focused `verification.md` sequence instead: that file owns the evidence procedure, this one owns the review dimensions to sweep.
+
 ## Scope
 
 - [ ] The change addresses one stated behavior.
@@ -87,11 +89,4 @@ Use this checklist while implementing, debugging, refactoring, or reviewing code
 - [ ] Integration tests exercise the real storage, filesystem, network, process, or protocol boundary when adapter behavior changes.
 - [ ] Tests assert observable contracts, not incidental private call order.
 
-## Verification report
-
-- [ ] The narrow affected test was run.
-- [ ] Relevant static or type checks were run.
-- [ ] The broader suite was run when shared behavior changed.
-- [ ] Build and package checks were run when distribution changed.
-- [ ] Every skipped command, known failure, assumption, and residual risk is stated exactly.
-- [ ] Completion is not described as perfect, crash-proof, or fully verified beyond the evidence.
+Report the run commands, results, and residual risk exactly as `verification.md` requires.
