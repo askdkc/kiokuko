@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -19,13 +19,13 @@ const forbiddenPackages = new Set([
 ]);
 let npmCacheDirectory;
 
-async function run(command, args, cwd) {
+async function run(command, args, cwd, environment = process.env) {
   try {
     return await execFileAsync(command, args, {
       cwd,
       maxBuffer: 4 * 1024 * 1024,
       env: {
-        ...process.env,
+        ...environment,
         npm_config_loglevel: 'warn',
         ...(npmCacheDirectory === undefined ? {} : { npm_config_cache: npmCacheDirectory }),
       },
@@ -81,6 +81,98 @@ async function recordInstalledPackage(packageDirectory, names) {
   await installedPackageNames(path.join(packageDirectory, 'node_modules'), names);
 }
 
+async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, packedFiles) {
+  const homeDirectory = path.join(fixtureRoot, 'home');
+  const environment = {
+    PATH: process.env.PATH,
+    HOME: homeDirectory,
+    USERPROFILE: homeDirectory,
+    CODEX_HOME: path.join(fixtureRoot, 'codex-config'),
+    CLAUDE_CONFIG_DIR: path.join(fixtureRoot, 'claude-config'),
+    XDG_CONFIG_HOME: path.join(fixtureRoot, 'config'),
+    KIOKUKO_DATA_DIR: path.join(fixtureRoot, 'data'),
+    HERMES_HOME: path.join(fixtureRoot, 'hermes', 'profiles', 'smoke'),
+    KIOKUKO_SKILL_DISCOVERY: 'off',
+  };
+  const skillDirectories = {
+    codex: path.join(homeDirectory, '.agents', 'skills'),
+    opencode: path.join(environment.XDG_CONFIG_HOME, 'opencode', 'skills'),
+    claude: path.join(environment.CLAUDE_CONFIG_DIR, 'skills'),
+    hermes: path.join(environment.HERMES_HOME, 'skills'),
+  };
+  await mkdir(homeDirectory, { recursive: true });
+  const skillFiles = packedFiles.filter((file) => file.path.startsWith('skills/'));
+  assert.ok(skillFiles.length > 0, 'the package must contain standard skills');
+  const expected = new Map();
+  for (const file of skillFiles) {
+    const source = await readFile(path.join(repositoryRoot, file.path));
+    assert.deepEqual(await readFile(path.join(installedRoot, file.path)), source, file.path);
+    for (const [client, directory] of Object.entries(skillDirectories)) {
+      expected.set(path.join(directory, file.path.slice('skills/'.length)), { client, content: source });
+    }
+  }
+  const args = ['setup', '--clients', Object.keys(skillDirectories).join(','), '--command', cliPath, '--no-embeddings', '--json'];
+  const setup = async (...extra) => {
+    const { stdout } = await run(cliPath, [...args, ...extra], fixtureRoot, environment);
+    const response = JSON.parse(stdout);
+    assert.equal(response.ok, true, stdout);
+    for (const file of response.data.files) {
+      const relative = path.relative(fixtureRoot, file.path);
+      assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative), file.path);
+    }
+    return response.data.files.filter((file) => file.purpose === 'standard-skill');
+  };
+  const verifyFiles = async (files, actions) => {
+    assert.deepEqual(files.map((file) => file.path).sort(), [...expected.keys()].sort());
+    for (const file of files) {
+      const target = expected.get(file.path);
+      assert.equal(file.client, target.client, file.path);
+      assert.equal(file.action, actions.get(file.path), file.path);
+      assert.deepEqual(await readFile(file.path), target.content, file.path);
+    }
+  };
+
+  const created = await setup();
+  await verifyFiles(created, new Map([...expected.keys()].map((file) => [file, 'created'])));
+  const beforeRepair = new Map();
+  const repairActions = new Map();
+  for (const [index, [file, target]] of [...expected].entries()) {
+    if (Math.floor(index / Object.keys(skillDirectories).length) % 2 === 0) {
+      await rm(file);
+      beforeRepair.set(file, undefined);
+      repairActions.set(file, 'created');
+    } else {
+      const stale = Buffer.concat([target.content, Buffer.from('\nold managed version\n')]);
+      await writeFile(file, stale);
+      beforeRepair.set(file, stale);
+      repairActions.set(file, 'updated');
+    }
+  }
+  const planned = await setup('--dry-run');
+  assert.deepEqual(new Map(planned.map((file) => [file.path, file.action])), repairActions);
+  assert.deepEqual(await setup('--no-standard-skills'), []);
+  for (const [file, content] of beforeRepair) {
+    if (content === undefined) {
+      await assert.rejects(readFile(file), { code: 'ENOENT' });
+    } else {
+      assert.deepEqual(await readFile(file), content, file);
+    }
+  }
+
+  await verifyFiles(await setup(), repairActions);
+  const beforeRepeat = new Map();
+  for (const file of expected.keys()) {
+    const snapshot = await stat(file, { bigint: true });
+    beforeRepeat.set(file, { ino: snapshot.ino, mtimeNs: snapshot.mtimeNs });
+  }
+  await verifyFiles(await setup(), new Map([...expected.keys()].map((file) => [file, 'unchanged'])));
+  for (const [file, before] of beforeRepeat) {
+    const after = await stat(file, { bigint: true });
+    assert.deepEqual({ ino: after.ino, mtimeNs: after.mtimeNs }, before, file);
+  }
+  process.stdout.write(`Installed setup verified ${skillFiles.length} skill files across ${Object.keys(skillDirectories).length} clients: create, repair, dry-run, skip, and unchanged rerun.\n`);
+}
+
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'kiokuko-global-install-'));
 const packDirectory = path.join(temporaryRoot, 'pack');
 const prefixDirectory = path.join(temporaryRoot, 'prefix');
@@ -105,6 +197,13 @@ try {
   const cliPath = path.join(prefixDirectory, 'bin', 'kiokuko');
   const version = await run(cliPath, ['--version'], repositoryRoot);
   assert.equal(version.stdout.trim(), packageJson.version, 'installed CLI version must match package.json');
+
+  await verifyInstalledSkillSetup(
+    cliPath,
+    path.join(prefixDirectory, 'lib', 'node_modules', packageJson.name),
+    path.join(temporaryRoot, 'setup-fixture'),
+    JSON.parse(packed.stdout)[0].files,
+  );
 
   const installedNames = await installedPackageNames(path.join(prefixDirectory, 'lib', 'node_modules'));
   for (const forbidden of forbiddenPackages) {

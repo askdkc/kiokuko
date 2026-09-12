@@ -13,6 +13,10 @@ Start every non-trivial Kiokuko-governed task by reading one stable router, reso
 
 This Skill owns the entry sequence and routes work. Akinator is the mandatory intake state machine, not a specialist route. This Skill does not duplicate specialist instructions, select another model, or authorize effects beyond the user request and current client permissions.
 
+## Priority
+
+Explicit user instructions outrank these Skills' design, style, workflow, and implementation preferences. They do not override host-enforced safety, authorization, identity, state, revision, or integrity invariants. Resolve routine choices from repository evidence and existing authorization; ask only when an unresolved assumption would materially change the intended result or permitted effects.
+
 ## Required entry
 
 Read this Skill before any other bundled Kiokuko Skill.
@@ -51,6 +55,10 @@ If `task_prepare` is unavailable before a non-trivial build or debug request can
 
 Enter planning and implementation routes only after the Akinator gate reaches `ready` or `exhausted` and top-level `nextAction` permits progress. Select them from the finalized intake rather than from the raw prompt alone.
 
+### Workflow completeness
+
+Read and apply `veteran-programmer-skill` before and after implementation when changes span setup, delivery, persisted state, or runtime handoffs. Check that the requested behavior reaches its actual consumer. An isolated edit needs no additional audit.
+
 ### Simple code work
 
 Read and apply `kiokuko-simple-work` when either condition is true:
@@ -76,11 +84,14 @@ Use this order:
 
 1. `kiokuko-soul`;
 2. one Akinator `task_prepare`, followed by grounded `task_answer` calls until `ready` or `exhausted`;
-3. `kiokuko-simple-work` when the finalized intake satisfies the simple-code activation boundary;
-4. `kiokuko-single-purpose-functions` for code planning or code work;
-5. `kiokuko-ui-design-soul` for interactive UI work.
+3. `veteran-programmer-skill` when the change crosses workflow stages;
+4. `kiokuko-simple-work` when the finalized intake satisfies the simple-code activation boundary;
+5. `kiokuko-single-purpose-functions` for code planning or code work;
+6. `kiokuko-ui-design-soul` for interactive UI work.
 
 Keep each route within the user-approved task scope.
+
+Apply `natural-japanese-output` when the user writes in Japanese or requests Japanese output. It governs wording without changing required schemas, report order, or technical identifiers.
 
 ## Availability and trust
 

@@ -18,10 +18,12 @@ import { GLOBAL_REPOSITORY_ID, GLOBAL_WORKSPACE } from '../../src/memory/workspa
 import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import {
   STANDARD_FUNCTION_SKILL_FILES,
+  STANDARD_JAPANESE_SKILL_FILES,
   STANDARD_MEMORY_SKILL_FILES,
   STANDARD_SIMPLE_SKILL_FILES,
   STANDARD_SOUL_SKILL_FILES,
   STANDARD_UI_SKILL_FILES,
+  STANDARD_WORKFLOW_SKILL_FILES,
 } from '../../src/setup/standard-skills.js';
 
 const STANDARD_SKILL_FIXTURES = [{
@@ -36,6 +38,12 @@ const STANDARD_SKILL_FIXTURES = [{
 }, {
   name: 'memory-reasoning',
   files: STANDARD_MEMORY_SKILL_FILES,
+}, {
+  name: 'veteran-programmer-skill',
+  files: STANDARD_WORKFLOW_SKILL_FILES,
+}, {
+  name: 'natural-japanese-output',
+  files: STANDARD_JAPANESE_SKILL_FILES,
 }, {
   name: 'kiokuko-soul',
   files: STANDARD_SOUL_SKILL_FILES,
@@ -894,7 +902,7 @@ test('setup upgrades an older managed standard skill and then reports it unchang
   const standardSkillActions = first.files.filter((file) => file.purpose === 'standard-skill').map((file) => file.action);
   assert.equal(standardSkillActions.filter((action) => action === 'updated').length, 3);
   assert.equal(standardSkillActions.filter((action) => action === 'created').length, standardSkillPaths('ignored').length - 3);
-  assert.match(await readFile(skillPath, 'utf8'), /description: Prevent common UI and UX failures/);
+  assert.match(await readFile(skillPath, 'utf8'), /description: Use for user-facing interface work/);
   assert.match(await readFile(checklistPath, 'utf8'), /Eight-principle map/);
   assert.match(
     await readFile(functionSkillPath, 'utf8'),
@@ -909,6 +917,14 @@ test('setup upgrades an older managed standard skill and then reports it unchang
     await readFile(path.join(temporary.home, '.agents', 'skills', 'memory-reasoning', 'SKILL.md'), 'utf8'),
     /source of testable hypotheses/,
   );
+  for (const fixture of STANDARD_SKILL_FIXTURES) {
+    for (const relativePath of fixture.files) {
+      assert.equal(
+        await readFile(path.join(temporary.home, '.agents', 'skills', fixture.name, relativePath), 'utf8'),
+        await readFile(new URL(`../../skills/${fixture.name}/${relativePath}`, import.meta.url), 'utf8'),
+      );
+    }
+  }
 
   const second = await setupGlobalClients({
     clients: ['codex'],

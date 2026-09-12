@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
+import { stripTypeScriptTypes } from 'node:module';
+import path from 'node:path';
 import test from 'node:test';
+import { parse } from 'yaml';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../../src/akinator/instructions.js';
 import {
   loadBundledStandardSkillFiles,
@@ -48,7 +51,6 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(skill, /references\/ui-checklist\.md/);
   assert.match(skill, /Reduced Motion/);
   assert.match(skill, /WCAG 2\.2/);
-  assert.match(skill, /one to three versioned expert fragments/iu);
   for (const [index, expertId] of STANDARD_UI_EXPERT_IDS.entries()) {
     assert.match(skill, new RegExp(expertId.replaceAll('.', '\\.')));
     assert.equal(uiFiles.some((file) => file.relativePath === STANDARD_UI_EXPERT_FILES[index]), true);
@@ -142,11 +144,76 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, /Never install or execute external Skill content automatically/);
   assert.match(
     soulSkill,
-    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `kiokuko-simple-work`[\s\S]*4\. `kiokuko-single-purpose-functions`[\s\S]*5\. `kiokuko-ui-design-soul`/u,
+    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `kiokuko-simple-work`[\s\S]*5\. `kiokuko-single-purpose-functions`[\s\S]*6\. `kiokuko-ui-design-soul`/u,
   );
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Akinator is the mandatory intake state machine before every planning or implementation route/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/);
+});
+
+test('every bundled skill and local reference is discoverable through the setup manifest', async () => {
+  const directories = await readdir(new URL('../../skills/', import.meta.url), { withFileTypes: true });
+  assert.deepEqual(
+    directories.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(),
+    STANDARD_SKILL_MANIFESTS.map((manifest) => manifest.name).sort(),
+  );
+  const files = await loadBundledStandardSkillFiles();
+  const packagedPaths = new Set(files.map((file) => `${file.skillName}/${file.relativePath}`));
+  for (const file of files) {
+    const sourcePath = `${file.skillName}/${file.relativePath}`;
+    if (file.relativePath === 'SKILL.md') {
+      const frontmatter = file.content.match(/^---\n([\s\S]*?)\n---\n/u)?.[1];
+      assert.ok(frontmatter, sourcePath);
+      const metadata = parse(frontmatter) as { name: string; description: string };
+      assert.equal(metadata.name, file.skillName);
+      assert.ok(metadata.description.trim(), sourcePath);
+    }
+    for (const link of file.content.matchAll(/\]\(([^\s)]+\.md)(?:#[^)]*)?\)/gu)) {
+      const target = link[1]!;
+      if (/^[a-z]+:/iu.test(target)) continue;
+      assert.ok(packagedPaths.has(path.posix.join(path.posix.dirname(sourcePath), target)), `${sourcePath} -> ${target}`);
+    }
+  }
+});
+
+test('the resource example closes exactly once and preserves operation and cleanup failures', async () => {
+  const patterns = await readFile(new URL('../../skills/kiokuko-single-purpose-functions/references/kiokuko-patterns.md', import.meta.url), 'utf8');
+  const example = patterns.match(/## 9\.[\s\S]*?```ts\n([\s\S]*?)\n```/u)?.[1];
+  assert.ok(example);
+  type Resource = { close: () => Promise<void> };
+  const useResource = new Function(`${stripTypeScriptTypes(example)}; return useResource;`)() as (
+    open: () => Promise<Resource>, operation: (resource: Resource) => Promise<unknown>,
+  ) => Promise<unknown>;
+  const operationError = new Error('operation failed');
+  const cleanupError = new Error('cleanup failed');
+  for (const operationFails of [false, true]) {
+    for (const cleanupFails of [false, true]) {
+      for (const failure of [operationError, undefined]) {
+        let closes = 0;
+        const result = useResource(async () => ({ close: async () => {
+          closes += 1;
+          if (cleanupFails) throw cleanupError;
+        } }), async () => {
+          if (operationFails) throw failure;
+          return 42;
+        });
+        if (!operationFails && !cleanupFails) {
+          assert.equal(await result, 42);
+        } else {
+          await assert.rejects(result, (error: unknown) => {
+            if (operationFails && cleanupFails) {
+              assert.ok(error instanceof AggregateError);
+              assert.deepEqual(error.errors, [failure, cleanupError]);
+            } else {
+              assert.equal(error, operationFails ? failure : cleanupError);
+            }
+            return true;
+          });
+        }
+        assert.equal(closes, 1);
+      }
+    }
+  }
 });
 
 test('the packaged skill sources remain readable at their repository locations', async () => {

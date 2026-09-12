@@ -59,7 +59,12 @@ export const STANDARD_MEMORY_SKILL_FILES = ['SKILL.md'] as const;
 export const STANDARD_SOUL_SKILL_NAME = 'kiokuko-soul';
 export const STANDARD_SOUL_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->';
 export const STANDARD_SOUL_SKILL_FILES = ['SKILL.md'] as const;
-
+export const STANDARD_WORKFLOW_SKILL_NAME = 'veteran-programmer-skill';
+export const STANDARD_WORKFLOW_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: veteran-programmer-skill -->';
+export const STANDARD_WORKFLOW_SKILL_FILES = ['SKILL.md'] as const;
+export const STANDARD_JAPANESE_SKILL_NAME = 'natural-japanese-output';
+export const STANDARD_JAPANESE_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: natural-japanese-output -->';
+export const STANDARD_JAPANESE_SKILL_FILES = ['SKILL.md'] as const;
 
 interface StandardSkillManifest {
   readonly name: string;
@@ -83,6 +88,14 @@ export const STANDARD_SKILL_MANIFESTS = [{
   name: STANDARD_MEMORY_SKILL_NAME,
   managedMarker: STANDARD_MEMORY_SKILL_MANAGED_MARKER,
   files: STANDARD_MEMORY_SKILL_FILES,
+}, {
+  name: STANDARD_WORKFLOW_SKILL_NAME,
+  managedMarker: STANDARD_WORKFLOW_SKILL_MANAGED_MARKER,
+  files: STANDARD_WORKFLOW_SKILL_FILES,
+}, {
+  name: STANDARD_JAPANESE_SKILL_NAME,
+  managedMarker: STANDARD_JAPANESE_SKILL_MANAGED_MARKER,
+  files: STANDARD_JAPANESE_SKILL_FILES,
 }, {
   name: STANDARD_SOUL_SKILL_NAME,
   managedMarker: STANDARD_SOUL_SKILL_MANAGED_MARKER,

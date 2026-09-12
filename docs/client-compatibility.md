@@ -4,10 +4,10 @@ Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-sco
 
 | Client | Global MCP registration | Global instructions | Managed standard skills | Hooks/plugins |
 |---|---|---|---|---|
-| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | `~/.agents/skills/{memory-reasoning,kiokuko-soul,kiokuko-simple-work,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
-| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | global config `skills/{memory-reasoning,kiokuko-soul,kiokuko-simple-work,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
-| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | Claude config `skills/{memory-reasoning,kiokuko-soul,kiokuko-simple-work,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
-| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | effective profile `skills/{memory-reasoning,kiokuko-soul,kiokuko-simple-work,kiokuko-single-purpose-functions,kiokuko-ui-design-soul}` | none |
+| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | seven bundled skills below `~/.agents/skills/` | none |
+| OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | seven bundled skills below global config `skills/` | none |
+| Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | seven bundled skills below Claude config `skills/` | none |
+| Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | seven bundled skills below effective profile `skills/` | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | not installed | none |
 
 OpenCode global configuration follows XDG paths on every platform:
@@ -20,10 +20,17 @@ configuration. OpenCode's current official documentation supports local MCP
 commands and global rules. Claude Code supports user-scoped stdio MCP servers,
 global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
 instruction surfaces and installs the bundled `memory-reasoning`, `kiokuko-soul`, `kiokuko-simple-work`,
-`kiokuko-single-purpose-functions`, and `kiokuko-ui-design-soul` skills in the selected supported clients by
+`kiokuko-single-purpose-functions`, `kiokuko-ui-design-soul`, `veteran-programmer-skill`,
+and `natural-japanese-output` skills in the selected supported clients by
 default. The skills are copied from a fixed package manifest and never downloaded
 during setup. `--no-standard-skills`
 skips placement without deleting an existing copy.
+
+`veteran-programmer-skill` checks workflows across setup, delivery, persisted
+state, and runtime handoffs. `natural-japanese-output` guides Japanese wording
+while preserving technical identifiers and required output structure. Both are
+routed by `kiokuko-soul` when applicable; neither introduces DSH-specific
+execution or changes the MCP intake gate.
 
 Hermes Agent v0.20.4 uses a profile-scoped native stdio MCP client. Kiokuko writes
 only the effective profile's `config.yaml` entry:
