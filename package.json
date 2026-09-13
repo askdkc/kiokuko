@@ -55,6 +55,11 @@
     "adm-zip": "0.6.0",
     "sharp": "0.35.4"
   },
+  "allowScripts": {
+    "onnxruntime-node": true,
+    "sharp": true,
+    "protobufjs": true
+  },
   "peerDependencies": {
     "@huggingface/hub": "2.16.1",
     "@huggingface/transformers": "4.2.0",

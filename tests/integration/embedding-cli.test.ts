@@ -86,7 +86,9 @@ test('embedding setup checks optional runtime before opening the database', asyn
       () => cli.parseAsync(['node', 'kiokuko', 'embeddings', 'setup']),
       (error: unknown) => error instanceof KiokukoError
         && error.code === 'SERVICE_UNAVAILABLE'
-        && error.message.includes('Automatic installation of the local semantic retrieval dependencies failed'),
+        && error.message.includes('Automatic installation of the local semantic retrieval dependencies failed')
+        && error.message.includes('Check the npm error above')
+        && !error.message.includes('interactive terminal'),
     );
     assert.equal(databaseCalls, 0);
     assert.deepEqual(output, []);
