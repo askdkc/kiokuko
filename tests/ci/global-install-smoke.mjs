@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -173,6 +173,26 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   process.stdout.write(`Installed setup verified ${skillFiles.length} skill files across ${Object.keys(skillDirectories).length} clients: create, repair, dry-run, skip, and unchanged rerun.\n`);
 }
 
+async function verifyInstalledProfileRebuild(cliPath, fixtureRoot) {
+  await mkdir(fixtureRoot, { recursive: true });
+  const databasePath = path.join(fixtureRoot, 'fixture.sqlite3');
+  // This is the closed, checked-in sample fixture, never an operating database.
+  await copyFile(path.join(repositoryRoot, 'tests/sampledb/kiokuko.sqlite3'), databasePath);
+  const environment = { ...process.env, KIOKUKO_DATA_DIR: path.join(fixtureRoot, 'data'), KIOKUKO_SKILL_DISCOVERY: 'off' };
+  const command = ['akinator-memory', 'rebuild'];
+  await assert.rejects(run(cliPath, command, fixtureRoot, environment), /commander\.missingMandatoryOptionValue/u);
+  await assert.rejects(run(cliPath, [...command, '--database', 'fixture.sqlite3'], fixtureRoot, environment), /--database must be an absolute path/u);
+  for (const extra of [['--restart'], []]) {
+    const { stdout } = await run(cliPath, [...command, '--database', databasePath, '--json', ...extra], fixtureRoot, environment);
+    const response = JSON.parse(stdout);
+    assert.equal(response.ok, true, stdout);
+    assert.equal(response.data.complete, true, stdout);
+    assert.ok(response.data.projects > 0, stdout);
+    if (extra.length === 0) assert.equal(response.data.processed, 0, 'a completed rebuild must resume without reprocessing');
+  }
+  process.stdout.write('Installed profile rebuild verified explicit database, restart, resume, and JSON output.\n');
+}
+
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'kiokuko-global-install-'));
 const packDirectory = path.join(temporaryRoot, 'pack');
 const prefixDirectory = path.join(temporaryRoot, 'prefix');
@@ -197,6 +217,7 @@ try {
   const cliPath = path.join(prefixDirectory, 'bin', 'kiokuko');
   const version = await run(cliPath, ['--version'], repositoryRoot);
   assert.equal(version.stdout.trim(), packageJson.version, 'installed CLI version must match package.json');
+  await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 
   await verifyInstalledSkillSetup(
     cliPath,

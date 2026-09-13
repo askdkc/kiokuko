@@ -39,7 +39,9 @@
     "sampledb:generate": "node --import tsx tests/fixtures/sample-database.ts tests/sampledb/kiokuko.sqlite3",
     "test:sampledb": "npm run build && node --import tsx tests/ci/verify-sample-database.ts",
     "pack:check": "npm pack --dry-run",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run pack:check"
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run pack:check",
+    "test:evaluation:akinator": "npm run build && node scripts/run-akinator-memory-evaluation.mjs",
+    "test:benchmark:akinator": "npm run build && node scripts/run-akinator-memory-benchmark.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

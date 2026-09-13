@@ -66,7 +66,7 @@ test('reports a healthy run and event chain with deterministic selected counts',
       contextFeedback: 0,
       runFeedback: 0,
       memoryLinks: 0,
-      tombstones: 0,
+      tombstones: 0, profileDocuments: 0, profileSignals: 0, profileProjectionStates: 0, memoryResolutions: 0,
     });
     assert.equal(report.checks.runs.ok, true);
     assert.equal(report.checks.runs.count, 1);
@@ -258,7 +258,7 @@ test('treats the workspace filter as a hard boundary for counts and findings', a
       contextFeedback: 0,
       runFeedback: 0,
       memoryLinks: 0,
-      tombstones: 0,
+      tombstones: 0, profileDocuments: 0, profileSignals: 0, profileProjectionStates: 0, memoryResolutions: 0,
     });
     assert.equal(report.findingCount, 0);
     assert.equal(JSON.stringify(report).includes('foreign-secret-12345'), false);
@@ -499,7 +499,7 @@ test('reports a fixed healthy schema for an empty ledger without mutating the da
       contextFeedback: 0,
       runFeedback: 0,
       memoryLinks: 0,
-      tombstones: 0,
+      tombstones: 0, profileDocuments: 0, profileSignals: 0, profileProjectionStates: 0, memoryResolutions: 0,
     });
     assert.deepEqual(Object.keys(report.checks), [...LEDGER_CHECK_NAMES]);
     for (const name of LEDGER_CHECK_NAMES) {

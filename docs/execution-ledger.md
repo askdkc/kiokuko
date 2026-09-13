@@ -66,3 +66,5 @@ Nudge policy version `nudges.v1` shows one logical occurrence at most once per r
 ## Archive, backup, purge
 
 Existing memory export remains memory-only. Ledger export/import uses a separate deterministic manifest/checksum and includes nudge delivery history. Full SQLite backup contains memory, ledger, nudge deliveries, and feedback. Purge removes bounded content under explicit confirmation while preserving only a content-free tombstone and any promoted memory that has its own lifecycle.
+
+Ledger archive v4 also includes Akinator profile-memory resolution references and accepts the `memory` provenance value. Strict v3 imports retain the earlier source allowlist. Search projections and FTS are rebuilt from canonical history after import; they are not archive records. See [profile memory maintenance](akinator-memory.md) for the explicit rebuild command and source-purge behavior.

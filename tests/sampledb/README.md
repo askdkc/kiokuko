@@ -6,7 +6,7 @@
 - global memory entries;
 - one imported external-skill snapshot and its entry mappings.
 
-The fixture is generated from schema version 1, the Kiokuko 1.0 baseline.
+The fixture is generated from schema version 2: the Kiokuko 1.0 baseline plus the Akinator profile memory projection.
 Only the standalone `.sqlite3` file is committed; WAL and SHM files are runtime artifacts.
 CI copies it into an isolated application-data directory before running
 `kiokuko setup`. The test verifies unchanged migration history, runs

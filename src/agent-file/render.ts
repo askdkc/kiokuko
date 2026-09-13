@@ -3,7 +3,7 @@ import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../
 import { validateRepositoryBindingIdentity } from '../repository/identity-value.js';
 import { BEGIN_MARKER, END_MARKER, upsertManagedBlock } from './managed-block.js';
 
-export const AGENT_TEMPLATE_VERSION = 24;
+export const AGENT_TEMPLATE_VERSION = 25;
 
 export interface AgentTemplateValues {
   repositoryId: string;

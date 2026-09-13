@@ -1,3 +1,6 @@
+import { probeProfileMemory } from '../akinator/memory-probe.js';
+import { saveMemoryResolution, syncProfileDocument } from '../akinator/profile-memory-store.js';
+import type { ProfileMemoryOptions } from '../akinator/memory-probe-types.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -23,7 +26,7 @@ import {
 } from '../ledger/types.js';
 import { LedgerStore } from '../ledger/store.js';
 import { listLedgerEvents, listLedgerRuns, readLedgerRun } from '../ledger/query.js';
-import { AKINATOR_POLICY_VERSION, evaluateProfile, profileHash } from '../akinator/domain.js';
+import { AKINATOR_POLICY_VERSION, deriveProfile, evaluateProfile, profileHash } from '../akinator/domain.js';
 import {
   answerAkinatorInTransaction,
   startAkinatorInTransaction,
@@ -99,6 +102,7 @@ type GatewayCloseResponse = AppendAck & {
 };
 
 export interface AgentGatewayServiceOptions {
+  readonly profileMemory?: ProfileMemoryOptions;
   readonly now?: () => string;
   readonly home?: string;
   readonly runIdFactory?: () => string;
@@ -423,6 +427,11 @@ export class AgentGatewayService {
       this.database,
       { scope: 'agent.run.open', key: envelope.idempotencyKey, request: hashRequest, createdAt: now },
       () => {
+        const memoryOptions = this.options.profileMemory;
+        if (memoryOptions && memoryOptions.scope.workspace !== request.workspace) conflict('Profile memory scope differs from the request');
+        const probe = memoryOptions ? probeProfileMemory(this.database, task.query, deriveProfile(task.query, task.profileHints), {
+          ...memoryOptions, capabilities: request.capabilities,
+        }) : undefined;
         const runId = this.nextRunId();
         const sessionId = this.nextSessionId();
         const store = this.ledgerStore(request.workspace);
@@ -441,7 +450,7 @@ export class AgentGatewayService {
         const result = startAkinatorInTransaction(this.database, {
           workspace: request.workspace,
           task: task.query,
-          profileHints: task.profileHints,
+          profileHints: probe?.profile ?? task.profileHints,
           now,
           idFactory: () => sessionId,
         });
@@ -451,7 +460,7 @@ export class AgentGatewayService {
           workspace: request.workspace,
           policyVersion: AKINATOR_POLICY_VERSION,
           profileSchemaVersion: 1,
-          profileSources: sourceMap(request, result.session.profile),
+          profileSources: { ...sourceMap(request, result.session.profile), ...(probe?.resolution.adoptedRunId ? { target: 'memory' as const } : {}) },
           initialProfileHash: null,
           recommendedTags: result.recommendedTags,
           linkedAt: now,
@@ -487,6 +496,8 @@ export class AgentGatewayService {
           });
           finalRun = store.updateRunStatusInTransaction(runId, 'active', now);
         }
+        if (probe) saveMemoryResolution(this.database, { runId, sessionId, workspace: request.workspace, resolution: probe.resolution, now });
+        syncProfileDocument(this.database, request.workspace, runId);
         return this.intakeResponse(runId, finalRun.status, result);
       },
     ));
@@ -552,6 +563,7 @@ export class AgentGatewayService {
             });
             finalRun = this.ledgerStore(run.workspace).updateRunStatusInTransaction(run.runId, 'active', now);
           }
+          syncProfileDocument(this.database, run.workspace, run.runId);
           return this.intakeResponse(run.runId, finalRun.status, mutation.result);
         },
       );

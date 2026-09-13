@@ -10,12 +10,12 @@ import { KiokukoError } from '../../src/errors.js';
 
 const invalid = (error: unknown): boolean => error instanceof KiokukoError && error.code === 'INTEGRITY_ERROR';
 
-test('one baseline creates current schema and is idempotent', () => {
+test('baseline and profile migration create current schema and is idempotent', () => {
   const database = openConnection(':memory:');
   try {
-    assert.deepEqual(loadMigrationSnapshot().migrations.map(m => m.name), ['001_baseline.sql']);
-    assert.deepEqual(migrateDatabase(database), { applied: [1], currentVersion: 1 });
-    assert.deepEqual(migrateDatabase(database), { applied: [], currentVersion: 1 });
+    assert.deepEqual(loadMigrationSnapshot().migrations.map(m => m.name), ['001_baseline.sql', '002_akinator_memory_probe.sql']);
+    assert.deepEqual(migrateDatabase(database), { applied: [1, 2], currentVersion: 2 });
+    assert.deepEqual(migrateDatabase(database), { applied: [], currentVersion: 2 });
     assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
     const names = database.prepare('SELECT name FROM sqlite_schema').all<{ name: string }>().map(r => r.name);
     assert.ok(names.includes('entry_search_documents'));
@@ -56,7 +56,7 @@ for (const mode of ['old', 'missing-history', 'empty-history', 'checksum', 'futu
       } else {
         migrateDatabase(database);
         if (mode === 'checksum') database.exec("UPDATE schema_migrations SET checksum='modified';");
-        if (mode === 'future') database.exec("INSERT INTO schema_migrations VALUES (2, '002_future.sql', 'future', '2026-01-01T00:00:00.000Z');");
+        if (mode === 'future') database.exec("INSERT INTO schema_migrations VALUES (3, '003_future.sql', 'future', '2026-01-01T00:00:00.000Z');");
       }
       const names = await readdir(directory);
       const before = await Promise.all(names.map(name => readFile(path.join(directory, name))));
@@ -90,7 +90,7 @@ test('reinitialization leaves the supported database file unchanged', async () =
   const first = await initializeDatabase({ databasePath });
   const before = await readFile(databasePath);
   const second = await initializeDatabase({ databasePath });
-  assert.deepEqual(first.applied, [1]);
+  assert.deepEqual(first.applied, [1, 2]);
   assert.deepEqual(second.applied, []);
   assert.deepEqual(await readFile(databasePath), before);
 });
@@ -153,8 +153,8 @@ test('baseline installs the derived embedding schema without provider I/O', () =
   }) as typeof fetch;
   try {
     const result = migrateDatabase(database);
-    assert.equal(result.currentVersion, 1);
-    assert.deepEqual(result.applied, [1]);
+    assert.equal(result.currentVersion, 2);
+    assert.deepEqual(result.applied, [1, 2]);
     for (const table of embeddingTables) {
       assert.equal(
         database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.present,
@@ -180,4 +180,25 @@ test('baseline installs the derived embedding schema without provider I/O', () =
     globalThis.fetch = originalFetch;
     database.close();
   }
+});
+
+test('profile migration upgrades the immutable v1 baseline without parsing or deleting existing sessions', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-profile-v1-'));
+  const baselineDirectory = path.join(directory, 'baseline');
+  await mkdir(baselineDirectory);
+  const baseline = loadMigrationSnapshot().migrations[0]!;
+  await writeFile(path.join(baselineDirectory, baseline.name), baseline.sql);
+  const database = openConnection(path.join(directory, 'data.sqlite3'));
+  try {
+    migrateDatabase(database, baselineDirectory);
+    database.prepare(`INSERT INTO akinator_sessions(id, workspace, task_text, profile_json, status, question_count, created_at, updated_at)
+      VALUES ('old-session', 'old-project', 'Implement feature', ?, 'ready', 0, ?, ?)`).run(
+      JSON.stringify({ taskType: 'build', target: 'src/feature.ts', expected: 'pass', constraints: null }),
+      '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
+    const before = database.prepare('SELECT * FROM akinator_sessions').all();
+    assert.deepEqual(migrateDatabase(database).applied, [2]);
+    assert.deepEqual(database.prepare('SELECT * FROM akinator_sessions').all(), before);
+    assert.equal(database.prepare('SELECT count(*) AS n FROM akinator_profile_documents').get<{ n: number }>()?.n, 0);
+    assert.equal(database.prepare('SELECT checksum FROM schema_migrations WHERE version = 1').get<{ checksum: string }>()?.checksum, baseline.checksum);
+  } finally { database.close(); }
 });

@@ -134,7 +134,7 @@ test('exports an empty workspace as a deterministic ledger manifest without memo
       runs: 0,
       sessions: 0,
       answers: 0,
-      runIntakes: 0,
+      runIntakes: 0, memoryResolutions: 0,
       intakeFeedback: 0,
       events: 0,
       evidence: 0,
@@ -151,7 +151,7 @@ test('exports an empty workspace as a deterministic ledger manifest without memo
     assert.equal(before.includes('ledger_events'), false);
     assert.equal(first.content.split('\n').length, 3);
     assert.match(first.content, /"type":"checksum"/);
-    assert.match(first.content, /"archiveVersion":3/);
+    assert.match(first.content, /"archiveVersion":4/);
     assert.match(first.content, /"format":"kiokuko-ledger-jsonl"/);
   } finally {
     database.close();
@@ -181,7 +181,7 @@ test('exports runs and events with stable allowlisted records and canonical stor
     const archive = exportLedgerArchive(database, { workspace: 'workspace:archive' });
     const lines = archive.content.trimEnd().split('\n').map((line: string) => JSON.parse(line) as Record<string, unknown>);
     assert.deepEqual(lines.slice(1).map((line: Record<string, unknown>) => line.type), ['manifest', 'run', 'event']);
-    assert.deepEqual(archive.counts, { runs: 1, sessions: 0, answers: 0, runIntakes: 0, intakeFeedback: 0, events: 1, evidence: 0, deliveries: 0, deliveryEntries: 0, nudgeDeliveries: 0, contextFeedback: 0, runFeedback: 0, memoryLinks: 0, purgeAudit: 0 });
+    assert.deepEqual(archive.counts, { runs: 1, sessions: 0, answers: 0, runIntakes: 0, memoryResolutions: 0, intakeFeedback: 0, events: 1, evidence: 0, deliveries: 0, deliveryEntries: 0, nudgeDeliveries: 0, contextFeedback: 0, runFeedback: 0, memoryLinks: 0, purgeAudit: 0 });
     assert.equal((lines[2]?.coverage_json as string), '{"approval":"unavailable","command":"declared","file":"unavailable","run":"complete","tool":"best_effort"}');
     assert.equal((lines[2]?.metadata_json as string), '{"a":"stable","z":true}');
     assert.equal((lines[3]?.payload_json as string), '{"a":"two","z":1}');
@@ -371,7 +371,7 @@ test('archives the complete linked ledger graph without curated memory bodies or
     assert.equal(archive.content.includes('curated-title-must-not-be-archived'), false);
     assert.equal(archive.content.includes('unrelated-run'), false);
     assert.deepEqual(archive.counts, {
-      runs: 1, sessions: 1, answers: 1, runIntakes: 1, intakeFeedback: 1, events: 1, evidence: 1,
+      runs: 1, sessions: 1, answers: 1, runIntakes: 1, memoryResolutions: 0, intakeFeedback: 1, events: 1, evidence: 1,
       deliveries: 1, deliveryEntries: 1, nudgeDeliveries: 1, contextFeedback: 1, runFeedback: 1, memoryLinks: 1, purgeAudit: 1,
     });
     const lines = archive.content.trimEnd().split('\n').map((line: string) => JSON.parse(line) as Record<string, unknown>);
