@@ -388,3 +388,36 @@ test('returns empty stored context when no local entry is available', async () =
     database.close();
   }
 });
+
+test('state reads no entry bodies and indexed tags skip unrelated entries across eligibility pages', async () => {
+  const database = openConnection(':memory:'); migrateDatabase(database);
+  const workspace = 'project:indexed-tags';
+  try {
+    const expected = recordEntry(database, { workspace, kind: 'lesson', title: 'Only eligible', body: 'Convention.', tags: ['bot:builder', 'skill:tdd'] }, { now: '2026-08-20T00:00:00.000Z' });
+    const unrelated = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      unrelated.add(recordEntry(database, { workspace, kind: 'lesson', title: `Unrelated ${i}`, body: `Unrelated fact ${i}`, tags: ['unrelated'] }).id);
+      recordEntry(database, { workspace, kind: 'reference', title: `Detached ${i}`, body: `Unmapped source ${i}`, tags: ['bot:builder', 'external:skill'],
+        scope: { retrievalScope: 'ecosystem', applicability: { frameworks: [{ name: 'Example' }] } },
+        provenance: { type: 'source_sync', reference: 'github:legacy/example' }, trustLevel: 'untrusted', createdBy: 'kiokuko-source-sync', actor: 'kiokuko-source-sync',
+      }, { now: '2026-08-21T00:00:00.000Z' });
+    }
+    const started = await startAkinatorService(database, { workspace, task: 'Implement zzunique', profileHints: { taskType: 'build', target: 'zzunique', expected: 'zzunique' } });
+    const readIds: string[] = [];
+    const original = database.prepare.bind(database);
+    database.prepare = sql => {
+      const statement = original(sql);
+      if (!sql.includes('revision_entry_id')) return statement;
+      const get = statement.get.bind(statement);
+      statement.get = (...parameters) => { readIds.push(String(parameters[0])); return get(...parameters); };
+      return statement;
+    };
+    const { getAkinatorStateService } = await import('../../src/akinator/service.js');
+    assert.equal((await getAkinatorStateService(database, { workspace, sessionId: started.session.id })).status, 'ready');
+    assert.deepEqual(readIds, []);
+    const context = await getAkinatorContextService(database, { workspace, sessionId: started.session.id });
+    assert.deepEqual(context.entries.map(entry => entry.id), [expected.id]);
+    assert.ok(readIds.every(id => !unrelated.has(id)));
+    assert.equal(readIds.filter(id => id === expected.id).length, 1);
+  } finally { database.close(); }
+});

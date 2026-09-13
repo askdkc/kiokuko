@@ -1,3 +1,4 @@
+import { registerAkinatorMemoryCommands } from './commands/akinator-memory.js';
 import { Command, CommanderError } from 'commander';
 import { constants as fsConstants } from 'node:fs';
 import { open } from 'node:fs/promises';
@@ -1026,6 +1027,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerServerCommands(cli, dependencies.server);
   registerAgentCommand(cli, dependencies.agent);
   registerLedgerCommands(cli, { withDatabase });
+  registerAkinatorMemoryCommands(cli);
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });
   registerEmbeddingsCommands(cli, {
     withDatabase: (operation) => withEmbeddingDatabase(dependencies, operation, { databasePath: getGlobalDatabasePath(dependencies.setupEnvironment) }),

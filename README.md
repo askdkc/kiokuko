@@ -103,6 +103,7 @@ error behavior are documented in [Security and trust](docs/security-and-trust.md
 - [Getting started](docs/getting-started.md)
 - [Concepts](docs/concepts.md)
 - [Semantic retrieval](docs/semantic-retrieval.md)
+- [Akinator profile memory](docs/akinator-memory.md)
 - [Security and trust](docs/security-and-trust.md)
 - [CLI contract](docs/cli-contract.md)
 

@@ -1,3 +1,5 @@
+import { parseMemoryResolution } from '../akinator/memory-probe-types.js';
+import { readProfileCandidate } from '../akinator/profile-memory-store.js';
 import { createHash } from 'node:crypto';
 import { parseStoredIdentifier, parseStoredNudgeDelivery, validateStoredNudgeHistory, type StoredNudgeDelivery } from '../context/nudge-validation.js';
 import { DEFAULT_NUDGE_RATE_LIMIT } from '../context/nudges.js';
@@ -55,6 +57,10 @@ export interface LedgerIntegrityReport {
     runFeedback: number;
     memoryLinks: number;
     tombstones: number;
+    profileDocuments: number;
+    profileSignals: number;
+    profileProjectionStates: number;
+    memoryResolutions: number;
   };
   checks: LedgerIntegrityChecks;
   findings: LedgerFinding[];
@@ -204,6 +210,9 @@ function counts(database: SqliteDatabase, workspace: string | undefined, nudgeDe
   return {
     runs: workspace === undefined ? rowCount(database, 'SELECT COUNT(*) AS count FROM ledger_runs') : rowCount(database, 'SELECT COUNT(*) AS count FROM ledger_runs WHERE workspace = ?', workspace),
     events: child('ledger_events'), evidence: child('ledger_evidence'), deliveries: child('context_deliveries'), deliveryEntries: entries,
+    profileDocuments: child('akinator_profile_documents'), memoryResolutions: child('akinator_memory_resolutions'),
+    profileSignals: rowCount(database, `SELECT COUNT(*) AS count FROM akinator_profile_signals ${workspace === undefined ? '' : 'WHERE workspace = ?'}`, ...(workspace === undefined ? [] : [workspace])),
+    profileProjectionStates: rowCount(database, `SELECT COUNT(*) AS count FROM akinator_profile_projection_state ${workspace === undefined ? '' : 'WHERE workspace = ?'}`, ...(workspace === undefined ? [] : [workspace])),
     nudgeDeliveries: nudgeDeliveriesAvailable ? child('nudge_deliveries') : 0, intakeFeedback: child('intake_feedback'), contextFeedback: child('context_feedback'), runFeedback: child('run_feedback'), memoryLinks: child('ledger_memory_links'), tombstones,
   };
 }
@@ -517,6 +526,53 @@ function inspectTombstones(database: SqliteDatabase, workspace: string | undefin
   return rows.length;
 }
 
+function inspectProfileMemory(database: SqliteDatabase, workspace: string | undefined, findings: FindingCollector): void {
+  const invalidSignals = database.prepare(`SELECT s.document_id FROM akinator_profile_signals s
+    LEFT JOIN akinator_profile_documents d ON d.id = s.document_id
+    WHERE (d.id IS NULL OR s.workspace <> d.workspace OR s.repository_id <> d.repository_id)
+      ${workspace === undefined ? '' : 'AND s.workspace = ?'} LIMIT 100`)
+    .all<Row>(...(workspace === undefined ? [] : [workspace]));
+  for (const row of invalidSignals) findings.add('references', 'profile_signal_binding', 'akinator_profile_signals', row.document_id);
+  const invalidStates = database.prepare(`SELECT p.workspace FROM akinator_profile_projection_state p
+    LEFT JOIN repositories r ON r.repository_id = p.repository_id
+    WHERE (r.repository_id IS NULL OR p.workspace <> r.workspace OR p.projection_version <> 1
+      OR (p.complete = 1 AND EXISTS (
+        SELECT 1 FROM run_intakes i JOIN ledger_runs lr ON lr.run_id = i.run_id
+        JOIN akinator_sessions s ON s.id = i.session_id LEFT JOIN akinator_profile_documents d ON d.run_id = i.run_id
+        WHERE lr.workspace = p.workspace AND s.status <> 'active' AND d.id IS NULL)))
+      ${workspace === undefined ? '' : 'AND p.workspace = ?'} LIMIT 100`)
+    .all<Row>(...(workspace === undefined ? [] : [workspace]));
+  for (const row of invalidStates) findings.add('storedValues', 'invalid_profile_projection_state', 'akinator_profile_projection_state', row.workspace);
+  const documents = database.prepare(`SELECT * FROM akinator_profile_documents ${workspace === undefined ? '' : 'WHERE workspace = ?'}`)
+    .all<Row>(...(workspace === undefined ? [] : [workspace]));
+  for (const row of documents) {
+    try {
+      const candidate = readProfileCandidate(database, String(row.workspace), {
+        runId: String(row.run_id), sessionId: String(row.session_id), repositoryId: String(row.repository_id),
+        profileHash: String(row.profile_hash), sourceHash: String(row.source_hash), rankingScore: 1,
+      });
+      if (!candidate) findings.add('storedValues', 'stale_profile_projection', 'akinator_profile_documents', row.run_id);
+    } catch (error) {
+      if (!(error instanceof KiokukoError)) throw error;
+      findings.add('storedValues', 'invalid_profile_projection', 'akinator_profile_documents', row.run_id);
+    }
+    scanRow(row, 'akinator_profile_documents', row.run_id, findings);
+  }
+  const resolutions = database.prepare(`SELECT m.*, i.session_id AS linked_session, r.workspace AS run_workspace
+    FROM akinator_memory_resolutions m LEFT JOIN run_intakes i ON i.run_id = m.run_id
+    LEFT JOIN ledger_runs r ON r.run_id = m.run_id ${workspace === undefined ? '' : 'WHERE m.workspace = ?'}`)
+    .all<Row>(...(workspace === undefined ? [] : [workspace]));
+  for (const row of resolutions) {
+    if (row.session_id !== row.linked_session || row.workspace !== row.run_workspace) findings.add('references', 'profile_resolution_binding', 'akinator_memory_resolutions', row.run_id);
+    try { parseMemoryResolution(JSON.parse(String(row.resolution_json))); }
+    catch (error) {
+      if (!(error instanceof SyntaxError) && !(error instanceof KiokukoError)) throw error;
+      findings.add('storedValues', 'invalid_profile_resolution', 'akinator_memory_resolutions', row.run_id);
+    }
+    scanRow(row, 'akinator_memory_resolutions', row.run_id, findings);
+  }
+}
+
 export function inspectLedger(database: SqliteDatabase, options: { workspace?: string } = {}): LedgerIntegrityReport {
   if (options.workspace !== undefined && (typeof options.workspace !== 'string' || options.workspace.length === 0)) errorValidation('workspace must be a non-empty string');
   try {
@@ -530,6 +586,7 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
     const runs = inspectRuns(runRows, findings);
     inspectEvents(eventRows, runs, findings);
     inspectIntakes(database, workspace, runs, findings);
+    inspectProfileMemory(database, workspace, findings);
     inspectReferences(database, workspace, findings);
     inspectContext(database, workspace, runs, findings);
     if (!nudgeDeliveriesAvailable) {
@@ -547,7 +604,7 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
     checks.contextDeliveries.count = reportCounts.deliveries + reportCounts.deliveryEntries;
     checks.feedbackLinks.count = reportCounts.intakeFeedback + reportCounts.contextFeedback + reportCounts.runFeedback + reportCounts.memoryLinks;
     checks.nudgeDeliveries.count = reportCounts.nudgeDeliveries;
-    checks.storedValues.count = runRows.length + eventRows.length + reportCounts.evidence + reportCounts.deliveries + reportCounts.deliveryEntries + reportCounts.nudgeDeliveries + reportCounts.intakeFeedback + reportCounts.contextFeedback + reportCounts.runFeedback + reportCounts.memoryLinks + tombstoneCount;
+    checks.storedValues.count = reportCounts.profileDocuments + reportCounts.memoryResolutions + runRows.length + eventRows.length + reportCounts.evidence + reportCounts.deliveries + reportCounts.deliveryEntries + reportCounts.nudgeDeliveries + reportCounts.intakeFeedback + reportCounts.contextFeedback + reportCounts.runFeedback + reportCounts.memoryLinks + tombstoneCount;
     checks.secretResidue.count = checks.storedValues.count;
     return { ok: LEDGER_CHECK_NAMES.every((name) => checks[name].ok), workspace: workspace ?? null, counts: reportCounts, checks, findings: findings.findings, findingCount: findings.findingCount, findingsTruncated: findings.findingsTruncated, tombstoneCount };
   } catch (error) {
@@ -639,7 +696,7 @@ function insertPurgeTombstone(database: SqliteDatabase, input: ValidatedPurge, r
 }
 function runGraphCount(database: SqliteDatabase, runId: string): number {
   let total = 1;
-  for (const table of ['run_intakes', 'intake_feedback', 'ledger_events', 'ledger_evidence', 'context_deliveries', 'nudge_deliveries', 'context_feedback', 'run_feedback', 'ledger_memory_links']) total += rowCount(database, `SELECT COUNT(*) AS count FROM ${table} WHERE run_id = ?`, runId);
+  for (const table of ['akinator_profile_documents', 'akinator_memory_resolutions', 'run_intakes', 'intake_feedback', 'ledger_events', 'ledger_evidence', 'context_deliveries', 'nudge_deliveries', 'context_feedback', 'run_feedback', 'ledger_memory_links']) total += rowCount(database, `SELECT COUNT(*) AS count FROM ${table} WHERE run_id = ?`, runId);
   total += rowCount(database, 'SELECT COUNT(*) AS count FROM context_delivery_entries AS e JOIN context_deliveries AS d ON d.delivery_id = e.delivery_id WHERE d.run_id = ?', runId);
   const session = database.prepare('SELECT session_id FROM run_intakes WHERE run_id = ?').get<{ session_id: string }>(runId);
   if (session) { total += rowCount(database, 'SELECT COUNT(*) AS count FROM akinator_answers WHERE session_id = ?', session.session_id); total += rowCount(database, 'SELECT COUNT(*) AS count FROM akinator_sessions WHERE id = ?', session.session_id); }
