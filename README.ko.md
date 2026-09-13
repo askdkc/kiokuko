@@ -38,6 +38,33 @@ kiokuko setup --no-embeddings
 
 임베딩 설정 단계를 건너뛰며 기존 임베딩 설정은 변경하지 않습니다.
 
+<a id="setup-messages"></a>
+
+### npm 알림과 설정 오류
+
+`install scripts not yet covered by allowScripts`는 해당 의존성 스크립트의 실행 승인이 npm에 기록되지 않았다는 뜻입니다.
+`esbuild`는 빌드 도구이고, `fsevents`는 macOS 파일 감시에 사용됩니다. 이 알림만으로 설정이 실패했다고 볼 수는 없습니다.
+
+알림이 발생한 패키지 디렉터리에서 확인하세요.
+
+```bash
+npm install-scripts ls
+```
+
+`esbuild`와 `fsevents`가 표시되고, 스크립트를 검토한 뒤 실행을 허용하려면 다음 명령으로 승인을 기록하세요.
+
+```bash
+npm install-scripts approve esbuild fsevents
+```
+
+승인은 해당 디렉터리의 `package.json`에 저장됩니다. macOS에 Kiokuko를 전역 설치했다면 오류에 표시된 Kiokuko 설치 디렉터리에서 실행하세요.
+다른 프로젝트에서 실행하면 그 프로젝트의 승인 설정을 조회하고 변경합니다.
+자세한 내용은 [npm 스크립트 승인 안내](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/)를 참조하세요.
+
+설정이 `Local semantic retrieval dependencies remain unavailable`과 `Cannot find package ... @huggingface/hub/index.js`로 끝나면,
+임베딩 런타임을 불러오지 못해 semantic 검색 설정이 완료되지 않은 상태입니다. 스크립트 승인으로 이 불러오기 오류가 해결되는지는 확인되지 않았습니다.
+도움을 요청할 때는 전체 오류와 `kiokuko --version`, `node --version`, `npm --version`의 출력을 첨부하세요.
+
 ## 제거
 
 Kiokuko를 사용하는 클라이언트와 `kiokuko serve`를 먼저 종료하세요.

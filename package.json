@@ -58,7 +58,9 @@
   "allowScripts": {
     "onnxruntime-node": true,
     "sharp": true,
-    "protobufjs": true
+    "protobufjs": true,
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true
   },
   "peerDependencies": {
     "@huggingface/hub": "2.16.1",

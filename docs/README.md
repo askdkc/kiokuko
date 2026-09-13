@@ -3,6 +3,7 @@
 Choose a guide by what you need to do:
 
 - [Getting started](getting-started.md) — install, configure Codex/OpenCode/Claude/Hermes, restart clients, and use the Web UI.
+- [npm notices and setup errors](../README.md#setup-messages) — review script approvals and distinguish them from missing embedding dependencies.
 - [Concepts](concepts.md) — RAG, memory lifecycle, Project/Ecosystem/Global scopes, and Akinator.
 - [Semantic retrieval](semantic-retrieval.md) — embedding runtime setup, operation, offline mode, and fallback.
 - [Akinator profile memory](akinator-memory.md) — optional hints, strict target resolution, and index rebuilding.

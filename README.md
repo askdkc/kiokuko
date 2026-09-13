@@ -44,6 +44,38 @@ kiokuko setup --no-embeddings
 
 This skips embedding setup and preserves any existing embedding settings.
 
+<a id="setup-messages"></a>
+
+### npm notices and setup errors
+
+`install scripts not yet covered by allowScripts` means npm has no recorded
+approval for those dependency scripts. `esbuild` is a build tool; `fsevents`
+supports macOS file watching. The notice alone does not mean setup failed.
+
+Run this in the package directory that produced the notice:
+
+```bash
+npm install-scripts ls
+```
+
+If it lists `esbuild` and `fsevents`, and you have reviewed and want to allow their
+scripts, record approval with:
+
+```bash
+npm install-scripts approve esbuild fsevents
+```
+
+Approval updates that directory's `package.json`. For a global macOS Kiokuko
+install, use the installed Kiokuko directory shown in the error; running these
+commands in another project reviews and changes that project's policy.
+See [npm's script approval guide](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/).
+
+If setup ends with `Local semantic retrieval dependencies remain unavailable`
+and `Cannot find package ... @huggingface/hub/index.js`, the embedding runtime
+could not load and semantic setup is incomplete. Script approval is not a
+confirmed fix for this import error. Report the full error and the output of
+`kiokuko --version`, `node --version`, and `npm --version` when requesting help.
+
 ## Uninstall
 
 Stop clients using Kiokuko and any `kiokuko serve` process first.

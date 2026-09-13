@@ -20,3 +20,6 @@ npm run sampledb:generate
 
 Do not run `kiokuko setup` or `kiokuko web` directly against the committed
 fixture. Use `npm run test:sampledb`, which works on a temporary copy.
+
+For ordinary installations, see [npm notices and setup errors](../../README.md#setup-messages)
+for script approval notices and missing embedding dependencies.

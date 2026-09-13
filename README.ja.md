@@ -41,6 +41,33 @@ kiokuko setup --no-embeddings
 
 埋め込みのセットアップを省略します。既存の埋め込み設定は変更しません。
 
+<a id="setup-messages"></a>
+
+### npmの通知とセットアップエラー
+
+`install scripts not yet covered by allowScripts`は、依存パッケージのスクリプトに実行許可が記録されていないという通知です。
+`esbuild`はビルドツール、`fsevents`はmacOSのファイル監視用です。この通知だけではセットアップの失敗とは限りません。
+
+通知が出たパッケージのディレクトリで確認します。
+
+```bash
+npm install-scripts ls
+```
+
+`esbuild`と`fsevents`が表示され、スクリプトを確認したうえで実行を許可する場合は、次のコマンドで記録します。
+
+```bash
+npm install-scripts approve esbuild fsevents
+```
+
+許可はそのディレクトリの`package.json`に保存されます。macOSでKiokukoをグローバルインストールした場合は、エラーに表示されたKiokukoのインストール先で実行してください。
+別のプロジェクトで実行すると、そのプロジェクトの許可設定を確認・変更します。
+詳しくは[npmのスクリプト許可ガイド](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/)を参照してください。
+
+最後に`Local semantic retrieval dependencies remain unavailable`と`Cannot find package ... @huggingface/hub/index.js`が出た場合は、
+埋め込みランタイムを読み込めず、semantic検索の設定が完了していません。スクリプトの許可でこの読み込みエラーが直るとは確認できていません。
+問い合わせる際は、エラー全文と`kiokuko --version`、`node --version`、`npm --version`の結果を添えてください。
+
 ## アンインストール
 
 Kiokukoを使うクライアントと`kiokuko serve`を終了してから実行します。
