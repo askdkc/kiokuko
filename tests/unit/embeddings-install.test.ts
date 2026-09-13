@@ -14,6 +14,7 @@ test('optional runtime installation uses npm directly on macOS', () => {
   assert.equal(invocation.cwd, packageRoot);
   assert.equal(invocation.args.includes('@askdkc/kiokuko'), false);
   assert.equal(invocation.args.includes('sudo'), false);
+  assert.equal(invocation.args.some((arg) => arg.startsWith('--allow-scripts')), false);
 });
 
 test('optional runtime installation uses the sudo wrapper only on Linux', () => {
@@ -21,4 +22,5 @@ test('optional runtime installation uses the sudo wrapper only on Linux', () => 
   assert.equal(invocation.command, 'sudo');
   assert.equal(invocation.args[0], 'npm');
   assert.equal(invocation.args[1], 'install');
+  assert.equal(invocation.args.includes('--allow-scripts=onnxruntime-node,sharp,protobufjs'), true);
 });

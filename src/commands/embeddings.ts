@@ -74,7 +74,6 @@ export function optionalRuntimeInstallInvocation(
         '--prefix',
         packageRoot,
         ...OPTIONAL_RUNTIME_PACKAGES,
-        ...OPTIONAL_RUNTIME_SCRIPT_ARGS,
       ],
       cwd: packageRoot,
     };
@@ -154,7 +153,7 @@ async function installOptionalRuntime(): Promise<void> {
     const cause = error instanceof Error ? `: ${error.message}` : '';
     throw new KiokukoError(
       'SERVICE_UNAVAILABLE',
-      `Automatic installation of the local semantic retrieval dependencies failed${cause}. Run this command from an interactive terminal and try again.`,
+      `Automatic installation of the local semantic retrieval dependencies failed${cause}. Check the npm error above, resolve the reported problem, then rerun kiokuko setup.`,
     );
   }
 }
@@ -174,7 +173,7 @@ async function ensureOptionalRuntime(dependencies: EmbeddingsCommandDependencies
     const cause = error instanceof Error ? `: ${error.message}` : '';
     throw new KiokukoError(
       'SERVICE_UNAVAILABLE',
-      `Automatic installation of the local semantic retrieval dependencies failed${cause}. Run this command from an interactive terminal and try again.`,
+      `Automatic installation of the local semantic retrieval dependencies failed${cause}. Check the npm error above, resolve the reported problem, then rerun kiokuko setup.`,
     );
   }
   try {
