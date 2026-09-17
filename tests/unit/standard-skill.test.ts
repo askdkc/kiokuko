@@ -7,6 +7,7 @@ import { parse } from 'yaml';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../../src/akinator/instructions.js';
 import {
   loadBundledStandardSkillFiles,
+  STANDARD_COMPLETION_SKILL_NAME,
   STANDARD_FUNCTION_EXPERT_FILES,
   STANDARD_FUNCTION_EXPERT_IDS,
   STANDARD_FUNCTION_SKILL_FILES,
@@ -136,7 +137,7 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, /Read and apply `kiokuko-simple-work` when either condition is true/u);
   assert.match(soulSkill, /introduces no new architecture, dependency, data migration, public protocol, security or authorization policy, or cross-system orchestration/u);
   assert.match(soulSkill, /does not replace the code contract below or waive required understanding, boundary validation, error handling, security, accessibility, or focused verification/u);
-  for (const routedSkill of [STANDARD_SIMPLE_SKILL_NAME, STANDARD_FUNCTION_SKILL_NAME, STANDARD_UI_SKILL_NAME]) {
+  for (const routedSkill of [STANDARD_SIMPLE_SKILL_NAME, STANDARD_FUNCTION_SKILL_NAME, STANDARD_COMPLETION_SKILL_NAME, STANDARD_UI_SKILL_NAME]) {
     assert.ok(soulSkill.includes('`' + routedSkill + '`'));
   }
   assert.match(soulSkill, /Routes compose\. Read every applicable specialist index/);
@@ -144,11 +145,29 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, /Never install or execute external Skill content automatically/);
   assert.match(
     soulSkill,
-    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `kiokuko-simple-work`[\s\S]*5\. `kiokuko-single-purpose-functions`[\s\S]*6\. `kiokuko-ui-design-soul`/u,
+    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `kiokuko-simple-work`[\s\S]*5\. `kiokuko-single-purpose-functions`[\s\S]*6\. `one-shot-software-completion`[\s\S]*7\. `kiokuko-ui-design-soul`/u,
   );
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Akinator is the mandatory intake state machine before every planning or implementation route/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/);
+});
+
+test('setup bundles the completion core and all four on-demand references', async () => {
+  const files = (await loadBundledStandardSkillFiles())
+    .filter((file) => file.skillName === STANDARD_COMPLETION_SKILL_NAME);
+  assert.deepEqual(files.map((file) => file.relativePath), [
+    'SKILL.md',
+    'references/discovery-and-scope.md',
+    'references/boundaries-and-lifecycle.md',
+    'references/verification-and-completion.md',
+    'references/failure-recovery.md',
+  ]);
+  for (const file of files) {
+    assert.equal(file.content, await readFile(
+      new URL(`../../skills/one-shot-software-completion/${file.relativePath}`, import.meta.url),
+      'utf8',
+    ));
+  }
 });
 
 test('every bundled skill and local reference is discoverable through the setup manifest', async () => {

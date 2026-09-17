@@ -66,6 +66,16 @@ export const STANDARD_JAPANESE_SKILL_NAME = 'natural-japanese-output';
 export const STANDARD_JAPANESE_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: natural-japanese-output -->';
 export const STANDARD_JAPANESE_SKILL_FILES = ['SKILL.md'] as const;
 
+export const STANDARD_COMPLETION_SKILL_NAME = 'one-shot-software-completion';
+export const STANDARD_COMPLETION_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: one-shot-software-completion -->';
+export const STANDARD_COMPLETION_SKILL_FILES = [
+  'SKILL.md',
+  'references/discovery-and-scope.md',
+  'references/boundaries-and-lifecycle.md',
+  'references/verification-and-completion.md',
+  'references/failure-recovery.md',
+] as const;
+
 interface StandardSkillManifest {
   readonly name: string;
   readonly managedMarker: string;
@@ -96,6 +106,10 @@ export const STANDARD_SKILL_MANIFESTS = [{
   name: STANDARD_JAPANESE_SKILL_NAME,
   managedMarker: STANDARD_JAPANESE_SKILL_MANAGED_MARKER,
   files: STANDARD_JAPANESE_SKILL_FILES,
+}, {
+  name: STANDARD_COMPLETION_SKILL_NAME,
+  managedMarker: STANDARD_COMPLETION_SKILL_MANAGED_MARKER,
+  files: STANDARD_COMPLETION_SKILL_FILES,
 }, {
   name: STANDARD_SOUL_SKILL_NAME,
   managedMarker: STANDARD_SOUL_SKILL_MANAGED_MARKER,

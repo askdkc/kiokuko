@@ -33,7 +33,7 @@ test('macOS runtime install accepts the shipped script policy and runs approved 
       scripts: { postinstall: 'node install.cjs' },
     }));
     await writeFile(path.join(fixtureRoot, 'install.cjs'), "require('node:fs').writeFileSync('installed.txt', 'ready');\n");
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       npm_config_cache: path.join(directory, 'cache'),
       npm_config_offline: 'true',
@@ -43,6 +43,11 @@ test('macOS runtime install accepts the shipped script policy and runs approved 
       npm_config_strict_allow_scripts: 'true',
       npm_config_dangerously_allow_all_scripts: 'false',
     };
+    // An inherited CLI allow-scripts setting is forbidden for project installs.
+    // Test the shipped package.json policy, retaining strict checks above.
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase().replaceAll('-', '_') === 'npm_config_allow_scripts') delete env[key];
+    }
     const packed = await execFileAsync('npm', ['pack', '--json', '--ignore-scripts'], { cwd: fixtureRoot, env });
     const tarball = path.join(fixtureRoot, JSON.parse(packed.stdout)[0].filename);
     const tarballContent = await readFile(tarball);

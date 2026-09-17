@@ -17,6 +17,7 @@ import { openConnection } from '../../src/db/connection.js';
 import { GLOBAL_REPOSITORY_ID, GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
 import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import {
+  STANDARD_COMPLETION_SKILL_FILES,
   STANDARD_FUNCTION_SKILL_FILES,
   STANDARD_JAPANESE_SKILL_FILES,
   STANDARD_MEMORY_SKILL_FILES,
@@ -44,6 +45,9 @@ const STANDARD_SKILL_FIXTURES = [{
 }, {
   name: 'natural-japanese-output',
   files: STANDARD_JAPANESE_SKILL_FILES,
+}, {
+  name: 'one-shot-software-completion',
+  files: STANDARD_COMPLETION_SKILL_FILES,
 }, {
   name: 'kiokuko-soul',
   files: STANDARD_SOUL_SKILL_FILES,
