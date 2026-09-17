@@ -1,6 +1,6 @@
 ---
 name: kiokuko-soul
-description: Use before every non-trivial Kiokuko-governed task as the mandatory first-read SOUL router. Run the Akinator intake gate before planning or implementation, then route simple code work, general code work, and interactive UI work to the bundled specialist Skills.
+description: Use before every coding request, including small fixes, and every other non-trivial Kiokuko-governed task as the mandatory first-read SOUL router. Run the Akinator intake gate before planning or implementation, then route simple code work, general code work, and interactive UI work to the bundled specialist Skills.
 ---
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->
@@ -9,7 +9,7 @@ description: Use before every non-trivial Kiokuko-governed task as the mandatory
 
 ## Outcome
 
-Start every non-trivial Kiokuko-governed task by reading one stable router, resolving the Akinator intake gate, then reading the applicable compact specialist indexes and only the expert fragments required by the current task.
+Start every coding request (including small fixes) and every other non-trivial Kiokuko-governed task by reading one stable router, resolving the Akinator intake gate, then reading the applicable compact specialist indexes and only the expert fragments required by the current task.
 
 This Skill owns the entry sequence and routes work. Akinator is the mandatory intake state machine, not a specialist route. This Skill does not duplicate specialist instructions, select another model, or authorize effects beyond the user request and current client permissions.
 
@@ -72,6 +72,14 @@ This route minimizes the solution; it does not replace the code contract below o
 
 Read and apply the `kiokuko-single-purpose-functions` index before writing, modifying, debugging, refactoring, or reviewing code, and before decomposing a code-changing plan. Select one to three `code.*` expert fragments for each cohesive function or task.
 
+### Software completion for every coding request
+
+Before code-changing planning or implementation, apply the compact
+`one-shot-software-completion/SKILL.md` core, including for small, minimal/YAGNI,
+test and UI changes. Reuse its unchanged full text already in active context;
+otherwise read it. A summary is insufficient. Load references only for concrete
+risks; this route does not require reading them all. Follow availability rules below.
+
 ### Interactive UI work
 
 Read and apply the `kiokuko-ui-design-soul` index before designing, implementing, modifying, debugging, or reviewing an interactive interface. Select one to three `ui.*` expert fragments for the actual interaction risks. If UI work changes code, apply both the code and UI indexes.
@@ -87,7 +95,8 @@ Use this order:
 3. `veteran-programmer-skill` when the change crosses workflow stages;
 4. `kiokuko-simple-work` when the finalized intake satisfies the simple-code activation boundary;
 5. `kiokuko-single-purpose-functions` for code planning or code work;
-6. `kiokuko-ui-design-soul` for interactive UI work.
+6. `one-shot-software-completion` for every coding request, including simple code and UI code changes;
+7. `kiokuko-ui-design-soul` for interactive UI work.
 
 Keep each route within the user-approved task scope.
 
