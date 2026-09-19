@@ -232,3 +232,35 @@ test('feature-off retrieval keeps the lexical baseline unchanged', () => {
     database.close();
   }
 });
+
+test('explicit subjects constrain semantic candidates before the backend limit', async () => {
+  const { createSqliteVecLoader } = await import('../../src/embedding/sqlite-vec-loader.js');
+  const { SqliteVecVectorSearchBackend } = await import('../../src/embedding/sqlite-vec-backend.js');
+  const loader = await createSqliteVecLoader();
+  const database = openConnection(':memory:', loader === null ? {} : { sqliteVecLoader: loader });
+  try {
+    migrateDatabase(database);
+    ensureGlobalWorkspace(database, timestamp);
+    const active = profile();
+    activateEmbeddingProfile(database, active, { replace: false, now: timestamp });
+    let target!: EntryRecord;
+    for (let index = 0; index < 131; index++) {
+      const entry = recordEntry(database, { workspace: 'global', kind: 'fact', title: `Subject ${index}`, body: 'A stored fact.',
+        tags: [`subject:${index === 130 ? 'grammar' : 'physics'}`],
+        scope: buildStructuredScope({ visibility: 'global', retrievalScope: 'global', portableReason: 'General subject knowledge.' }) },
+      { idFactory: () => `subject-${String(index).padStart(3, '0')}`, now: timestamp });
+      addVector(database, active, entry, index === 130 ? [1, 0.1, 0] : [1, 0, 0], '1');
+      target = entry;
+    }
+    const backends = [new JavaScriptVectorSearchBackend(), ...(loader === null ? [] : [new SqliteVecVectorSearchBackend()])];
+    for (const backend of backends) {
+      const original = runtime(active).semantic!;
+      const prepared = { semantic: { ...original, backend, query: { ...original.query, backendId: backend.id } } };
+      const result = await retrieveFederatedMemory(database, { query: 'unrelated semantic paraphrase', scope: 'global', readOnly: true,
+        subjects: ['grammar'], limit: 1 }, prepared);
+      assert.equal(result.global?.items[0]?.id, target.id, backend.id);
+      assert.throws(() => backend.search(database, { profileId: active.profileId, dimensions: 3,
+        queryVector: new Float32Array([1, 0, 0]), distanceCeiling: 0.8, subjects: [], limit: 1 }), { code: 'VALIDATION_ERROR' });
+    }
+  } finally { database.close(); }
+});

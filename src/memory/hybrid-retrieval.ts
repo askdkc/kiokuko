@@ -23,6 +23,7 @@ export interface HybridSearchInput {
   status?: EntryStatus;
   tag?: string;
   includeSuperseded?: boolean;
+  subjects?: readonly string[];
 }
 
 export interface RetrievalCandidate {
@@ -167,6 +168,11 @@ function hasCanonicalWordMatch(database: SqliteDatabase, input: HybridSearchInpu
 function filterSql(input: HybridSearchInput, parameters: Array<string | number>): string {
   const clauses = ['e.workspace = ?'];
   parameters.push(input.workspace);
+  if (input.subjects !== undefined) {
+    clauses.push(`EXISTS (SELECT 1 FROM entry_revision_tags st WHERE st.entry_id = e.id
+      AND st.revision = e.current_revision AND st.tag IN (${input.subjects.map(() => '?').join(',')}))`);
+    parameters.push(...input.subjects.map((subject) => `subject:${subject}`));
+  }
   return clauses.join(' AND ');
 }
 
@@ -333,6 +339,7 @@ function semanticLane(database: SqliteDatabase, input: HybridSearchInput, runtim
     distanceCeiling: query.distanceCeiling,
     workspace: input.workspace,
     limit: MAX_LANE_CANDIDATES,
+    ...(input.subjects === undefined ? {} : { subjects: input.subjects }),
   });
   if (!Array.isArray(hits) || hits.length > MAX_LANE_CANDIDATES) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Semantic backend returned too many candidates');
@@ -383,6 +390,7 @@ export function hybridSearch(
   if (input.kind !== undefined && !ENTRY_KINDS.includes(input.kind)) invalid();
   if (input.status !== undefined && !ENTRY_STATUSES.includes(input.status)) invalid();
   if (input.tag !== undefined && (typeof input.tag !== 'string' || input.tag.length === 0)) invalid();
+  if (input.subjects !== undefined && (!Array.isArray(input.subjects) || input.subjects.length < 1 || input.subjects.length > 5 || input.subjects.some((s) => typeof s !== 'string' || !s || s.length > 80))) invalid();
   const parsed = parseRetrievalQuery(input.query);
   if (parsed.normalized.length === 0) return [];
   // Treat SQL/FTS-looking operator soup as data, not as a broad OR query. A
@@ -430,6 +438,7 @@ export function hybridSearch(
     if (input.kind !== undefined && entry.kind !== input.kind) return false;
     if (input.status !== undefined && entry.status !== input.status) return false;
     if (input.tag !== undefined && !entry.tags.includes(input.tag)) return false;
+    if (input.subjects !== undefined && !input.subjects.some((subject) => entry.tags.includes(`subject:${subject}`))) return false;
     return true;
   });
 }

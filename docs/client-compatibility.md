@@ -115,3 +115,12 @@ framework. `task_prepare` treats it as a first-party recommendation for concrete
 coding terms in English or Japanese. Explicit no-code, documentation-only, and
 image-only work do not trigger it. Kiokuko does not claim that availability alone
 forces model use.
+
+## Interaction memory
+
+All four setup targets receive the same capture/recall instructions and bundled
+Skills. `memory_capture` stores untrusted candidates without ending a task;
+`memory_recall` serves global conversation without a project. Project preparation
+and capability withholding retain their existing gates. Reload the client after
+setup so new tools and instructions are visible. Configuration coverage is not
+proof of model behavior; see [per-client validation](interaction-memory-validation.md).

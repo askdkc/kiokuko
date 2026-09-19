@@ -1,3 +1,4 @@
+import { normalizeSubject } from '../memory/interaction-subjects.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { requireWorkspace } from '../serialization/validate.js';
@@ -38,6 +39,7 @@ function searchInput(input: VectorSearchInput): {
   distanceCeiling: number;
   workspace: string | undefined;
   excludedWorkspaces: string[];
+  subjects: string[];
   limit: number;
 } {
   if (typeof input.profileId !== 'string' || !/^[0-9a-f]{64}$/u.test(input.profileId)) invalid('profileId is invalid');
@@ -49,7 +51,9 @@ function searchInput(input: VectorSearchInput): {
   const excludedWorkspaces = input.excludedWorkspaces === undefined
     ? []
     : [...new Set(input.excludedWorkspaces.map((value) => requireWorkspace(value)))];
+  if (input.subjects !== undefined && (!Array.isArray(input.subjects) || input.subjects.length < 1 || input.subjects.length > 5 || input.subjects.some((s) => typeof s !== 'string'))) invalid('subjects are invalid');
   return {
+    subjects: input.subjects?.map(normalizeSubject) ?? [],
     profileId: input.profileId,
     dimensions: input.dimensions,
     queryVector,
@@ -76,6 +80,11 @@ export class SqliteVecVectorSearchBackend implements VectorSearchBackend {
     if (normalized.workspace !== undefined) {
       clauses.push('e.workspace = ?');
       parameters.push(normalized.workspace);
+    }
+    if (normalized.subjects.length > 0) {
+      clauses.push(`EXISTS (SELECT 1 FROM entry_revision_tags st WHERE st.entry_id = e.id
+        AND st.revision = e.current_revision AND st.tag IN (${normalized.subjects.map(() => '?').join(',')}))`);
+      parameters.push(...normalized.subjects.map((subject) => `subject:${subject}`));
     }
     if (normalized.excludedWorkspaces.length > 0) {
       clauses.push(`e.workspace NOT IN (${normalized.excludedWorkspaces.map(() => '?').join(', ')})`);

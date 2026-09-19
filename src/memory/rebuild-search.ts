@@ -1,3 +1,4 @@
+import { rebuildInteractionFingerprintsInTransaction } from './interaction-fingerprint.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
@@ -121,6 +122,7 @@ export function rebuildHybridSearchInTransaction(database: SqliteDatabase): { en
   if (documentCount !== projections.length || signalCount !== expectedSignals) {
     integrity('Hybrid search projection rebuild produced an incomplete result');
   }
+  rebuildInteractionFingerprintsInTransaction(database);
   return { entries: projections.length, signals: expectedSignals };
 }
 

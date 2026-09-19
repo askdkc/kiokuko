@@ -3,6 +3,10 @@
 Kiokuko 1.0 initializes a new database from `migrations/001_baseline.sql`.
 The baseline includes memory revisions, task intake and ledger, scoped context,
 external Skill discovery, CJK word/trigram search, and semantic search tables.
+Additive migration `003_interaction_memory.sql` indexes normalized captured-content
+fingerprints; revision hashes and existing entries keep their original meaning.
+Edits/imports/rebuilds synchronize the index, superseding invalidates it, and purge
+cascades deletion. Capture retry receipts contain hashes, IDs, and outcomes only.
 SQL performs no network access, model loading, or vector generation.
 
 `schema_migrations` binds the baseline filename and SHA-256 checksum. Reopening

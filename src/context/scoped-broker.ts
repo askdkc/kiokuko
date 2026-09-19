@@ -25,7 +25,7 @@ import { CONTEXT_SELECTION_REASON_ORDER } from './ranking.js';
 import { readContextRunRetrievalState } from './run-state.js';
 import { contextRetrievalStateHash, ordinaryContextSelectionStateHash } from './selection-state.js';
 
-export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v6' as const;
+export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v7' as const;
 export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
 
@@ -726,7 +726,9 @@ async function prepareScopedContext(
     if (previous === undefined || item.score > previous.score) candidates.set(item.entryId, item);
   }
   const ordered = [...candidates.values()].sort((left, right) => right.score - left.score || compareCanonicalStrings(left.entryId, right.entryId));
-  const fitted = fitScopedItems(ordered, limit, characterBudget);
+  const preferenceItems = ordered.filter((item) => item.selectionReasons.includes('general_communication_preference')).slice(0, 2);
+  const preferred = new Set(preferenceItems.map((item) => item.entryId));
+  const fitted = fitScopedItems([...preferenceItems, ...ordered.filter((item) => !preferred.has(item.entryId))], limit, characterBudget);
   return {
     result: {
       project: project ?? null,

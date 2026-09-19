@@ -12,6 +12,7 @@ export interface SearchEntriesInput {
   status?: EntryStatus;
   tag?: string;
   includeSuperseded?: boolean;
+  subjects?: readonly string[];
 }
 
 export interface SearchResult {

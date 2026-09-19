@@ -97,6 +97,7 @@ export interface VectorSearchInput {
   readonly distanceCeiling: number;
   readonly workspace?: string;
   readonly excludedWorkspaces?: readonly string[];
+  readonly subjects?: readonly string[];
   readonly limit: number;
 }
 

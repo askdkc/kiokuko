@@ -6,6 +6,7 @@ Choose a guide by what you need to do:
 - [npm notices and setup errors](../README.md#setup-messages) — review script approvals and distinguish them from missing embedding dependencies.
 - [Concepts](concepts.md) — RAG, memory lifecycle, Project/Ecosystem/Global scopes, and Akinator.
 - [Semantic retrieval](semantic-retrieval.md) — embedding runtime setup, operation, offline mode, and fallback.
+- [Interaction memory](interaction-memory.md) — automatic candidate capture, subject recall, corrections, and the disable switch.
 - [Akinator profile memory](akinator-memory.md) — optional hints, strict target resolution, and index rebuilding.
 - [Security and trust](security-and-trust.md) — secret rejection, memory boundaries, External Skills, and public errors.
 - [CLI contract](cli-contract.md) — stable command and response details.

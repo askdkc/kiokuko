@@ -17,6 +17,40 @@ This Skill owns the entry sequence and routes work. Akinator is the mandatory in
 
 Explicit user instructions outrank these Skills' design, style, workflow, and implementation preferences. They do not override host-enforced safety, authorization, identity, state, revision, or integrity invariants. Resolve routine choices from repository evidence and existing authorization; ask only when an unresolved assumption would materially change the intended result or permitted effects.
 
+## Ordinary conversation and interaction memory
+
+For ordinary conversation that does not involve project work, use `memory_recall`
+with the current query, optional subjects, `soulRead: true`, and the complete
+capability catalog. Read `memory-reasoning` before advertising it. No repository,
+task run, or Akinator answers are needed. This route cannot replace or bypass
+intake for project work or an already-open project run.
+
+Proactively use non-terminal `memory_capture` for durable user statements and
+preferences, explicit corrections, settled decisions, and verified reusable
+results, even without “remember this.” Extract at most five concise memories per
+call with subjects and an honest basis. Use short topic labels such as “Japanese
+grammar”, not task phrases such as “Japanese grammar explanations”. Prefer
+query-only recall; pass subject filters only for exact known stored labels.
+Save important corrections promptly and
+batch other memories before the final answer. Save nothing when nothing is useful.
+Skip routine progress, temporary requests, repetition, unsupported assistant
+conclusions, sensitive personal profiling, secrets, and transcripts.
+
+Project saves require the active run with completed intake. Clearly general
+knowledge may use global scope with a portability reason. `generalCommunication`
+is only for explicitly general communication preferences, without subjects or
+applicability. Subject-specific preferences must retain their subjects. Correct
+only a known entry ID and expected revision; never guess a replacement target.
+All captures remain untrusted candidates, immediately eligible for advisory
+recall. Curator still requires approval for verified global promotion.
+
+`memory_capture` does not close the task. `memory_checkpoint` remains terminal;
+do not repeat captured memories there. Exact transport retries reuse the capture
+operation ID; changed payloads use a new operation. A purged receipt is not an
+instruction to recreate content. `KIOKUKO_INTERACTION_MEMORY=off` disables capture
+without disabling recall or explicit checkpoints. Tool use is model-mediated,
+not a guarantee of interception on every turn.
+
 ## Required entry
 
 Read this Skill before any other bundled Kiokuko Skill.

@@ -60,7 +60,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'curator_check',
       'curator_globalize',
+      'memory_capture',
       'memory_checkpoint',
+      'memory_recall',
       'task_answer',
       'task_prepare',
     ]);
@@ -743,7 +745,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     });
     assert.equal(availableContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(availableContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
-    assert.equal(availableContent.context.policyVersion, 'context-ranking-v6');
+    assert.equal(availableContent.context.policyVersion, 'context-ranking-v7');
 
     const exactBoundary = await client.callTool({
       name: 'task_prepare',
@@ -852,7 +854,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       });
       assert.equal(persisted.includes(sentinel), false);
       assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(content.run.runId)?.count, 0);
-      assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v6');
+      assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v7');
       const storedReasons = database.prepare(`
         SELECT selection_reason_json
           FROM context_delivery_entries

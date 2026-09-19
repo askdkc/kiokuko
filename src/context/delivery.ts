@@ -31,7 +31,9 @@ const DELIVERY_CURSOR_VERSION = 1 as const;
 // The persisted score schema is the mode discriminant: v1 is the generic
 // broker contract and v2 is the scoped broker contract.
 const GENERIC_DELIVERY_POLICY_VERSION = `${CONTEXT_RANKING_VERSION}+${RECOMMENDATION_POLICY_VERSION}`;
-const SCOPED_DELIVERY_POLICY_VERSION = 'context-ranking-v6';
+// v6 remains readable/importable history; only the scoped broker chooses the
+// current ranking policy for new retrieval and replay.
+const SCOPED_DELIVERY_POLICY_VERSIONS = new Set(['context-ranking-v6', 'context-ranking-v7']);
 
 const VALIDATION_MESSAGE = 'Context delivery input is invalid';
 const NOT_FOUND_MESSAGE = 'Context delivery target was not found';
@@ -310,12 +312,8 @@ function validatedScoreSchemaVersion(value: unknown, onInvalid: () => never): 1 
   return value as 1 | 2;
 }
 
-function deliveryPolicyVersion(version: 1 | 2): string {
-  return version === 1 ? GENERIC_DELIVERY_POLICY_VERSION : SCOPED_DELIVERY_POLICY_VERSION;
-}
-
 function storedDeliveryPolicyMatches(version: 1 | 2, policyVersion: string): boolean {
-  return policyVersion === deliveryPolicyVersion(version);
+  return version === 1 ? policyVersion === GENERIC_DELIVERY_POLICY_VERSION : SCOPED_DELIVERY_POLICY_VERSIONS.has(policyVersion);
 }
 
 function storedNonNegativeSafeInteger(value: unknown): number {
@@ -460,7 +458,7 @@ function validateContextDeliveryInput(value: unknown): ValidatedContextDeliveryI
       object.scoreSchemaVersion === undefined ? 1 : object.scoreSchemaVersion,
       validation,
     );
-    if (policyVersion !== deliveryPolicyVersion(parsedScoreSchemaVersion)) validation();
+    if (!storedDeliveryPolicyMatches(parsedScoreSchemaVersion, policyVersion)) validation();
     const items = validateDeliveryItems(readField(object, 'items'), parsedScoreSchemaVersion);
     return {
       workspace,

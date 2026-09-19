@@ -1,3 +1,4 @@
+import { GENERAL_COMMUNICATION_TAG, isGeneralCommunicationPreference, matchesInteractionSubject } from './interaction-subjects.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry, type EntryRecord } from './entries.js';
@@ -403,24 +404,38 @@ interface RankedEntry {
   hit: RankedRecallHit;
 }
 
-function globalLaneCandidates(
+export function globalLaneCandidates(
   database: SqliteDatabase,
   query: string,
   limit: number,
   runtime: HybridSearchRuntime,
+  subjects?: readonly string[],
 ): { candidates: RankedEntry[]; truncated: boolean } {
-  const ranked = rankedEntryHits(database, { workspace: GLOBAL_WORKSPACE, query, limit: 1_000 }, runtime);
+  const ranked = rankedEntryHits(database, { workspace: GLOBAL_WORKSPACE, query, limit: 1_000, ...(subjects === undefined ? {} : { subjects }) }, runtime);
   const eligible = ranked.hits.flatMap((hit) => {
     const entry = readEntry(database, { workspace: GLOBAL_WORKSPACE, entryId: hit.entryId });
     const scope = metadataObject(entry);
     if (scope.schemaVersion === 3 && scope.visibility !== 'global') {
       throw new KiokukoError('INTEGRITY_ERROR', 'Stored global memory scope is invalid');
     }
-    return hasExplicitFederatedScope(entry, 'global') ? [{ entry, hit }] : [];
+    return hasExplicitFederatedScope(entry, 'global') && !isGeneralCommunicationPreference(entry)
+      && matchesInteractionSubject(entry, query, subjects) ? [{ entry, hit }] : [];
   });
+  const preferenceRows = subjects === undefined ? database.prepare(`SELECT e.id FROM entry_revision_tags t
+    JOIN entries e ON e.id = t.entry_id AND e.current_revision = t.revision
+    WHERE e.workspace = ? AND e.status <> 'superseded' AND t.tag = ?
+    ORDER BY CASE e.status WHEN 'verified' THEN 0 ELSE 1 END, e.updated_at DESC, e.id LIMIT 120`)
+    .all<{ id: string }>(GLOBAL_WORKSPACE, GENERAL_COMMUNICATION_TAG) : [];
+  const preferences = preferenceRows.flatMap((row): RankedEntry[] => {
+    const entry = readEntry(database, { workspace: GLOBAL_WORKSPACE, entryId: row.id });
+    if (!hasExplicitFederatedScope(entry, 'global') || !isRetrievableEntry(database, entry)
+      || !isGeneralCommunicationPreference(entry)) return [];
+    return [{ entry, hit: { entryId: entry.id, retrievalScore: 1, rank: 1,
+      reasons: ['tag_match', 'general_communication_preference'] } }];
+  }).slice(0, 2);
   return {
-    candidates: eligible.slice(0, limit),
-    truncated: ranked.truncated || eligible.length > limit,
+    candidates: [...preferences, ...eligible].slice(0, limit),
+    truncated: ranked.truncated || preferences.length + eligible.length > limit,
   };
 }
 
@@ -478,7 +493,7 @@ function combinedResult(items: Array<{ item: FederatedRecallItem; score: number;
 
 export async function retrieveFederatedMemory(
   database: SqliteDatabase,
-  input: { query: string; cwd?: string; project?: ResolvedProjectWorkspace; fingerprint?: ProjectFingerprint; scope?: FederatedScope; limit?: number; maxChars?: number; policy?: Partial<FederatedRetrievalPolicy>; readOnly?: boolean },
+  input: { query: string; cwd?: string; project?: ResolvedProjectWorkspace; fingerprint?: ProjectFingerprint; scope?: FederatedScope; limit?: number; maxChars?: number; policy?: Partial<FederatedRetrievalPolicy>; readOnly?: boolean; subjects?: readonly string[] },
   runtime: HybridSearchRuntime = {},
 ): Promise<FederatedRecallResult> {
   const scope = input.scope ?? 'auto';
@@ -516,7 +531,7 @@ export async function retrieveFederatedMemory(
   }), Math.min(limit, policy.ecosystem.limit), maxChars, false);
   const globalEnabled = scope !== 'project' && scope !== 'ecosystem' && policy.global.enabled;
   const globalLane = globalEnabled
-    ? globalLaneCandidates(database, input.query, Math.min(limit, policy.global.limit), runtime)
+    ? globalLaneCandidates(database, input.query, Math.min(limit, policy.global.limit), runtime, input.subjects)
     : { candidates: [], truncated: false };
   const globalMemory = globalEnabled
     ? recallRankedEntries(globalLane.candidates, maxChars, globalLane.truncated)
@@ -582,5 +597,8 @@ export async function federatedEntries(
     selectionReasons: ['global_origin', ...hit.reasons],
   }));
   const byRelevance = (left: FederatedEntry, right: FederatedEntry): number => right.score - left.score || compareCanonicalStrings(left.entry.id, right.entry.id);
-  return [...current.sort(byRelevance), ...ecosystem.sort(byRelevance), ...global.sort(byRelevance)].slice(0, input.limit);
+  const preferences = global.filter((item) => isGeneralCommunicationPreference(item.entry));
+  return [...preferences, ...current.sort(byRelevance), ...ecosystem.sort(byRelevance),
+    ...global.filter((item) => !isGeneralCommunicationPreference(item.entry)).sort(byRelevance)]
+    .filter((item) => matchesInteractionSubject(item.entry, input.query)).slice(0, input.limit);
 }

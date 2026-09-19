@@ -4,11 +4,12 @@ Version 1.0 requires a new database and removes the previous orchestration. See 
 
 English | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
 
-**Connect through MCP, recall useful context, and build reusable project memory.**
+**Connect through MCP, learn from interaction, and recall useful context.**
 
-Kiokuko is local external memory for AI coding agents. It stores durable knowledge
-in SQLite, retrieves relevant context for the next task, and records useful results
-after work. You keep using your client normally; the client calls Kiokuko through MCP.
+Kiokuko is local external memory for AI agents, for coding work and ordinary
+conversation. Your client can save durable preferences, decisions, corrections,
+and useful results as untrusted SQLite records, then recall relevant context for
+the next interaction. You keep using your client normally through MCP.
 
 ## The core idea
 
@@ -94,6 +95,7 @@ Use the same environment overrides as setup for custom locations. See [cleanup s
 
 ## Main features
 
+- **Interaction memory**: learns durable preferences, decisions, and corrections from ordinary conversation as untrusted candidates. [How it works](docs/interaction-memory.md).
 - **RAG memory**: lexical retrieval plus local semantic retrieval configured by `setup`.
 - **Akinator**: clarifies vague requests before work begins.
 - **Local Web UI**: review and curate saved memories.

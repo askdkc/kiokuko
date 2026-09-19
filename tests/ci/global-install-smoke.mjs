@@ -203,6 +203,10 @@ try {
   await mkdir(packDirectory, { recursive: true });
   await run('npm', ['run', 'build'], repositoryRoot);
   const packed = await run('npm', ['pack', '--pack-destination', packDirectory, '--json'], repositoryRoot);
+  const packageFiles = new Set(JSON.parse(packed.stdout)[0].files.map((file) => file.path));
+  for (const file of ['migrations/003_interaction_memory.sql', 'dist/memory/interaction-capture.js', 'dist/memory/interaction-recall.js', 'docs/interaction-memory.md']) {
+    assert.ok(packageFiles.has(file), `interaction memory package artifact missing: ${file}`);
+  }
   const tarball = packedFilename(packed.stdout, packDirectory);
   const install = await run('npm', [
     'install',

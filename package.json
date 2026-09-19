@@ -35,6 +35,8 @@
     "test:sqlite-vec": "node --import tsx tests/ci/sqlite-vec-package-smoke.ts",
     "test:global-install": "node tests/ci/global-install-smoke.mjs",
     "test:evaluation": "npm run build && node scripts/run-retrieval-evaluation.mjs",
+    "test:interaction:live": "npm run build && node scripts/run-interaction-memory-smoke.mjs",
+    "test:interaction:benchmark": "npm run build && node scripts/run-interaction-memory-benchmark.mjs",
     "test:benchmark": "npm run build && node scripts/run-retrieval-benchmark.mjs",
     "sampledb:generate": "node --import tsx tests/fixtures/sample-database.ts tests/sampledb/kiokuko.sqlite3",
     "test:sampledb": "npm run build && node --import tsx tests/ci/verify-sample-database.ts",

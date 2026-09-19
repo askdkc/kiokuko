@@ -12,6 +12,8 @@ export type McpToolOperation =
   | 'task_prepare'
   | 'task_answer'
   | 'memory_checkpoint'
+  | 'memory_capture'
+  | 'memory_recall'
   | 'curator_check'
   | 'curator_globalize';
 
@@ -79,6 +81,7 @@ const EXTERNAL_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
 ]);
 
 const MUTATION_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
+  'memory_capture',
   'memory_checkpoint',
   'curator_globalize',
 ]);

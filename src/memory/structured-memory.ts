@@ -1,3 +1,5 @@
+import { readEntry } from './entries.js';
+import { syncInteractionFingerprint } from './interaction-fingerprint.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { canonicalTagOrder, compareCanonicalStrings, type JsonObject } from '../serialization/validate.js';
@@ -296,4 +298,9 @@ export function syncEntrySearchProjection(database: SqliteDatabase, input: Param
   }
 
   syncEntrySearchSignals(database, { ...input, tags });
+  const captured = database.prepare(`SELECT e.workspace FROM entries e JOIN entry_revisions r
+    ON r.entry_id = e.id AND r.revision = e.current_revision
+    WHERE e.id = ? AND json_extract(r.provenance_json, '$.type') = 'interaction_capture'`)
+    .get<{ workspace: string }>(input.entryId);
+  if (captured !== undefined) syncInteractionFingerprint(database, readEntry(database, { workspace: captured.workspace, entryId: input.entryId }));
 }
