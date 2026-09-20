@@ -1,8 +1,9 @@
+import { scopedMemoryUseSignal } from '../context/scoped-memory-use.js';
+import { readContextDelivery } from '../context/delivery.js';
+import { assuranceState, enrollAssurance, bindAssuranceDelivery, bindAssuranceRoot, taskAssuranceReport, type AssuranceReport } from '../assurance/service.js';
 import { profileMemoryHints } from './memory-probe.js';
 import { readProfileMemoryMode, type MemoryHint, type ProbeMode, type ProfileMemoryOptions } from './memory-probe-types.js';
 import { readContextBrokerRunState } from '../context/broker.js';
-import { contextFeedbackSignals } from '../context/feedback.js';
-import { entryOriginMatchesWorkspace } from '../context/origin.js';
 import {
   queryScopedContextGated,
   SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET,
@@ -18,10 +19,8 @@ import { KiokukoError } from '../errors.js';
 import { AgentGatewayService } from '../gateway/agent-service.js';
 import { LedgerStore } from '../ledger/store.js';
 import type { RunRecord } from '../ledger/types.js';
-import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { readEntry } from '../memory/entries.js';
-import { isRetrievableEntry, retrievableWorkspaceEntryCount } from '../memory/hybrid-retrieval.js';
-import { effectiveRetrievalScope, hasExplicitApplicability } from '../memory/structured-memory.js';
+import { retrievableWorkspaceEntryCount } from '../memory/hybrid-retrieval.js';
 import {
   GLOBAL_WORKSPACE,
   resolveProjectWorkspace,
@@ -38,14 +37,13 @@ import {
 import { canonicalContentHash, type JsonObject } from '../serialization/validate.js';
 import { readSkillDiscoveryConfig } from '../skills/config.js';
 import { discoverSkills } from '../skills/discovery-service.js';
-import { isExternalSkillReference } from '../skills/store.js';
 import type { SkillDiscoveryMode, SkillDiscoverySummary } from '../skills/types.js';
 import {
   deriveMemoryPolicy,
   deriveMemoryUseSignal,
-  hasActionableMemorySelection,
   hasBlockingRequiredCapability,
   memoryReasoningCapabilityAvailability,
+  memoryReasoningRequired,
   normalizeCapabilityCatalog,
   resolveCapabilities,
   type CapabilityResolution,
@@ -113,6 +111,7 @@ export interface PreparedAgentTask {
   skillDiscovery: SkillDiscoverySummary;
   context: ScopedContextResult | null;
   memoryPolicy: MemoryPolicy;
+  assurance: AssuranceReport;
   warnings: CapabilityWarning[];
   nextAction: 'proceed' | 'answer_from_evidence_or_ask_user' | 'required_capability_unavailable';
   securityNotice: string;
@@ -240,7 +239,7 @@ function assertTaskContextRequestBinding(metadata: JsonObject, maxContextChars: 
 
 function memoryCapabilityUnavailableForTask(context: AkinatorResult, capabilities: unknown): boolean {
   return context.status === 'ready'
-    && (context.session.profile.taskType === 'build' || context.session.profile.taskType === 'debug')
+    && memoryReasoningRequired(context.session.profile, 'actionable')
     && memoryReasoningCapabilityAvailability(capabilities) !== 'available';
 }
 
@@ -279,74 +278,6 @@ function currentAgentTaskContext(
     session: { ...context.session, profile: { ...current.taskProfile } },
     recommendedTags: [...current.recommendedTags],
   };
-}
-
-function currentScopedEntry(
-  database: SqliteDatabase,
-  runWorkspace: string,
-  item: Pick<ScopedContextItem, 'entryId' | 'revision' | 'origin'>,
-) {
-  const row = database.prepare('SELECT workspace FROM entries WHERE id = ?')
-    .get<{ workspace: unknown }>(item.entryId);
-  if (row === undefined || typeof row.workspace !== 'string' || row.workspace.length === 0) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Scoped context entry is missing or invalid');
-  }
-  const entry = readEntry(
-    database,
-    { workspace: row.workspace, entryId: item.entryId },
-    { requireStructuredScope: item.origin !== 'project' },
-  );
-  if (entry.revision !== item.revision) {
-    throw new KiokukoError('CONFLICT', 'Scoped context entry changed after ranking');
-  }
-  if (!entryOriginMatchesWorkspace({
-    origin: item.origin,
-    runWorkspace,
-    entryWorkspace: entry.workspace,
-  })) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Scoped context entry origin is invalid');
-  }
-  if (item.origin === 'global'
-    && (entry.scope.visibility !== 'global' || effectiveRetrievalScope(entry.scope) !== 'global')) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Scoped context global entry scope is invalid');
-  }
-  if (item.origin === 'ecosystem'
-    && (!Object.hasOwn(entry.scope, 'retrievalScope')
-      || effectiveRetrievalScope(entry.scope) !== 'ecosystem'
-      || !hasExplicitApplicability(entry.scope))) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Scoped context ecosystem entry scope is invalid');
-  }
-  if (!isRetrievableEntry(database, entry)) {
-    throw new KiokukoError('CONFLICT', 'Scoped context entry is no longer retrievable');
-  }
-  if (entry.status === 'superseded') {
-    throw new KiokukoError('CONFLICT', 'Scoped context entry is no longer retrievable');
-  }
-  return entry;
-}
-
-function capabilityGatedScopedItems(
-  database: SqliteDatabase,
-  runWorkspace: string,
-  scopedContext: ScopedContextResult,
-): ScopedContextItem[] {
-  return scopedContext.items.filter((item) => {
-    const entry = currentScopedEntry(database, runWorkspace, item);
-    return !isExternalSkillReference(entry) && !isCuratorManagedGlobalMemory(entry);
-  });
-}
-
-function scopedMemoryUseSignal(
-  database: SqliteDatabase,
-  runWorkspace: string,
-  scopedContext: ScopedContextResult,
-): MemoryUseSignal {
-  const items = capabilityGatedScopedItems(database, runWorkspace, scopedContext);
-  if (hasActionableMemorySelection(items)) return 'actionable';
-  return items.some((item) => contextFeedbackSignals(database, item.entryId)
-    .some((signal) => signal.verdict === 'helpful'))
-    ? 'actionable'
-    : 'none';
 }
 
 function assertScopedMemoryUseSignal(
@@ -479,9 +410,14 @@ function buildPreparedTaskBase(
     ...(capabilities === undefined ? {} : { capabilities }),
     memoryUse,
   });
+  if (!assuranceState(database, run.runId)) enrollAssurance(database, run.runId, new Date().toISOString());
+  if (scopedContext?.deliveryId) bindAssuranceDelivery(database, readContextDelivery(database, { workspace: project.workspace, deliveryId: scopedContext.deliveryId }));
+  const policy = deriveMemoryPolicy(context.session.profile, memoryUse, capabilities, deliveryObservation);
+  bindAssuranceRoot(database, run.runId, project.repositoryRoot, policy.contextWithheld ? 'capability_withheld' : scopedContext?.retrieval?.status);
   return {
     project,
     executionContext,
+    assurance: taskAssuranceReport(database, run.runId, false),
     intake: {
       status: context.status,
       sessionId: context.session.id,

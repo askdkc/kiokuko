@@ -1,3 +1,4 @@
+import { removeCodexAssuranceHooks } from '../setup/codex-hooks.js';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
@@ -124,7 +125,7 @@ async function planClients(plan: UninstallPlan, options: PathEnvironment, client
   if (clients.includes('codex')) {
     await planMcpConfig(plan, getCodexConfigPath(options), removeCodexMcpConfig);
     await planText(plan, getCodexInstructionsPath(options), removeInstructions);
-    await planText(plan, path.join(getCodexHome(options), 'hooks.json'), source => removeLegacyHooks(source, 'codex'));
+    await planText(plan, path.join(getCodexHome(options), 'hooks.json'), source => { const remaining = removeCodexAssuranceHooks(source); return remaining === undefined ? undefined : removeLegacyHooks(remaining, 'codex'); });
     skills.add(getCodexSkillsDirectory(options));
   }
   if (clients.includes('claude')) {

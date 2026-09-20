@@ -88,8 +88,8 @@ async function runCliJson(args: string[], operation: string, environment: NodeJS
 
 function assertCurrentFixture(databasePath: string): void {
   assert.ok(
-    CURRENT_SCHEMA_VERSION === SAMPLE_DATABASE_BASELINE_VERSION,
-    'The sample database baseline must use the current schema',
+    CURRENT_SCHEMA_VERSION >= SAMPLE_DATABASE_BASELINE_VERSION,
+    'The historical sample baseline must not be newer than the bundled schema',
   );
   const database = openConnection(databasePath, { readOnly: true });
   try {

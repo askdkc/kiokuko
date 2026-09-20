@@ -43,7 +43,8 @@
     "pack:check": "npm pack --dry-run",
     "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run pack:check",
     "test:evaluation:akinator": "npm run build && node scripts/run-akinator-memory-evaluation.mjs",
-    "test:benchmark:akinator": "npm run build && node scripts/run-akinator-memory-benchmark.mjs"
+    "test:benchmark:akinator": "npm run build && node scripts/run-akinator-memory-benchmark.mjs",
+    "test:memory-assurance:live": "npm run build && node scripts/run-memory-assurance-live.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

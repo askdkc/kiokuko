@@ -117,6 +117,7 @@ MCPの利用はclientとモデルが決めるため、**毎回必ずKiokukoが�
 - [基本概念](docs/concepts.ja.md)
 - [Semantic retrieval](docs/semantic-retrieval.ja.md)
 - [Akinator のプロフィール補助](docs/akinator-memory.md)
+- [記憶の適用記録・検証結果・Codex フック](docs/memory-assurance.md)
 - [Security and trust](docs/security-and-trust.ja.md)
 - [CLI contract](docs/cli-contract.md)
 

@@ -1,3 +1,4 @@
+import { createTaskAssuranceRoute, taskAssuranceOperation } from './routes/task-assurance.js';
 import { KiokukoError } from '../errors.js';
 import { AgentGatewayService } from '../gateway/agent-service.js';
 import { FeedbackService } from '../gateway/checkpoint-service.js';
@@ -16,7 +17,8 @@ import { AgentCheckpointUseCase } from './agent-checkpoint-use-case.js';
 export type AgentHttpServerOptions = Omit<HttpServerOptions, 'app' | 'v1' | 'applicationFactory'>;
 
 function operationFor(method: string, pathname: string): string | undefined {
-  return agentRunsOperation(method, pathname)
+  return taskAssuranceOperation(method, pathname)
+    ?? agentRunsOperation(method, pathname)
     ?? agentPromotionsOperation(method, pathname)
     ?? agentIntakeOperation(method, pathname)
     ?? agentEventsOperation(method, pathname)
@@ -49,6 +51,7 @@ export function createAgentV1Handler(context: HttpApplicationContext): V1RouteHa
     createAgentIntakeRoute(routeContext),
     createAgentEventsRoute(routeContext),
     createTask5Route(routeContext),
+    createTaskAssuranceRoute(routeContext),
   ];
   const handler = (async (request) => {
     for (const route of routes) {

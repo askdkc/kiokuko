@@ -101,6 +101,10 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     hermes: path.join(environment.HERMES_HOME, 'skills'),
   };
   await mkdir(homeDirectory, { recursive: true });
+  await mkdir(environment.CODEX_HOME, { recursive: true });
+  const hookPath = path.join(environment.CODEX_HOME, 'hooks.json');
+  const userHook = { hooks: [{ type: 'command', command: 'user-owned-hook' }] };
+  await writeFile(hookPath, JSON.stringify({ hooks: { Stop: [userHook] } }));
   const skillFiles = packedFiles.filter((file) => file.path.startsWith('skills/'));
   assert.ok(skillFiles.length > 0, 'the package must contain standard skills');
   const expected = new Map();
@@ -133,6 +137,11 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   };
 
   const created = await setup();
+  const installedHooks = JSON.parse(await readFile(hookPath, 'utf8')).hooks;
+  assert.deepEqual(installedHooks.Stop[0], userHook);
+  for (const event of ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop']) {
+    assert.ok(installedHooks[event].some(group => group.hooks.some(hook => hook.command.includes(' codex-hook --database '))), `Installed hook missing: ${event}`);
+  }
   await verifyFiles(created, new Map([...expected.keys()].map((file) => [file, 'created'])));
   const beforeRepair = new Map();
   const repairActions = new Map();
@@ -166,6 +175,7 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     beforeRepeat.set(file, { ino: snapshot.ino, mtimeNs: snapshot.mtimeNs });
   }
   await verifyFiles(await setup(), new Map([...expected.keys()].map((file) => [file, 'unchanged'])));
+  assert.deepEqual(JSON.parse(await readFile(hookPath, 'utf8')).hooks, installedHooks);
   for (const [file, before] of beforeRepeat) {
     const after = await stat(file, { bigint: true });
     assert.deepEqual({ ino: after.ino, mtimeNs: after.mtimeNs }, before, file);
@@ -206,6 +216,9 @@ try {
   const packageFiles = new Set(JSON.parse(packed.stdout)[0].files.map((file) => file.path));
   for (const file of ['migrations/003_interaction_memory.sql', 'dist/memory/interaction-capture.js', 'dist/memory/interaction-recall.js', 'docs/interaction-memory.md']) {
     assert.ok(packageFiles.has(file), `interaction memory package artifact missing: ${file}`);
+  }
+  for (const file of ['migrations/004_memory_assurance.sql', 'dist/assurance/service.js', 'dist/commands/codex-hook.js', 'docs/memory-assurance.md']) {
+    assert.ok(packageFiles.has(file), `Memory assurance package artifact missing: ${file}`);
   }
   const tarball = packedFilename(packed.stdout, packDirectory);
   const install = await run('npm', [

@@ -13,7 +13,7 @@ test('capability catalog binding hashes the normalized descriptor set without de
     { kind: 'skill', name: 'memory-reasoning', description: 'Verify remembered claims' },
   ];
   const reordered = [...first].reverse();
-  assert.equal(capabilityCatalogDigest(first), 'dcadb89b1e8f1f31f0c6fb76bf6e49e2c95f21f0d32e5ba6418ad784a30958a9');
+  assert.equal(capabilityCatalogDigest(first), 'c21bf6079986621ead7ac47285dab746d894299146c032897152dbb25fb97ddb');
   assert.equal(capabilityCatalogDigest(first), capabilityCatalogDigest(reordered));
   assert.equal(capabilityCatalogDigest(first), capabilityCatalogDigest([...first, first[0], first[1]]));
   assert.notEqual(capabilityCatalogDigest(undefined), capabilityCatalogDigest([]));

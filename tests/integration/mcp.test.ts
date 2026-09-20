@@ -64,6 +64,11 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'memory_checkpoint',
       'memory_recall',
       'task_answer',
+      'task_execution_evidence',
+      'task_inspect',
+      'task_memory_refresh',
+      'task_memory_review',
+      'task_memory_status',
       'task_prepare',
     ]);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
@@ -777,8 +782,8 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     const boundaryContent = boundary.structuredContent as { run: { runId: string }; capabilities: { availability: string; diagnostics: unknown } };
     assert.notEqual(exactBoundaryContent.run.runId, content.run.runId);
     assert.notEqual(boundaryContent.run.runId, exactBoundaryContent.run.runId);
-    assert.equal(boundaryContent.capabilities.availability, 'unknown');
-    assert.deepEqual(boundaryContent.capabilities.diagnostics, { received: 201, accepted: 200, truncated: 0, dropped: 1 });
+    assert.equal(boundaryContent.capabilities.availability, 'known-nonempty');
+    assert.deepEqual(boundaryContent.capabilities.diagnostics, { received: 201, accepted: 201, truncated: 0, dropped: 0 });
 
     const finalExactDescription = MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS
       - (7 * MAX_RAW_CAPABILITY_DESCRIPTION_CHARS)
@@ -798,9 +803,9 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       },
     });
     const budgetContent = budget.structuredContent as { capabilities: { availability: string; diagnostics: unknown; warnings: Array<{ code: string }> } };
-    assert.equal(budgetContent.capabilities.availability, 'unknown');
+    assert.equal(budgetContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(budgetContent.capabilities.diagnostics, { received: 8, accepted: 8, truncated: 8, dropped: 0 });
-    assert.ok(budgetContent.capabilities.warnings.some((warning) => warning.code === 'CAPABILITY_CATALOG_BUDGET_EXCEEDED'));
+    assert.ok(budgetContent.capabilities.warnings.some((warning) => warning.code === 'CAPABILITY_CATALOG_COMPACTED'));
 
     const incomplete = await client.callTool({
       name: 'task_prepare',

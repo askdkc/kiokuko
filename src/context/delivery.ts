@@ -1,3 +1,4 @@
+import { bindAssuranceDelivery } from '../assurance/service.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
@@ -860,7 +861,9 @@ export function recordContextDeliveryInTransaction(
   const validated = validateContextDeliveryInput(input);
   if (options.assertBeforePersist !== undefined && typeof options.assertBeforePersist !== 'function') validation();
   try {
-    return writeContextDelivery(database, validated, options);
+    const delivery = writeContextDelivery(database, validated, options);
+    bindAssuranceDelivery(database, delivery);
+    return delivery;
   } catch (error) {
     normalizeDatabaseError(error, DELIVERY_UNIQUENESS_FAILURES);
   }
@@ -874,7 +877,7 @@ export function recordContextDelivery(
   const validated = validateContextDeliveryInput(input);
   if (options.assertBeforePersist !== undefined && typeof options.assertBeforePersist !== 'function') validation();
   try {
-    return withImmediateTransaction(database, () => writeContextDelivery(database, validated, options));
+    return withImmediateTransaction(database, () => { const delivery = writeContextDelivery(database, validated, options); bindAssuranceDelivery(database, delivery); return delivery; });
   } catch (error) {
     normalizeDatabaseError(error, DELIVERY_UNIQUENESS_FAILURES);
   }

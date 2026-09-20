@@ -341,9 +341,9 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     databasePath: temporary.databasePath,
   });
   assert.equal(first.standardSkills, true);
-  assert.equal(first.files.length, 7 + standardSkillPaths('ignored').length * 4);
+  assert.equal(first.files.length, 8 + standardSkillPaths('ignored').length * 4);
   assert.equal(first.files.filter((file) => file.action === 'updated').length, 6);
-  assert.equal(first.files.filter((file) => file.action === 'created').length, 1 + standardSkillPaths('ignored').length * 4);
+  assert.equal(first.files.filter((file) => file.action === 'created').length, 2 + standardSkillPaths('ignored').length * 4);
   assert.equal(first.files.filter((file) => file.purpose === 'standard-skill').length, standardSkillPaths('ignored').length * 4);
 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
@@ -1886,6 +1886,10 @@ test('setup refuses to remove previously installed retired hooks, plugins, or Sk
     await writeFile(file, contents[index]!);
   }
   const result = await setupGlobalClients({ clients: ['codex', 'claude', 'opencode'], platform: 'linux', env: temporary.env, databasePath: temporary.databasePath });
-  assert.ok(result.files.every(file => !retired.includes(file.path)));
-  for (const [index, file] of retired.entries()) assert.equal(await readFile(file, 'utf8'), contents[index]);
+  assert.ok(result.files.every(file => !retired.slice(1).includes(file.path)));
+  for (const [index, file] of retired.entries()) {
+    const actual = await readFile(file, 'utf8');
+    if (index === 0) assert.deepEqual(JSON.parse(actual).hooks.Stop[0], JSON.parse(contents[0]!).hooks.Stop[0]);
+    else assert.equal(actual, contents[index]);
+  }
 });

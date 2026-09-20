@@ -1,3 +1,4 @@
+import { assuranceDoctor } from '../assurance/doctor.js';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -60,6 +61,7 @@ export interface DoctorResult {
     hybridSearch: DoctorCheck;
     embeddings: DoctorCheck;
     codexMcp: DoctorCheck;
+    memoryAssurance: DoctorCheck;
   };
 }
 
@@ -196,6 +198,7 @@ interface DoctorCollectionOptions {
   embeddingEnvironment?: NodeJS.ProcessEnv;
   embeddingBackend?: VectorSearchBackend;
   codexMcp: DoctorCheck;
+  hooksPath?: string;
 }
 
 async function collectDoctorResult(
@@ -377,6 +380,7 @@ async function collectDoctorResult(
     hybridSearch: hybridCheck,
     embeddings: embeddings.check,
     codexMcp: options.codexMcp,
+    memoryAssurance: assuranceDoctor(database, options.hooksPath),
   };
   const ok = Object.values(checks).every((check) => check.ok);
   return {
@@ -438,6 +442,7 @@ export async function runDoctor(
         ? {}
         : { embeddingBackend: opened.backend ?? options.embeddingBackend }),
       codexMcp,
+      ...(options.databasePath === undefined ? { hooksPath: path.join(path.dirname(getCodexConfigPath()), 'hooks.json') } : {}),
     });
   } catch (error) {
     operationFailed = true;

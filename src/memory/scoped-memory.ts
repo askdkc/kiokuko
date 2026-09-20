@@ -1,3 +1,4 @@
+import { assertAssuranceCompletion } from '../assurance/service.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -573,6 +574,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
     if (run !== undefined && transactionRun !== undefined && transactionRun.workspace !== run.workspace) {
       throw new KiokukoError('NOT_FOUND', 'Checkpoint run was not found');
     }
+    if (transactionRun) assertAssuranceCompletion(database, transactionRun.runId, outcome ?? "");
     ensureGlobalWorkspace(database, now);
     const store = transactionRun === undefined ? undefined : new LedgerStore(database, { workspace: transactionRun.workspace });
     const evidenceEvents = [

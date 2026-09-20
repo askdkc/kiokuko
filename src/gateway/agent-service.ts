@@ -1,3 +1,4 @@
+import { assertAssuranceCompletion } from '../assurance/service.js';
 import { probeProfileMemory } from '../akinator/memory-probe.js';
 import { saveMemoryResolution, syncProfileDocument } from '../akinator/profile-memory-store.js';
 import type { ProfileMemoryOptions } from '../akinator/memory-probe-types.js';
@@ -603,6 +604,7 @@ export class AgentGatewayService {
       () => {
         const run = this.requireRun(envelope.runId);
         if (run.status !== 'active') conflict('Only active runs can be closed');
+        assertAssuranceCompletion(this.database, run.runId, request.status);
         const store = this.ledgerStore(run.workspace);
         const ack: AppendAck = store.appendBatchInTransaction(run.runId, {
           events: [

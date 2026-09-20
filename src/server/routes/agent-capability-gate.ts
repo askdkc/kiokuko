@@ -1,3 +1,4 @@
+import { assuranceState, enrollAssurance } from '../../assurance/service.js';
 import type { GatewayIntakeResponse } from '../../gateway/agent-service.js';
 import type { ContextBrokerContextItem, ContextBrokerResult } from '../../context/broker.js';
 import { contextFeedbackSignals } from '../../context/feedback.js';
@@ -233,6 +234,7 @@ export async function attachCapabilityGatedContext(
 ): Promise<CapabilityGatedIntakeResponse> {
   const run = context.service.readRun({ runId: value.runId });
   assertNonTerminalRun(run);
+  if (!assuranceState(context.database, value.runId)) enrollAssurance(context.database, value.runId, new Date().toISOString());
   const task = run.title ?? '';
   const gated = await context.broker.queryGated({ workspace: 'run-bound', runId: value.runId }, (candidate) => {
     assertBrokerContextRun(candidate, value.runId);
@@ -270,6 +272,7 @@ export async function attachCapabilityGatedContext(
   if (finalRun.status !== expectedRunStatus) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Agent run status and context broker state disagree');
   }
+  if (gated.value.memoryPolicy.contextWithheld) context.database.prepare("UPDATE task_assurance SET retrieval_status='capability_withheld' WHERE run_id=?").run(value.runId);
   return {
     ...current,
     runStatus: finalRun.status,

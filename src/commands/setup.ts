@@ -1,3 +1,4 @@
+import { renderCodexAssuranceHooks } from '../setup/codex-hooks.js';
 import { mkdir, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { stdin, stdout } from 'node:process';
@@ -86,7 +87,7 @@ interface PlannedFile {
   original: RegularFileSnapshot | undefined;
   mustRemainAbsent?: readonly string[];
   action: SetupAction;
-  purpose: 'mcp-config' | 'instructions' | 'standard-skill';
+  purpose: 'mcp-config' | 'instructions' | 'standard-skill' | 'hooks';
   client: SetupClient;
   report: boolean;
 }
@@ -773,6 +774,7 @@ export async function setupGlobalClients(
       ),
     );
     files.push(mcpFile);
+    files.push(await planFile(planning, path.join(path.dirname(getCodexConfigPath(pathEnvironment)), 'hooks.json'), 'codex', 'hooks', existing => { const content = renderCodexAssuranceHooks(existing ?? '', command, databasePath); return { content, action: content === existing ? 'unchanged' : existing === undefined ? 'created' : 'updated' }; }));
     files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
   }
   if (clients.includes('opencode')) {

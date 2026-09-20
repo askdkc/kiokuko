@@ -13,11 +13,13 @@ import {
   type ProjectFingerprint,
 } from '../repository/project-fingerprint.js';
 import { satisfiesFrameworkVersion } from '../repository/framework-version.js';
-import { isRetrievableEntry, type HybridSearchRuntime } from './hybrid-retrieval.js';
+import { isRetrievableEntry, retrievableWorkspaceEntryCount, type HybridSearchRuntime } from './hybrid-retrieval.js';
 import { isExternalSkillReference } from '../skills/store.js';
 import { compareCanonicalStrings } from '../serialization/validate.js';
 
 export type FederatedOrigin = 'project' | 'ecosystem' | 'global';
+export interface RetrievalDiagnostics { status: 'delivered' | 'no_entries' | 'no_match' | 'out_of_scope'; searchedEntryCount: number; excludedCount: number; }
+
 export type FederatedScope = 'auto' | FederatedOrigin;
 const FEDERATED_SCOPES = ['auto', 'project', 'ecosystem', 'global'] as const;
 
@@ -317,7 +319,8 @@ function ecosystemEntries(
   readOnly: boolean,
   suppliedFingerprint?: ProjectFingerprint,
   runtime: HybridSearchRuntime = {},
-): { entries: FederatedEntry[]; fingerprint: ProjectFingerprint } {
+): { entries: FederatedEntry[]; fingerprint: ProjectFingerprint; excludedCount: number } {
+  let excludedCount = 0;
   if (suppliedFingerprint !== undefined && suppliedFingerprint.repositoryId !== project.repositoryId) {
     throw new KiokukoError('VALIDATION_ERROR', 'Project fingerprint does not match the requested repository');
   }
@@ -354,9 +357,9 @@ function ecosystemEntries(
     const entry = readEntry(database, { workspace: row.workspace, entryId: row.id });
     if (!isFederatedEcosystemCandidate(database, entry, {
       requireApplicability: policy.ecosystem.requireApplicability,
-    })) continue;
+    })) { excludedCount += 1; continue; }
     const compatibility = applicabilityCompatibility(entry, fingerprint);
-    if (compatibility.incompatible) continue;
+    if (compatibility.incompatible) { excludedCount += 1; continue; }
     const lexical = lexicalScore(entry, query);
     const score = Number(row.signal_score) + lexical.score;
     const reasons = ['exact_signal_match', ...compatibility.reasons, ...lexical.reasons];
@@ -376,7 +379,7 @@ function ecosystemEntries(
         requireApplicability: policy.ecosystem.requireApplicability,
       })) continue;
       const compatibility = applicabilityCompatibility(entry, fingerprint);
-      if (compatibility.incompatible) continue;
+      if (compatibility.incompatible) { excludedCount += 1; continue; }
       const lexical = lexicalScore(entry, query);
       workspaceCounts.set(workspace, (workspaceCounts.get(workspace) ?? 0) + 1);
       candidateIds.add(entry.id);
@@ -396,7 +399,7 @@ function ecosystemEntries(
     .sort((left, right) => right[1] - left[1] || compareCanonicalStrings(left[0], right[0]))
     .slice(0, policy.ecosystem.maxWorkspaces)
     .map(([workspace]) => workspace));
-  return { entries: candidates.filter((item) => allowedWorkspaces.has(item.sourceWorkspace!)).sort((left, right) => right.score - left.score || compareCanonicalStrings(left.entry.id, right.entry.id)).slice(0, policy.ecosystem.limit), fingerprint };
+  return { entries: candidates.filter((item) => allowedWorkspaces.has(item.sourceWorkspace!)).sort((left, right) => right.score - left.score || compareCanonicalStrings(left.entry.id, right.entry.id)).slice(0, policy.ecosystem.limit), fingerprint, excludedCount };
 }
 
 interface RankedEntry {
@@ -579,7 +582,7 @@ export async function retrieveFederatedMemory(
 
 export async function federatedEntries(
   database: SqliteDatabase,
-  input: { project: ResolvedProjectWorkspace; query: string; limit: number; fingerprint?: ProjectFingerprint },
+  input: { project: ResolvedProjectWorkspace; query: string; limit: number; fingerprint?: ProjectFingerprint; observe?: (diagnostics: RetrievalDiagnostics) => void },
   runtime: HybridSearchRuntime = {},
 ): Promise<FederatedEntry[]> {
   const ranked = (workspace: string): RankedRecallHit[] => rankedEntryHits(database, { workspace, query: input.query, limit: Math.min(input.limit, 100) }, runtime).hits;
@@ -589,7 +592,8 @@ export async function federatedEntries(
     score: hit.retrievalScore,
     selectionReasons: ['project_origin', ...hit.reasons],
   }));
-  const ecosystem = ecosystemEntries(database, input.project, input.query, { ...DEFAULT_FEDERATED_POLICY, project: { enabled: true, limit: input.limit }, ecosystem: { ...DEFAULT_FEDERATED_POLICY.ecosystem, limit: input.limit }, global: { enabled: false, limit: 0 } }, false, input.fingerprint, runtime).entries;
+  const ecosystemResult = ecosystemEntries(database, input.project, input.query, { ...DEFAULT_FEDERATED_POLICY, project: { enabled: true, limit: input.limit }, ecosystem: { ...DEFAULT_FEDERATED_POLICY.ecosystem, limit: input.limit }, global: { enabled: false, limit: 0 } }, false, input.fingerprint, runtime);
+  const ecosystem = ecosystemResult.entries;
   const global = globalLaneCandidates(database, input.query, Math.min(input.limit, 100), runtime).candidates.map(({ entry, hit }) => ({
     entry,
     origin: 'global' as const,
@@ -598,7 +602,11 @@ export async function federatedEntries(
   }));
   const byRelevance = (left: FederatedEntry, right: FederatedEntry): number => right.score - left.score || compareCanonicalStrings(left.entry.id, right.entry.id);
   const preferences = global.filter((item) => isGeneralCommunicationPreference(item.entry));
-  return [...preferences, ...current.sort(byRelevance), ...ecosystem.sort(byRelevance),
+  const selected = [...preferences, ...current.sort(byRelevance), ...ecosystem.sort(byRelevance),
     ...global.filter((item) => !isGeneralCommunicationPreference(item.entry)).sort(byRelevance)]
     .filter((item) => matchesInteractionSubject(item.entry, input.query)).slice(0, input.limit);
+  const searchedEntryCount = retrievableWorkspaceEntryCount(database, input.project.workspace) + retrievableWorkspaceEntryCount(database, GLOBAL_WORKSPACE);
+  const excludedCount = ecosystemResult.excludedCount + current.length + global.length + ecosystem.length - selected.length;
+  input.observe?.({ status: selected.length ? 'delivered' : excludedCount ? 'out_of_scope' : searchedEntryCount ? 'no_match' : 'no_entries', searchedEntryCount, excludedCount });
+  return selected;
 }

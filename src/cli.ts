@@ -1,3 +1,4 @@
+import { registerCodexHookCommand } from './commands/codex-hook.js';
 import { registerAkinatorMemoryCommands } from './commands/akinator-memory.js';
 import { Command, CommanderError } from 'commander';
 import { constants as fsConstants } from 'node:fs';
@@ -1026,6 +1027,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
   registerServerCommands(cli, dependencies.server);
   registerAgentCommand(cli, dependencies.agent);
+  registerCodexHookCommand(cli);
   registerLedgerCommands(cli, { withDatabase });
   registerAkinatorMemoryCommands(cli);
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });

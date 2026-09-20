@@ -5,7 +5,7 @@ import type { PreparedSemanticQuery } from '../embedding/types.js';
 import { KiokukoError } from '../errors.js';
 import type { RunStatus } from '../ledger/types.js';
 import { readEntry, type EntryRecord } from '../memory/entries.js';
-import { federatedEntries, type FederatedOrigin } from '../memory/federated-retrieval.js';
+import { federatedEntries, type RetrievalDiagnostics, type FederatedOrigin } from '../memory/federated-retrieval.js';
 import type { HybridSearchRuntime } from '../memory/hybrid-retrieval.js';
 import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
 import { decodeStoredStructuredScope, readEntryRevision } from '../memory/revisions.js';
@@ -76,6 +76,7 @@ export interface ScopedContextItem {
 }
 
 export interface ScopedContextResult {
+  retrieval?: RetrievalDiagnostics;
   project: ResolvedProjectWorkspace | null;
   taskProfileHash: string;
   queryHash: string;
@@ -705,11 +706,13 @@ async function prepareScopedContext(
       projectState,
     };
   }
+  let retrieval: RetrievalDiagnostics = { status: "no_entries", searchedEntryCount: 0, excludedCount: 0 };
   const candidates = new Map<string, ScopedContextItem>();
   const federated = project === undefined ? [] : await federatedEntries(database, {
     project,
     ...(fingerprint === undefined ? {} : { fingerprint }),
     query: queryText,
+    observe: value => { retrieval = value; },
     limit: 200,
   }, runtime);
   for (const hit of federated) {
@@ -736,6 +739,7 @@ async function prepareScopedContext(
       queryHash,
       policyVersion: SCOPED_CONTEXT_POLICY_VERSION,
       items: fitted.items,
+      retrieval,
       deliveryId: null,
       truncated: fitted.truncated,
       untrusted: true,
@@ -798,6 +802,7 @@ function persistPreparedScopedContext(
   database: SqliteDatabase,
   prepared: PreparedScopedContext,
   assertBeforePersist?: () => void,
+  afterPersist?: (result: ScopedContextResult) => void,
 ): ScopedContextResult {
   if (prepared.pendingDelivery === null) {
     return withImmediateTransaction(database, () => {
@@ -806,6 +811,7 @@ function persistPreparedScopedContext(
         assertBeforePersist();
         assertPreparedScopedState(database, prepared);
       }
+      afterPersist?.(prepared.result);
       return prepared.result;
     });
   }
@@ -821,12 +827,14 @@ function persistPreparedScopedContext(
       database,
       { ...request, deliveryId: scopedDeliveryId(request) },
     );
-    return {
+    const result = {
       ...prepared.result,
       items: storedScopedItems(database, delivery),
       deliveryId: delivery.deliveryId,
       truncated: delivery.truncated,
     };
+    afterPersist?.(result);
+    return result;
   });
 }
 
@@ -843,6 +851,7 @@ export async function queryScopedContextGated<T>(
   raw: ScopedContextQuery,
   decide: (candidate: ScopedContextResult) => ScopedContextGateDecision<T>,
   runtime: HybridSearchRuntime = {},
+  onResolved?: (context: ScopedContextResult | null, value: T) => void,
 ): Promise<ScopedContextGatedResult<T>> {
   const prepared = await prepareScopedContext(database, raw, runtime);
   const decision = normalizedScopedGateDecision<T>(decide(prepared.result));
@@ -853,10 +862,11 @@ export async function queryScopedContextGated<T>(
         decision.assertBeforePersist();
         assertPreparedScopedState(database, prepared);
       }
+      onResolved?.(null, decision.value);
     });
   }
   return {
-    context: decision.persist ? persistPreparedScopedContext(database, prepared, decision.assertBeforePersist) : null,
+    context: decision.persist ? persistPreparedScopedContext(database, prepared, decision.assertBeforePersist, context => onResolved?.(context, decision.value)) : null,
     value: decision.value,
     selectionStateHash: prepared.selectionStateHash,
   };

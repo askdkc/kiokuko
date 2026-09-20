@@ -129,67 +129,37 @@ test('keeps a valid recommendation when malformed catalog items are adjacent', (
     && item.source === 'akinator_policy'));
 });
 
-test('fails closed when catalog items are invalid or omitted at processing boundaries', () => {
-  const twoHundred = Array.from({ length: MAX_CAPABILITY_ITEMS }, (_, index) => ({ kind: 'mcp_tool', name: `tool-${index}` }));
-  const below = normalizeCapabilityCatalog(twoHundred.slice(0, 199));
-  const exact = normalizeCapabilityCatalog(twoHundred);
-  const over = normalizeCapabilityCatalog([...twoHundred, { kind: 'mcp_tool', name: 'tool-200' }]);
-  const invalid = normalizeCapabilityCatalog([{ kind: 'invalid', name: 'invalid' }]);
-  assert.deepEqual(below.diagnostics, { received: 199, accepted: 199, truncated: 0, dropped: 0 });
-  assert.deepEqual(exact.diagnostics, { received: 200, accepted: 200, truncated: 0, dropped: 0 });
-  assert.deepEqual(over.diagnostics, { received: 201, accepted: 200, truncated: 0, dropped: 1 });
-  assert.equal(over.availability, 'unknown');
-  assert.equal(invalid.availability, 'unknown');
-  assert.deepEqual(invalid.diagnostics, { received: 1, accepted: 0, truncated: 0, dropped: 1 });
-});
-
-function aggregateCatalog(lastDescriptionLength: number, withUnreadSuffix = false): Array<unknown> {
-  const catalog: Array<unknown> = [
-    ...Array.from({ length: 7 }, () => ({ kind: 'mcp_tool', name: 'x', description: 'a'.repeat(MAX_RAW_CAPABILITY_DESCRIPTION_CHARS) })),
-    { kind: 'skill', name: 'y', description: 'b'.repeat(lastDescriptionLength) },
-  ];
-  if (withUnreadSuffix) {
-    Object.defineProperty(catalog, 8, {
-      enumerable: true,
-      get() { throw new Error('aggregate budget suffix was scanned'); },
-    });
-    catalog.length = 9;
+test('retains 201 and larger valid catalogs while malformed items remain unknown', () => {
+  for (const length of [201, 1000]) {
+    const catalog = Array.from({ length }, (_, i) => ({ kind: 'mcp_tool', name: `tool-${i}`, description: 'x'.repeat(4000) }));
+    catalog.push({ kind: 'skill', name: 'memory-reasoning', description: 'workflow' });
+    const result = normalizeCapabilityCatalog(catalog);
+    assert.equal(result.availability, 'known-nonempty');
+    assert.equal(result.diagnostics.accepted, length + 1);
+    assert.equal(result.diagnostics.dropped, 0);
+    assert.equal(memoryReasoningCapabilityAvailability(catalog), 'available');
   }
-  return catalog;
-}
-
-test('enforces aggregate capability budget at minus-one, exact, and plus-one boundaries', () => {
-  const finalExactDescription = MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS
-    - (7 * MAX_RAW_CAPABILITY_DESCRIPTION_CHARS)
-    - 8;
-  const below = normalizeCapabilityCatalog(aggregateCatalog(finalExactDescription - 1));
-  const exact = normalizeCapabilityCatalog(aggregateCatalog(finalExactDescription));
-  const over = normalizeCapabilityCatalog(aggregateCatalog(finalExactDescription + 1, true));
-  assert.equal(below.budgetExceeded, false);
-  assert.equal(exact.budgetExceeded, false);
-  assert.deepEqual(exact.diagnostics, { received: 8, accepted: 8, truncated: 8, dropped: 0 });
-  assert.equal(over.availability, 'unknown');
-  assert.equal(over.budgetExceeded, true);
-  assert.deepEqual(over.skills, [{ kind: 'skill', name: 'y' }]);
-  assert.deepEqual(over.diagnostics, { received: 9, accepted: 8, truncated: 8, dropped: 1 });
-  assert.deepEqual(normalizeCapabilityCatalog(aggregateCatalog(finalExactDescription + 1)).diagnostics, {
-    received: 8, accepted: 8, truncated: 8, dropped: 0,
-  });
+  assert.equal(normalizeCapabilityCatalog([{ kind: 'invalid', name: 'bad' }]).availability, 'unknown');
 });
-
-test('reports a fixed budget warning without echoing omitted catalog content', () => {
-  const finalExactDescription = MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS
-    - (7 * MAX_RAW_CAPABILITY_DESCRIPTION_CHARS)
-    - 8;
-  const result = resolveCapabilities({
-    task: 'Implement repository tests for the beacon',
-    profile: buildProfile,
-    recommendedTags: ['skill:tdd'],
-    capabilities: aggregateCatalog(finalExactDescription + 1),
-  });
-  assert.ok(result.warnings.some((warning) => warning.code === 'CAPABILITY_CATALOG_BUDGET_EXCEEDED'
-    && warning.message === 'Some capability catalog data was omitted because the catalog exceeded its processing budget.'));
-  assert.equal(JSON.stringify(result).includes('b'.repeat(2_001)), false);
+test('reports incomplete identities explicitly when their aggregate budget is exhausted', () => {
+  const catalog = Array.from({ length: MAX_CAPABILITY_ITEMS }, (_, i) => ({ kind: 'mcp_tool', name: `${i}`.padEnd(300, 'x') }));
+  const result = normalizeCapabilityCatalog(catalog);
+  assert.equal(result.availability, 'unknown');
+  assert.equal(result.budgetExceeded, true);
+  assert.ok(result.diagnostics.dropped > 0);
+});
+test('description exhaustion never drops subsequent identities or invokes catalog accessors', () => {
+  const catalog: unknown[] = Array.from({ length: 20 }, (_, i) => ({ kind: 'mcp_tool', name: `tool-${i}`, description: 'x'.repeat(MAX_RAW_CAPABILITY_DESCRIPTION_CHARS) }));
+  catalog.push({ kind: 'skill', name: 'memory-reasoning' });
+  const result = normalizeCapabilityCatalog(catalog);
+  assert.equal(result.availability, 'known-nonempty');
+  assert.equal(result.diagnostics.accepted, 21);
+  assert.equal(result.diagnostics.dropped, 0);
+  assert.ok(result.diagnostics.truncated > 0);
+  Object.defineProperty(catalog, 21, { get() { throw new Error('must not run getter'); } });
+  const invalid = normalizeCapabilityCatalog(catalog);
+  assert.equal(invalid.availability, 'unknown');
+  assert.equal(invalid.diagnostics.dropped, 1);
 });
 
 test('reports Akinator skill recommendations as unknown without a client catalog', () => {
