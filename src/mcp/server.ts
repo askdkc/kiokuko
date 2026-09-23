@@ -139,6 +139,10 @@ type McpToolErrorResult = {
 };
 
 function publicToolErrorResult(error: unknown): McpToolErrorResult {
+  const reinforcement = reinforcementConflictToolError(error);
+  if (reinforcement !== undefined) return reinforcement;
+  const specific = assuranceConflictToolError(error);
+  if (specific !== undefined) return specific;
   const publicError = publicToolError(error);
   return {
     isError: true,
@@ -150,6 +154,20 @@ function publicToolErrorResult(error: unknown): McpToolErrorResult {
         ? { retryAfterSeconds: boundedRetryAfterSeconds(publicError.details.retryAfterSeconds) }
         : {}),
     },
+  };
+}
+
+/** Return fixed recovery advice for a rejected observation, without echoing entry content. */
+function reinforcementConflictToolError(error: unknown): McpToolErrorResult | undefined {
+  if (!(error instanceof KiokukoError) || error.code !== 'CONFLICT') return undefined;
+  const condition = safeOwnRecord(error.details)?.condition;
+  if (condition !== 'reinforcement_revision_changed' && condition !== 'invalid_reinforcement_target') return undefined;
+  return {
+    isError: true,
+    content: [{ type: 'text', text: condition === 'reinforcement_revision_changed'
+      ? 'No observation was saved: the lesson revision changed. Retrieve the current lesson, review its content, and use its current revision with a new operationId.'
+      : 'No observation was saved: the target is superseded, managed, or not a captured project lesson. Retrieve an eligible current project lesson; use replaces for a correction.' }],
+    structuredContent: { code: 'CONFLICT', reason: condition, retryable: false, nextAction: 'retrieve_current_project_lesson', storedObservationCount: 0 },
   };
 }
 
@@ -166,6 +184,67 @@ function safeOwnRecord(value: unknown): Record<string, unknown> | undefined {
     result[key] = descriptor.value;
   }
   return result;
+}
+
+/** Expose only fixed assurance conditions and bounded entry IDs, never a raw exception. */
+function assuranceConflictToolError(error: unknown): McpToolErrorResult | undefined {
+  if (!(error instanceof KiokukoError) || error.code !== 'CONFLICT') return undefined;
+  const fixed = {
+    'Assurance request identity was reused with different content': {
+      reason: 'request_id_reused',
+      message: 'This requestId was already used with different content. Replay the original request exactly, or use a new requestId for a new operation.',
+      nextAction: 'use_new_request_id_for_new_operation',
+    },
+    'Task assurance revision changed': {
+      reason: 'assurance_revision_changed',
+      message: 'The assurance revision changed. Read task_memory_status and submit a new requestId with its current revision.',
+      nextAction: 'read_task_memory_status',
+    },
+  } as const;
+  const known = fixed[error.message as keyof typeof fixed];
+  if (known !== undefined) return {
+    isError: true,
+    content: [{ type: 'text', text: known.message }],
+    structuredContent: { code: 'CONFLICT', reason: known.reason, nextAction: known.nextAction, retryable: false },
+  };
+  if (error.message !== 'Memory review or regression verification is incomplete') return undefined;
+  const details = safeOwnRecord(error.details);
+  const report = safeOwnRecord(details?.assurance);
+  if (report === undefined || report.complete !== false
+    || typeof report.revision !== 'number' || !Number.isSafeInteger(report.revision) || report.revision < 0) return undefined;
+  const entryIds = (value: unknown): string[] | undefined => {
+    if (!Array.isArray(value) || isProxy(value) || value.length > 200) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (Reflect.ownKeys(value).length !== value.length + 1) return undefined;
+    const ids: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !('value' in descriptor)
+        || typeof descriptor.value !== 'string'
+        || !/^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|memory_retrieval)$/u.test(descriptor.value)) return undefined;
+      ids.push(descriptor.value);
+    }
+    return ids;
+  };
+  const pending = entryIds(report.pending);
+  const stale = entryIds(report.stale);
+  const missingVerification = entryIds(report.missingVerification);
+  if (pending === undefined || stale === undefined || missingVerification === undefined
+    || pending.length + stale.length + missingVerification.length === 0) return undefined;
+  const requiredActions = [
+    ...(pending.length ? ['review_pending_memories'] : []),
+    ...(stale.length ? ['resolve_stale_memory_delivery'] : []),
+    ...(missingVerification.length ? ['record_passing_execution_evidence_and_review'] : []),
+  ];
+  return {
+    isError: true,
+    content: [{ type: 'text', text: `Checkpoint was not saved: ${pending.length} memory review(s) pending, ${stale.length} stale, ${missingVerification.length} lacking passing verification. Read task_memory_status and resolve these conditions before retrying.` }],
+    structuredContent: {
+      code: 'CONFLICT', reason: 'assurance_incomplete', retryable: false,
+      assurance: { revision: report.revision, pending, stale, missingVerification },
+      nextAction: 'read_task_memory_status', requiredActions,
+    },
+  };
 }
 
 function checkpointEligibilityToolError(error: unknown): McpToolErrorResult | undefined {

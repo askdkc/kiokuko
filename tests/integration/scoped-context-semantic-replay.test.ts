@@ -105,7 +105,7 @@ test('binds scoped replay to semantic query and projection state, then rejects a
     };
     const prepared = runtime(active);
     const first = await queryScopedContext(database, query, prepared);
-    assert.equal(first.policyVersion, 'context-ranking-v7');
+    assert.equal(first.policyVersion, 'context-ranking-v8');
     assert.equal(first.items[0]?.entryId, entry.id);
     assert.equal(first.items[0]?.selectionReasons.includes('semantic_match'), true);
     const replay = await queryScopedContext(database, query, prepared);

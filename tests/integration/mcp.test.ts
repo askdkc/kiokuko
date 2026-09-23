@@ -2,7 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, realpath } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -627,6 +627,86 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
   }
 });
 
+test('checkpoint reports pending reviews and evidence-only success without claiming a memory write', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-assurance-repo-'));
+  execFileSync('git', ['init', '-q', root]);
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-checkpoint-assurance-data-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); await rm(data, { recursive: true, force: true }); });
+  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'kiokuko-checkpoint-assurance-test', version: '1.0.0' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(b);
+  await client.connect(a);
+  try {
+    const seeded = await client.callTool({ name: 'memory_checkpoint', arguments: {
+      memories: [{ kind: 'lesson', title: 'Migration asset review',
+        body: 'Review migration asset lists when changing migrations.' }],
+    } });
+    assert.notEqual(seeded.isError, true);
+    const entryId = (seeded.structuredContent as { entries: Array<{ id: string }>; storedMemoryCount: number }).entries[0]!.id;
+    assert.equal((seeded.structuredContent as { storedMemoryCount: number }).storedMemoryCount, 1);
+    const prepared = await client.callTool({ name: 'task_prepare', arguments: {
+      soulRead: true, requestId: 'checkpoint-assurance-request', task: 'Debug migration asset review',
+      profileHints: { taskType: 'debug', target: 'migration asset review', expected: 'asset list test passes' },
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
+    } });
+    assert.notEqual(prepared.isError, true);
+    const state = prepared.structuredContent as {
+      run: { runId: string }; context: { deliveryId: string; items: Array<{ entryId: string; revision: number }> };
+      assurance: { revision: number; pending: string[] };
+    };
+    assert.ok(state.context.items.some((item) => item.entryId === entryId));
+    assert.deepEqual(state.assurance.pending, [entryId]);
+    const checkpoint = () => client.callTool({ name: 'memory_checkpoint', arguments: {
+      runId: state.run.runId, outcome: 'completed', evidence: { tests: [{ runner: 'node:test', outcome: 'passed' }] },
+    } });
+    const blocked = await checkpoint();
+    assert.equal(blocked.isError, true);
+    assert.deepEqual(blocked.structuredContent, {
+      code: 'CONFLICT', reason: 'assurance_incomplete', retryable: false,
+      assurance: { revision: state.assurance.revision, pending: [entryId], stale: [], missingVerification: [] },
+      nextAction: 'read_task_memory_status', requiredActions: ['review_pending_memories'],
+    });
+    const blockedText = (blocked as { content: Array<{ type: string; text?: string }> }).content[0];
+    assert.match(blockedText?.type === 'text' ? blockedText.text ?? '' : '', /Checkpoint was not saved/u);
+    const before = openConnection(databasePath);
+    try {
+      assert.equal(before.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(state.run.runId)?.status, 'active');
+      assert.equal(before.prepare('SELECT COUNT(*) n FROM entries').get<{ n: number }>()?.n, 1);
+      assert.equal(before.prepare('SELECT COUNT(*) n FROM ledger_evidence WHERE run_id = ?').get<{ n: number }>(state.run.runId)?.n, 0);
+    } finally { before.close(); }
+
+    const review = {
+      runId: state.run.runId, requestId: 'review-migration-asset', expectedRevision: state.assurance.revision,
+      cwd: root, deliveryId: state.context.deliveryId, entryId,
+      entryRevision: state.context.items.find((item) => item.entryId === entryId)!.revision,
+      decision: 'inapplicable', basis: 'This candidate does not apply to the isolated checkpoint test.',
+    };
+    const reviewed = await client.callTool({ name: 'task_memory_review', arguments: review });
+    assert.notEqual(reviewed.isError, true);
+    assert.deepEqual((await client.callTool({ name: 'task_memory_review', arguments: review })).structuredContent, reviewed.structuredContent);
+    const reused = await client.callTool({ name: 'task_memory_review', arguments: { ...review, basis: 'Changed request' } });
+    assert.deepEqual(reused.structuredContent, {
+      code: 'CONFLICT', reason: 'request_id_reused', nextAction: 'use_new_request_id_for_new_operation', retryable: false,
+    });
+    const staleRevision = await client.callTool({ name: 'task_memory_review', arguments: { ...review, requestId: 'review-stale', basis: 'New request', expectedRevision: state.assurance.revision } });
+    assert.deepEqual(staleRevision.structuredContent, {
+      code: 'CONFLICT', reason: 'assurance_revision_changed', nextAction: 'read_task_memory_status', retryable: false,
+    });
+    const saved = await checkpoint();
+    assert.notEqual(saved.isError, true);
+    const result = saved.structuredContent as { storedMemoryCount: number; entries: unknown[]; run: { status: string; evidenceCount: number } };
+    assert.equal(result.storedMemoryCount, 0);
+    assert.deepEqual(result.entries, []);
+    assert.equal(result.run.status, 'completed');
+    assert.equal(result.run.evidenceCount, 1);
+    const after = openConnection(databasePath);
+    try { assert.equal(after.prepare('SELECT COUNT(*) n FROM entries').get<{ n: number }>()?.n, 1); }
+    finally { after.close(); }
+  } finally { await client.close(); await server.close(); }
+});
+
 test('task_prepare degrades safely for oversized and malformed capability items', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-capability-repo-'));
   execFileSync('git', ['init', '-q', root]);
@@ -750,7 +830,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
     });
     assert.equal(availableContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(availableContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
-    assert.equal(availableContent.context.policyVersion, 'context-ranking-v7');
+    assert.equal(availableContent.context.policyVersion, 'context-ranking-v8');
 
     const exactBoundary = await client.callTool({
       name: 'task_prepare',
@@ -859,7 +939,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       });
       assert.equal(persisted.includes(sentinel), false);
       assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(content.run.runId)?.count, 0);
-      assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v7');
+      assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v8');
       const storedReasons = database.prepare(`
         SELECT selection_reason_json
           FROM context_delivery_entries
@@ -1278,6 +1358,29 @@ test('MCP checkpoint keeps unsupported eligibility details on the generic redact
     await client.close();
     if (server.isConnected()) await server.close();
   }
+});
+
+test('MCP checkpoint does not echo malformed assurance details', async () => {
+  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-assurance-redaction-'));
+  const sentinel = 'token=private-assurance-sentinel';
+  const server = createKiokukoMcpServer({
+    databasePath: path.join(data, 'kiokuko.sqlite3'),
+    openConnection: () => { throw new KiokukoError('CONFLICT', 'Memory review or regression verification is incomplete', {
+      assurance: { revision: 1, complete: false, pending: [sentinel], stale: [], missingVerification: [] },
+    }); },
+  });
+  const client = new Client({ name: 'kiokuko-assurance-redaction-test', version: '1.0.0' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(b);
+  await client.connect(a);
+  try {
+    const result = await client.callTool({ name: 'memory_checkpoint', arguments: {
+      memories: [{ kind: 'lesson', title: 'Redaction test', body: 'bounded' }],
+    } });
+    assert.equal(result.isError, true);
+    assert.equal(JSON.stringify(result).includes(sentinel), false);
+    assert.deepEqual(result.structuredContent, { code: 'CONFLICT', retryable: false });
+  } finally { await client.close(); await server.close(); await rm(data, { recursive: true, force: true }); }
 });
 
 test('stdio framing rejects an oversized envelope before parsing and accepts the next message', async () => {

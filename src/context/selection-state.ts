@@ -12,6 +12,7 @@ import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
 import { canonicalContentHash, compareCanonicalStrings } from '../serialization/validate.js';
 import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
 import { contextFeedbackSignals } from './feedback.js';
+import { lessonReinforcement } from '../memory/lesson-reinforcement.js';
 
 export const CONTEXT_SELECTION_STATE_MAX_ENTRIES = 10_000;
 const MAX_SELECTION_WORKSPACES = 2;
@@ -238,6 +239,7 @@ function selectionEntrySnapshot(
     searchSignals: searchSignalSnapshot(database, entry.id),
     ...(external === null ? {} : { external }),
     feedback: contextFeedbackSignals(database, entry.id),
+    lessonPriority: lessonReinforcement(database, entry).priority,
     ...(semanticState === null ? {} : { semantic: semanticProjectionSnapshotForState(database, entry, semanticState) }),
   };
 }

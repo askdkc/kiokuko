@@ -600,7 +600,9 @@ export async function federatedEntries(
     score: hit.retrievalScore,
     selectionReasons: ['global_origin', ...hit.reasons],
   }));
-  const byRelevance = (left: FederatedEntry, right: FederatedEntry): number => right.score - left.score || compareCanonicalStrings(left.entry.id, right.entry.id);
+  const byRelevance = (left: FederatedEntry, right: FederatedEntry): number =>
+    Number(right.selectionReasons.includes('repeated_lesson')) - Number(left.selectionReasons.includes('repeated_lesson'))
+    || right.score - left.score || compareCanonicalStrings(left.entry.id, right.entry.id);
   const preferences = global.filter((item) => isGeneralCommunicationPreference(item.entry));
   const selected = [...preferences, ...current.sort(byRelevance), ...ecosystem.sort(byRelevance),
     ...global.filter((item) => !isGeneralCommunicationPreference(item.entry)).sort(byRelevance)]

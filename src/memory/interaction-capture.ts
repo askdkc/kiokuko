@@ -14,13 +14,15 @@ import { findInteractionDuplicate } from './interaction-fingerprint.js';
 import { memoryCaptureInputSchema, type interactionMemorySchema } from './interaction-contract.js';
 import { GENERAL_COMMUNICATION_TAG, INTERACTION_SOURCE } from './interaction-subjects.js';
 import { supersedeEntryInTransaction } from './lifecycle.js';
+import { observeLessonInTransaction, type LessonReinforcement } from './lesson-reinforcement.js';
 import { findSecretInValue } from './secrets.js';
 import { buildStructuredScope, validateApplicability, validateSignals } from './structured-memory.js';
 import { ensureGlobalWorkspace, GLOBAL_WORKSPACE, resolveProjectWorkspaceReadOnly, type ResolvedProjectWorkspace } from './workspaces.js';
 import type * as z from 'zod/v4';
 
 type Memory = z.output<typeof interactionMemorySchema>;
-type Receipt = { entryId: string; revision: number; workspace: string; outcome: 'created' | 'duplicate' | 'corrected' };
+type Receipt = { entryId: string; revision: number; workspace: string; outcome: 'created' | 'duplicate' | 'corrected' | 'reinforced';
+  reinforcement?: LessonReinforcement & { promoted: boolean } };
 export interface CaptureOptions { cwd: string; clientKind: string; enabled?: boolean; signal?: AbortSignal; }
 
 /** Recheck the location and binding under the writer lock without registering anything. */
@@ -80,6 +82,23 @@ function assertReplacement(database: SqliteDatabase, memory: Memory, workspace: 
   return entry;
 }
 
+/** A paraphrased observation may reference a known lesson, but never overwrite it. */
+function reinforcementTarget(database: SqliteDatabase, memory: Memory, workspace: string): EntryRecord | undefined {
+  if (memory.reinforces === undefined) return undefined;
+  const entry = readEntry(database, { workspace, entryId: memory.reinforces.entryId });
+  const managed = database.prepare('SELECT 1 FROM external_skill_entries WHERE entry_id = ? LIMIT 1').get(entry.id);
+  if (entry.revision !== memory.reinforces.expectedRevision) {
+    throw new KiokukoError('CONFLICT', 'Reinforcement revision changed', { condition: 'reinforcement_revision_changed' });
+  }
+  if (entry.status === 'superseded'
+    || entry.kind !== 'lesson' || entry.scope.visibility !== 'project' || managed !== undefined
+    || ![INTERACTION_SOURCE, 'agent_checkpoint'].includes(String(entry.provenance.type))) {
+    throw new KiokukoError('CONFLICT', 'Reinforcement target is stale, managed, or not a captured project lesson',
+      { condition: 'invalid_reinforcement_target' });
+  }
+  return entry;
+}
+
 /** A non-terminal atomic capture. The caller's model supplies claims, never trust. */
 export async function captureInteractionMemory(database: SqliteDatabase, raw: unknown, options: CaptureOptions) {
   const parsed = memoryCaptureInputSchema.safeParse(raw);
@@ -114,14 +133,19 @@ export async function captureInteractionMemory(database: SqliteDatabase, raw: un
       if (new Set(targeted).size !== targeted.length) throw new KiokukoError('VALIDATION_ERROR', 'A batch cannot correct one memory twice');
       return records.map((record, index): Receipt => {
         const old = replacements[index];
-        const duplicate = findInteractionDuplicate(database, record);
+        const reinforced = reinforcementTarget(database, input.memories[index]!, record.workspace);
+        const duplicate = reinforced ?? findInteractionDuplicate(database, record);
         const saved = duplicate ?? recordEntryInTransaction(database, record, { now });
         if (old !== undefined && old.id !== saved.id) {
           supersedeEntryInTransaction(database, { workspace: old.workspace, oldEntryId: old.id,
             replacementEntryId: saved.id, expectedRevision: old.revision, actor: 'kiokuko-mcp', now });
         }
         const receipt: Receipt = { entryId: saved.id, revision: saved.revision, workspace: saved.workspace,
-          outcome: old !== undefined && old.id !== saved.id ? 'corrected' : duplicate === undefined ? 'created' : 'duplicate' };
+          outcome: old !== undefined && old.id !== saved.id ? 'corrected' : reinforced !== undefined ? 'reinforced' : duplicate === undefined ? 'created' : 'duplicate' };
+        if (input.runId !== undefined && input.memories[index]!.basis === 'observed_result'
+          && saved.kind === 'lesson' && saved.workspace === project!.workspace) {
+          receipt.reinforcement = observeLessonInTransaction(database, saved, input.runId, now);
+        }
         if (input.runId !== undefined) {
           new LedgerStore(database).appendBatchInTransaction(input.runId, { events: [{ eventType: 'memory.proposed', actor: 'kiokuko-mcp',
             payload: { entryId: saved.id, revision: saved.revision, scope: saved.workspace, outcome: receipt.outcome } }] });

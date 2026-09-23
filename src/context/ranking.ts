@@ -74,6 +74,7 @@ export const CONTEXT_SELECTION_REASON_ORDER = [
   'tag_match',
   'verified',
   'candidate',
+  'repeated_lesson',
   'system_verified_trust',
   'source_verified_trust',
   'user_asserted_trust',

@@ -97,6 +97,7 @@ export interface MemoryDeliveryObservation {
 }
 
 const ACTIONABLE_MEMORY_SELECTION_REASONS = new Set([
+  'repeated_lesson',
   'exact_signal_match',
   'word_match',
   'lexical_match',

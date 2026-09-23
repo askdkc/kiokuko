@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { BEGIN_MARKER, END_MARKER } from '../../src/agent-file/managed-block.js';
-import { renderAgentFile, renderManagedBlock } from '../../src/agent-file/render.js';
+import { AGENT_TEMPLATE_VERSION, renderAgentFile, renderManagedBlock } from '../../src/agent-file/render.js';
 import { KiokukoError } from '../../src/errors.js';
 
 test('template placeholders produce exactly the programmatic managed block', async () => {
@@ -30,7 +30,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
     cliCommand: 'kiokuko',
   });
 
-  assert.match(rendered, /<!-- kiokuko-template-version: 26 -->/);
+  assert.ok(rendered.includes(`<!-- kiokuko-template-version: ${AGENT_TEMPLATE_VERSION} -->`));
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);

@@ -34,7 +34,7 @@ const DELIVERY_CURSOR_VERSION = 1 as const;
 const GENERIC_DELIVERY_POLICY_VERSION = `${CONTEXT_RANKING_VERSION}+${RECOMMENDATION_POLICY_VERSION}`;
 // v6 remains readable/importable history; only the scoped broker chooses the
 // current ranking policy for new retrieval and replay.
-const SCOPED_DELIVERY_POLICY_VERSIONS = new Set(['context-ranking-v6', 'context-ranking-v7']);
+const SCOPED_DELIVERY_POLICY_VERSIONS = new Set(['context-ranking-v6', 'context-ranking-v7', 'context-ranking-v8']);
 
 const VALIDATION_MESSAGE = 'Context delivery input is invalid';
 const NOT_FOUND_MESSAGE = 'Context delivery target was not found';

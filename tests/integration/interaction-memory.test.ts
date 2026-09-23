@@ -182,6 +182,59 @@ test('project capture requires its ready active run and preserves terminal check
   assert.equal(saved.items[0]!.workspace, ready.project.workspace);
 });
 
+test('project memory_capture survives a server restart and is delivered from its original workspace', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-capture-restart-'));
+  const databasePath = path.join(root, 'data.sqlite3');
+  execFileSync('git', ['init', '-q', root]);
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const connect = async () => {
+    const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+    const client = new Client({ name: 'capture-restart-test', version: '1' });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(b);
+    await client.connect(a);
+    return { client, server };
+  };
+  const first = await connect();
+  let entryId: string;
+  let workspace: string;
+  try {
+    const prepared = await first.client.callTool({ name: 'task_prepare', arguments: {
+      soulRead: true, requestId: 'capture-restart-first', task: 'Check migration compatibility assets',
+      profileHints: { taskType: 'debug', target: 'migration compatibility assets', expected: 'The asset list is checked' },
+      capabilities,
+    } });
+    assert.notEqual(prepared.isError, true);
+    const initial = prepared.structuredContent as { run: { runId: string }; project: { workspace: string } };
+    workspace = initial.project.workspace;
+    const captured = await first.client.callTool({ name: 'memory_capture', arguments: {
+      operationId: 'capture-restart-memory', runId: initial.run.runId,
+      memories: [{ kind: 'lesson', title: 'Migration compatibility asset list',
+        body: 'When adding a migration, update the explicit module compatibility asset list and run its test.',
+        scope: 'project', subjects: ['migration compatibility'], basis: 'observed_result' }],
+    } });
+    assert.notEqual(captured.isError, true);
+    const receipt = captured.structuredContent as { items: Array<{ entryId: string; workspace: string; outcome: string; availability: string }> };
+    assert.equal(receipt.items[0]?.outcome, 'created');
+    assert.equal(receipt.items[0]?.availability, 'current');
+    assert.equal(receipt.items[0]?.workspace, workspace);
+    entryId = receipt.items[0]!.entryId;
+  } finally { await first.client.close(); await first.server.close(); }
+
+  const second = await connect();
+  try {
+    const prepared = await second.client.callTool({ name: 'task_prepare', arguments: {
+      soulRead: true, requestId: 'capture-restart-second', task: 'Check migration compatibility asset list',
+      profileHints: { taskType: 'debug', target: 'migration compatibility asset list', expected: 'The asset list is checked' },
+      capabilities,
+    } });
+    assert.notEqual(prepared.isError, true);
+    const recalled = prepared.structuredContent as { project: { workspace: string }; context: { items: Array<{ entryId: string }> } };
+    assert.equal(recalled.project.workspace, workspace);
+    assert.ok(recalled.context.items.some((item) => item.entryId === entryId));
+  } finally { await second.client.close(); await second.server.close(); }
+});
+
 test('project preparation includes general preferences but withholds them without memory-reasoning', async (t) => {
   const { root, db, capture } = await fixture(t);
   await capture('general', [general]);

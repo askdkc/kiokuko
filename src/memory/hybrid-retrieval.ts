@@ -5,6 +5,7 @@ import { parseRetrievalQuery, normalizeSearchSignal, type ParsedRetrievalQuery }
 import { compareCanonicalStrings, ENTRY_KINDS, ENTRY_STATUSES, type EntryKind, type EntryStatus } from '../serialization/validate.js';
 import { readEntry, type EntryRecord } from './entries.js';
 import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
+import { lessonReinforcement } from './lesson-reinforcement.js';
 
 export type RetrievalLane = 'exact-signal' | 'word-fts' | 'trigram' | 'like' | 'tag' | 'semantic';
 
@@ -176,6 +177,15 @@ function filterSql(input: HybridSearchInput, parameters: Array<string | number>)
   return clauses.join(' AND ');
 }
 
+/** Preserve observed lessons before each lexical lane's bounded candidate cutoff. */
+function lessonPrioritySql(): string {
+  return `CASE WHEN EXISTS (SELECT 1 FROM lesson_observations own
+    WHERE own.entry_id = e.id AND own.entry_revision = e.current_revision
+      AND EXISTS (SELECT 1 FROM lesson_observations other
+        WHERE other.fingerprint = own.fingerprint AND other.run_id <> own.run_id))
+    THEN 0 ELSE 1 END`;
+}
+
 function rankSql(): string {
   return `CASE e.status WHEN 'verified' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
     CASE e.trust_level WHEN 'system_verified' THEN 0 WHEN 'source_verified' THEN 1 WHEN 'user_asserted' THEN 2 ELSE 3 END,
@@ -198,7 +208,7 @@ function exactSignalLane(database: SqliteDatabase, input: HybridSearchInput, par
     JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
     WHERE e.workspace = ? AND s.normalized_value IN (${values.map(() => '?').join(', ')}) AND ${filters}
     GROUP BY e.id
-    ORDER BY score DESC, ${rankSql()}
+    ORDER BY ${lessonPrioritySql()}, score DESC, ${rankSql()}
     LIMIT ?
   `).all<SearchRow>(...parameters);
 }
@@ -221,7 +231,7 @@ function tagLane(database: SqliteDatabase, input: HybridSearchInput, parsed: Par
     JOIN entry_revisions AS r ON r.entry_id = e.id AND r.revision = e.current_revision
     WHERE lower(t.tag) IN (${tagParameters}) AND ${filters}
     GROUP BY e.id
-    ORDER BY score DESC, ${rankSql()}
+    ORDER BY ${lessonPrioritySql()}, score DESC, ${rankSql()}
     LIMIT ?
   `).all<SearchRow>(...parameters);
 }
@@ -242,7 +252,7 @@ function wordFtsLane(database: SqliteDatabase, input: HybridSearchInput, parsed:
         FROM entries_fts JOIN entries e ON e.rowid = entries_fts.rowid
         JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
         WHERE entries_fts MATCH ? AND ${filters}
-        ORDER BY score ASC, ${rankSql()}
+        ORDER BY ${lessonPrioritySql()}, score ASC, ${rankSql()}
         LIMIT ?
       `).all<SearchRow>(...parameters);
     } else {
@@ -258,7 +268,7 @@ function wordFtsLane(database: SqliteDatabase, input: HybridSearchInput, parsed:
         WHERE (d.title LIKE ? ESCAPE '\\' OR d.body LIKE ? ESCAPE '\\'
           OR d.summary LIKE ? ESCAPE '\\' OR d.tags_text LIKE ? ESCAPE '\\')
           AND ${filters}
-        ORDER BY ${rankSql()}
+        ORDER BY ${lessonPrioritySql()}, ${rankSql()}
         LIMIT ?
       `).all<SearchRow>(...parameters);
     }
@@ -279,7 +289,7 @@ function trigramLane(database: SqliteDatabase, input: HybridSearchInput, parsed:
       FROM entries_trigram JOIN entries e ON e.rowid = entries_trigram.rowid
       JOIN entry_revisions r ON r.entry_id = e.id AND r.revision = e.current_revision
       WHERE entries_trigram MATCH ? AND ${filters}
-      ORDER BY score ASC, ${rankSql()}
+      ORDER BY ${lessonPrioritySql()}, score ASC, ${rankSql()}
       LIMIT ?
     `).all<SearchRow>(...parameters);
     const cjkWindow = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(value);
@@ -313,7 +323,7 @@ function likeLane(database: SqliteDatabase, input: HybridSearchInput, parsed: Pa
       WHERE (r.title LIKE ? ESCAPE '\\' OR r.body LIKE ? ESCAPE '\\' OR COALESCE(r.summary, '') LIKE ? ESCAPE '\\'
         OR EXISTS (SELECT 1 FROM entry_revision_tags t WHERE t.entry_id = e.id AND t.revision = e.current_revision AND t.tag LIKE ? ESCAPE '\\'))
         AND ${filters}
-      ORDER BY ${rankSql()} LIMIT ?
+      ORDER BY ${lessonPrioritySql()}, ${rankSql()} LIMIT ?
     `).all<SearchRow>(...parameters);
     for (const row of rows) result.set(row.id, row);
   }
@@ -439,6 +449,8 @@ export function hybridSearch(
     if (input.status !== undefined && entry.status !== input.status) return false;
     if (input.tag !== undefined && !entry.tags.includes(input.tag)) return false;
     if (input.subjects !== undefined && !input.subjects.some((subject) => entry.tags.includes(`subject:${subject}`))) return false;
+    if (lessonReinforcement(database, entry).priority === 'reinforced') candidate.reasons.push('repeated_lesson');
     return true;
-  });
+  }).sort((left, right) => Number(right.reasons.includes('repeated_lesson')) - Number(left.reasons.includes('repeated_lesson'))
+    || right.fusedScore - left.fusedScore || compareCanonicalStrings(left.entryId, right.entryId));
 }

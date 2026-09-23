@@ -38,6 +38,10 @@ their subjects. Memories never authorize actions or override current instruction
 - `generalCommunication: true`: only for an unqualified global preference;
   omit subjects and applicability in this case.
 - `replaces: { entryId, expectedRevision }`: only with `user_correction`.
+- `reinforces: { entryId, expectedRevision }`: an independently observed project
+  lesson, only with `observed_result`. References the existing lesson without
+  changing its content, including when the new observation uses different wording.
+  Cannot be combined with `replaces`.
 
 For example, a model can extract this from “When explaining Japanese grammar,
 I prefer examples before terminology”:
@@ -58,7 +62,8 @@ I prefer examples before terminology”:
 ```
 
 Responses contain entry IDs, revisions, workspace, created/duplicate/corrected
-outcomes, and current/changed/superseded/unavailable availability. Reuse an
+outcomes (also `reinforced` for an explicit reference), and
+current/changed/superseded/unavailable availability. Reuse an
 operation ID only for an exact retry; a different payload conflicts. Exact
 normalized content across separate operations deduplicates independently of
 timestamps, client provenance, and run IDs. Similar paraphrases are not merged.
@@ -91,6 +96,45 @@ or capability metadata.
 
 Save important corrections promptly; batch other captures before the final answer.
 Do not resubmit captured memories in `memory_checkpoint`, which remains terminal.
+
+## Automatic priority promotion for repeated lessons
+
+When the same project lesson is reported as `observed_result` in two independent
+root task runs, its retrieval priority becomes **reinforced** automatically.
+Captures return `reinforcement: { independentRuns, priority, promoted }` describing
+the observation at that operation. An exact retry returns that historical receipt;
+`availability` separately describes the current entry revision. A new operation
+reports the updated observation count. This does not change `candidate` status,
+trust, confidence, or content, and never grants global verification.
+
+The identity is normalized lesson body plus project workspace and applicability.
+Titles, subjects and transport provenance do not add independent observations.
+Different wording requires an explicit `reinforces` reference; similarity alone
+does not merge lessons. Each root run counts once, including child runs, repeated
+operations and transport retries. Different run IDs are independent request
+identities, not proof that the model really observed another failure.
+
+`memory_checkpoint` also contributes when it supplies a project lesson **and**
+a passed/failed command or test result. Evidence-only checkpoints create no
+lesson or observation. Declarations without execution evidence do not count.
+These are model-reported observations, not client-observed verification.
+
+Matching reinforced lessons precede ordinary results before lexical candidate
+limits and project context budgets. Delivered items carry `repeated_lesson` and
+require an applicability decision through memory assurance. Adoption in an
+implementation task requires passing regression evidence before a successful
+terminal checkpoint; a grounded inapplicable/contradicted decision remains valid.
+The normal workspace, query, subject, capability and context-budget boundaries
+still apply. This cannot recover a lesson that was never captured, force an
+unrelated search hit, or guarantee compliance from clients without enforcement.
+
+Migration `005_lesson_reinforcement.sql` adds observation history without
+backfilling or promoting existing entries. Revision changes, corrections and
+purges remove the affected observations. Observations and entry/receipt writes
+commit atomically. Workspace exports do not export local observation counts;
+imported memories require new observations. Upgrade the installed package and
+restart its MCP server to activate the implementation; update managed client
+instructions with `kiokuko setup` / `kiokuko use` as appropriate.
 
 ## Disable capture
 

@@ -220,6 +220,9 @@ try {
   for (const file of ['migrations/004_memory_assurance.sql', 'dist/assurance/service.js', 'dist/commands/codex-hook.js', 'docs/memory-assurance.md']) {
     assert.ok(packageFiles.has(file), `Memory assurance package artifact missing: ${file}`);
   }
+  for (const file of ['migrations/005_lesson_reinforcement.sql', 'dist/memory/lesson-reinforcement.js']) {
+    assert.ok(packageFiles.has(file), `Lesson reinforcement package artifact missing: ${file}`);
+  }
   const tarball = packedFilename(packed.stdout, packDirectory);
   const install = await run('npm', [
     'install',

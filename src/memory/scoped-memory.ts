@@ -1,4 +1,5 @@
 import { assertAssuranceCompletion } from '../assurance/service.js';
+import { observeLessonInTransaction, lessonReinforcement, type LessonReinforcement } from './lesson-reinforcement.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -161,7 +162,8 @@ export type ScopedCheckpointInput = ScopedCheckpointStandaloneInput | ScopedChec
 
 export interface ScopedCheckpointResult {
   project: ResolvedProjectWorkspace | null;
-  entries: Array<Pick<EntryRecord, 'id' | 'workspace' | 'kind' | 'status' | 'title' | 'revision'>>;
+  entries: Array<Pick<EntryRecord, 'id' | 'workspace' | 'kind' | 'status' | 'title' | 'revision'> & { reinforcement?: LessonReinforcement }>;
+  storedMemoryCount: number;
   run?: { runId: string; status: string; feedbackCount: number; evidenceCount: number; reasoningPaths: number; qualifiedReasoningPaths: number };
 }
 
@@ -604,6 +606,12 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
       }
     }
     const saved = preparedMemories.map((memory) => recordEntryInTransaction(database, memory, { now }));
+    if (transactionRun && [...evidence.tests, ...evidence.commands].some(item => item.outcome === 'passed' || item.outcome === 'failed')) {
+      for (const entry of saved) observeLessonInTransaction(database, entry, transactionRun.runId, now);
+    }
+    const entries = saved.map(entry => ({ id: entry.id, workspace: entry.workspace, kind: entry.kind,
+      status: entry.status, title: entry.title, revision: entry.revision,
+      ...(entry.kind === 'lesson' && entry.scope.visibility === 'project' ? { reinforcement: lessonReinforcement(database, entry) } : {}) }));
     const memoryEvents = saved.map((entry) => ({ eventId: randomUUID(), eventType: 'memory.proposed' as const, actor: 'kiokuko-mcp', occurredAt: now, payload: { entryId: entry.id, revision: entry.revision } }));
     const memoryAck = transactionRun === undefined || memoryEvents.length === 0 ? { eventIds: [] as string[] } : store!.appendBatchInTransaction(transactionRun.runId, { events: memoryEvents });
     const eventId = evidenceAck.eventIds[0] ?? memoryAck.eventIds[0] ?? null;
@@ -631,6 +639,7 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
       const updated = new LedgerStore(database).updateRunStatusInTransaction(transactionRun.runId, outcome, now);
       return {
         saved,
+        entries,
         run: {
           runId: updated.runId,
           status: updated.status,
@@ -641,12 +650,13 @@ export async function checkpointScopedMemory(database: SqliteDatabase, input: Sc
         },
       };
     }
-    return { saved, run: undefined };
+    return { saved, entries, run: undefined };
   });
 
   return {
     project: project ?? null,
-    entries: records.saved.map(({ id, workspace, kind, status, title, revision }) => ({ id, workspace, kind, status, title, revision })),
+    entries: records.entries,
+    storedMemoryCount: records.saved.length,
     ...(records.run === undefined ? {} : { run: records.run }),
   };
 }
