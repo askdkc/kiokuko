@@ -60,6 +60,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'curator_check',
       'curator_globalize',
+      'handoff_discard',
+      'handoff_load',
+      'handoff_save',
       'memory_capture',
       'memory_checkpoint',
       'memory_recall',

@@ -9,6 +9,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { loadMigrationSnapshot, migrateDatabase } from '../../src/db/migrate.js';
+import { migrationVersionsAfter } from '../fixtures/current-migrations.js';
 import { createKiokukoMcpServer } from '../../src/mcp/server.js';
 import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { captureInteractionMemory } from '../../src/memory/interaction-capture.js';
@@ -232,7 +233,7 @@ test('migration preserves existing entries and does not infer historical observa
   const db = openConnection(databasePath);
   try {
     const entry = recordEntry(db, { workspace: 'legacy', kind: 'lesson', title: 'Existing lesson', body: lesson.body });
-    assert.deepEqual(migrateDatabase(db).applied, [5]);
+    assert.deepEqual(migrateDatabase(db).applied, migrationVersionsAfter(4));
     assert.deepEqual(readEntry(db, { workspace: entry.workspace, entryId: entry.id }), entry);
     assert.deepEqual(migrateDatabase(db).applied, []);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM lesson_observations').get<{ n: number }>()!.n, 0);

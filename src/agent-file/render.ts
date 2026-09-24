@@ -1,10 +1,11 @@
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
+import { HANDOFF_INSTRUCTIONS } from '../memory/handoff.js';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../akinator/instructions.js';
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
 import { validateRepositoryBindingIdentity } from '../repository/identity-value.js';
 import { BEGIN_MARKER, END_MARKER, upsertManagedBlock } from './managed-block.js';
 
-export const AGENT_TEMPLATE_VERSION = 27;
+export const AGENT_TEMPLATE_VERSION = 28;
 
 export interface AgentTemplateValues {
   repositoryId: string;
@@ -39,6 +40,7 @@ export function renderManagedBlock(values: AgentTemplateValues): string {
     '### Before non-trivial work',
     '',
     INTERACTION_MEMORY_INSTRUCTIONS,
+    HANDOFF_INSTRUCTIONS,
     '',
     SOUL_ROUTING_ENTRY_CONTRACT,
     '',

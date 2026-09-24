@@ -48,7 +48,7 @@ function deny(reason: string) {
 function context(event: string, text: string) {
   return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
 }
-const preparationTools = new Set(['task_inspect', 'task_prepare', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'memory_checkpoint', 'memory_capture', 'memory_recall', 'curator_check']);
+const preparationTools = new Set(['task_inspect', 'task_prepare', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'memory_checkpoint', 'memory_capture', 'memory_recall', 'handoff_save', 'handoff_load', 'handoff_discard', 'curator_check']);
 function kiokukoTool(name: string): string | null {
   const match = /^mcp__kiokuko__(\w+)$/.exec(name);
   return match && preparationTools.has(match[1]!) ? match[1]! : null;

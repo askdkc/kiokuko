@@ -124,3 +124,16 @@ Skills. `memory_capture` stores untrusted candidates without ending a task;
 and capability withholding retain their existing gates. Reload the client after
 setup so new tools and instructions are visible. Configuration coverage is not
 proof of model behavior; see [per-client validation](interaction-memory-validation.md).
+
+## Short-term handoff
+
+All four MCP clients expose `handoff_save`, `handoff_load`, and `handoff_discard`.
+The model saves a bounded state after meaningful changes and loads it by the exact
+returned ID when a model/thinking change or work resumption is known. The default
+`KIOKUKO_HANDOFF=auto` enables saves; `off` disables new saves and updates but
+allows loading and discarding existing records until their 24-hour expiry.
+Run-linked saves require the capability catalog bound at `task_prepare`.
+Handoff state is untrusted and is not searchable long-term memory. The MCP server
+does not observe model settings, compact native history, or guarantee a tool call
+on every turn. A client reload is needed for newly installed tool descriptions
+and Skill instructions; configuration alone does not prove live behavior.

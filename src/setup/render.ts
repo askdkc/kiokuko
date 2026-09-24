@@ -1,5 +1,6 @@
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
+import { HANDOFF_INSTRUCTIONS } from '../memory/handoff.js';
 import { SOUL_ROUTING_ENTRY_CONTRACT } from '../akinator/instructions.js';
 import { KiokukoError } from '../errors.js';
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
@@ -24,6 +25,7 @@ export function renderGlobalInstructions(existing = ''): DelimitedBlockResult {
     'When the Kiokuko MCP tools are available:',
     '',
     INTERACTION_MEMORY_INSTRUCTIONS,
+    HANDOFF_INSTRUCTIONS,
     '',
     SOUL_ROUTING_ENTRY_CONTRACT,
     MEMORY_ASSURANCE_INSTRUCTIONS,

@@ -223,6 +223,9 @@ try {
   for (const file of ['migrations/005_lesson_reinforcement.sql', 'dist/memory/lesson-reinforcement.js']) {
     assert.ok(packageFiles.has(file), `Lesson reinforcement package artifact missing: ${file}`);
   }
+  for (const file of ['migrations/006_conversation_handoffs.sql', 'dist/memory/handoff.js']) {
+    assert.ok(packageFiles.has(file), `Conversation handoff package artifact missing: ${file}`);
+  }
   const tarball = packedFilename(packed.stdout, packDirectory);
   const install = await run('npm', [
     'install',

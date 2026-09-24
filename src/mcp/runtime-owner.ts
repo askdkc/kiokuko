@@ -8,6 +8,7 @@ import { createEmbeddingRuntime } from '../embedding/runtime.js';
 import type { EmbeddingConfig, EmbeddingProvider, EmbeddingRuntime, VectorSearchBackend } from '../embedding/types.js';
 import { createEmbeddingWorker, type EmbeddingWorker } from '../embedding/worker.js';
 import { WriteQueue } from '../server/write-queue.js';
+import { cleanupExpiredHandoffs } from '../memory/handoff.js';
 
 export interface McpRuntimeOwnerOptions extends PathEnvironment {
   readonly databasePath?: string;
@@ -65,6 +66,7 @@ export class McpRuntimeOwner implements McpDatabaseOwner {
     const database = opened.database;
     const queue = new WriteQueue<unknown>(64);
     try {
+      if (this.#options.initializeDatabase === undefined && this.#options.openDatabase === undefined) cleanupExpiredHandoffs(database);
       const runtime = createEmbeddingRuntime(database, config, {
         ...(this.#options.embeddingProvider === undefined ? {} : { provider: this.#options.embeddingProvider }),
         ...(opened.backend === undefined ? {} : { backend: opened.backend }),
