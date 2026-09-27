@@ -27,7 +27,7 @@ configuration, and execution results take precedence over remembered context.
 Node.js 24.16.0 or newer is required (Node.js 26.1.0 or newer is also supported).
 
 ```bash
-npm install --global @askdkc/kiokuko
+npm install --global kiokuko
 kiokuko setup
 ```
 
