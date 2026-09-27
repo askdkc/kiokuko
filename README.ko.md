@@ -22,7 +22,7 @@ Kiokuko는 AI 코딩 에이전트를 위한 로컬 외부 메모리입니다. �
 Node.js 24.16.0 이상이 필요합니다（Node.js 26.1.0 이상도 지원）.
 
 ```bash
-npm install --global @askdkc/kiokuko
+npm install --global kiokuko
 kiokuko setup
 ```
 
