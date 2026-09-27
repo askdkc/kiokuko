@@ -22,7 +22,7 @@ Kiokuko 是面向 AI 编程代理的本地外部记忆。它把知识保存在 S
 需要 Node.js 24.16.0 或更高版本（也支持 Node.js 26.1.0 或更高版本）。
 
 ```bash
-npm install --global @askdkc/kiokuko
+npm install --global kiokuko
 kiokuko setup
 ```
 
