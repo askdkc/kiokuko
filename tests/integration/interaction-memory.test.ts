@@ -112,6 +112,38 @@ test('correction supersedes a verified memory atomically and stale revisions rol
   assert.deepEqual((await capture('correct', [correction])).items.map((item) => item.entryId), [saved.entryId]);
 });
 
+test('a first project correction needs no stored ID and reaches the next task only in that project', async (t) => {
+  const { root, db, capture, options } = await fixture(t);
+  const project = path.join(root, 'project');
+  const unrelated = path.join(root, 'unrelated');
+  await mkdir(project);
+  await mkdir(unrelated);
+  execFileSync('git', ['init', '-q', project]);
+  execFileSync('git', ['init', '-q', unrelated]);
+  const prepare = (cwd: string, requestId: string) => prepareAgentTask(db, {
+    cwd, requestId, task: 'Update README DSH plugin installation instructions',
+    profileHints: { taskType: 'build', target: 'README DSH plugin installation', expected: 'Instructions use the requested command' },
+    capabilities, client: { kind: options.clientKind }, skillDiscoveryMode: 'off',
+  });
+  const first = await prepare(project, 'first-correction');
+  assert.equal(first.intake.status, 'ready');
+  const correction = {
+    kind: 'lesson', title: 'DSH plugin installation docs',
+    body: 'When editing this project README, use the standard dsh plugin command and do not add an unrequested version constraint.',
+    scope: 'project', subjects: ['DSH plugin installation'], basis: 'user_correction',
+  };
+  const saved = (await capture('first-correction', [correction], { cwd: project, runId: first.run.runId })).items[0]!;
+  assert.equal(saved.outcome, 'created');
+  assert.equal(readEntry(db, { workspace: first.project.workspace, entryId: saved.entryId }).provenance.reference, 'user_correction');
+  const duplicate = (await capture('second-correction', [correction], { cwd: project, runId: first.run.runId })).items[0]!;
+  assert.equal(duplicate.outcome, 'duplicate');
+  assert.equal(duplicate.entryId, saved.entryId);
+  const next = await prepare(project, 'next-task');
+  assert.ok(next.context?.items.some((item) => item.entryId === saved.entryId));
+  const other = await prepare(unrelated, 'unrelated-task');
+  assert.ok(!other.context?.items.some((item) => item.entryId === saved.entryId));
+});
+
 test('a write failure after replacement insertion rolls back entry, superseding and receipt', async (t) => {
   const { capture, db } = await fixture(t);
   const old = (await capture('first', [grammar])).items[0]!;
@@ -261,7 +293,12 @@ test('MCP publishes usable schemas, transport provenance, disable switch, and tw
   };
   const first = await connect(true);
   const tools = (await first.listTools()).tools;
-  assert.ok(tools.find((tool) => tool.name === 'memory_capture')!.inputSchema.properties?.memories);
+  const captureSchema = tools.find((tool) => tool.name === 'memory_capture')!.inputSchema.properties?.memories as {
+    items: { properties: Record<string, { description?: string }> };
+  };
+  assert.ok(captureSchema);
+  assert.match(captureSchema.items.properties.basis!.description ?? '', /first capture when no stored entry exists/u);
+  assert.match(captureSchema.items.properties.replaces!.description ?? '', /Omit for a correction not yet stored/u);
   const saved = await first.callTool({ name: 'memory_capture', arguments: { operationId: 'mcp-first', memories: [grammar] } });
   assert.notEqual(saved.isError, true);
   const second = await connect(false);

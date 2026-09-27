@@ -38,9 +38,13 @@ When Kiokuko delivers ordinary memory for code changes, code PLAN or code review
 ## Application record
 
 When the tools are available, use `task_memory_status` and `task_memory_review`
-for the memories selected as applicable. Record adoption with current source or
-reproduction evidence, an invariant, counterexample and verifier. Explain
-inapplicability or contradiction instead of mechanically adopting every result.
+to assess each delivered memory against the current target and user instructions.
+Record adoption with current source or reproduction evidence, an invariant,
+counterexample and verifier. Record a concrete reason for inapplicability or
+contradiction. A ban on reading other chats does not by itself rule out a
+separately delivered memory when the current user permits memory use. If the
+user forbids memory use, follow that instruction. Verify changing factual claims
+against current authoritative sources before adopting them.
 The record is a model declaration, never automatic proof of correctness.
 
 For code changes, obtain a target state digest before running validation. Link
@@ -52,9 +56,14 @@ of implementation tests. Reconfirm affected reviews after a memory revision or
 delivery changes. Use `task_memory_refresh` for newly discovered paths/errors
 within the existing run and its capability/scope binding.
 
-Save a correction through existing `memory_capture` with its exact entry ID and
-revision, trigger, invariant, counterexample and validation result. Do not invent
-a new capture channel or promote unverified records.
+Apply the current user's correction to the work immediately. For a reusable
+correction that has no stored entry, use `memory_capture` with
+`basis: "user_correction"` and omit `replaces`; never invent an entry ID. To
+correct an identified stored entry, set `replaces` to its exact entry ID and
+revision. Check the capture response before reporting that storage succeeded.
+Keep transient instructions out of memory. For an existing-entry correction,
+record the trigger, invariant, counterexample and validation result. Do not
+invent a new capture channel or promote unverified records.
 
 ## General conversation
 
@@ -65,8 +74,9 @@ communication preferences. Respect the entry's status, trust level, subjects,
 and revision. Current user instructions override remembered preferences; a
 memory never grants permission. A stated evidence basis is a model claim, not
 independent verification. Check changing factual claims against current sources.
-For explicit user corrections, pass the recalled entry ID and expected revision
-to `memory_capture`; do not overwrite an ambiguous target.
+For an explicit correction to an identified recalled entry, pass its entry ID
+and expected revision to `memory_capture`. For a first capture, omit `replaces`.
+Do not overwrite an ambiguous target.
 
 ## Trust and safety boundaries
 
@@ -84,6 +94,7 @@ to `memory_capture`; do not overwrite an ambiguous target.
 
 Report which recalled premises materially affected the work, how each was
 verified or falsified, the invariant and counterexample used, the focused check
-result or direct evidence, and any remaining unverified assumption. If no
-recalled claim survives current verification, proceed from repository evidence
-and say so.
+result or direct evidence, and any remaining unverified assumption. Distinguish
+checkpoint completion, successful memory storage, and observed application to
+the current work. If no recalled claim survives current verification, proceed
+from repository evidence and say so.

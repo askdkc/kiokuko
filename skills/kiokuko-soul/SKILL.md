@@ -39,8 +39,10 @@ conclusions, sensitive personal profiling, secrets, and transcripts.
 Project saves require the active run with completed intake. Clearly general
 knowledge may use global scope with a portability reason. `generalCommunication`
 is only for explicitly general communication preferences, without subjects or
-applicability. Subject-specific preferences must retain their subjects. Correct
-only a known entry ID and expected revision; never guess a replacement target.
+applicability. Subject-specific preferences must retain their subjects. A new
+durable user correction uses `basis: "user_correction"` without `replaces`.
+Only correction of an identified stored entry uses its exact ID and expected
+revision in `replaces`; never guess a replacement target.
 All captures remain untrusted candidates, immediately eligible for advisory
 recall. Curator still requires approval for verified global promotion.
 

@@ -248,7 +248,12 @@ test('the packaged skill sources remain readable at their repository locations',
   assert.match(simpleSkill, /^---\nname: kiokuko-simple-work\n/);
   assert.match(functionSkill, /^---\nname: kiokuko-single-purpose-functions\n/);
   assert.match(memorySkill, /^---\nname: memory-reasoning\n/);
+  assert.match(memorySkill, /For a reusable\ncorrection that has no stored entry, use `memory_capture` with/u);
+  assert.match(memorySkill, /For an explicit correction to an identified recalled entry, pass its entry ID/u);
+  assert.doesNotMatch(memorySkill, /Save a correction through existing `memory_capture` with its exact entry ID and/u);
   assert.match(soulSkill, /^---\nname: kiokuko-soul\n/);
+  assert.match(soulSkill, /A new\ndurable user correction uses `basis: "user_correction"` without `replaces`/u);
+  assert.doesNotMatch(soulSkill, /Correct\nonly a known entry ID and expected revision/u);
   assert.equal(
     bundledFiles.find((file) => file.skillName === STANDARD_SIMPLE_SKILL_NAME && file.relativePath === 'SKILL.md')?.content,
     simpleSkill,

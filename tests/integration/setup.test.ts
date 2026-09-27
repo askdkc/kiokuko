@@ -418,6 +418,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict/);
     assert.match(instructions, /task_answer/);
     assert.match(instructions, /memory_checkpoint/);
+    assert.match(instructions, /For a durable correction not yet stored, use memory_capture with basis user_correction and omit replaces/u);
+    assert.match(instructions, /Review each delivered memory against the current target and user instructions/u);
+    assert.match(instructions, /Capture a new durable user correction through memory_capture with basis user_correction and no replaces/u);
+    assert.doesNotMatch(instructions, /Apply explicit corrections only to a known entry ID and revision/u);
     assert.match(instructions, /curator_check/);
     assert.match(instructions, /curator_globalize/);
     assert.match(instructions, /Optional external skill discovery is feature-flagged and reference-only/);
