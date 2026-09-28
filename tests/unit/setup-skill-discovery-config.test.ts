@@ -55,7 +55,7 @@ test('README entry points and English/Japanese docs carry the setup and trust co
   for (const name of ['README.md', 'README.ja.md', 'README.zh-CN.md', 'README.ko.md']) {
     const readme = readFileSync(new URL(`../../${name}`, import.meta.url), 'utf8');
     assert.match(readme, /Node\.js 24\.16\.0/u, name);
-    assert.match(readme, /npm install --global @askdkc\/kiokuko/u, name);
+    assert.match(readme, /npm install --global kiokuko/u, name);
     assert.match(readme, /kiokuko setup/u, name);
     assert.match(readme, /docs\/(README|getting-started)/u, name);
   }

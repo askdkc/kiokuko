@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { Command } from 'commander';
 import { buildCli } from '../../src/cli.js';
-import { registerEmbeddingsCommands, type EmbeddingsCommandDependencies } from '../../src/commands/embeddings.js';
+import { checkOptionalRuntime, registerEmbeddingsCommands, type EmbeddingsCommandDependencies } from '../../src/commands/embeddings.js';
 import { setupGlobalClients } from '../../src/commands/setup.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
@@ -185,6 +185,63 @@ test('setup --offline does not install a missing optional runtime', async () => 
     withDatabase: noEffects,
     setupGlobalClients: noEffects,
   }).parseAsync(['node', 'kiokuko', 'setup', '--offline', '--json']), /unavailable for offline setup/);
+});
+
+test('first setup installs missing runtime and succeeds in the same invocation', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-first-setup-'));
+  const packageRoot = path.join(root, 'package');
+  await mkdir(packageRoot);
+  const database = openConnection(':memory:');
+  migrateDatabase(database);
+  const calls: string[] = [];
+  let result: Record<string, unknown> = {};
+  try {
+    await assert.rejects(checkOptionalRuntime(packageRoot), /unavailable/);
+    await command({
+      pathEnvironment: { env: { HOME: root, KIOKUKO_DATA_DIR: root, PATH: '' } },
+      optionalRuntimeChecker: async () => {
+        calls.push('probe');
+        await checkOptionalRuntime(packageRoot);
+      },
+      optionalRuntimeInstaller: async () => {
+        calls.push('install');
+        for (const name of ['@huggingface/hub', '@huggingface/transformers']) {
+          const directory = path.join(packageRoot, 'node_modules', name);
+          await mkdir(directory, { recursive: true });
+          await writeFile(path.join(directory, 'package.json'), JSON.stringify({
+            name, type: 'module', exports: './index.mjs',
+          }));
+          await writeFile(path.join(directory, 'index.mjs'), 'export default true;\n');
+        }
+      },
+      setupGlobalClients: async () => {
+        calls.push('clients');
+        return { clients: ['codex'], projectAgentFiles: [] };
+      },
+      withDatabase: async (run) => {
+        calls.push('database');
+        return run(database);
+      },
+      modelInstaller: async () => {
+        calls.push('model');
+        return {
+          installation: 'installed', directory: root,
+          relativePath: 'models/embeddings/local-small/test',
+          totalBytes: LOCAL_SMALL_PRESET.files.reduce((sum, file) => sum + file.size, 0),
+          manifestHash: 'a'.repeat(64),
+        };
+      },
+      provider: {
+        profile: { providerKind: 'local-transformers' } as never,
+        embed: async () => { assert.fail('empty database needs no vectors'); },
+      },
+      output: (_json, _name, data) => { result = data as Record<string, unknown>; },
+    }).parseAsync(['node', 'kiokuko', 'setup', '--clients', 'codex', '--json']);
+    assert.deepEqual(calls, ['probe', 'install', 'probe', 'clients', 'database', 'model']);
+    assert.equal(result.semanticEnabled, true);
+  } finally {
+    database.close();
+  }
 });
 
 test('embedding plan counts persisted entries without changing database or WAL files', async () => {
