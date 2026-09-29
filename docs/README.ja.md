@@ -6,6 +6,7 @@
 - [npmの通知とセットアップエラー](../README.ja.md#setup-messages) — スクリプトの許可を確認し、埋め込み依存関係のエラーと区別する。
 - [基本概念](concepts.ja.md) — RAG、記憶のライフサイクル、Project/Ecosystem/Global、Akinator。
 - [Semantic retrieval](semantic-retrieval.ja.md) — embedding runtime、運用、offline、fallback。
+- [ChatGPTの記憶連携](chatgpt.ja.md) — 対応版の導入、接続トラブル、利用範囲。
 - [Akinator のプロフィール補助](akinator-memory.md) — 候補提示、限定的な対象補完、索引の再構築。
 - [Security and trust](security-and-trust.ja.md) — secret拒否、記憶の境界、External Skills、公開エラー。
 - [CLI contract](cli-contract.md) — 安定したコマンドとレスポンス。

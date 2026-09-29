@@ -102,6 +102,29 @@ managed MCP blockと登録済みプロジェクトのinstructionsを更新しま
 Codex、OpenCode、Claude Code、Hermes Agentに対応しています。client別の設定、再起動、Web UIは
 [導入ガイド](docs/getting-started.ja.md)にまとめています。
 
+## ChatGPTで使う（プレビュー）
+
+Developer modeで自分用プラグインとして接続し、記憶を保存・検索します。ストア配布版はありません。
+
+1. **準備する。** `kiokuko mcp --help`に`--profile`と`--access`がある版を使います。なければ[ソース版を導入](docs/chatgpt.ja.md)。DBが未作成なら`kiokuko init`を実行します。[OpenAIのTunnel手順](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)で`tunnel-client`、利用するChatGPT workspaceのTunnel ID、認証用APIキーを準備し、環境変数`CONTROL_PLANE_API_KEY`に設定します。
+2. **手元のPCで接続を起動する。** `<tunnel_id>`を取得したIDに置き換えます。
+
+   ```bash
+   tunnel-client init \
+     --sample sample_mcp_stdio_local \
+     --profile kiokuko-chatgpt \
+     --tunnel-id "<tunnel_id>" \
+     --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
+   tunnel-client run --profile kiokuko-chatgpt
+   ```
+
+   利用中は起動したままにします。次回からは最後の`run`だけで起動できます。
+3. **ChatGPTに登録する。** 設定 → **Security and login → Developer mode**を有効化。**Plugins → ＋**で名前を`Kiokuko`、説明を「記憶の保存と検索」にし、**Connection → Tunnel**で同じIDを指定します。新しい会話のツールメニューからKiokukoを選びます。[公式の画面手順](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+
+使い方: 「この内容をKiokukoに保存して」「Kiokukoから○○についての記憶を探して」。書き込み確認が出たら内容を確認して承認します。
+
+検索だけなら起動コマンドの`read-write`を`read`に変更します。ChatGPT標準メモリの保存先は変わりません。**ChatGPT実機での接続確認は未実施**です。[困ったとき](docs/chatgpt.ja.md)
+
 ## 安全性と制約
 
 会話全文は保存せず、パスワード、API key、token、秘密鍵に似た内容を拒否します。保存された記憶は参考情報であり、

@@ -10,6 +10,15 @@ Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-sco
 | Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | seven bundled skills below effective profile `skills/` | none |
 | Other MCP clients | manual `kiokuko mcp` stdio registration | client-specific | not installed | none |
 
+ChatGPT has a separate conversation memory preview:
+`kiokuko mcp --profile chatgpt-memory --access read`. It exposes only
+`memory_policy` and Global `memory_recall`, with an exact bundled-policy
+version/digest attestation instead of local Skill declarations. It is not a
+`setup` target. [Tunnel setup](chatgpt.md) and [live validation status](chatgpt-validation.md)
+are separate from local MCP test results. `--access read-write` adds Global capture and correction. Plugin distribution and
+HTTP hosting are not included in this phase. The local capability gates below still
+apply to the default MCP server.
+
 OpenCode global configuration follows XDG paths on every platform:
 `$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode` when unset. On Windows,
 `~` resolves from `%USERPROFILE%`, falling back to `%HOME%`; `%APPDATA%` and
