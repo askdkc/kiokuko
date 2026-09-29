@@ -20,6 +20,7 @@ Run `kiokuko init` only if no database exists. ChatGPT does not require `kiokuko
 
 | Symptom | Action |
 |---|---|
+| `tunnel-client: command not found` | On macOS, install with `brew install openai/tools/tunnel-client` and check `tunnel-client --version`. If already installed, check PATH with `command -v tunnel-client`. |
 | Cannot create or select a Tunnel in ChatGPT | Check permissions and the target ChatGPT workspace association in the [official guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). |
 | Cannot connect | Run doctor below. If `kiokuko` is not found, update the Tunnel launch command to the path returned by `command -v kiokuko`. |
 | Missing or incompatible database | For a missing DB, run `kiokuko init`. For an incompatible DB, preserve it and use a compatible Kiokuko version. |

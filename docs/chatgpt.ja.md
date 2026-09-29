@@ -20,6 +20,7 @@ DBが未作成の場合だけ`kiokuko init`を実行する。ChatGPT用に`kioku
 
 | 症状 | 対処 |
 |---|---|
+| `tunnel-client: command not found` | macOSでは`brew install openai/tools/tunnel-client`で導入し、`tunnel-client --version`で確認する。導入済みなら`command -v tunnel-client`でPATHを確認する。 |
 | Tunnelを作れない・ChatGPTで選べない | [公式手順](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)で権限と対象ChatGPT workspaceへの関連付けを確認する。 |
 | 接続できない | 下のdoctorを実行する。`kiokuko`が見つからなければ、Tunnel設定の起動コマンドを`command -v kiokuko`で確認したパスに直す。 |
 | DBがない・互換性がない | 未作成なら`kiokuko init`。互換性エラーならDBを保全し、そのDBに対応するKiokuko版で扱う。 |

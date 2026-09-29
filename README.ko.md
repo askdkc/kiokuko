@@ -101,20 +101,32 @@ Codex, OpenCode, Claude Code, Hermes Agent.
 
 Developer mode에서 개인용 플러그인으로 연결해 기억을 저장하고 검색합니다. 스토어 배포 버전은 없습니다.
 
-1. **준비합니다.** `kiokuko mcp --help`에 `--profile`과 `--access`가 있는 버전을 사용합니다. 없다면 [소스에서 설치](docs/chatgpt.md)합니다. DB가 없으면 `kiokuko init`을 실행합니다. [OpenAI Tunnel 안내](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)에 따라 `tunnel-client`, 사용할 ChatGPT workspace에 연결된 Tunnel ID, 인증용 `CONTROL_PLANE_API_KEY`를 준비합니다.
-2. **컴퓨터에서 연결을 시작합니다.** `<tunnel_id>`를 발급받은 ID로 바꿉니다.
+1. **Kiokuko를 준비합니다.** `kiokuko mcp --help`에 `--profile`과 `--access`가 있는 버전을 사용합니다. 없다면 [소스에서 설치](docs/chatgpt.md)합니다. DB가 없으면 `kiokuko init`을 실행합니다.
+2. **Tunnel 클라이언트를 설치합니다.** macOS에서는 [공식 Homebrew 설치 방법](https://github.com/openai/tunnel-client#install-with-homebrew)을 사용합니다.
 
    ```bash
+   brew install openai/tools/tunnel-client
+   tunnel-client --version
+   ```
+
+   다른 OS는 [공식 배포 페이지](https://github.com/openai/tunnel-client/releases/latest)를 참고합니다. [Tunnel 설정](https://platform.openai.com/settings/organization/tunnels)에서 ChatGPT workspace에 연결된 Tunnel ID와 Tunnels Read + Use 권한이 있는 [실행용 API 키](https://platform.openai.com/settings/organization/api-keys)를 준비합니다.
+
+3. **컴퓨터에서 연결을 시작합니다.** `<tunnel_id>`와 `<runtime_api_key>`를 발급받은 값으로 바꿉니다.
+
+   ```bash
+   export CONTROL_PLANE_API_KEY="<runtime_api_key>"
    tunnel-client init \
      --sample sample_mcp_stdio_local \
      --profile kiokuko-chatgpt \
      --tunnel-id "<tunnel_id>" \
      --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
+   tunnel-client doctor --profile kiokuko-chatgpt --explain
    tunnel-client run --profile kiokuko-chatgpt
    ```
 
-   사용하는 동안 계속 실행해 둡니다. 다음부터는 마지막 `run` 명령만 실행하면 됩니다.
-3. **ChatGPT에 등록합니다.** **Settings → Security and login → Developer mode**를 켭니다. **Plugins → ＋**에서 이름을 `Kiokuko`, 설명을 “기억 저장 및 검색”으로 입력하고 **Connection → Tunnel**에 같은 ID를 지정합니다. 새 대화의 도구 메뉴에서 Kiokuko를 선택합니다. [공식 화면 안내](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+   사용하는 동안 계속 실행해 둡니다. 새 터미널에서는 API 키를 다시 설정한 뒤 마지막 `run` 명령을 실행합니다.
+
+4. **ChatGPT에 등록합니다.** **Settings → Security and login → Developer mode**를 켭니다. **Plugins → ＋**에서 이름을 `Kiokuko`, 설명을 “기억 저장 및 검색”으로 입력하고 **Connection → Tunnel**에 같은 ID를 지정합니다. 새 대화의 도구 메뉴에서 Kiokuko를 선택합니다. [공식 화면 안내](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 
 사용 예: “이 내용을 Kiokuko에 저장해 줘” 또는 “Kiokuko에서 [주제]에 관한 기억을 찾아 줘”. 쓰기 확인이 나오면 내용을 확인하고 승인합니다.
 

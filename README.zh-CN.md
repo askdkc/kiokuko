@@ -101,20 +101,32 @@ Codex、OpenCode、Claude Code、Hermes Agent。
 
 通过 Developer mode 添加个人插件连接，保存和搜索记忆。目前没有商店分发版。
 
-1. **准备。** 使用 `kiokuko mcp --help` 中包含 `--profile` 和 `--access` 的版本；否则[从源码安装](docs/chatgpt.md)。尚无数据库时运行 `kiokuko init`。按 [OpenAI Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)准备 `tunnel-client`、关联到所用 ChatGPT workspace 的 Tunnel ID，以及认证用的 `CONTROL_PLANE_API_KEY`。
-2. **在电脑上启动连接。** 将 `<tunnel_id>` 替换为取得的 ID。
+1. **准备 Kiokuko。** 使用 `kiokuko mcp --help` 中包含 `--profile` 和 `--access` 的版本；否则[从源码安装](docs/chatgpt.md)。尚无数据库时运行 `kiokuko init`。
+2. **安装 Tunnel 客户端。** macOS 使用[官方 Homebrew 安装方式](https://github.com/openai/tunnel-client#install-with-homebrew)：
 
    ```bash
+   brew install openai/tools/tunnel-client
+   tunnel-client --version
+   ```
+
+   其他系统参见[官方发布页](https://github.com/openai/tunnel-client/releases/latest)。在 [Tunnel 设置](https://platform.openai.com/settings/organization/tunnels)中准备关联到 ChatGPT workspace 的 Tunnel ID，以及具有 Tunnels Read + Use 权限的[运行用 API 密钥](https://platform.openai.com/settings/organization/api-keys)。
+
+3. **在电脑上启动连接。** 将 `<tunnel_id>` 和 `<runtime_api_key>` 替换为取得的值。
+
+   ```bash
+   export CONTROL_PLANE_API_KEY="<runtime_api_key>"
    tunnel-client init \
      --sample sample_mcp_stdio_local \
      --profile kiokuko-chatgpt \
      --tunnel-id "<tunnel_id>" \
      --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
+   tunnel-client doctor --profile kiokuko-chatgpt --explain
    tunnel-client run --profile kiokuko-chatgpt
    ```
 
-   使用期间保持运行。下次只需执行最后一行 `run` 命令。
-3. **在 ChatGPT 中添加。** 开启 **Settings → Security and login → Developer mode**。在 **Plugins → ＋** 中填写名称 `Kiokuko`、说明“保存和搜索记忆”，再通过 **Connection → Tunnel** 指定同一个 ID。在新对话的工具菜单中选择 Kiokuko。[官方界面步骤](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+   使用期间保持运行。在新终端中，先重新设置 API 密钥，再执行最后一行 `run` 命令。
+
+4. **在 ChatGPT 中添加。** 开启 **Settings → Security and login → Developer mode**。在 **Plugins → ＋** 中填写名称 `Kiokuko`、说明“保存和搜索记忆”，再通过 **Connection → Tunnel** 指定同一个 ID。在新对话的工具菜单中选择 Kiokuko。[官方界面步骤](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 
 使用示例：“把这些内容保存到 Kiokuko”或“在 Kiokuko 中查找关于[主题]的记忆”。出现写入确认时，检查内容后批准。
 

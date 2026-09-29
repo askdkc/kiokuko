@@ -124,20 +124,32 @@ links to conceptual and operational guides.
 
 Connect a personal plugin in Developer mode to save and recall memory. No store-distributed plugin is available.
 
-1. **Prepare.** Use a version whose `kiokuko mcp --help` lists `--profile` and `--access`; otherwise [install from source](docs/chatgpt.md). Run `kiokuko init` if you do not have a database. Follow [OpenAI's Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) to obtain `tunnel-client`, a Tunnel ID associated with your ChatGPT workspace, and configure `CONTROL_PLANE_API_KEY` for authentication.
-2. **Start the connection on your computer.** Replace `<tunnel_id>` with your ID.
+1. **Prepare Kiokuko.** Use a version whose `kiokuko mcp --help` lists `--profile` and `--access`; otherwise [install from source](docs/chatgpt.md). Run `kiokuko init` if you do not have a database.
+2. **Install the Tunnel client.** On macOS, use the [official Homebrew instructions](https://github.com/openai/tunnel-client#install-with-homebrew):
 
    ```bash
+   brew install openai/tools/tunnel-client
+   tunnel-client --version
+   ```
+
+   For other operating systems, see the [official releases](https://github.com/openai/tunnel-client/releases/latest). In [Tunnel settings](https://platform.openai.com/settings/organization/tunnels), obtain a Tunnel ID associated with your ChatGPT workspace and a [runtime API key](https://platform.openai.com/settings/organization/api-keys) with Tunnels Read + Use permission.
+
+3. **Start the connection on your computer.** Replace `<tunnel_id>` and `<runtime_api_key>` with your values.
+
+   ```bash
+   export CONTROL_PLANE_API_KEY="<runtime_api_key>"
    tunnel-client init \
      --sample sample_mcp_stdio_local \
      --profile kiokuko-chatgpt \
      --tunnel-id "<tunnel_id>" \
      --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
+   tunnel-client doctor --profile kiokuko-chatgpt --explain
    tunnel-client run --profile kiokuko-chatgpt
    ```
 
-   Keep it running while using the connection. Next time, only the final `run` command is needed.
-3. **Register in ChatGPT.** Enable **Settings → Security and login → Developer mode**. Under **Plugins → ＋**, name it `Kiokuko`, describe it as “Save and recall memory”, and choose **Connection → Tunnel** with the same ID. Select Kiokuko from the tools menu in a new conversation. [Official UI instructions](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+   Keep it running while using the connection. In a new terminal, set the API key again and execute the final `run` command.
+
+4. **Register in ChatGPT.** Enable **Settings → Security and login → Developer mode**. Under **Plugins → ＋**, name it `Kiokuko`, describe it as “Save and recall memory”, and choose **Connection → Tunnel** with the same ID. Select Kiokuko from the tools menu in a new conversation. [Official UI instructions](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 
 Try: “Save this information in Kiokuko” or “Search Kiokuko for memories about [topic].” Review and approve write requests when prompted.
 
