@@ -5,6 +5,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -203,6 +205,47 @@ async function verifyInstalledProfileRebuild(cliPath, fixtureRoot) {
   process.stdout.write('Installed profile rebuild verified explicit database, restart, resume, and JSON output.\n');
 }
 
+async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
+  const environment = { PATH: process.env.PATH ?? '', KIOKUKO_DATA_DIR: fixtureRoot };
+  await run(cliPath, ['init'], repositoryRoot, environment);
+  const client = new Client({ name: 'chatgpt-package-smoke', version: '1' });
+  const transport = new StdioClientTransport({ command: cliPath,
+    args: ['mcp', '--profile', 'chatgpt-memory', '--access', 'read'], env: environment, stderr: 'pipe' });
+  try {
+    await client.connect(transport);
+    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_policy', 'memory_recall']);
+    const policy = (await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
+    assert.equal(policy.policyVersion, 'chatgpt-memory/2');
+    assert.match(policy.policyDigest, /^[a-f0-9]{64}$/u);
+    assert.ok(policy.instructions.length > 0);
+    const result = await client.callTool({ name: 'memory_recall', arguments: { query: 'package smoke',
+      policy: { version: policy.policyVersion, digest: policy.policyDigest, read: true } } });
+    assert.notEqual(result.isError, true);
+    assert.deepEqual(result.structuredContent.items, []);
+    assert.equal((await client.callTool({ name: 'memory_capture', arguments: {} })).isError, true);
+  } finally { await client.close(); }
+  const writer = new Client({ name: 'chatgpt-package-smoke', version: '1' });
+  try {
+    await writer.connect(new StdioClientTransport({ command: cliPath,
+      args: ['mcp', '--profile', 'chatgpt-memory', '--access', 'read-write'], env: environment, stderr: 'pipe' }));
+    assert.deepEqual((await writer.listTools()).tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_policy', 'memory_recall']);
+    const p = (await writer.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
+    assert.equal(p.access, 'read-write');
+    const policy = { version: p.policyVersion, digest: p.policyDigest, read: true };
+    const args = { policy, operationId: 'package-save', memories: [{ kind: 'preference', title: 'Package smoke',
+      body: 'Use concise examples for package smoke explanations.', subjects: ['package smoke'], basis: 'user_statement',
+      portableReason: 'General explanation preference across projects.' }] };
+    const saved = await writer.callTool({ name: 'memory_capture', arguments: args });
+    assert.notEqual(saved.isError, true);
+    assert.equal(saved.structuredContent.enabled, true);
+    assert.equal(saved.structuredContent.items[0].outcome, 'created');
+    assert.deepEqual((await writer.callTool({ name: 'memory_capture', arguments: args })).structuredContent, saved.structuredContent);
+    const found = await writer.callTool({ name: 'memory_recall', arguments: { policy, query: 'package smoke' } });
+    assert.equal(found.structuredContent.items[0].entryId, saved.structuredContent.items[0].entryId);
+  } finally { await writer.close(); }
+  process.stdout.write('Installed ChatGPT profile verified policy asset, read-only allowlist, opt-in save, replay and recall.\n');
+}
+
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'kiokuko-global-install-'));
 const packDirectory = path.join(temporaryRoot, 'pack');
 const prefixDirectory = path.join(temporaryRoot, 'prefix');
@@ -214,6 +257,11 @@ try {
   await run('npm', ['run', 'build'], repositoryRoot);
   const packed = await run('npm', ['pack', '--pack-destination', packDirectory, '--json'], repositoryRoot);
   const packageFiles = new Set(JSON.parse(packed.stdout)[0].files.map((file) => file.path));
+  for (const file of ['templates/chatgpt/memory-policy.json', 'dist/chatgpt/memory-policy.js',
+    'dist/mcp/chatgpt-server.js', 'dist/mcp/chatgpt-runtime.js', 'dist/memory/global-conversation-query.js',
+    'docs/chatgpt.md', 'docs/chatgpt.ja.md']) {
+    assert.ok(packageFiles.has(file), `ChatGPT memory package artifact missing: ${file}`);
+  }
   for (const file of ['migrations/003_interaction_memory.sql', 'dist/memory/interaction-capture.js', 'dist/memory/interaction-recall.js', 'docs/interaction-memory.md']) {
     assert.ok(packageFiles.has(file), `interaction memory package artifact missing: ${file}`);
   }
@@ -240,6 +288,7 @@ try {
   const cliPath = path.join(prefixDirectory, 'bin', 'kiokuko');
   const version = await run(cliPath, ['--version'], repositoryRoot);
   assert.equal(version.stdout.trim(), packageJson.version, 'installed CLI version must match package.json');
+  await verifyInstalledChatgptProfile(cliPath, path.join(temporaryRoot, 'chatgpt-fixture'));
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 
   await verifyInstalledSkillSetup(

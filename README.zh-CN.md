@@ -97,6 +97,29 @@ npm uninstall --global kiokuko
 
 Codex、OpenCode、Claude Code、Hermes Agent。
 
+## 在 ChatGPT 中使用（预览）
+
+通过 Developer mode 添加个人插件连接，保存和搜索记忆。目前没有商店分发版。
+
+1. **准备。** 使用 `kiokuko mcp --help` 中包含 `--profile` 和 `--access` 的版本；否则[从源码安装](docs/chatgpt.md)。尚无数据库时运行 `kiokuko init`。按 [OpenAI Tunnel 指南](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)准备 `tunnel-client`、关联到所用 ChatGPT workspace 的 Tunnel ID，以及认证用的 `CONTROL_PLANE_API_KEY`。
+2. **在电脑上启动连接。** 将 `<tunnel_id>` 替换为取得的 ID。
+
+   ```bash
+   tunnel-client init \
+     --sample sample_mcp_stdio_local \
+     --profile kiokuko-chatgpt \
+     --tunnel-id "<tunnel_id>" \
+     --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
+   tunnel-client run --profile kiokuko-chatgpt
+   ```
+
+   使用期间保持运行。下次只需执行最后一行 `run` 命令。
+3. **在 ChatGPT 中添加。** 开启 **Settings → Security and login → Developer mode**。在 **Plugins → ＋** 中填写名称 `Kiokuko`、说明“保存和搜索记忆”，再通过 **Connection → Tunnel** 指定同一个 ID。在新对话的工具菜单中选择 Kiokuko。[官方界面步骤](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+
+使用示例：“把这些内容保存到 Kiokuko”或“在 Kiokuko 中查找关于[主题]的记忆”。出现写入确认时，检查内容后批准。
+
+只需搜索时，将启动命令中的 `read-write` 改为 `read`。这不会更改 ChatGPT 内置记忆的保存位置。**尚未在 ChatGPT 中实测连接。** [故障排查](docs/chatgpt.md)
+
 ## 安全性与限制
 
 Kiokuko 不保存完整对话，并拒绝看起来像密码、API key、token 或私钥的内容。记忆只是参考信息，应以当前代码和运行结果为准。

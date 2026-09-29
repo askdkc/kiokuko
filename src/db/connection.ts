@@ -106,7 +106,7 @@ function configureJournalMode(database: DatabaseSync): void {
 
 export function openConnection(filePath: string, options: ConnectionOptions = {}): NodeSqliteAdapter {
   const sqliteVecLoader = requireSqliteVecLoader(options.sqliteVecLoader);
-  if (filePath !== ':memory:') {
+  if (filePath !== ':memory:' && !options.readOnly) {
     mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
   }
   const database = new DatabaseSync(filePath, {

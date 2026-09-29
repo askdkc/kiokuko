@@ -863,9 +863,17 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     ...(dependencies.uninstallOutput === undefined ? {} : { output: dependencies.uninstallOutput }),
   });
 
-  cli.command('mcp').description('Run the Kiokuko MCP server over stdio').action(async () => {
-    await runMcpServer();
-  });
+  cli.command('mcp').description('Run the Kiokuko MCP server over stdio')
+    .option('--profile <name>', 'MCP profile: chatgpt-memory (omit for the existing local server)')
+    .option('--access <mode>', 'ChatGPT access: read (default) or read-write (explicit save/correction)')
+    .action(async (options: { profile?: string; access?: string }) => {
+      if (options.profile === undefined && options.access === undefined) return runMcpServer();
+      if (options.profile !== 'chatgpt-memory' || (options.access !== undefined && options.access !== 'read' && options.access !== 'read-write')) {
+        throw new KiokukoError('USAGE_ERROR', 'Use --profile chatgpt-memory with --access read or read-write, or omit both options for the local MCP server');
+      }
+      const { runChatgptMemoryServer } = await import('./mcp/chatgpt-server.js');
+      await runChatgptMemoryServer(options.access ?? 'read');
+    });
 
   cli.command('use').description('Bind this repository to Kiokuko external memory')
     .option('--root <path>').option('--workspace <name>').option('--agent-file <path>', 'Agent instruction file')

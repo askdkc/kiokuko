@@ -120,6 +120,29 @@ Client-specific setup, Web UI, and restart instructions are in
 [Getting started](docs/getting-started.md). The [documentation index](docs/README.md)
 links to conceptual and operational guides.
 
+## Use with ChatGPT (preview)
+
+Connect a personal plugin in Developer mode to save and recall memory. No store-distributed plugin is available.
+
+1. **Prepare.** Use a version whose `kiokuko mcp --help` lists `--profile` and `--access`; otherwise [install from source](docs/chatgpt.md). Run `kiokuko init` if you do not have a database. Follow [OpenAI's Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) to obtain `tunnel-client`, a Tunnel ID associated with your ChatGPT workspace, and configure `CONTROL_PLANE_API_KEY` for authentication.
+2. **Start the connection on your computer.** Replace `<tunnel_id>` with your ID.
+
+   ```bash
+   tunnel-client init \
+     --sample sample_mcp_stdio_local \
+     --profile kiokuko-chatgpt \
+     --tunnel-id "<tunnel_id>" \
+     --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
+   tunnel-client run --profile kiokuko-chatgpt
+   ```
+
+   Keep it running while using the connection. Next time, only the final `run` command is needed.
+3. **Register in ChatGPT.** Enable **Settings → Security and login → Developer mode**. Under **Plugins → ＋**, name it `Kiokuko`, describe it as “Save and recall memory”, and choose **Connection → Tunnel** with the same ID. Select Kiokuko from the tools menu in a new conversation. [Official UI instructions](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+
+Try: “Save this information in Kiokuko” or “Search Kiokuko for memories about [topic].” Review and approve write requests when prompted.
+
+For search only, change `read-write` to `read` in the launch command. This does not change ChatGPT's built-in memory storage. **Live ChatGPT connection testing is pending.** [Troubleshooting](docs/chatgpt.md)
+
 ## Safety and limitations
 
 Kiokuko does not store full conversations and rejects content that resembles secrets

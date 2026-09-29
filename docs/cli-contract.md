@@ -48,6 +48,17 @@ JSON keeps the invoked operation name (`setup` or `embeddings.setup`) and includ
 and `projectSetup`; `--no-embeddings` returns the client setup result without a
 semantic result. Dry-run reads an existing database without initializing or upgrading it.
 
+## ChatGPT conversation MCP profile
+
+`kiokuko mcp --profile chatgpt-memory --access read` exposes only `memory_policy`
+and Global `memory_recall`. Access defaults to `read`; unsupported profile/access
+values and `--access` without this profile fail before opening the database.
+`--access read-write` additionally exposes Global `memory_capture` for explicit saves and corrections. Plain `kiokuko mcp` retains the local contract.
+This profile requires a current existing database, uses lexical search, and never
+initializes, migrates or starts an embedding worker. ChatGPT registration is a
+manual connection step, not a setup target. See the [connection guide](chatgpt.md)
+and [validation status](chatgpt-validation.md).
+
 ## Uninstall
 
 Stop clients using Kiokuko and any foreground `kiokuko serve` process before cleanup:

@@ -7,6 +7,7 @@ Choose a guide by what you need to do:
 - [Concepts](concepts.md) — RAG, memory lifecycle, Project/Ecosystem/Global scopes, and Akinator.
 - [Semantic retrieval](semantic-retrieval.md) — embedding runtime setup, operation, offline mode, and fallback.
 - [Interaction memory](interaction-memory.md) — automatic candidate capture, subject recall, corrections, and the disable switch.
+- [ChatGPT memory](chatgpt.md) — supported-version installation, connection troubleshooting and scope.
 - [Akinator profile memory](akinator-memory.md) — optional hints, strict target resolution, and index rebuilding.
 - [Security and trust](security-and-trust.md) — secret rejection, memory boundaries, External Skills, and public errors.
 - [CLI contract](cli-contract.md) — stable command and response details.
