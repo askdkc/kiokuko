@@ -24,7 +24,7 @@ KiokukoはAIコーディングエージェント向けのローカル外部メ�
 Node.js 24.16.0以上が必要です（Node.js 26.1.0以上にも対応）。
 
 ```bash
-npm install --global @askdkc/kiokuko
+npm install --global kiokuko
 kiokuko setup
 ```
 

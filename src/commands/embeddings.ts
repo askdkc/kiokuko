@@ -1,7 +1,8 @@
 import type { Command } from 'commander';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import type { PathEnvironment } from '../config/paths.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -48,6 +49,7 @@ const OPTIONAL_RUNTIME_INSTALL_ARGS = [
   ...OPTIONAL_RUNTIME_PACKAGES,
   ...OPTIONAL_RUNTIME_SCRIPT_ARGS,
 ] as const;
+const execFileAsync = promisify(execFile);
 
 function runningPackageRoot(): string {
   return dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -120,12 +122,15 @@ export interface EmbeddingsCommandDependencies {
   readonly setupGlobalClients?: (options: SetupOptions) => Promise<Pick<SetupResult, 'clients' | 'projectAgentFiles'>>;
 }
 
-async function checkOptionalRuntime(): Promise<void> {
+export async function checkOptionalRuntime(packageRoot = runningPackageRoot()): Promise<void> {
   try {
-    await Promise.all([
-      import('@huggingface/hub'),
-      import('@huggingface/transformers'),
-    ]);
+    // A failed import remains cached in a Node process even if npm installs the
+    // package later. Probe in a disposable process so setup can import it afterward.
+    await execFileAsync(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      "await Promise.all([import('@huggingface/hub'), import('@huggingface/transformers')]);",
+    ], { cwd: packageRoot, timeout: 30_000, maxBuffer: 64 * 1024 });
   } catch (error) {
     const cause = error instanceof Error ? `: ${error.message}` : '';
     throw new KiokukoError(

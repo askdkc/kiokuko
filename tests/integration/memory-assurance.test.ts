@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { initializeDatabase } from '../../src/commands/init.js';
+import { runDoctor } from '../../src/commands/doctor.js';
 import { openConnection } from '../../src/db/connection.js';
 import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
@@ -65,6 +66,54 @@ test('requires current memory decisions and passing evidence, persists across re
     assert.ok(refreshed);
     assert.equal(taskAssuranceReport(db, runId).complete, false);
   } finally { db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+test('doctor inspects adopted memory across a symlink and nested Git repositories', async () => {
+  const f = await fixture();
+  try {
+    const link = path.join(f.root, 'CLAUDE.md');
+    symlinkSync('source.ts', link);
+    const moduleRoot = path.join(f.root, 'module');
+    const nestedRoot = path.join(moduleRoot, 'nested');
+    execFileSync('git', ['init', '-q', moduleRoot]);
+    execFileSync('git', ['init', '-q', nestedRoot]);
+    writeFileSync(path.join(nestedRoot, 'nested.ts'), 'export const value = 1;\n');
+    execFileSync('git', ['-C', moduleRoot, 'update-index', '--add', '--cacheinfo', `160000,${'b'.repeat(40)},nested`]);
+    execFileSync('git', ['-C', f.root, 'update-index', '--add', '--cacheinfo', `160000,${'a'.repeat(40)},module`]);
+    const runId = f.prepared.run.runId;
+    const deliveryId = f.prepared.context!.deliveryId!;
+    const evidence = recordTaskEvidence(f.db, {
+      runId, requestId: 'symlink-evidence', expectedRevision: taskAssuranceReport(f.db, runId).revision!, cwd: f.root,
+      deliveryId, execution: 'symlink fixture', stateDigest: repositoryStateDigest(f.root), outcome: 'passed', exitCode: 0,
+    });
+    reviewTaskMemory(f.db, {
+      runId, requestId: 'symlink-review', expectedRevision: evidence.revision, cwd: f.root, deliveryId,
+      entryId: f.entry.id, entryRevision: f.entry.revision, decision: 'adopted',
+      basis: 'Fixture contains the current source', invariant: 'The source remains at its verified state',
+      counterexample: 'Change the link target after verification', verification: 'Run doctor against the fixture',
+      evidenceIds: [evidence.evidenceId],
+    });
+    const healthy = await runDoctor({ databasePath: f.databasePath });
+    assert.equal(healthy.checks.memoryAssurance.ok, true);
+    assert.match(healthy.checks.memoryAssurance.detail!, /inspectionErrors=0/u);
+
+    writeFileSync(path.join(nestedRoot, 'nested.ts'), 'export const value = 2;\n');
+    const changedModule = await runDoctor({ databasePath: f.databasePath });
+    assert.match(changedModule.checks.memoryAssurance.detail!, /missingVerification=1; inspectionErrors=0/u);
+    writeFileSync(path.join(nestedRoot, 'nested.ts'), 'export const value = 1;\n');
+
+    writeFileSync(path.join(f.root, 'other.ts'), 'export const other = true;\n');
+    unlinkSync(link);
+    symlinkSync('other.ts', link);
+    const stale = await runDoctor({ databasePath: f.databasePath });
+    assert.equal(stale.checks.memoryAssurance.ok, true);
+    assert.match(stale.checks.memoryAssurance.detail!, /missingVerification=1; inspectionErrors=0/u);
+
+    unlinkSync(link);
+    const outside = path.join(f.base, 'outside.ts');
+    writeFileSync(outside, 'export const secret = true;\n');
+    symlinkSync(outside, link);
+    assert.throws(() => repositoryStateDigest(f.root), /symlink escapes the repository/u);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 test('Codex blocks unprepared edits and does not inherit another agent or interrupted request', async () => {
   const f = await fixture();

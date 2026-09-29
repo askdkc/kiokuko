@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -20,17 +20,23 @@ const forbiddenPackages = new Set([
   'boolean',
 ]);
 let npmCacheDirectory;
+let npmUserConfigPath;
 
 async function run(command, args, cwd, environment = process.env) {
   try {
+    const childEnvironment = {
+      ...environment,
+      npm_config_loglevel: 'warn',
+      ...(npmCacheDirectory === undefined ? {} : { npm_config_cache: npmCacheDirectory }),
+      ...(npmUserConfigPath === undefined ? {} : { npm_config_userconfig: npmUserConfigPath }),
+    };
+    for (const key of Object.keys(childEnvironment)) {
+      if (key.toLowerCase().replaceAll('-', '_') === 'npm_config_allow_scripts') delete childEnvironment[key];
+    }
     return await execFileAsync(command, args, {
       cwd,
       maxBuffer: 4 * 1024 * 1024,
-      env: {
-        ...environment,
-        npm_config_loglevel: 'warn',
-        ...(npmCacheDirectory === undefined ? {} : { npm_config_cache: npmCacheDirectory }),
-      },
+      env: childEnvironment,
     });
   } catch (error) {
     const stdout = typeof error.stdout === 'string' ? error.stdout : '';
@@ -250,8 +256,10 @@ const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'kiokuko-global-insta
 const packDirectory = path.join(temporaryRoot, 'pack');
 const prefixDirectory = path.join(temporaryRoot, 'prefix');
 npmCacheDirectory = path.join(temporaryRoot, 'npm-cache');
+npmUserConfigPath = path.join(temporaryRoot, 'empty.npmrc');
 
 try {
+  await writeFile(npmUserConfigPath, '');
   const packageJson = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
   await mkdir(packDirectory, { recursive: true });
   await run('npm', ['run', 'build'], repositoryRoot);
@@ -302,6 +310,11 @@ try {
   for (const forbidden of forbiddenPackages) {
     assert.equal(installedNames.has(forbidden), false, `${forbidden} must not be in the minimal dependency tree`);
   }
+  await verifyFirstInstalledEmbeddingSetup(
+    path.join(prefixDirectory, 'lib', 'node_modules', packageJson.name),
+    prefixDirectory,
+    path.join(temporaryRoot, 'embedding-setup-fixture'),
+  );
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }
