@@ -43,6 +43,7 @@ import {
   canonicalEntryRevisionContentHash,
   canonicalJson,
   type EntryKind,
+  type JsonObject,
 } from '../../src/serialization/validate.js';
 import { createRuntimeDescriptor, writeRuntimeDescriptor } from '../../src/server/runtime-descriptor.js';
 import { MAX_STRICT_JSON_DEPTH } from '../../src/setup/strict-json.js';
@@ -146,6 +147,51 @@ function rowCounts(db: ReturnType<typeof openConnection>): Record<string, number
     ]),
   );
 }
+
+test('import refuses derived lesson records whose revision-bound sources an archive cannot preserve', async () => {
+  const source = await database('export-derived-lesson-source');
+  const target = await database('export-derived-lesson-target');
+  const workspace = 'project:archive-derived-lesson';
+  try {
+    recordEntry(source.db, {
+      workspace,
+      kind: 'lesson',
+      title: 'Revision-bound lesson',
+      body: 'A workspace archive cannot prove this derived lesson source.',
+      createdBy: 'archive-test',
+    }, { now: '2026-09-30T00:00:00.000Z', idFactory: () => 'archive-derived-lesson' });
+    const archive = exportWorkspace(source.db, { workspace }).content;
+    const derivedArchive = rebuildWorkspaceArchive(archive, (records) => {
+      const entry = records.find((record) => record.type === 'entry');
+      assert.ok(entry);
+      const provenance = {
+        type: 'agent_derived_lesson',
+        runId: 'archive-lesson-run',
+        deliveryId: 'archive-lesson-delivery',
+        evidenceIds: ['archive-lesson-source'],
+        sourceSetHash: 'a'.repeat(64),
+      };
+      entry.provenance_json = canonicalJson(provenance);
+      entry.content_hash = canonicalEntryRevisionContentHash({
+        kind: entry.kind as EntryKind,
+        title: String(entry.title),
+        body: String(entry.body),
+        summary: entry.summary === null ? null : String(entry.summary),
+        scope: JSON.parse(String(entry.scope_json)) as JsonObject,
+        provenance,
+        tags: records.filter((record) => record.type === 'tag' && record.entry_id === entry.id)
+          .map((record) => String(record.tag)),
+      });
+    });
+    const input = path.join(source.directory, 'derived-lesson.jsonl');
+    await writeFile(input, derivedArchive, 'utf8');
+    await assert.rejects(importWorkspace(target.db, { input, workspace }), { code: 'VALIDATION_ERROR' });
+    assertArchiveTablesEmpty(target.db);
+  } finally {
+    source.db.close();
+    target.db.close();
+  }
+});
 
 function archiveReplayState(db: ReturnType<typeof openConnection>): Record<string, unknown> {
   return {

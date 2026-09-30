@@ -34,6 +34,11 @@ import {
   type ProjectFingerprint,
 } from '../repository/project-fingerprint.js';
 import type { ResolvedProjectWorkspace } from '../memory/workspaces.js';
+import { normalizeTemporalConstraint, type TemporalConstraint } from '../memory/temporal.js';
+import { effectiveRelatedSearchMode } from '../memory/search-extension-config.js';
+import { readRerankerConfig, type RerankerConfig } from '../reranker/config.js';
+import { scoreLocalReranker } from '../reranker/service.js';
+import { deduplicateDeliverableLessonSources, formatLessonSourceReferences, readDeliverableLessonSourceReferences, type LessonDeduplicationResult } from '../memory/lesson-derivation.js';
 
 export const CONTEXT_BROKER_POLICY_VERSION = `${CONTEXT_RANKING_VERSION}+${RECOMMENDATION_POLICY_VERSION}` as const;
 export const CONTEXT_BROKER_DEFAULT_LIMIT = 20;
@@ -51,6 +56,8 @@ export interface ContextBrokerQueryInput {
   errorSignatures?: string[];
   limit?: number;
   characterBudget?: number;
+  temporal?: TemporalConstraint;
+  relatedMode?: 'off' | 'observe' | 'active';
 }
 
 export interface ContextBrokerContextItem {
@@ -85,6 +92,17 @@ export interface ContextBrokerResult {
   projection: LedgerProjection | null;
   context: ContextBrokerContext | null;
   recommendations: Recommendation[];
+  rerankerDiagnostics?: ContextRerankerDiagnostics;
+  lessonDeduplicationDiagnostics?: LessonDeduplicationResult['diagnostics'];
+}
+
+export interface ContextRerankerDiagnostics {
+  mode: 'observe' | 'active';
+  state: 'observed' | 'applied' | 'unavailable' | 'failed' | 'no_candidates';
+  candidateCount: number;
+  scoredCount: number;
+  unscoredCount: number;
+  reason?: string;
 }
 
 export interface ContextBrokerPersistence {
@@ -160,6 +178,11 @@ interface PreparedQuery {
   task: string;
   limit: number;
   characterBudget: number;
+  temporal?: TemporalConstraint;
+  relatedMode: 'off' | 'observe' | 'active';
+  rerankerConfig: RerankerConfig;
+  rerankerDiagnostics?: ContextRerankerDiagnostics;
+  lessonDeduplicationDiagnostics?: LessonDeduplicationResult['diagnostics'];
   throughSequence: number;
   intakeSessionId: string | null;
   projection: LedgerProjection | null;
@@ -253,7 +276,7 @@ function boundedStringArray(value: unknown, max: number): string[] {
 function normalizeInput(input: unknown): ContextBrokerQueryInput {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) invalid();
   const value = input as Record<string, unknown>;
-  const allowed = new Set(['apiVersion', 'workspace', 'runId', 'task', 'taskProfile', 'recommendedTags', 'changedPaths', 'errorSignatures', 'limit', 'characterBudget']);
+  const allowed = new Set(['apiVersion', 'workspace', 'runId', 'task', 'taskProfile', 'recommendedTags', 'changedPaths', 'errorSignatures', 'limit', 'characterBudget', 'temporal', 'relatedMode']);
   if (Object.keys(value).some((key) => !allowed.has(key))) invalid();
   if (value.apiVersion !== undefined && value.apiVersion !== '1') invalid();
   if (value.workspace !== undefined && (typeof value.workspace !== 'string' || value.workspace.length === 0 || value.workspace.length > 256)) invalid();
@@ -263,6 +286,8 @@ function normalizeInput(input: unknown): ContextBrokerQueryInput {
   if (value.taskProfile !== undefined && !isTaskProfile(value.taskProfile)) invalid();
   if (value.limit !== undefined && (typeof value.limit !== 'number' || !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > CONTEXT_BROKER_MAX_LIMIT)) invalid();
   if (value.characterBudget !== undefined && (typeof value.characterBudget !== 'number' || !Number.isSafeInteger(value.characterBudget) || value.characterBudget < 1 || value.characterBudget > CONTEXT_BROKER_MAX_CHARACTER_BUDGET)) invalid();
+  if (value.relatedMode !== undefined && value.relatedMode !== 'off' && value.relatedMode !== 'observe' && value.relatedMode !== 'active') invalid();
+  const temporal = normalizeTemporalConstraint(value.temporal);
   return {
     ...(value.workspace === undefined ? {} : { workspace: value.workspace }),
     ...(value.runId === undefined ? {} : { runId: value.runId }),
@@ -273,6 +298,8 @@ function normalizeInput(input: unknown): ContextBrokerQueryInput {
     errorSignatures: boundedStringArray(value.errorSignatures, 500),
     ...(value.limit === undefined ? {} : { limit: value.limit as number }),
     ...(value.characterBudget === undefined ? {} : { characterBudget: value.characterBudget as number }),
+    ...(temporal === undefined ? {} : { temporal }),
+    ...(value.relatedMode === undefined ? {} : { relatedMode: value.relatedMode as NonNullable<ContextBrokerQueryInput['relatedMode']> }),
   };
 }
 
@@ -334,6 +361,10 @@ function preparedQuery(database: SqliteDatabase, input: ContextBrokerQueryInput)
   const taskProfileHash = runContext?.profileHash ?? canonicalContentHash(profile);
   const recommendedTags = runContext?.recommendedTags ?? input.recommendedTags ?? [];
   const workspace = runContext?.run.workspace ?? requestedWorkspace;
+  const temporal = normalizeTemporalConstraint(input.temporal);
+  const relatedMode = effectiveRelatedSearchMode(input.relatedMode);
+  const rerankerConfig = readRerankerConfig();
+  if (relatedMode !== 'off' && relatedMode !== 'observe' && relatedMode !== 'active') invalid();
   const project = projectForWorkspace(database, workspace);
   const projectState = project === undefined
     ? null
@@ -363,6 +394,20 @@ function preparedQuery(database: SqliteDatabase, input: ContextBrokerQueryInput)
     throughSequence,
     characterBudget: input.characterBudget ?? CONTEXT_BROKER_DEFAULT_CHARACTER_BUDGET,
     limit: input.limit ?? CONTEXT_BROKER_DEFAULT_LIMIT,
+    ...(temporal === undefined ? {} : { temporal }),
+    ...(relatedMode === 'off' ? {} : { relatedMode }),
+    ...(rerankerConfig.mode === 'active' ? { reranker: {
+      mode: rerankerConfig.mode,
+      presetId: rerankerConfig.presetId,
+      revision: rerankerConfig.revision,
+      dtype: rerankerConfig.dtype,
+      maxCandidates: rerankerConfig.maxCandidates,
+      maxInputBytes: rerankerConfig.maxInputBytes,
+      maxTokens: rerankerConfig.maxTokens,
+      timeoutMs: rerankerConfig.timeoutMs,
+      maxConcurrency: rerankerConfig.maxConcurrency,
+      queueLimit: rerankerConfig.queueLimit,
+    } } : {}),
     projectState,
     retrievalStateHash,
     runStateHash: runContext?.stateHash ?? null,
@@ -381,6 +426,9 @@ function preparedQuery(database: SqliteDatabase, input: ContextBrokerQueryInput)
     task,
     limit: input.limit ?? CONTEXT_BROKER_DEFAULT_LIMIT,
     characterBudget: input.characterBudget ?? CONTEXT_BROKER_DEFAULT_CHARACTER_BUDGET,
+    ...(temporal === undefined ? {} : { temporal }),
+    relatedMode,
+    rerankerConfig,
     throughSequence,
     intakeSessionId: runContext?.intakeSessionId ?? null,
     projection: runContext?.projection ?? null,
@@ -395,7 +443,7 @@ function preparedQuery(database: SqliteDatabase, input: ContextBrokerQueryInput)
   };
 }
 
-function entrySnapshot(entry: EntryRecord, origin?: FederatedOrigin, selectionReasons: string[] = []): Parameters<typeof rankContextCandidates>[0] extends infer _ ? {
+function entrySnapshot(entry: EntryRecord, origin?: FederatedOrigin, selectionReasons: string[] = [], sourceReferences = ''): Parameters<typeof rankContextCandidates>[0] extends infer _ ? {
   id: string; revision: number; kind: EntryRecord['kind']; status: EntryRecord['status']; trustLevel: EntryRecord['trustLevel']; confidence: number;
   title: string; summary: string | null; body: string; tags: string[]; scope: JsonObject; updatedAt: string;
   selectionReasons: string[];
@@ -410,7 +458,7 @@ function entrySnapshot(entry: EntryRecord, origin?: FederatedOrigin, selectionRe
     confidence: entry.confidence,
     title: entry.title,
     summary: entry.summary,
-    body: entry.body,
+    body: `${entry.body}${sourceReferences}`,
     tags: [...entry.tags],
     scope: entry.scope,
     updatedAt: entry.updatedAt,
@@ -485,6 +533,10 @@ async function retrieveEntries(
     .filter((value): value is string => value !== null && value.length > 0)
     .map((value) => value.slice(0, 2_000));
   const queries = [retrievalQuery(query), ...terms];
+  const features = {
+    ...(query.temporal === undefined ? {} : { temporal: query.temporal }),
+    relatedMode: query.relatedMode,
+  };
   const entries = new Map<string, RetrievedEntry>();
   for (const value of queries) {
     if (query.projectState !== null) {
@@ -493,11 +545,12 @@ async function retrieveEntries(
         fingerprint: query.projectState.fingerprint,
         query: value,
         limit: 500,
+        ...features,
         }, runtime)) {
         addRetrievedEntry(entries, { entry: hit.entry, origin: hit.origin, selectionReasons: hit.selectionReasons });
       }
     } else {
-      for (const hit of rankedEntryHits(database, { workspace: query.workspace, query: value, limit: 500, includeSuperseded: false }, runtime).hits) {
+      for (const hit of rankedEntryHits(database, { workspace: query.workspace, query: value, limit: 500, includeSuperseded: false, ...features }, runtime).hits) {
         addRetrievedEntry(entries, {
           entry: readEntry(database, { workspace: query.workspace, entryId: hit.entryId }),
           origin: 'project',
@@ -542,19 +595,113 @@ async function rank(
   prior: ReturnType<typeof priorData>,
   runtime: import('../memory/hybrid-retrieval.js').HybridSearchRuntime,
 ): Promise<RankedCandidate[]> {
-  const entries = await retrieveEntries(database, query, runtime);
+  const retrievedEntries = await retrieveEntries(database, query, runtime);
+  const deduplicated = deduplicateDeliverableLessonSources(
+    database,
+    retrievedEntries.map(({ entry }) => entry),
+    query.relatedMode,
+  );
+  query.lessonDeduplicationDiagnostics = deduplicated.diagnostics;
+  const suppressedForRetained = new Set(deduplicated.suppressed.map((item) => item.retainedEntryId));
+  const suppressedIds = new Set(deduplicated.suppressed.map((item) => item.entryId));
+  const sourceNotes = new Map<string, string>();
+  if (query.relatedMode === 'active') {
+    for (const [entryId, references] of deduplicated.sourceReferences) {
+      sourceNotes.set(entryId, formatLessonSourceReferences(references));
+    }
+  }
+  const entries = retrievedEntries.filter(({ entry }) => !suppressedIds.has(entry.id)).map((value) => ({
+    ...value,
+    selectionReasons: suppressedForRetained.has(value.entry.id)
+      ? [...value.selectionReasons, 'duplicate_source_suppressed']
+      : value.selectionReasons,
+  }));
   const feedback = entries.flatMap(({ entry }) => contextFeedbackSignals(database, entry.id).flatMap((signal) =>
     Array.from({ length: signal.boundedInfluence }, () => ({ entryId: entry.id, verdict: signal.verdict }))));
-  return rankContextCandidates({
+  const rankingInput = {
     taskProfile: query.taskProfile,
     recommendedTags: query.recommendedTags,
     changedPaths: query.changedPaths,
     errorSignatures: query.errorSignatures,
     priorDelivered: prior.delivered,
     feedback,
-    candidates: entries.map(({ entry, origin, selectionReasons }) => entrySnapshot(entry, origin, selectionReasons)),
+    candidates: entries.map(({ entry, origin, selectionReasons }) => entrySnapshot(entry, origin, selectionReasons, sourceNotes.get(entry.id))),
     limit: query.limit,
     characterBudget: query.characterBudget,
+  };
+  const baseline = rankContextCandidates(rankingInput);
+  const config = query.rerankerConfig;
+  if (config.mode === 'off') return baseline.filter((candidate) => {
+    const sourceNote = sourceNotes.get(candidate.entryId);
+    return sourceNote === undefined || candidate.content.bodyPreview.endsWith(sourceNote);
+  });
+  const entriesById = new Map(entries.map(({ entry }) => [entry.id, entry]));
+  const candidates = baseline.slice(0, config.maxCandidates).flatMap((item) => {
+    const entry = entriesById.get(item.entryId);
+    return entry === undefined ? [] : [{
+      key: item.entryId,
+      title: entry.title,
+      summary: entry.summary,
+      body: `${entry.body}${sourceNotes.get(entry.id) ?? ''}`,
+    }];
+  });
+  if (candidates.length === 0) {
+    query.rerankerDiagnostics = {
+      mode: config.mode, state: 'no_candidates', candidateCount: 0, scoredCount: 0, unscoredCount: 0,
+    };
+    return baseline.filter((candidate) => {
+      const sourceNote = sourceNotes.get(candidate.entryId);
+      return sourceNote === undefined || candidate.content.bodyPreview.endsWith(sourceNote);
+    });
+  }
+  const selectionState = contextRetrievalStateHash(database, query.selectionWorkspaces, { includeEcosystem: query.includeEcosystem });
+  const assertSelectionStateUnchanged = (): void => {
+    assertPreparedProjectState(database, query);
+    if (contextRetrievalStateHash(database, query.selectionWorkspaces, { includeEcosystem: query.includeEcosystem }) !== selectionState) {
+      throw new KiokukoError('CONFLICT', 'Context selection state changed during reranker inference');
+    }
+  };
+  let scoring: Awaited<ReturnType<typeof scoreLocalReranker>>;
+  try {
+    scoring = await scoreLocalReranker(retrievalQuery(query), candidates, { config });
+  } catch (error) {
+    if (config.mode === 'active'
+      || error instanceof KiokukoError && ['INTEGRITY_ERROR', 'SECURITY_REJECTION', 'CONFLICT'].includes(error.code)) throw error;
+    assertSelectionStateUnchanged();
+    const reason = error instanceof KiokukoError ? error.code.toLowerCase() : 'inference_unavailable';
+    query.rerankerDiagnostics = {
+      mode: config.mode, state: 'unavailable', candidateCount: candidates.length, scoredCount: 0,
+      unscoredCount: candidates.length, reason,
+    };
+    return baseline.filter((candidate) => {
+      const sourceNote = sourceNotes.get(candidate.entryId);
+      return sourceNote === undefined || candidate.content.bodyPreview.endsWith(sourceNote);
+    });
+  }
+  assertSelectionStateUnchanged();
+  if (scoring.failed) {
+    query.rerankerDiagnostics = {
+      mode: config.mode, state: 'failed', candidateCount: candidates.length,
+      scoredCount: 0, unscoredCount: candidates.length, reason: scoring.failureReason ?? 'inference_failed',
+    };
+    return baseline.filter((candidate) => {
+      const sourceNote = sourceNotes.get(candidate.entryId);
+      return sourceNote === undefined || candidate.content.bodyPreview.endsWith(sourceNote);
+    });
+  }
+  const ranked = config.mode === 'active'
+    ? rankContextCandidates(rankingInput, { scores: scoring.scores, maximumCandidates: config.maxCandidates })
+    : baseline;
+  query.rerankerDiagnostics = {
+    mode: config.mode,
+    state: config.mode === 'active' ? 'applied' : 'observed',
+    candidateCount: candidates.length,
+    scoredCount: scoring.scores.size,
+    unscoredCount: scoring.unscored.size,
+  };
+  return ranked.filter((candidate) => {
+    const sourceNote = sourceNotes.get(candidate.entryId);
+    return sourceNote === undefined || candidate.content.bodyPreview.endsWith(sourceNote);
   });
 }
 
@@ -794,18 +941,22 @@ function storedContext(database: SqliteDatabase, query: PreparedQuery, delivery:
       workspace: current.workspace,
       revision: item.entryRevision,
     });
+    const sourceNote = query.relatedMode === 'active'
+      ? formatLessonSourceReferences(readDeliverableLessonSourceReferences(database, current))
+      : '';
+    const fullBody = `${entry.body}${sourceNote}`;
     const take = (value: string, budget: number): string => Array.from(value).slice(0, Math.max(0, budget)).join('');
     const count = (value: string): number => Array.from(value).length;
     const title = take(entry.title, remaining);
     remaining -= count(title);
     const summary = entry.summary === null ? null : take(entry.summary, remaining);
     remaining -= count(summary ?? '');
-    const bodyPreview = take(entry.body, remaining);
+    const bodyPreview = take(fullBody, remaining);
     remaining -= count(bodyPreview);
     const characterCount = count(title) + count(summary ?? '') + count(bodyPreview);
     const truncated = count(title) < count(entry.title)
       || (entry.summary !== null && count(summary ?? '') < count(entry.summary))
-      || count(bodyPreview) < count(entry.body);
+      || count(bodyPreview) < count(fullBody);
     totalCharacterCount += characterCount;
     anyTruncated ||= truncated;
     return {
@@ -971,14 +1122,15 @@ export class ContextBroker {
   private async execute(rawInput: unknown, persistence: ContextBrokerPersistence): Promise<ContextBrokerResult> {
     const input = normalizeInput(rawInput);
     const query = preparedQuery(this.database, input);
-    const previous = this.inFlight.get(query.queryHash);
+    const inFlightKey = `${query.queryHash}\u0000${query.rerankerConfig.mode}`;
+    const previous = this.inFlight.get(inFlightKey);
     if (previous !== undefined) return previous;
     const operation = this.queryPrepared(query, persistence);
-    this.inFlight.set(query.queryHash, operation);
+    this.inFlight.set(inFlightKey, operation);
     try {
       return await operation;
     } finally {
-      if (this.inFlight.get(query.queryHash) === operation) this.inFlight.delete(query.queryHash);
+      if (this.inFlight.get(inFlightKey) === operation) this.inFlight.delete(inFlightKey);
     }
   }
 
@@ -1009,11 +1161,21 @@ export class ContextBroker {
     query.deliveryHistoryStateHash = prior.stateHash;
     query.deliveryHistoryExcludeQueryHash = excludeDeliveredQueryHash ?? null;
     if (replay.delivery !== null) {
+    if (query.rerankerConfig.mode === 'observe' || query.relatedMode !== 'off') {
+        const retrievalRuntime = await prepareEmbeddingSearchRuntime(
+          this.embeddingRuntime,
+          this.database,
+          retrievalQuery(query),
+        );
+        await rank(this.database, query, prior, retrievalRuntime);
+      }
       return {
         result: {
           ...base,
           context: storedContext(this.database, query, replay.delivery),
           recommendations: query.projection === null ? [] : buildRecommendations({ projection: query.projection, broker: { staleDeliveredEntries: prior.stale } }),
+          ...(query.rerankerDiagnostics === undefined ? {} : { rerankerDiagnostics: query.rerankerDiagnostics }),
+          ...(query.lessonDeduplicationDiagnostics === undefined ? {} : { lessonDeduplicationDiagnostics: query.lessonDeduplicationDiagnostics }),
         },
         replayDelivery: replay.delivery,
         pendingDelivery: null,
@@ -1045,11 +1207,17 @@ export class ContextBroker {
       : buildRecommendations({ projection: query.projection, broker: { staleDeliveredEntries: prior.stale } });
     const context = outputContext(deliveryQuery, ranked, null);
     if (deliveryQuery.deliveryId === null || deliveryQuery.run === null) {
-      return { result: { ...base, context, recommendations }, replayDelivery: null, pendingDelivery: null };
+      return { result: { ...base, context, recommendations,
+        ...(query.rerankerDiagnostics === undefined ? {} : { rerankerDiagnostics: query.rerankerDiagnostics }),
+        ...(query.lessonDeduplicationDiagnostics === undefined ? {} : { lessonDeduplicationDiagnostics: query.lessonDeduplicationDiagnostics }),
+      }, replayDelivery: null, pendingDelivery: null };
     }
     const deliveryRequest = deliveryInput(deliveryQuery, ranked);
     return {
-      result: { ...base, context, recommendations },
+      result: { ...base, context, recommendations,
+        ...(query.rerankerDiagnostics === undefined ? {} : { rerankerDiagnostics: query.rerankerDiagnostics }),
+        ...(query.lessonDeduplicationDiagnostics === undefined ? {} : { lessonDeduplicationDiagnostics: query.lessonDeduplicationDiagnostics }),
+      },
       replayDelivery: null,
       pendingDelivery: { query: deliveryQuery, ranked, input: deliveryRequest },
     };

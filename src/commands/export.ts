@@ -127,6 +127,9 @@ function exportWorkspaceInSnapshot(database: SqliteDatabase, options: ExportOpti
       throw new KiokukoError('INTEGRITY_ERROR', 'Stored entry identity is invalid');
     }
     const entry = readEntry(database, { workspace, entryId: row.id });
+    if (entry.provenance.type === 'agent_derived_lesson') {
+      throw new KiokukoError('CONFLICT', 'Workspace archive v2 cannot preserve revision-bound lesson sources; use a full SQLite backup');
+    }
     if (entry.revision !== 1) {
       throw new KiokukoError(
         'VALIDATION_ERROR',

@@ -7,6 +7,7 @@ import { assertCapabilityCatalogBinding } from '../akinator/capability-binding.j
 import { deriveMemoryPolicy, resolveCapabilities, hasBlockingRequiredCapability } from '../akinator/capabilities.js';
 import { readContextBrokerRunState } from '../context/broker.js';
 import { queryScopedContextGated } from '../context/scoped-broker.js';
+import { readTaskContextRequestBinding } from '../akinator/agent-task.js';
 import { resolveProjectWorkspaceReadOnly } from '../memory/workspaces.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import { memoryRefreshSchema, parseAssurance } from './contracts.js';
@@ -32,8 +33,8 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
   }
   const state = assertAssuranceCwd(db, input.runId, input.cwd);
   if (state.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Refresh revision changed');
-  const bound = run.metadata.kiokukoAgentTaskContextBinding;
-  const boundBudget = bound && typeof bound === 'object' && !Array.isArray(bound) ? bound.maxContextChars : undefined;
+  const retrievalBinding = readTaskContextRequestBinding(run.metadata);
+  const boundBudget = retrievalBinding?.maxContextChars;
   if (input.maxContextChars !== undefined && typeof boundBudget === 'number' && input.maxContextChars !== boundBudget) throw new KiokukoError('CONFLICT', 'Refresh context budget differs from the prepared run');
   const budget = input.maxContextChars ?? (typeof boundBudget === 'number' ? boundBudget : undefined);
   const current = readContextBrokerRunState(db, input.runId);
@@ -44,6 +45,8 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
   await queryScopedContextGated(db, {
     project, task: run.title ?? current.taskProfile.target ?? "task", taskProfile: current.taskProfile, runId: input.runId,
     recommendedTags: current.recommendedTags, changedPaths: input.changedPaths, errorSignatures: input.errorSignatures,
+    ...(retrievalBinding?.temporal === undefined ? {} : { temporal: retrievalBinding.temporal }),
+    relatedMode: retrievalBinding?.relatedMode ?? 'off',
     ...(budget === undefined ? {} : { characterBudget: budget }),
   }, candidate => {
     const memoryUse = scopedMemoryUseSignal(db, run.workspace, candidate);

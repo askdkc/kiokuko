@@ -6,14 +6,24 @@ import { compareCanonicalStrings, ENTRY_KINDS, ENTRY_STATUSES, type EntryKind, t
 import { readEntry, type EntryRecord } from './entries.js';
 import { isExternalSkillReference, readExternalSkill } from '../skills/store.js';
 import { lessonReinforcement } from './lesson-reinforcement.js';
+import { matchesTemporalConstraint, normalizeTemporalConstraint, type TemporalConstraint } from './temporal.js';
+import { isDeliverableDerivedLesson } from './lesson-derivation.js';
 
-export type RetrievalLane = 'exact-signal' | 'word-fts' | 'trigram' | 'like' | 'tag' | 'semantic';
+export type RetrievalLane = 'exact-signal' | 'word-fts' | 'trigram' | 'like' | 'tag' | 'semantic' | 'related';
+export type RelatedSearchMode = 'off' | 'observe' | 'active';
+
+export interface RelatedSearchObservation {
+  readonly seedCount: number;
+  readonly candidateCount: number;
+  readonly deliveredCandidateCount: 0;
+}
 
 export interface HybridSearchRuntime {
   readonly semantic?: {
     readonly query: PreparedSemanticQuery;
     readonly backend: VectorSearchBackend;
   };
+  readonly onRelatedDiagnostics?: (observation: RelatedSearchObservation) => void;
 }
 
 export interface HybridSearchInput {
@@ -25,6 +35,10 @@ export interface HybridSearchInput {
   tag?: string;
   includeSuperseded?: boolean;
   subjects?: readonly string[];
+  temporal?: TemporalConstraint;
+  relatedMode?: RelatedSearchMode;
+  relatedSeedLimit?: number;
+  relatedCandidateLimit?: number;
 }
 
 export interface RetrievalCandidate {
@@ -51,7 +65,12 @@ const LANE_WEIGHTS: Record<RetrievalLane, number> = {
   like: 0.75,
   tag: 3,
   semantic: 2.5,
+  related: 0.5,
 };
+const DEFAULT_RELATED_SEEDS = 8;
+const DEFAULT_RELATED_CANDIDATES = 32;
+const MAX_RELATED_SEEDS = 32;
+const MAX_RELATED_CANDIDATES = 128;
 
 interface ExternalMappingRow extends SqliteRow {
   skill_id: unknown;
@@ -59,6 +78,7 @@ interface ExternalMappingRow extends SqliteRow {
 
 /** Decide eligibility only after the entry and the complete parent snapshot decode. */
 export function isRetrievableEntry(database: SqliteDatabase, entry: EntryRecord): boolean {
+  if (entry.provenance.type === 'agent_derived_lesson' && !isDeliverableDerivedLesson(database, entry)) return false;
   const mappingRows = database.prepare(`
     SELECT skill_id
       FROM external_skill_entries
@@ -173,6 +193,18 @@ function filterSql(input: HybridSearchInput, parameters: Array<string | number>)
     clauses.push(`EXISTS (SELECT 1 FROM entry_revision_tags st WHERE st.entry_id = e.id
       AND st.revision = e.current_revision AND st.tag IN (${input.subjects.map(() => '?').join(',')}))`);
     parameters.push(...input.subjects.map((subject) => `subject:${subject}`));
+  }
+  // Strict recorded-time constraints apply inside every SQL lane before its cutoff.
+  // Occurred time is verified against revision-bound source evidence after decoding.
+  if (input.temporal?.mode === 'restrict' && input.temporal.basis === 'recorded') {
+    if (input.temporal.start !== undefined) {
+      clauses.push('r.created_at >= ?');
+      parameters.push(input.temporal.start);
+    }
+    if (input.temporal.end !== undefined) {
+      clauses.push('r.created_at < ?');
+      parameters.push(input.temporal.end);
+    }
   }
   return clauses.join(' AND ');
 }
@@ -390,6 +422,66 @@ function laneRows(
   return rows;
 }
 
+interface RelatedRow extends SearchRow {
+  reason: 'related_link_candidate' | 'related_error_signal_candidate';
+}
+
+/** Use one-hop workspace links and exact error signals only as bounded candidate discovery. */
+function relatedLane(database: SqliteDatabase, workspace: string, seedIds: readonly string[], limit: number): RelatedRow[] {
+  if (seedIds.length === 0 || limit === 0) return [];
+  const excluded = seedIds.map(() => '?').join(', ');
+  const links = database.prepare(`
+    WITH seeds(id) AS (VALUES ${seedIds.map(() => '(?)').join(', ')}),
+    related(id) AS (
+      SELECT link.to_entry_id FROM entry_links AS link JOIN seeds ON seeds.id = link.from_entry_id
+      UNION
+      SELECT link.from_entry_id FROM entry_links AS link JOIN seeds ON seeds.id = link.to_entry_id
+    )
+    SELECT candidate.id
+      FROM related
+      JOIN entries AS candidate ON candidate.id = related.id
+     WHERE candidate.workspace = ? AND candidate.id NOT IN (${excluded})
+     GROUP BY candidate.id
+     ORDER BY candidate.id ASC
+     LIMIT ?
+  `).all<{ id: unknown }>(...seedIds, workspace, ...seedIds, limit);
+  const found = new Map<string, RelatedRow>();
+  for (const row of links) {
+    if (typeof row.id !== 'string' || row.id.length === 0) {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Related-link candidate is invalid');
+    }
+    found.set(row.id, { id: row.id, reason: 'related_link_candidate' });
+  }
+
+  // The stored signal projection is case-folded. Do not use it for path or symbol identity.
+  const signals = database.prepare(`
+    WITH seeds(id) AS (VALUES ${seedIds.map(() => '(?)').join(', ')}),
+    seed_signals(value) AS (
+      SELECT DISTINCT signal.normalized_value
+        FROM entry_search_signals AS signal
+        JOIN seeds ON seeds.id = signal.entry_id
+       WHERE signal.signal_type = 'error'
+    )
+    SELECT DISTINCT candidate.id
+      FROM seed_signals
+      JOIN entry_search_signals AS signal
+        ON signal.signal_type = 'error' AND signal.normalized_value = seed_signals.value
+      JOIN entries AS candidate ON candidate.id = signal.entry_id
+     WHERE candidate.workspace = ?
+       AND candidate.status <> 'superseded'
+       AND candidate.id NOT IN (${excluded})
+     ORDER BY candidate.id ASC
+     LIMIT ?
+  `).all<{ id: unknown }>(...seedIds, workspace, ...seedIds, limit);
+  for (const row of signals) {
+    if (typeof row.id !== 'string' || row.id.length === 0) {
+      throw new KiokukoError('INTEGRITY_ERROR', 'Related-signal candidate is invalid');
+    }
+    if (!found.has(row.id) && found.size < limit) found.set(row.id, { id: row.id, reason: 'related_error_signal_candidate' });
+  }
+  return [...found.values()].slice(0, limit);
+}
+
 export function hybridSearch(
   database: SqliteDatabase,
   input: HybridSearchInput,
@@ -401,6 +493,20 @@ export function hybridSearch(
   if (input.status !== undefined && !ENTRY_STATUSES.includes(input.status)) invalid();
   if (input.tag !== undefined && (typeof input.tag !== 'string' || input.tag.length === 0)) invalid();
   if (input.subjects !== undefined && (!Array.isArray(input.subjects) || input.subjects.length < 1 || input.subjects.length > 5 || input.subjects.some((s) => typeof s !== 'string' || !s || s.length > 80))) invalid();
+  const temporal = normalizeTemporalConstraint(input.temporal);
+  const relatedMode = input.relatedMode ?? 'off';
+  const relatedSeedLimit = input.relatedSeedLimit ?? DEFAULT_RELATED_SEEDS;
+  const relatedCandidateLimit = input.relatedCandidateLimit ?? DEFAULT_RELATED_CANDIDATES;
+  if ((relatedMode !== 'off' && relatedMode !== 'observe' && relatedMode !== 'active')
+    || !Number.isSafeInteger(relatedSeedLimit) || relatedSeedLimit < 1 || relatedSeedLimit > MAX_RELATED_SEEDS
+    || !Number.isSafeInteger(relatedCandidateLimit) || relatedCandidateLimit < 1 || relatedCandidateLimit > MAX_RELATED_CANDIDATES) invalid();
+  const normalizedInput: HybridSearchInput = {
+    ...input,
+    ...(temporal === undefined ? {} : { temporal }),
+    relatedMode,
+    relatedSeedLimit,
+    relatedCandidateLimit,
+  };
   const parsed = parseRetrievalQuery(input.query);
   if (parsed.normalized.length === 0) return [];
   // Treat SQL/FTS-looking operator soup as data, not as a broad OR query. A
@@ -408,7 +514,7 @@ export function hybridSearch(
   const lexicalAllowed = !/(?:--|\/\*|\*\/|["']\s*(?:OR|AND)\b|\b(?:OR|AND)\s+\d+\s*[=<>])/iu.test(parsed.normalized)
     || parsed.exactSignals.length > 0;
   const merged = new Map<string, RetrievalCandidate>();
-  for (const [lane, rows] of laneRows(database, input, parsed, runtime, lexicalAllowed)) {
+  for (const [lane, rows] of laneRows(database, normalizedInput, parsed, runtime, lexicalAllowed)) {
     const seen = new Set<string>();
     let rank = 0;
     for (const row of rows) {
@@ -432,6 +538,30 @@ export function hybridSearch(
       if (merged.size >= MAX_MERGED_CANDIDATES) break;
     }
   }
+  if (relatedMode !== 'off') {
+    const seeds = [...merged.values()]
+      .sort((left, right) => right.fusedScore - left.fusedScore || compareCanonicalStrings(left.entryId, right.entryId))
+      .slice(0, relatedSeedLimit)
+      .filter((candidate) => {
+        const entry = readEntry(database, { workspace: input.workspace, entryId: candidate.entryId });
+        return isRetrievableEntry(database, entry) && (temporal?.mode !== 'restrict'
+          || matchesTemporalConstraint(database, entry, temporal));
+      })
+      .map((candidate) => candidate.entryId);
+    const related = relatedLane(database, input.workspace, seeds, relatedCandidateLimit);
+    if (relatedMode === 'observe') {
+      runtime.onRelatedDiagnostics?.({ seedCount: seeds.length, candidateCount: related.length, deliveredCandidateCount: 0 });
+    } else {
+    for (const [index, row] of related.entries()) {
+      const existing = merged.get(row.id) ?? { entryId: row.id, fusedScore: 0, laneRanks: {}, matchedSignals: [], reasons: [] };
+      const rank = index + 1;
+      existing.fusedScore += LANE_WEIGHTS.related / (RRF_K + rank);
+      existing.laneRanks.related = Math.min(existing.laneRanks.related ?? rank, rank);
+      existing.reasons.push(row.reason);
+      merged.set(row.id, existing);
+    }
+    }
+  }
   const candidates = [...merged.values()]
     .map((candidate) => ({
       ...candidate,
@@ -444,6 +574,14 @@ export function hybridSearch(
   return candidates.filter((candidate) => {
     const entry = readEntry(database, { workspace: input.workspace, entryId: candidate.entryId });
     if (!isRetrievableEntry(database, entry)) return false;
+    if (temporal !== undefined) {
+      const matches = matchesTemporalConstraint(database, entry, temporal);
+      if (temporal.mode === 'restrict' && !matches) return false;
+      if (temporal.mode === 'boost' && matches) {
+        candidate.fusedScore += 0.01;
+        candidate.reasons.push('temporal_match');
+      }
+    }
     if (!input.includeSuperseded && entry.status === 'superseded') return false;
     if (input.kind !== undefined && entry.kind !== input.kind) return false;
     if (input.status !== undefined && entry.status !== input.status) return false;

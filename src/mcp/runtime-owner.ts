@@ -9,6 +9,7 @@ import type { EmbeddingConfig, EmbeddingProvider, EmbeddingRuntime, VectorSearch
 import { createEmbeddingWorker, type EmbeddingWorker } from '../embedding/worker.js';
 import { WriteQueue } from '../server/write-queue.js';
 import { cleanupExpiredHandoffs } from '../memory/handoff.js';
+import { closeSharedRerankerRuntime } from '../reranker/service.js';
 
 export interface McpRuntimeOwnerOptions extends PathEnvironment {
   readonly databasePath?: string;
@@ -134,6 +135,11 @@ export class McpRuntimeOwner implements McpDatabaseOwner {
       }
       try {
         await state.queue.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await closeSharedRerankerRuntime();
       } catch (error) {
         errors.push(error);
       }

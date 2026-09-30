@@ -64,6 +64,8 @@ const PROVENANCE_FIELDS = new Set([
   'sourcePaths',
   'clientKind',
   'timestamp',
+  'temporal',
+  'sourceSetHash',
 ]);
 
 function validation(message: string, details: Record<string, unknown> = {}): never {
@@ -186,13 +188,39 @@ function validateProvenance(value: unknown): JsonObject {
         validation(`provenance.${field} must be a non-empty string`);
       }
     }
-    for (const field of ['requirementScopeHash'] as const) {
+    for (const field of ['requirementScopeHash', 'sourceSetHash'] as const) {
       if (provenance[field] !== undefined && !/^[0-9a-f]{64}$/u.test(provenance[field] as string)) {
         validation(`provenance.${field} must be a lowercase SHA-256 hash`);
       }
     }
     if (provenance.sourceChunkIndex !== undefined && (typeof provenance.sourceChunkIndex !== 'number' || !Number.isSafeInteger(provenance.sourceChunkIndex) || provenance.sourceChunkIndex < 0)) {
       validation('provenance.sourceChunkIndex must be a non-negative integer');
+    }
+    if (provenance.temporal !== undefined) {
+      if (typeof provenance.temporal !== 'object' || provenance.temporal === null || Array.isArray(provenance.temporal)) {
+        validation('provenance.temporal must be an object');
+      }
+      const temporal = provenance.temporal as Record<string, unknown>;
+      assertKnownFields(temporal, new Set(['occurredAt']), 'provenance.temporal');
+      if (typeof temporal.occurredAt !== 'object' || temporal.occurredAt === null || Array.isArray(temporal.occurredAt)) {
+        validation('provenance.temporal.occurredAt must be an object');
+      }
+      const occurredAt = temporal.occurredAt as Record<string, unknown>;
+      assertKnownFields(occurredAt, new Set(['instant', 'source']), 'provenance.temporal.occurredAt');
+      if (!isNonEmptyString(occurredAt.instant)
+        || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(occurredAt.instant)) {
+        validation('provenance.temporal.occurredAt.instant must be an ISO-8601 instant');
+      }
+      if (typeof occurredAt.source !== 'object' || occurredAt.source === null || Array.isArray(occurredAt.source)) {
+        validation('provenance.temporal.occurredAt.source must be an object');
+      }
+      const source = occurredAt.source as Record<string, unknown>;
+      assertKnownFields(source, new Set(['workspace', 'entryId', 'revision', 'contentHash']), 'provenance.temporal.occurredAt.source');
+      if (!isNonEmptyString(source.workspace) || !isNonEmptyString(source.entryId)
+        || typeof source.revision !== 'number' || !Number.isSafeInteger(source.revision) || source.revision < 1
+        || typeof source.contentHash !== 'string' || !/^[a-f0-9]{64}$/u.test(source.contentHash)) {
+        validation('provenance.temporal.occurredAt.source must identify a workspace revision and content hash');
+      }
     }
     for (const field of ['evidenceIds', 'sourcePaths'] as const) {
       const values = provenance[field];

@@ -802,6 +802,9 @@ export async function importWorkspace(
     tagsByEntry.set(entryId, values);
   }
   const entries = parsed.entries.map((entry) => importedEntry({ ...entry, tags: tagsByEntry.get(String(entry.id)) ?? [] }, workspace));
+  if (entries.some((entry) => entry.provenance.type === 'agent_derived_lesson')) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Workspace archive v2 cannot verify revision-bound lesson sources; import is refused');
+  }
   const sourceIds = new Set(entries.map((entry) => entry.id));
   if (sourceIds.size !== entries.length) throw new KiokukoError('VALIDATION_ERROR', 'Import contains duplicate entry IDs');
   if (new Set(entries.map((entry) => entry.contentHash)).size !== entries.length) {

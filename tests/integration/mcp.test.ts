@@ -65,6 +65,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'handoff_save',
       'memory_capture',
       'memory_checkpoint',
+      'memory_derive_lesson',
       'memory_recall',
       'task_answer',
       'task_execution_evidence',
@@ -81,6 +82,10 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_globalize')?.annotations?.idempotentHint, true);
     assert.match(tools.tools.find((tool) => tool.name === 'curator_globalize')?.description ?? '', /stored as verified\/system_verified memory created by kiokuko-curator/);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, false);
+    const deriveLessonTool = tools.tools.find((tool) => tool.name === 'memory_derive_lesson');
+    assert.equal(deriveLessonTool?.annotations?.idempotentHint, true);
+    assert.equal(deriveLessonTool?.annotations?.openWorldHint, false);
+    assert.match(deriveLessonTool?.description ?? '', /untrusted candidate only.*does not count as an observation/);
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
     assert.match(taskPrepareTool?.description ?? '', /once for one logical user request/);

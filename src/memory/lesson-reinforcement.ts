@@ -2,6 +2,7 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import type { EntryRecord } from './entries.js';
+import { isDeliverableDerivedLesson } from './lesson-derivation.js';
 
 export type LessonReinforcement = {
   independentRuns: number;
@@ -9,17 +10,19 @@ export type LessonReinforcement = {
 };
 
 /** Titles, subjects and transport provenance do not change the identity of a lesson. */
-function lessonFingerprint(entry: EntryRecord): string | null {
+function lessonFingerprint(database: SqliteDatabase, entry: EntryRecord): string | null {
   if (entry.kind !== 'lesson' || entry.status === 'superseded'
     || entry.scope.visibility !== 'project' || entry.workspace === 'global'
-    || !['interaction_capture', 'agent_checkpoint'].includes(String(entry.provenance.type))) return null;
+    || !['interaction_capture', 'agent_checkpoint', 'agent_derived_lesson'].includes(String(entry.provenance.type))
+    || (entry.provenance.type === 'agent_derived_lesson'
+      && !isDeliverableDerivedLesson(database, entry))) return null;
   return canonicalContentHash({ version: 1, workspace: entry.workspace,
     body: entry.body.normalize('NFKC').trim(), applicability: entry.scope.applicability ?? null });
 }
 
 /** Current-revision observations only; repeated reports confer priority, never trust. */
 export function lessonReinforcement(database: SqliteDatabase, entry: EntryRecord): LessonReinforcement {
-  const fingerprint = lessonFingerprint(entry);
+  const fingerprint = lessonFingerprint(database, entry);
   const independentRuns = fingerprint === null ? 0 : database.prepare(
     'SELECT COUNT(*) AS count FROM lesson_observations WHERE fingerprint = ?',
   ).get<{ count: number }>(fingerprint)!.count;
@@ -28,7 +31,7 @@ export function lessonReinforcement(database: SqliteDatabase, entry: EntryRecord
 
 /** Record one observation per logical root run inside the capture/checkpoint transaction. */
 export function observeLessonInTransaction(database: SqliteDatabase, entry: EntryRecord, runId: string, now: string) {
-  const fingerprint = lessonFingerprint(entry);
+  const fingerprint = lessonFingerprint(database, entry);
   const before = lessonReinforcement(database, entry);
   if (fingerprint === null) return { ...before, promoted: false };
   let rootId = runId;

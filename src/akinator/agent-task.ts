@@ -37,6 +37,7 @@ import {
 import { canonicalContentHash, type JsonObject } from '../serialization/validate.js';
 import { readSkillDiscoveryConfig } from '../skills/config.js';
 import { discoverSkills } from '../skills/discovery-service.js';
+import { normalizeTemporalConstraint, type TemporalConstraint } from '../memory/temporal.js';
 import type { SkillDiscoveryMode, SkillDiscoverySummary } from '../skills/types.js';
 import {
   deriveMemoryPolicy,
@@ -71,6 +72,8 @@ export interface PrepareAgentTaskInput {
   profileHints?: Partial<TaskProfile>;
   capabilities?: unknown;
   maxContextChars?: number;
+  temporal?: TemporalConstraint;
+  relatedMode?: 'off' | 'observe' | 'active';
   client?: { kind?: string; version?: string; sessionId?: string };
   skillDiscoveryMode?: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
@@ -128,8 +131,7 @@ const AGENT_TASK_DISCOVERY_BINDING_METADATA_KEY = 'kiokukoAgentTaskDiscoveryBind
 const AGENT_TASK_DISCOVERY_BINDING_VERSION = 1 as const;
 const AGENT_TASK_DISCOVERY_BINDING_FIELDS = new Set(['version', 'mode', 'requestDigest']);
 const AGENT_TASK_CONTEXT_BINDING_METADATA_KEY = 'kiokukoAgentTaskContextBinding' as const;
-const AGENT_TASK_CONTEXT_BINDING_VERSION = 1 as const;
-const AGENT_TASK_CONTEXT_BINDING_FIELDS = new Set(['version', 'maxContextChars']);
+const AGENT_TASK_CONTEXT_BINDING_VERSION = 2 as const;
 const AGENT_TASK_REQUEST_ID_MAX_LENGTH = 256;
 const CONTROL_CHARACTERS = /\p{Cc}/u;
 
@@ -204,37 +206,74 @@ function assertSkillDiscoveryRequestBinding(metadata: JsonObject, request: Skill
   }
 }
 
-function bindTaskContextRequest(metadata: JsonObject, maxContextChars: number): JsonObject {
+function bindTaskContextRequest(
+  metadata: JsonObject,
+  maxContextChars: number,
+  temporal: TemporalConstraint | undefined,
+  relatedMode: 'off' | 'observe' | 'active',
+): JsonObject {
   if (Object.hasOwn(metadata, AGENT_TASK_CONTEXT_BINDING_METADATA_KEY)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Run metadata contains a reserved task context binding');
+  }
+  if (temporal === undefined && relatedMode === 'off') {
+    return {
+      ...metadata,
+      [AGENT_TASK_CONTEXT_BINDING_METADATA_KEY]: { version: 1, maxContextChars },
+    };
   }
   return {
     ...metadata,
     [AGENT_TASK_CONTEXT_BINDING_METADATA_KEY]: {
       version: AGENT_TASK_CONTEXT_BINDING_VERSION,
       maxContextChars,
+      relatedMode,
+      temporal: temporal === undefined ? null : { ...temporal } as JsonObject,
     },
   };
 }
 
-function assertTaskContextRequestBinding(metadata: JsonObject, maxContextChars: number): void {
+export interface TaskContextRetrievalBinding {
+  maxContextChars: number;
+  temporal?: TemporalConstraint;
+  relatedMode: 'off' | 'observe' | 'active';
+}
+
+export function readTaskContextRequestBinding(metadata: JsonObject): TaskContextRetrievalBinding | undefined {
   const binding = metadata[AGENT_TASK_CONTEXT_BINDING_METADATA_KEY];
+  if (binding === undefined) return undefined;
   if (typeof binding !== 'object'
     || binding === null
     || Array.isArray(binding)
     || Object.getPrototypeOf(binding) !== Object.prototype
-    || Object.keys(binding).length !== AGENT_TASK_CONTEXT_BINDING_FIELDS.size
-    || Object.keys(binding).some((key) => !AGENT_TASK_CONTEXT_BINDING_FIELDS.has(key))
-    || binding.version !== AGENT_TASK_CONTEXT_BINDING_VERSION
     || typeof binding.maxContextChars !== 'number'
     || !Number.isSafeInteger(binding.maxContextChars)
     || binding.maxContextChars < 1
     || binding.maxContextChars > SCOPED_CONTEXT_MAX_CHARACTER_BUDGET) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Run task context binding is missing or invalid');
   }
+  const fields = Object.keys(binding);
+  if (binding.version === 1 && fields.length === 2
+    && fields.includes('version') && fields.includes('maxContextChars')) {
+    return { maxContextChars: binding.maxContextChars, relatedMode: 'off' };
+  }
+  if (binding.version !== AGENT_TASK_CONTEXT_BINDING_VERSION || fields.length !== 4
+    || fields.some((key) => !['version', 'maxContextChars', 'relatedMode', 'temporal'].includes(key))
+    || (binding.relatedMode !== 'off' && binding.relatedMode !== 'observe' && binding.relatedMode !== 'active')
+    || binding.temporal === undefined) {
+    throw new KiokukoError('INTEGRITY_ERROR', 'Run task context binding is missing or invalid');
+  }
+  const temporal = binding.temporal === null ? undefined : normalizeTemporalConstraint(binding.temporal);
+  return { maxContextChars: binding.maxContextChars, relatedMode: binding.relatedMode,
+    ...(temporal === undefined ? {} : { temporal }) };
+}
+
+function assertTaskContextRequestBinding(metadata: JsonObject, maxContextChars: number): TaskContextRetrievalBinding {
+  const binding = readTaskContextRequestBinding(metadata);
+  if (binding === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Run task context binding is missing or invalid');
   if (binding.maxContextChars !== maxContextChars) {
     throw new KiokukoError('CONFLICT', 'Task context request differs from the request bound when the run was opened');
   }
+  return binding;
 }
 
 function memoryCapabilityUnavailableForTask(context: AkinatorResult, capabilities: unknown): boolean {
@@ -451,6 +490,8 @@ interface FinalizeAgentTaskInput {
   runId: string;
   capabilities: unknown;
   maxContextChars: number;
+  temporal?: TemporalConstraint;
+  relatedMode: 'off' | 'observe' | 'active';
   discoveryMode: SkillDiscoveryMode;
   fetchImpl?: typeof fetch;
   embeddingRuntime?: EmbeddingRuntime;
@@ -468,6 +509,8 @@ interface PreparedTaskContextQuery {
     recommendedTags: string[];
     runId: string;
     characterBudget: number;
+    temporal?: TemporalConstraint;
+    relatedMode: 'off' | 'observe' | 'active';
   };
   readonly discoveryAttemptIdentity: {
     runId: string;
@@ -523,6 +566,8 @@ function prepareTaskContextQuery(
     recommendedTags: current.recommendedTags,
     runId: input.runId,
     characterBudget: input.maxContextChars,
+    ...(input.temporal === undefined ? {} : { temporal: input.temporal }),
+    relatedMode: input.relatedMode,
   });
   const discoveryAttemptIdentity = {
     runId: input.runId,
@@ -556,7 +601,10 @@ async function previewMemoryBeforeDiscovery(
   run: NonTerminalTaskRun,
   context: AkinatorResult,
 ): Promise<MemoryPreviewResult> {
-  const query = prepared.queryFor(context);
+  const query = {
+    ...prepared.queryFor(context),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  };
   const runtime = await searchRuntime(input, query);
   const preview = await queryScopedContextGated(input.database, query, (candidate) => {
     const memoryUse = scopedMemoryUseSignal(input.database, input.project.workspace, candidate);
@@ -676,7 +724,10 @@ async function selectFinalTaskContext(
 ): Promise<FinalTaskContextResult> {
   const { input, prepared, missingMemoryCapability } = value;
   let approvedEmptyContext: ScopedContextResult | null = null;
-  const query = prepared.queryFor(value.context);
+  const query = {
+    ...prepared.queryFor(value.context),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  };
   const runtime = await searchRuntime(input, query);
   const gated = await queryScopedContextGated(input.database, query, (candidate) => {
     const memoryUse = scopedMemoryUseSignal(input.database, input.project.workspace, candidate);
@@ -773,6 +824,9 @@ function failTaskRunAfterAbort(database: SqliteDatabase, runId: string, cause: u
 export async function prepareAgentTask(database: SqliteDatabase, input: PrepareAgentTaskInput): Promise<PreparedAgentTask> {
   const requestId = taskRequestId(input.requestId);
   const maxContextChars = taskContextCharacterBudget(input.maxContextChars);
+  const temporal = normalizeTemporalConstraint(input.temporal);
+  const relatedMode = input.relatedMode ?? 'off';
+  if (relatedMode !== 'off' && relatedMode !== 'observe' && relatedMode !== 'active') throw new KiokukoError('VALIDATION_ERROR', 'Related search mode is invalid');
   const { project, executionContext } = await requireProject(database, input.cwd);
   await drainEmbeddingsBeforeRetrieval(input.embeddingRuntime, project.workspace);
   const manifestSnapshot = captureProjectManifestSnapshot(project);
@@ -815,6 +869,8 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
           discoveryRequest,
         ),
         maxContextChars,
+        temporal,
+        relatedMode,
       ),
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
     },
@@ -834,6 +890,8 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
       runId: opened.runId,
       capabilities: input.capabilities,
       maxContextChars,
+      ...(temporal === undefined ? {} : { temporal }),
+      relatedMode,
       discoveryMode,
       ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
       ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
@@ -869,7 +927,7 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
   const runMetadata = gateway.readRun({ runId: runRow.runId }).metadata;
   assertProjectManifestSnapshotBinding(runMetadata, project, manifestSnapshot);
   assertSkillDiscoveryRequestBinding(runMetadata, discoveryRequest);
-  assertTaskContextRequestBinding(runMetadata, maxContextChars);
+  const retrievalBinding = assertTaskContextRequestBinding(runMetadata, maxContextChars);
   const answered = gateway.answerIntake(
     {
       runId: runRow.runId,
@@ -897,6 +955,8 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
       runId: answered.runId,
       capabilities: input.capabilities,
       maxContextChars,
+      ...(retrievalBinding.temporal === undefined ? {} : { temporal: retrievalBinding.temporal }),
+      relatedMode: retrievalBinding.relatedMode,
       discoveryMode,
       ...(input.embeddingRuntime === undefined ? {} : { embeddingRuntime: input.embeddingRuntime }),
       ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),

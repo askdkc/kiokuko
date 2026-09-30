@@ -3,13 +3,19 @@ import { withDeferredReadTransaction } from '../db/transaction.js';
 import { isCuratorManagedGlobalMemory } from './curator-trust.js';
 import { globalLaneCandidates } from './federated-retrieval.js';
 import type { HybridSearchRuntime } from './hybrid-retrieval.js';
+import type { RelatedSearchMode } from './hybrid-retrieval.js';
 import { memorySubjects } from './interaction-subjects.js';
+import type { TemporalConstraint } from './temporal.js';
+import { KiokukoError } from '../errors.js';
 
 interface GlobalConversationQuery {
   readonly query: string;
   readonly limit: number;
   readonly maxContextChars: number;
   readonly subjects?: readonly string[] | undefined;
+  readonly temporal?: TemporalConstraint | undefined;
+  readonly relatedMode?: RelatedSearchMode | undefined;
+  readonly orderedEntryIds?: readonly string[] | undefined;
 }
 
 /** Internal read service. Each caller must enforce its own client policy first. */
@@ -20,12 +26,25 @@ export function queryGlobalConversationMemory(
   withholdOrdinary = false,
 ) {
   return withDeferredReadTransaction(database, () => {
-    const result = globalLaneCandidates(database, input.query, input.limit, runtime, input.subjects);
+    const result = globalLaneCandidates(database, input.query, input.limit, runtime, input.subjects, {
+      ...(input.temporal === undefined ? {} : { temporal: input.temporal }),
+      ...(input.relatedMode === undefined ? {} : { relatedMode: input.relatedMode }),
+    });
+    let candidates = result.candidates;
+    if (input.orderedEntryIds !== undefined) {
+      const byId = new Map(candidates.map((candidate) => [candidate.entry.id, candidate]));
+      if (input.orderedEntryIds.length !== candidates.length
+        || new Set(input.orderedEntryIds).size !== candidates.length
+        || input.orderedEntryIds.some((entryId) => !byId.has(entryId))) {
+        throw new KiokukoError('INTEGRITY_ERROR', 'Reranker order does not match the current global candidate set');
+      }
+      candidates = input.orderedEntryIds.map((entryId) => byId.get(entryId)!);
+    }
     const items: Array<{ entryId: string; revision: number; kind: string; status: string; trustLevel: string;
       title: string; content: string; subjects: string[]; metadata: { storedData: true; untrusted: true; instructions: false } }> = [];
     let characters = 2;
     let truncated = result.truncated;
-    for (const { entry } of result.candidates) {
+    for (const { entry } of candidates) {
       const content = entry.summary ?? entry.body;
       if (withholdOrdinary && !isCuratorManagedGlobalMemory(entry)) continue;
       const item = { entryId: entry.id, revision: entry.revision, kind: entry.kind, status: entry.status,

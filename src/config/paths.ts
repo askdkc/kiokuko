@@ -345,6 +345,12 @@ export function getEmbeddingModelsDirectory(options: PathEnvironment = {}): stri
   return join(getPlatformDataDirectory({ platform, env }), 'models', 'embeddings');
 }
 
+export function getRerankerModelsDirectory(options: PathEnvironment = {}): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(getPlatformDataDirectory({ platform, env }), 'models', 'rerankers');
+}
+
 export function getEmbeddingModelStagingDirectory(options: PathEnvironment = {}): string {
   const { platform, env } = selectedEnvironment(options);
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
@@ -366,6 +372,20 @@ export function getEmbeddingPresetDirectory(
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
   return join(
     getEmbeddingModelsDirectory({ platform, env }),
+    embeddingCoordinate(preset, 'preset'),
+    embeddingCoordinate(revision, 'revision'),
+  );
+}
+
+export function getRerankerPresetDirectory(
+  preset: string,
+  revision: string,
+  options: PathEnvironment = {},
+): string {
+  const { platform, env } = selectedEnvironment(options);
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return join(
+    getRerankerModelsDirectory({ platform, env }),
     embeddingCoordinate(preset, 'preset'),
     embeddingCoordinate(revision, 'revision'),
   );

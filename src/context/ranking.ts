@@ -67,6 +67,7 @@ export const CONTEXT_SELECTION_REASON_ORDER = [
   'exact_signal_match',
   'word_match',
   'semantic_match',
+  'duplicate_source_suppressed',
   'lexical_match',
   'cjk_window_match',
   'substring_match',
@@ -593,7 +594,35 @@ function applyCharacterBudget(ranked: RankedCandidate[], budget: number): Ranked
   return selected;
 }
 
-export function rankContextCandidates(input: unknown): RankedCandidate[] {
+export interface ContextRerankingOverride {
+  readonly scores: ReadonlyMap<string, number>;
+  readonly maximumCandidates?: number;
+}
+
+function reorderRerankedSlots(
+  ranked: RankedCandidate[],
+  override: ContextRerankingOverride | undefined,
+): RankedCandidate[] {
+  if (override === undefined) return ranked;
+  const maximumCandidates = Math.min(32, Math.max(0, override.maximumCandidates ?? 32));
+  const indexes: number[] = [];
+  const scored: RankedCandidate[] = [];
+  const baselinePosition = new Map<string, number>();
+  for (let index = 0; index < Math.min(ranked.length, maximumCandidates); index += 1) {
+    const candidate = ranked[index]!;
+    if (override.scores.has(candidate.entryId)) {
+      indexes.push(index);
+      scored.push(candidate);
+      baselinePosition.set(candidate.entryId, index);
+    }
+  }
+  scored.sort((left, right) => (override.scores.get(right.entryId)! - override.scores.get(left.entryId)!)
+    || baselinePosition.get(left.entryId)! - baselinePosition.get(right.entryId)!);
+  indexes.forEach((slot, index) => { ranked[slot] = scored[index]!; });
+  return ranked;
+}
+
+export function rankContextCandidates(input: unknown, reranking?: ContextRerankingOverride): RankedCandidate[] {
   const parsed = parseInput(input);
   const priorDelivered = new Map<string, number>();
   for (const delivered of parsed.priorDelivered) {
@@ -618,5 +647,6 @@ export function rankContextCandidates(input: unknown): RankedCandidate[] {
     })
     .map((candidate) => scoreCandidate(candidate, context))
     .sort((left, right) => right.totalScore - left.totalScore || compareStrings(left.entryId, right.entryId));
+  reorderRerankedSlots(ranked, reranking);
   return applyCharacterBudget(ranked.slice(0, parsed.limit), parsed.characterBudget);
 }

@@ -11,6 +11,7 @@ import { createBackup } from './commands/backup.js';
 import { runCuratorCommand } from './commands/curator.js';
 import { promptRemoveMissingRepositoryLocations, runDoctor } from './commands/doctor.js';
 import { registerEmbeddingsCommands } from './commands/embeddings.js';
+import { registerRerankerCommands } from './commands/reranker.js';
 import { writeExport } from './commands/export.js';
 import { importWorkspace } from './commands/import.js';
 import { initializeDatabase } from './commands/init.js';
@@ -23,6 +24,7 @@ import { registerUninstallCommand } from './commands/uninstall.js';
 import { getGlobalDatabasePath, type PathEnvironment } from './config/paths.js';
 import type { SqliteDatabase } from './db/adapter.js';
 import { openConnection } from './db/connection.js';
+import { closeSharedRerankerRuntime } from './reranker/service.js';
 import { openEmbeddingDatabase } from './embedding/backend.js';
 import { parseEmbeddingConfig } from './embedding/config.js';
 import { createEmbeddingRuntime, prepareEmbeddingSearchRuntime } from './embedding/runtime.js';
@@ -34,9 +36,11 @@ import { readEntry, recordEntry, type RecordEntryInput } from './memory/entries.
 import type { HybridSearchRuntime } from './memory/hybrid-retrieval.js';
 import { linkEntries, promoteEntry, supersedeEntry } from './memory/lifecycle.js';
 import type { RecallResult } from './memory/retrieval.js';
-import { recallEntries, searchEntries } from './memory/retrieval.js';
+import { recallEntriesWithReranker, searchEntriesWithReranker, recallEntries, searchEntries } from './memory/retrieval.js';
 import type { ScopedRecallResult } from './memory/scoped-memory.js';
 import { recallScopedMemory } from './memory/scoped-memory.js';
+import { normalizeTemporalConstraint, type TemporalConstraint } from './memory/temporal.js';
+import { effectiveRelatedSearchMode } from './memory/search-extension-config.js';
 import { PACKAGE_VERSION } from './package-version.js';
 import { findMissingRepositoryLocations, removeMissingRepositoryLocations } from './repository/binding.js';
 import { errorEnvelope, successEnvelope } from './serialization/envelope.js';
@@ -302,8 +306,17 @@ async function withPreparedSemanticRuntime<T>(
 function configureRecallCommand(command: Command, dependencies: CliDependencies): Command {
   const recall = addWorkspaceOptions(command.description('Human/operator management: recall relevant memory entries').argument('<query>'))
     .option('--limit <number>', 'Maximum entries', '5').option('--max-chars <number>', 'Context character budget', '8000')
-    .option('--scope <scope>', 'auto, project, ecosystem, or global', 'auto').option('--cwd <path>', 'Repository path used for scoped recall');
+    .option('--scope <scope>', 'auto, project, ecosystem, or global', 'auto').option('--cwd <path>', 'Repository path used for scoped recall')
+    .option('--temporal-basis <basis>', 'recorded or occurred')
+    .option('--temporal-mode <mode>', 'boost or restrict')
+    .option('--temporal-start <instant>', 'Inclusive ISO-8601 lower bound')
+    .option('--temporal-end <instant>', 'Exclusive ISO-8601 upper bound')
+    .option('--anchor-time <instant>', 'ISO-8601 request time fixed for replay')
+    .option('--timezone <zone>', 'IANA time zone used to normalize the request', 'UTC')
+    .option('--related-mode <mode>', 'off, observe, or active bounded one-hop related candidates');
   recall.action(async (query: string, options: Record<string, unknown>) => {
+    const temporal = temporalOption(options);
+    const relatedMode = relatedModeOption(options);
     let data: RecallResult | ScopedRecallResult;
     if (options.workspace !== undefined) {
       data = await withEmbeddingDatabase(dependencies, (database, backend) => withPreparedSemanticRuntime(
@@ -311,7 +324,10 @@ function configureRecallCommand(command: Command, dependencies: CliDependencies)
         database,
         backend,
         query,
-        (runtime) => recallEntries(database, { workspace: String(options.workspace), query, limit: Number(options.limit), maxChars: Number(options.maxChars) }, runtime),
+        (runtime) => recallEntriesWithReranker(database, {
+          workspace: String(options.workspace), query, limit: Number(options.limit), maxChars: Number(options.maxChars),
+          ...(temporal === undefined ? {} : { temporal }), relatedMode,
+        }, runtime),
       ));
     } else {
       data = await withEmbeddingDatabase(dependencies, (database, backend) => withPreparedSemanticRuntime(
@@ -324,6 +340,8 @@ function configureRecallCommand(command: Command, dependencies: CliDependencies)
           scope: String(options.scope ?? 'auto') as never,
           limit: Number(options.limit),
           maxChars: Number(options.maxChars),
+          ...(temporal === undefined ? {} : { temporal }),
+          relatedMode,
           ...(typeof options.cwd === 'string' ? { cwd: options.cwd } : {}),
         }, runtime),
       ));
@@ -334,6 +352,29 @@ function configureRecallCommand(command: Command, dependencies: CliDependencies)
     humanOrJson(options.json === true, 'recall', data, `${items.length} memory entries recalled`, { count, truncated });
   });
   return recall;
+}
+
+function temporalOption(options: Record<string, unknown>): TemporalConstraint | undefined {
+  const supplied = ['temporalBasis', 'temporalMode', 'temporalStart', 'temporalEnd', 'anchorTime']
+    .some((key) => options[key] !== undefined);
+  if (!supplied) return undefined;
+  const anchorTime = typeof options.anchorTime === 'string' ? options.anchorTime : new Date().toISOString();
+  return normalizeTemporalConstraint({
+    basis: options.temporalBasis,
+    mode: options.temporalMode,
+    ...(typeof options.temporalStart === 'string' ? { start: options.temporalStart } : {}),
+    ...(typeof options.temporalEnd === 'string' ? { end: options.temporalEnd } : {}),
+    anchorTime,
+    timezone: options.timezone ?? 'UTC',
+  });
+}
+
+function relatedModeOption(options: Record<string, unknown>): 'off' | 'observe' | 'active' {
+  const requested = options.relatedMode;
+  if (requested !== undefined && requested !== 'off' && requested !== 'observe' && requested !== 'active') {
+    throw new KiokukoError('VALIDATION_ERROR', 'related mode must be off, observe, or active');
+  }
+  return effectiveRelatedSearchMode(requested as 'off' | 'observe' | 'active' | undefined);
 }
 
 export interface CliDependencies {
@@ -910,9 +951,21 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'guide.answer', data, data.question?.prompt ?? 'Akinator context is ready');
   });
   const search = addWorkspaceOptions(cli.command('search').description('Human/operator management: search memory entries').argument('<query>'))
-    .option('--limit <number>', 'Maximum entries', '20').option('--kind <kind>').option('--status <status>').option('--tag <tag>');
+    .option('--limit <number>', 'Maximum entries', '20').option('--kind <kind>').option('--status <status>').option('--tag <tag>')
+    .option('--temporal-basis <basis>', 'recorded or occurred')
+    .option('--temporal-mode <mode>', 'boost or restrict')
+    .option('--temporal-start <instant>', 'Inclusive ISO-8601 lower bound')
+    .option('--temporal-end <instant>', 'Exclusive ISO-8601 upper bound')
+    .option('--anchor-time <instant>', 'ISO-8601 request time fixed for replay')
+    .option('--timezone <zone>', 'IANA time zone used to normalize the request', 'UTC')
+    .option('--related-mode <mode>', 'off, observe, or active bounded one-hop related candidates');
   search.action(async (query: string, options: Record<string, unknown>) => {
-    const searchOptions: Parameters<typeof searchEntries>[1] = { workspace: String(options.workspace ?? ''), query, limit: Number(options.limit) };
+    const temporal = temporalOption(options);
+    const searchOptions: Parameters<typeof searchEntries>[1] = {
+      workspace: String(options.workspace ?? ''), query, limit: Number(options.limit),
+      ...(temporal === undefined ? {} : { temporal }),
+      relatedMode: relatedModeOption(options),
+    };
     if (typeof options.kind === 'string') searchOptions.kind = options.kind as never;
     if (typeof options.status === 'string') searchOptions.status = options.status as never;
     if (typeof options.tag === 'string') searchOptions.tag = options.tag;
@@ -921,7 +974,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       database,
       backend,
       query,
-      (runtime) => searchEntries(database, searchOptions, runtime),
+      (runtime) => searchEntriesWithReranker(database, searchOptions, runtime),
     ));
     humanOrJson(options.json === true, 'search', data, `${data.items.length} memory entries found`, { count: data.count });
   });
@@ -1049,6 +1102,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     ...(dependencies.setupOutput === undefined ? {} : { setupOutput: dependencies.setupOutput }),
     output: humanOrJson,
   });
+  registerRerankerCommands(cli, {
+    ...(dependencies.setupEnvironment === undefined ? {} : dependencies.setupEnvironment),
+    output: humanOrJson,
+  });
 
   cli.command('web').description('Start the local Kiokuko web UI')
     .option('--host <host>', 'Loopback host', '127.0.0.1')
@@ -1095,7 +1152,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
 function operationFor(argv: string[]): string {
   const command = argv[2] ?? 'unknown';
-  if (['server', 'agent', 'skills', 'embeddings'].includes(command) && argv[3] !== undefined && !argv[3].startsWith('-')) return `${command}.${argv[3]}`;
+  if (['server', 'agent', 'skills', 'embeddings', 'reranker'].includes(command) && argv[3] !== undefined && !argv[3].startsWith('-')) return `${command}.${argv[3]}`;
   return command;
 }
 
@@ -1134,5 +1191,7 @@ export async function runCli(argv: string[] = process.argv, dependencies: CliDep
     if (jsonRequested && !(serveStarted && operation === 'serve')) emit(envelope);
     else process.stderr.write(`${envelope.error.message}\n`);
     return exitCodeFor(error);
+  } finally {
+    await closeSharedRerankerRuntime();
   }
 }

@@ -15,6 +15,8 @@ import { canonicalJson, type EntryKind } from '../serialization/validate.js';
 import { buildStructuredScope, hasExplicitApplicability, type Applicability, type MemoryClass, type MemorySignals, type RetrievalScope } from './structured-memory.js';
 import { retrieveFederatedMemory, type FederatedScope, type FederatedRecallResult } from './federated-retrieval.js';
 import type { HybridSearchRuntime } from './hybrid-retrieval.js';
+import type { RelatedSearchMode } from './hybrid-retrieval.js';
+import type { TemporalConstraint } from './temporal.js';
 import { analyzePortability } from './portability.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -124,6 +126,9 @@ export interface ScopedRecallInput {
   limit?: number;
   maxChars?: number;
   readOnly?: boolean;
+  temporal?: TemporalConstraint;
+  relatedMode?: RelatedSearchMode;
+  signal?: AbortSignal;
 }
 
 export type ScopedRecallResult = FederatedRecallResult;
@@ -435,6 +440,9 @@ export async function recallScopedMemory(
     ...(input.limit === undefined ? {} : { limit: input.limit }),
     ...(input.maxChars === undefined ? {} : { maxChars: input.maxChars }),
     ...(input.readOnly === undefined ? {} : { readOnly: input.readOnly }),
+    ...(input.temporal === undefined ? {} : { temporal: input.temporal }),
+    ...(input.relatedMode === undefined ? {} : { relatedMode: input.relatedMode }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
   }, runtime);
 }
 

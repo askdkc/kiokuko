@@ -11,6 +11,7 @@ import { executeIdempotentInTransaction } from '../server/idempotency.js';
 import { isCuratorManagedGlobalMemory } from './curator-trust.js';
 import { readEntry, recordEntryInTransaction, validateNewEntryInput, type EntryRecord } from './entries.js';
 import { findInteractionDuplicate } from './interaction-fingerprint.js';
+import { isDeliverableDerivedLesson } from './lesson-derivation.js';
 import { memoryCaptureInputSchema, type interactionMemorySchema } from './interaction-contract.js';
 import { GENERAL_COMMUNICATION_TAG, INTERACTION_SOURCE } from './interaction-subjects.js';
 import { supersedeEntryInTransaction } from './lifecycle.js';
@@ -83,7 +84,7 @@ function assertReplacement(database: SqliteDatabase, memory: Memory, workspace: 
 }
 
 /** A paraphrased observation may reference a known lesson, but never overwrite it. */
-function reinforcementTarget(database: SqliteDatabase, memory: Memory, workspace: string): EntryRecord | undefined {
+function reinforcementTarget(database: SqliteDatabase, memory: Memory, workspace: string, observingRunId?: string): EntryRecord | undefined {
   if (memory.reinforces === undefined) return undefined;
   const entry = readEntry(database, { workspace, entryId: memory.reinforces.entryId });
   const managed = database.prepare('SELECT 1 FROM external_skill_entries WHERE entry_id = ? LIMIT 1').get(entry.id);
@@ -92,7 +93,9 @@ function reinforcementTarget(database: SqliteDatabase, memory: Memory, workspace
   }
   if (entry.status === 'superseded'
     || entry.kind !== 'lesson' || entry.scope.visibility !== 'project' || managed !== undefined
-    || ![INTERACTION_SOURCE, 'agent_checkpoint'].includes(String(entry.provenance.type))) {
+    || ![INTERACTION_SOURCE, 'agent_checkpoint', 'agent_derived_lesson'].includes(String(entry.provenance.type))
+    || (entry.provenance.type === 'agent_derived_lesson'
+      && (entry.provenance.runId === observingRunId || !isDeliverableDerivedLesson(database, entry)))) {
     throw new KiokukoError('CONFLICT', 'Reinforcement target is stale, managed, or not a captured project lesson',
       { condition: 'invalid_reinforcement_target' });
   }
@@ -133,7 +136,7 @@ export async function captureInteractionMemory(database: SqliteDatabase, raw: un
       if (new Set(targeted).size !== targeted.length) throw new KiokukoError('VALIDATION_ERROR', 'A batch cannot correct one memory twice');
       return records.map((record, index): Receipt => {
         const old = replacements[index];
-        const reinforced = reinforcementTarget(database, input.memories[index]!, record.workspace);
+        const reinforced = reinforcementTarget(database, input.memories[index]!, record.workspace, input.runId);
         const duplicate = reinforced ?? findInteractionDuplicate(database, record);
         const saved = duplicate ?? recordEntryInTransaction(database, record, { now });
         if (old !== undefined && old.id !== saved.id) {

@@ -11,8 +11,10 @@ import { AgentGatewayService } from '../gateway/agent-service.js';
 import { projectLedger } from '../ledger/projection.js';
 import { curateMemoryCandidates, curatorFacets, globalizeCuratorCandidate } from '../memory/curator.js';
 import { readEntry, updateCandidateEntry, type EntryRecord } from '../memory/entries.js';
-import { searchEntries } from '../memory/retrieval.js';
+import { searchEntriesWithReranker, searchEntries } from '../memory/retrieval.js';
 import { recallScopedMemory } from '../memory/scoped-memory.js';
+import { normalizeTemporalConstraint, type TemporalConstraint } from '../memory/temporal.js';
+import { effectiveRelatedSearchMode } from '../memory/search-extension-config.js';
 import { MEMORY_CLASSES } from '../memory/structured-memory.js';
 import type { ResolvedProjectWorkspace } from '../memory/workspaces.js';
 import { GLOBAL_WORKSPACE } from '../memory/workspaces.js';
@@ -337,6 +339,27 @@ function requireNoQueryParameters(url: URL): void {
   }
 }
 
+function searchFeaturesFromUrl(url: URL): { temporal?: TemporalConstraint; relatedMode: 'off' | 'observe' | 'active' } {
+  const basis = url.searchParams.get('temporalBasis') ?? undefined;
+  const mode = url.searchParams.get('temporalMode') ?? undefined;
+  const start = url.searchParams.get('temporalStart') ?? undefined;
+  const end = url.searchParams.get('temporalEnd') ?? undefined;
+  const anchorTime = url.searchParams.get('anchorTime') ?? undefined;
+  const timezone = url.searchParams.get('timezone') ?? undefined;
+  const supplied = [basis, mode, start, end, anchorTime, timezone].some((value) => value !== undefined);
+  const temporal = supplied ? normalizeTemporalConstraint({
+    basis,
+    mode,
+    ...(start === undefined ? {} : { start }),
+    ...(end === undefined ? {} : { end }),
+    ...(anchorTime === undefined ? {} : { anchorTime }),
+    timezone: timezone ?? 'UTC',
+  }) : undefined;
+  const requested = enumQuery(url.searchParams.get('relatedMode'), ['off', 'observe', 'active'] as const, 'relatedMode');
+  const relatedMode = effectiveRelatedSearchMode(requested);
+  return { ...(temporal === undefined ? {} : { temporal }), relatedMode };
+}
+
 async function requireEmptyBody(request: IncomingMessage): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     request.once('data', () => {
@@ -383,7 +406,7 @@ function workspaceProject(database: SqliteDatabase, workspace: string): Resolved
   return { repositoryId: row.repository_id, workspace: row.workspace, repositoryRoot: row.canonical_root, source: 'location' };
 }
 
-function listEntries(
+async function listEntries(
   database: SqliteDatabase,
   workspace: string,
   query: string,
@@ -392,13 +415,14 @@ function listEntries(
   tag: string | undefined,
   includeSuperseded: boolean,
   limit: number,
-): { entries: EntryRecord[]; count: number } {
+  features: { temporal?: TemporalConstraint; relatedMode?: 'off' | 'observe' | 'active' } = {},
+): Promise<{ entries: EntryRecord[]; count: number }> {
   if (query.trim().length > 0) {
     const searchInput: Parameters<typeof searchEntries>[1] = { workspace, query, limit, includeSuperseded };
     if (kind !== undefined) searchInput.kind = kind;
     if (status !== undefined) searchInput.status = status;
     if (tag !== undefined) searchInput.tag = tag;
-    const result = searchEntries(database, searchInput);
+    const result = await searchEntriesWithReranker(database, { ...searchInput, ...features });
     return { entries: result.items, count: result.count };
   }
 
@@ -750,13 +774,25 @@ async function handleRequest(
     const scope = enumQuery(url.searchParams.get('scope'), ['auto', 'project', 'ecosystem', 'global'] as const, 'scope') ?? 'auto';
     const project = workspace === GLOBAL_WORKSPACE ? undefined : workspaceProject(context.database, workspace);
     if (scope !== 'global' && workspace !== GLOBAL_WORKSPACE && project === undefined) throw new KiokukoError('NOT_FOUND', 'The selected workspace has no repository root for scoped recall');
-    const result = await recallScopedMemory(context.database, {
-      query,
-      scope,
-      ...(project === undefined ? {} : { project }),
-      limit: Math.min(limitQuery(url.searchParams.get('limit')), 100),
-      maxChars: 50_000,
-    });
+    const recallController = new AbortController();
+    const abortRecallOnDisconnect = (): void => {
+      if (!response.writableEnded) recallController.abort();
+    };
+    response.once('close', abortRecallOnDisconnect);
+    let result: Awaited<ReturnType<typeof recallScopedMemory>>;
+    try {
+      result = await recallScopedMemory(context.database, {
+        query,
+        scope,
+        ...(project === undefined ? {} : { project }),
+        limit: Math.min(limitQuery(url.searchParams.get('limit')), 100),
+        maxChars: 50_000,
+        signal: recallController.signal,
+        ...searchFeaturesFromUrl(url),
+      });
+    } finally {
+      response.off('close', abortRecallOnDisconnect);
+    }
     jsonResponse(response, 200, { workspace, ...result });
     return;
   }
@@ -825,7 +861,7 @@ async function handleRequest(
     const tagValue = url.searchParams.get('tag');
     const tag = tagValue === null || tagValue.trim().length === 0 ? undefined : tagValue;
     const includeSuperseded = booleanQuery(url.searchParams.get('includeSuperseded'), 'includeSuperseded') ?? false;
-    const result = await listEntries(context.database, workspace, url.searchParams.get('q') ?? '', kind, status, tag, includeSuperseded, limitQuery(url.searchParams.get('limit')));
+    const result = await listEntries(context.database, workspace, url.searchParams.get('q') ?? '', kind, status, tag, includeSuperseded, limitQuery(url.searchParams.get('limit')), searchFeaturesFromUrl(url));
     jsonResponse(response, 200, { workspace, entries: result.entries, count: result.count });
     return;
   }

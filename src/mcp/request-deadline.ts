@@ -19,6 +19,7 @@ export type McpToolOperation =
   | 'memory_checkpoint'
   | 'memory_capture'
   | 'memory_recall'
+  | 'memory_derive_lesson'
   | 'handoff_save'
   | 'handoff_load'
   | 'handoff_discard'
@@ -93,6 +94,7 @@ const MUTATION_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
   'task_execution_evidence',
   'task_memory_refresh',
   'memory_capture',
+  'memory_derive_lesson',
   'handoff_save',
   'handoff_discard',
   'memory_checkpoint',

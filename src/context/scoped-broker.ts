@@ -5,6 +5,7 @@ import type { PreparedSemanticQuery } from '../embedding/types.js';
 import { KiokukoError } from '../errors.js';
 import type { RunStatus } from '../ledger/types.js';
 import { readEntry, type EntryRecord } from '../memory/entries.js';
+import type { TemporalConstraint } from '../memory/temporal.js';
 import { federatedEntries, type RetrievalDiagnostics, type FederatedOrigin } from '../memory/federated-retrieval.js';
 import type { HybridSearchRuntime } from '../memory/hybrid-retrieval.js';
 import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
@@ -24,12 +25,17 @@ import { entryOriginMatchesWorkspace } from './origin.js';
 import { CONTEXT_SELECTION_REASON_ORDER } from './ranking.js';
 import { readContextRunRetrievalState } from './run-state.js';
 import { contextRetrievalStateHash, ordinaryContextSelectionStateHash } from './selection-state.js';
+import { effectiveRelatedSearchMode } from '../memory/search-extension-config.js';
+import { readRerankerConfig } from '../reranker/config.js';
+import { reorderScoredCandidates, scoreLocalReranker } from '../reranker/service.js';
+import { deduplicateDeliverableLessonSources, formatLessonSourceReferences, readDeliverableLessonSourceReferences, type LessonDeduplicationResult } from '../memory/lesson-derivation.js';
 
 export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v8' as const;
 export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
 
 export interface ScopedContextQuery {
+  signal?: AbortSignal;
   cwd?: string;
   project?: ResolvedProjectWorkspace;
   fingerprint?: ProjectFingerprint;
@@ -41,6 +47,8 @@ export interface ScopedContextQuery {
   limit?: number;
   characterBudget?: number;
   runId?: string;
+  temporal?: TemporalConstraint;
+  relatedMode?: 'off' | 'observe' | 'active';
 }
 
 export interface ScopedContextItem {
@@ -85,6 +93,15 @@ export interface ScopedContextResult {
   deliveryId: string | null;
   truncated: boolean;
   untrusted: true;
+  rerankerDiagnostics?: {
+    mode: 'observe' | 'active';
+    state: 'observed' | 'applied' | 'unavailable' | 'failed' | 'no_candidates';
+    candidateCount: number;
+    scoredCount: number;
+    unscoredCount: number;
+    reason?: string;
+  };
+  lessonDeduplicationDiagnostics?: LessonDeduplicationResult['diagnostics'];
 }
 
 export interface ScopedContextGateDecision<T> {
@@ -164,6 +181,7 @@ interface PreparedScopedContext {
   pendingDelivery: ScopedDeliveryRequest | null;
   run: ScopedRunContext | null;
   projectState: { project: ResolvedProjectWorkspace; fingerprint: ProjectFingerprint } | null;
+  relatedMode: 'off' | 'observe' | 'active';
 }
 
 function semanticQueryIdentity(runtime: HybridSearchRuntime): Record<string, unknown> | null {
@@ -324,7 +342,12 @@ function assertScopedSelectionState(
   }
 }
 
-function fitScopedItems(ordered: ScopedContextItem[], limit: number, characterBudget: number): FittedScopedItems {
+function fitScopedItems(
+  ordered: ScopedContextItem[],
+  limit: number,
+  characterBudget: number,
+  requiredSuffixes: ReadonlyMap<string, string> = new Map(),
+): FittedScopedItems {
   const items: ScopedContextItem[] = [];
   let remaining = characterBudget;
   let truncated = false;
@@ -341,7 +364,22 @@ function fitScopedItems(ordered: ScopedContextItem[], limit: number, characterBu
       truncated = true;
       break;
     }
-    const bodyPreview = takeCharacters(item.bodyPreview, remaining - metadataCost);
+    const sourceSuffix = requiredSuffixes.get(item.entryId);
+    const bodyBudget = remaining - metadataCost;
+    let bodyPreview: string;
+    if (sourceSuffix === undefined) {
+      bodyPreview = takeCharacters(item.bodyPreview, bodyBudget);
+    } else {
+      const suffixCharacters = Array.from(sourceSuffix);
+      const suffixCost = suffixCharacters.length;
+      if (suffixCost > bodyBudget) {
+        truncated = true;
+        continue;
+      }
+      const bodyCharacters = Array.from(item.bodyPreview);
+      const baseBody = bodyCharacters.slice(0, Math.max(0, bodyCharacters.length - suffixCost)).join('');
+      bodyPreview = `${takeCharacters(baseBody, bodyBudget - suffixCost)}${sourceSuffix}`;
+    }
     if (characterCount(bodyPreview) < characterCount(item.bodyPreview)) truncated = true;
     const cost = metadataCost + characterCount(bodyPreview);
     items.push({
@@ -533,11 +571,16 @@ function replayableDelivery(
   return null;
 }
 
-function storedScopedItems(database: SqliteDatabase, delivery: ContextDeliveryView): ScopedContextItem[] {
+function storedScopedItems(
+  database: SqliteDatabase,
+  delivery: ContextDeliveryView,
+  relatedMode: 'off' | 'observe' | 'active' = 'off',
+): ScopedContextItem[] {
   if (delivery.policyVersion !== SCOPED_CONTEXT_POLICY_VERSION) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Unsupported context delivery cannot be replayed');
   }
   assertScopedDeliveryIdentity(delivery);
+  const suffixes = new Map<string, string>();
   const fullItems = delivery.items.map((item): ScopedContextItem => {
     const current = currentRetrievableDeliveryEntry(database, delivery.workspace, item);
     if (current === null) throw new KiokukoError('INTEGRITY_ERROR', 'Stored scoped context entry is no longer retrievable');
@@ -547,20 +590,24 @@ function storedScopedItems(database: SqliteDatabase, delivery: ContextDeliveryVi
       revision: item.entryRevision,
     });
     const scoreComponents = item.scoreComponents as ScopedContextItem['scoreComponents'];
+    const sourceSuffix = relatedMode === 'active'
+      ? formatLessonSourceReferences(readDeliverableLessonSourceReferences(database, current))
+      : '';
+    if (sourceSuffix.length > 0) suffixes.set(item.entryId, sourceSuffix);
     return {
       entryId: item.entryId,
       revision: item.entryRevision,
       origin: item.origin ?? 'project',
       title: revision.title,
       summary: revision.summary,
-      bodyPreview: revision.body,
+      bodyPreview: `${revision.body}${sourceSuffix}`,
       score: Object.values(scoreComponents).reduce((total, component) => total + component, 0),
       scoreComponents: { ...scoreComponents },
       selectionReasons: [...item.selectionReasons],
       metadata: { storedData: true, untrusted: true, instructions: false },
     };
   });
-  const fitted = fitScopedItems(fullItems, fullItems.length || 1, delivery.charBudget);
+  const fitted = fitScopedItems(fullItems, fullItems.length || 1, delivery.charBudget, suffixes);
   if (fitted.charCount !== delivery.charCount
     || fitted.items.length !== delivery.items.length
     || (fitted.truncated && !delivery.truncated)) {
@@ -647,6 +694,8 @@ async function prepareScopedContext(
   ensureGlobalWorkspace(database);
   const limit = raw.limit ?? 20;
   const characterBudget = raw.characterBudget ?? SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET;
+  const rerankerConfig = readRerankerConfig();
+  const relatedMode = effectiveRelatedSearchMode(raw.relatedMode);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_LIMIT || !Number.isSafeInteger(characterBudget) || characterBudget < 1 || characterBudget > SCOPED_CONTEXT_MAX_CHARACTER_BUDGET) {
     throw new KiokukoError('VALIDATION_ERROR', 'Scoped context bounds are invalid');
   }
@@ -672,6 +721,20 @@ async function prepareScopedContext(
     },
     limit,
     characterBudget,
+    ...(raw.temporal === undefined ? {} : { temporal: raw.temporal }),
+    ...(relatedMode === 'off' ? {} : { relatedMode }),
+    ...(rerankerConfig.mode === 'active' ? { reranker: {
+      mode: rerankerConfig.mode,
+      presetId: rerankerConfig.presetId,
+      revision: rerankerConfig.revision,
+      dtype: rerankerConfig.dtype,
+      maxCandidates: rerankerConfig.maxCandidates,
+      maxInputBytes: rerankerConfig.maxInputBytes,
+      maxTokens: rerankerConfig.maxTokens,
+      timeoutMs: rerankerConfig.timeoutMs,
+      maxConcurrency: rerankerConfig.maxConcurrency,
+      queueLimit: rerankerConfig.queueLimit,
+    } } : {}),
     policyVersion: SCOPED_CONTEXT_POLICY_VERSION,
     retrievalStateHash,
     runStateHash: run?.stateHash ?? null,
@@ -692,7 +755,7 @@ async function prepareScopedContext(
         taskProfileHash,
         queryHash,
         policyVersion: SCOPED_CONTEXT_POLICY_VERSION,
-        items: storedScopedItems(database, replay),
+        items: storedScopedItems(database, replay, relatedMode),
         deliveryId: replay.deliveryId,
         truncated: replay.truncated,
         untrusted: true,
@@ -704,6 +767,7 @@ async function prepareScopedContext(
       pendingDelivery: null,
       run,
       projectState,
+      relatedMode,
     };
   }
   let retrieval: RetrievalDiagnostics = { status: "no_entries", searchedEntryCount: 0, excludedCount: 0 };
@@ -714,11 +778,28 @@ async function prepareScopedContext(
     query: queryText,
     observe: value => { retrieval = value; },
     limit: 200,
+    ...(raw.temporal === undefined ? {} : { temporal: raw.temporal }),
+    relatedMode,
   }, runtime);
+  const deduplicated = deduplicateDeliverableLessonSources(database, federated.map((hit) => hit.entry), relatedMode);
+  const suppressedIds = new Set(deduplicated.suppressed.map((item) => item.entryId));
+  const retainedIds = new Set(deduplicated.suppressed.map((item) => item.retainedEntryId));
+  const sourceNotes = new Map<string, string>();
+  if (relatedMode === 'active') {
+    for (const [entryId, references] of deduplicated.sourceReferences) {
+      sourceNotes.set(entryId, formatLessonSourceReferences(references));
+    }
+  }
+  const entriesById = new Map<string, EntryRecord>();
   for (const hit of federated) {
     const entry = hit.entry;
+    if (suppressedIds.has(entry.id)) continue;
+    entriesById.set(entry.id, entry);
     const item = entryScore(entry, hit.origin, hit.score, hit.selectionReasons.includes('exact_signal_match'), queryText);
     item.selectionReasons.push(...hit.selectionReasons);
+    if (retainedIds.has(entry.id)) item.selectionReasons.push('duplicate_source_suppressed');
+    const sourceNote = sourceNotes.get(entry.id);
+    if (sourceNote !== undefined) item.bodyPreview = `${item.bodyPreview}${sourceNote}`;
     item.selectionReasons = [...new Set(item.selectionReasons)];
     const feedback = feedbackScore(database, entry.id);
     item.score += feedback.score;
@@ -728,14 +809,70 @@ async function prepareScopedContext(
     const previous = candidates.get(item.entryId);
     if (previous === undefined || item.score > previous.score) candidates.set(item.entryId, item);
   }
-  const ordered = [...candidates.values()].sort((left, right) =>
+  let ordered = [...candidates.values()].sort((left, right) =>
     Number(right.origin === 'project' && right.selectionReasons.includes('repeated_lesson'))
     - Number(left.origin === 'project' && left.selectionReasons.includes('repeated_lesson'))
     || right.score - left.score || compareCanonicalStrings(left.entryId, right.entryId));
   const preferenceItems = ordered.filter((item) => item.selectionReasons.includes('general_communication_preference')).slice(0, 2);
   const repeatedItems = ordered.filter(item => item.origin === 'project' && item.selectionReasons.includes('repeated_lesson'));
   const preferred = new Set([...repeatedItems, ...preferenceItems].map((item) => item.entryId));
-  const fitted = fitScopedItems([...repeatedItems, ...preferenceItems, ...ordered.filter((item) => !preferred.has(item.entryId))], limit, characterBudget);
+  const fixedItems = [...repeatedItems, ...preferenceItems];
+  const rerankable = ordered.filter((item) => !preferred.has(item.entryId));
+  let rerankerDiagnostics: ScopedContextResult['rerankerDiagnostics'];
+  if (rerankerConfig.mode !== 'off') {
+    const candidateItems = rerankable.slice(0, rerankerConfig.maxCandidates);
+    if (candidateItems.length === 0) {
+      rerankerDiagnostics = {
+        mode: rerankerConfig.mode, state: 'no_candidates', candidateCount: 0, scoredCount: 0, unscoredCount: 0,
+      };
+    } else {
+      try {
+        const scores = await scoreLocalReranker(queryText, candidateItems.flatMap((item) => {
+          const entry = entriesById.get(item.entryId);
+          return entry === undefined ? [] : [{ key: item.entryId, title: entry.title, summary: entry.summary, body: item.bodyPreview }];
+        }), { config: rerankerConfig, ...(raw.signal === undefined ? {} : { signal: raw.signal }) });
+        assertScopedSelectionState(database, selectionWorkspaces, retrievalStateHash);
+        if (scores.failed) {
+          rerankerDiagnostics = {
+            mode: rerankerConfig.mode, state: 'failed', candidateCount: candidateItems.length,
+            scoredCount: 0, unscoredCount: candidateItems.length, reason: scores.failureReason ?? 'inference_failed',
+          };
+        } else {
+          rerankerDiagnostics = {
+            mode: rerankerConfig.mode,
+            state: rerankerConfig.mode === 'active' ? 'applied' : 'observed',
+            candidateCount: candidateItems.length,
+            scoredCount: scores.scores.size,
+            unscoredCount: scores.unscored.size,
+          };
+          if (rerankerConfig.mode === 'active') {
+            const reranked = reorderScoredCandidates(
+              candidateItems.map((item) => ({ key: item.entryId, item })),
+              scores.scores,
+              rerankerConfig.maxCandidates,
+            ).map(({ item }) => item);
+            ordered = [...fixedItems, ...reranked, ...ordered.filter((item) => !preferred.has(item.entryId)
+              && !candidateItems.some((candidate) => candidate.entryId === item.entryId))];
+          }
+        }
+      } catch (error) {
+        if (rerankerConfig.mode === 'active'
+          || error instanceof KiokukoError && ['INTEGRITY_ERROR', 'SECURITY_REJECTION', 'CONFLICT'].includes(error.code)) throw error;
+        assertScopedSelectionState(database, selectionWorkspaces, retrievalStateHash);
+        rerankerDiagnostics = {
+          mode: rerankerConfig.mode, state: 'unavailable', candidateCount: candidateItems.length,
+          scoredCount: 0, unscoredCount: candidateItems.length,
+          reason: error instanceof KiokukoError ? error.code.toLowerCase() : 'inference_unavailable',
+        };
+      }
+    }
+  }
+  const fitted = fitScopedItems(
+    [...repeatedItems, ...preferenceItems, ...ordered.filter((item) => !preferred.has(item.entryId))],
+    limit,
+    characterBudget,
+    sourceNotes,
+  );
   return {
     result: {
       project: project ?? null,
@@ -747,6 +884,8 @@ async function prepareScopedContext(
       deliveryId: null,
       truncated: fitted.truncated,
       untrusted: true,
+      ...(rerankerDiagnostics === undefined ? {} : { rerankerDiagnostics }),
+      lessonDeduplicationDiagnostics: deduplicated.diagnostics,
     },
     replayDelivery: null,
     selectionStateHash,
@@ -755,6 +894,7 @@ async function prepareScopedContext(
     pendingDelivery: run === null ? null : deliveryRequest(run, taskProfileHash, queryHash, characterBudget, fitted),
     run,
     projectState,
+    relatedMode,
   };
 }
 
@@ -833,7 +973,7 @@ function persistPreparedScopedContext(
     );
     const result = {
       ...prepared.result,
-      items: storedScopedItems(database, delivery),
+      items: storedScopedItems(database, delivery, prepared.relatedMode),
       deliveryId: delivery.deliveryId,
       truncated: delivery.truncated,
     };

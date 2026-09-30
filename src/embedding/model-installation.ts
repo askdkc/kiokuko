@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { KiokukoError } from '../errors.js';
-import { getEmbeddingPresetDirectory, type PathEnvironment } from '../config/paths.js';
+import { getEmbeddingPresetDirectory, getRerankerPresetDirectory, type PathEnvironment } from '../config/paths.js';
 import { assertNoUnexpectedModelFiles, MODEL_MANIFEST_FILENAME, serializeModelManifest, verifyModelDirectory } from './model-manifest.js';
 import { createHuggingFaceModelDownloader, type ModelDownloader, type ModelDownloadProgress } from './model-download.js';
-import type { LocalEmbeddingPreset } from './presets/manifest.js';
+import type { LocalEmbeddingPreset, ModelArtifactPreset } from './presets/manifest.js';
 
 export interface InstalledModel {
   readonly installation: 'installed' | 'reused';
@@ -19,10 +19,11 @@ export interface InstallModelOptions extends PathEnvironment {
   readonly downloader?: ModelDownloader;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: ModelDownloadProgress) => void;
+  readonly family?: 'embeddings' | 'rerankers';
 }
 
-function relativeModelPath(preset: LocalEmbeddingPreset): string {
-  return path.posix.join('models', 'embeddings', preset.id, preset.revision);
+function relativeModelPath(preset: ModelArtifactPreset, family: 'embeddings' | 'rerankers'): string {
+  return path.posix.join('models', family, preset.id, preset.revision);
 }
 
 async function existingDirectory(pathname: string): Promise<boolean> {
@@ -37,16 +38,20 @@ async function existingDirectory(pathname: string): Promise<boolean> {
   }
 }
 
-export async function installEmbeddingModel(
-  preset: LocalEmbeddingPreset,
+export async function installLocalModel(
+  preset: ModelArtifactPreset,
   options: InstallModelOptions = {},
 ): Promise<InstalledModel> {
   const downloader = options.downloader ?? createHuggingFaceModelDownloader();
-  const finalDirectory = getEmbeddingPresetDirectory(preset.id, preset.revision, options);
+  const family = options.family ?? 'embeddings';
+  const finalDirectory = family === 'rerankers'
+    ? getRerankerPresetDirectory(preset.id, preset.revision, options)
+    : getEmbeddingPresetDirectory(preset.id, preset.revision, options);
+  const relativePath = relativeModelPath(preset, family);
   if (await existingDirectory(finalDirectory)) {
     const manifest = await verifyModelDirectory(finalDirectory, preset);
     await assertNoUnexpectedModelFiles(finalDirectory, preset);
-    return { installation: 'reused', directory: finalDirectory, relativePath: relativeModelPath(preset), totalBytes: manifest.totalBytes, manifestHash: manifest.artifactManifestHash };
+    return { installation: 'reused', directory: finalDirectory, relativePath, totalBytes: manifest.totalBytes, manifestHash: manifest.artifactManifestHash };
   }
 
   const stagingParent = path.dirname(path.dirname(finalDirectory));
@@ -65,16 +70,16 @@ export async function installEmbeddingModel(
     if (await existingDirectory(finalDirectory)) {
       const existing = await verifyModelDirectory(finalDirectory, preset);
       if (existing.artifactManifestHash !== manifest.artifactManifestHash) throw new KiokukoError('CONFLICT', 'A different model installation already exists for this preset revision');
-      return { installation: 'reused', directory: finalDirectory, relativePath: relativeModelPath(preset), totalBytes: existing.totalBytes, manifestHash: existing.artifactManifestHash };
+      return { installation: 'reused', directory: finalDirectory, relativePath, totalBytes: existing.totalBytes, manifestHash: existing.artifactManifestHash };
     }
     try {
       await rename(downloaded.directory, finalDirectory);
-      return { installation: 'installed', directory: finalDirectory, relativePath: relativeModelPath(preset), totalBytes: manifest.totalBytes, manifestHash: manifest.artifactManifestHash };
+      return { installation: 'installed', directory: finalDirectory, relativePath, totalBytes: manifest.totalBytes, manifestHash: manifest.artifactManifestHash };
     } catch (error) {
       if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOTEMPTY'
         && await existingDirectory(finalDirectory)) {
         const existing = await verifyModelDirectory(finalDirectory, preset);
-        return { installation: 'reused', directory: finalDirectory, relativePath: relativeModelPath(preset), totalBytes: existing.totalBytes, manifestHash: existing.artifactManifestHash };
+        return { installation: 'reused', directory: finalDirectory, relativePath, totalBytes: existing.totalBytes, manifestHash: existing.artifactManifestHash };
       }
       throw error;
     }
@@ -82,4 +87,11 @@ export async function installEmbeddingModel(
     await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+export async function installEmbeddingModel(
+  preset: LocalEmbeddingPreset,
+  options: InstallModelOptions = {},
+): Promise<InstalledModel> {
+  return installLocalModel(preset, { ...options, family: 'embeddings' });
 }
