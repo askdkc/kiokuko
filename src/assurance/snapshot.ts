@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync, realpathSync, existsSync } from 'node:fs';
+import { lstatSync, readFileSync, readlinkSync, realpathSync, existsSync, opendirSync } from 'node:fs';
 import path from 'node:path';
 import { KiokukoError } from '../errors.js';
 
@@ -36,7 +36,10 @@ function snapshotRepository(root: string, budget: SnapshotBudget, depth: number)
     hash.update(file).update('\0');
     let stat;
     try { stat = lstatSync(full); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') { hash.update('deleted\0'); continue; }
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        hash.update(gitlinks.has(file) ? `gitlink\0${gitlinks.get(file)!}\0uninitialized\0` : 'deleted\0');
+        continue;
+      }
       throw error;
     }
     if (stat.isSymbolicLink()) {
@@ -53,6 +56,16 @@ function snapshotRepository(root: string, budget: SnapshotBudget, depth: number)
     }
     if (stat.isDirectory() && gitlinks.has(file) && realpathSync(full) === full) {
       hash.update('gitlink\0').update(gitlinks.get(file)!).update('\0');
+      if (!existsSync(path.join(full, '.git'))) {
+        // A normal non-recursive clone leaves an empty gitlink directory. Do not
+        // mistake the parent discovered by rev-parse for this submodule's root.
+        const directory = opendirSync(full);
+        try {
+          if (directory.readSync() !== null) throw new KiokukoError('VALIDATION_ERROR', 'Uninitialized submodule contains files that cannot be verified');
+        } finally { directory.closeSync(); }
+        hash.update('uninitialized\0');
+        continue;
+      }
       hash.update(snapshotRepository(full, budget, depth + 1)).update('\0');
       continue;
     }

@@ -66,7 +66,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
       db.prepare("INSERT INTO codex_hook_requests VALUES (?, ?, NULL, ?, 'pending', 0, ?, ?) ON CONFLICT(identity_digest) DO UPDATE SET last_event=excluded.last_event, updated_at=excluded.updated_at")
         .run(identity, root, requestId, input.hook_event_name, now);
     });
-    return context(input.hook_event_name, `Kiokuko request ${requestId}. Before project work, read kiokuko-soul using task_inspect and call task_prepare with this requestId. Use task_inspect for bounded preparation reads. Ordinary conversation needs no project run. ${CODEX_HOOK_LIMITATION}`);
+    return context(input.hook_event_name, `Kiokuko request ${requestId}. Before project work, call task_inspect with {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path to read kiokuko-soul), then call task_prepare with this requestId and soulRead=true. Use task_inspect for bounded preparation reads. Ordinary conversation needs no project run. ${CODEX_HOOK_LIMITATION}`);
   }
   if (!request) {
     if (input.hook_event_name === 'Interrupt' || input.hook_event_name === 'SubagentStop') return {};
@@ -111,7 +111,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
       if (args.runId !== undefined && args.runId !== request.run_id) return deny('Tool run is not bound to this client request');
       return {};
     }
-    if (!request.run_id) return deny('Read kiokuko-soul and complete task_prepare first; task_inspect is available for preparation.');
+    if (!request.run_id) return deny(`Read kiokuko-soul with task_inspect {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path), then complete task_prepare. task_inspect also permits bounded preparation reads.`);
     if (request.state !== 'bound') return deny('Kiokuko preparation has not permitted progress; resolve the current intake or required capability gate.');
     const run = new LedgerStore(db).readRun(request.run_id);
     if (!run || run.status !== 'active') return deny('Kiokuko intake is unfinished or the run is terminal');

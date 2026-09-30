@@ -53,6 +53,21 @@ remaining fields in the body. The status body accepts `cwd` and `snapshot`.
 `task_inspect` provides bounded preparation reads and bundled Skill access
 without executing a model-supplied shell command.
 
+Start preparation with `{"cwd":"/absolute/repository","operation":"skill"}`;
+omitting `path` reads `kiokuko-soul`. Other bundled Skills accept their name
+(for example, `memory-reasoning`) or `skill-name/SKILL.md`; references use
+`skill-name/references/file.md`. Skill access is independent of Git and reads
+the package's bundled files, rather than installed client paths. Repository
+reads accept relative paths or absolute paths inside the repository. Rejected
+paths return fixed recovery guidance without exposing filesystem details.
+
+Fresh clones do not need `git submodule update --init --recursive` for preparation
+or hook snapshots. Missing or empty uninitialized submodules are recorded with
+their indexed commit and initialization state. Initialized submodules are
+inspected recursively, so initializing them or changing nested files invalidates
+earlier evidence. A nonempty submodule directory without Git metadata is rejected
+because its contents cannot be verified by a Git snapshot.
+
 Capability normalization v2 reserves identity space before spending description
 space. More than 200 valid capabilities are accepted. Oversized descriptions are
 omitted without losing identities. Malformed inputs or identity-budget exhaustion

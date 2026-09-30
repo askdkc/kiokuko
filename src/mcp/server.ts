@@ -1,6 +1,6 @@
 import { indexSubmitSchema, indexReviewSchema, submitIndex, reviewIndex } from '../memory/index-service.js';
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
-import { inspectTask, inspectTaskSchema } from '../assurance/inspect.js';
+import { inspectTask, inspectTaskSchema, TaskInspectionError } from '../assurance/inspect.js';
 import { memoryReviewSchema, executionEvidenceSchema, memoryRefreshSchema } from '../assurance/contracts.js';
 import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCwd } from '../assurance/service.js';
 import { repositoryStateDigest } from '../assurance/snapshot.js';
@@ -135,6 +135,7 @@ const RETRYABLE_TOOL_ERROR_CODES: ReadonlySet<ErrorCode> = new Set([
 ]);
 
 function publicToolError(error: unknown): KiokukoError {
+  if (error instanceof TaskInspectionError) return new TaskInspectionError(error.reason);
   if (!(error instanceof KiokukoError)) {
     return new KiokukoError('INTEGRITY_ERROR', PUBLIC_TOOL_ERROR_MESSAGES.INTEGRITY_ERROR);
   }
@@ -477,7 +478,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   }))))));
 
   server.registerTool('task_inspect', {
-    title: 'Inspect files for task preparation', description: 'Bounded repository reads, file listing, Git status, or bundled Skill reads (path: skill-name/SKILL.md). Executes no model-supplied shell command.',
+    title: 'Inspect files for task preparation', description: 'Bounded preparation reads. Start with operation="skill" and omit path to read kiokuko-soul; other bundled Skills accept their name or skill-name/SKILL.md. Skill reads need no Git checkout or initialized submodules. Read paths are repository-relative or absolute inside the repository. Executes no model-supplied shell command.',
     inputSchema: inspectTaskSchema, annotations: { readOnlyHint: true, openWorldHint: false },
   }, async (input, extra) => withMcpToolDeadline('task_inspect', deadlinePolicy, extra.signal, () => withPublicToolError(async () => toolResult(inspectTask(input)))));
   server.registerTool('task_memory_review', {
