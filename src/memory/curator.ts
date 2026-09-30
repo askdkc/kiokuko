@@ -358,6 +358,7 @@ function scoreEntry(entry: EntryRecord): CuratorScore {
 }
 
 function candidateFromEntry(database: SqliteDatabase, entry: EntryRecord): CuratorCandidate | null {
+  if (entry.provenance.type === "memory_index" || entry.createdBy === "kiokuko-memory-index") return null;
   if (entry.workspace === GLOBAL_WORKSPACE || entry.status !== 'candidate') return null;
   if (isExternalSkillReference(entry)) return null;
   const scored = scoreEntry(entry);

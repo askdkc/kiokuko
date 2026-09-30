@@ -1,3 +1,4 @@
+import { assertNotIndexArtifact } from './index-state.js';
 import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -398,6 +399,7 @@ function updateCandidateEntryInTransactionInternal(database: SqliteDatabase, inp
   const now = input.now ?? new Date().toISOString();
 
   const current = readEntry(database, { workspace, entryId: input.entryId });
+  assertNotIndexArtifact(current);
   if (current.status !== 'candidate') throw new KiokukoError('CONFLICT', 'Verified or superseded entries must be replaced, not edited');
   if (current.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
   const duplicate = semanticRevision(database, workspace, contentHash);

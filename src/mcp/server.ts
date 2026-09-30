@@ -1,3 +1,4 @@
+import { indexSubmitSchema, indexReviewSchema, submitIndex, reviewIndex } from '../memory/index-service.js';
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { inspectTask, inspectTaskSchema } from '../assurance/inspect.js';
 import { memoryReviewSchema, executionEvidenceSchema, memoryRefreshSchema } from '../assurance/contracts.js';
@@ -491,9 +492,11 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   }, async (input, extra) => withMcpToolDeadline('task_execution_evidence', deadlinePolicy, extra.signal, () => withPublicToolError(() => withDatabase(dependencies, async db => toolResult(recordTaskEvidence(db, input))))));
   server.registerTool('task_memory_refresh', {
     title: 'Refresh task memory within the same run',
-    description: 'Retrieve memory for newly discovered changed paths or error signatures using the existing run, scope and capability binding. Review records from older deliveries require reconfirmation.',
+    description: 'Retrieve memory for newly discovered paths/errors or request an explicit bounded atomic/bridge indexing batch after intake, using the existing run, scope and capability binding. Review records from older deliveries require reconfirmation.',
     inputSchema: memoryRefreshSchema,
   }, async (input, extra) => withMcpToolDeadline('task_memory_refresh', deadlinePolicy, extra.signal, signal => withPublicToolError(() => withDatabase(dependencies, async db => toolResult(await refreshTaskMemory(db, input, signal))))));
+  server.registerTool('memory_index_submit', {title:'Submit revision-bound index knowledge',description:'Submit atomic or bridge candidates from the exact indexing work batch. Candidates remain untrusted.',inputSchema:indexSubmitSchema}, async (input,extra) => withMcpToolDeadline('memory_index_submit',deadlinePolicy,extra.signal,()=>withPublicToolError(() => withDatabase(dependencies, async db => toolResult(submitIndex(db,input))))));
+  server.registerTool('memory_index_review', {title:'Review index knowledge',description:'Record supported, unsupported or uncertain against source quotes. Model-reported; never promotes trust.',inputSchema:indexReviewSchema}, async (input,extra) => withMcpToolDeadline('memory_index_review',deadlinePolicy,extra.signal,()=>withPublicToolError(() => withDatabase(dependencies, async db => toolResult(reviewIndex(db,input))))));
   server.registerTool('task_memory_status', {
     title: 'Inspect memory application and verification status',
     description: 'Return current assurance revision, missing reviews and stale verification without memory bodies or logs.',

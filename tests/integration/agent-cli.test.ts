@@ -576,7 +576,7 @@ test('agent JSON input rejects trailing data and server absence is a fixed error
 
   const unavailable = await captureOutput(() => runCli([
     'node', 'kiokuko', 'agent', 'open', '--workspace', 'w', '--client', 'generic', '--task', 't', '--json',
-  ]));
+  ], { agent: { createClient: () => createServerClient({ descriptorPath: path.join(directory, 'absent-runtime.json') }) } }));
   assert.equal(unavailable.result, 6);
   assert.equal(unavailable.stderr, '');
   const unavailableBody = parsed(unavailable.stdout);

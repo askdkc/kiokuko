@@ -1,3 +1,4 @@
+import { indexVectorFilter, validIndexVector } from '../memory/index-state.js';
 import { normalizeSubject } from '../memory/interaction-subjects.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
@@ -10,6 +11,8 @@ export const SQLITE_VEC_BACKEND_ID = 'sqlite-vec' as const;
 
 interface VectorRow extends SqliteRow {
   entry_id: unknown;
+  index_generated: number;
+  workspace: string;
   dimensions: unknown;
   embedding: unknown;
   vector_hash: unknown;
@@ -75,6 +78,7 @@ export class SqliteVecVectorSearchBackend implements VectorSearchBackend {
       'ee.dimensions = ?',
       'ee.revision = e.current_revision',
       'ee.content_hash = r.content_hash',
+      indexVectorFilter(input.indexEvaluation ?? false,input.indexOriginalsOnly??false),
     ];
     const parameters: Array<string | number | Uint8Array> = [normalized.queryBlob, normalized.profileId, normalized.dimensions];
     if (normalized.workspace !== undefined) {
@@ -95,7 +99,7 @@ export class SqliteVecVectorSearchBackend implements VectorSearchBackend {
     let rows: VectorRow[];
     try {
       rows = database.prepare(`
-        SELECT ee.entry_id, ee.dimensions, ee.embedding, ee.vector_hash,
+        SELECT ee.entry_id, e.workspace, (e.created_by='kiokuko-memory-index' OR json_extract(r.provenance_json,'$.type')='memory_index') AS index_generated, ee.dimensions, ee.embedding, ee.vector_hash,
                vec_distance_cosine(ee.embedding, ?) AS distance
           FROM entry_embeddings AS ee
           JOIN entries AS e
@@ -116,6 +120,7 @@ export class SqliteVecVectorSearchBackend implements VectorSearchBackend {
     const hits: VectorHit[] = [];
     for (const row of rows) {
       const id = entryId(row.entry_id);
+      if(row.index_generated && !validIndexVector(database,row.workspace,id)) continue;
       if (typeof row.dimensions !== 'number' || row.dimensions !== normalized.dimensions) {
         integrity('Stored vector dimensions do not match the search profile');
       }
@@ -123,6 +128,7 @@ export class SqliteVecVectorSearchBackend implements VectorSearchBackend {
       try {
         decodeVector(row.embedding, normalized.dimensions, vectorHash);
       } catch {
+        if(row.index_generated) continue;
         integrity('Stored vector is invalid');
       }
       if (typeof row.distance !== 'number' || !Number.isFinite(row.distance)) integrity('Vector distance is invalid');

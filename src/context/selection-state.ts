@@ -1,3 +1,4 @@
+import { indexStateHash } from '../memory/index-state.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { readActiveEmbeddingProfile, readEmbeddingRuntimeState, readEntryEmbedding, type ActiveEmbeddingProfile } from '../embedding/store.js';
 import { KiokukoError } from '../errors.js';
@@ -436,6 +437,7 @@ export function contextRetrievalStateHash(
   return canonicalContentHash({
     workspaces: state.workspaces,
     includeEcosystem,
+    memoryIndex: indexStateHash(database, state.workspaces),
     semantic: state.semantic,
     entries: state.entries,
   });

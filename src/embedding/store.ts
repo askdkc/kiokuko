@@ -611,6 +611,7 @@ export function upsertEntryEmbeddingInTransaction(database: SqliteDatabase, inpu
   if (current.revision !== revision || current.contentHash !== contentHash) {
     conflict('Entry changed before its embedding could be stored');
   }
+  if (database.prepare("SELECT 1 AS stale FROM memory_index_artifacts WHERE entry_id=? AND state IN ('stale','unsupported','uncertain')").get(input.entryId)) conflict('Index source invalidated before embedding completion');
   const bytes = encodeVector(input.vector, profile.identity.dimensions);
   const vectorHash = hashVectorBytes(bytes);
   database.prepare(`

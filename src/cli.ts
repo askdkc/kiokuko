@@ -1,3 +1,4 @@
+import { registerMemoryIndexCommands } from './commands/memory-index.js';
 import { registerCodexHookCommand } from './commands/codex-hook.js';
 import { registerAkinatorMemoryCommands } from './commands/akinator-memory.js';
 import { Command, CommanderError } from 'commander';
@@ -1091,6 +1092,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerCodexHookCommand(cli);
   registerLedgerCommands(cli, { withDatabase });
   registerAkinatorMemoryCommands(cli);
+  registerMemoryIndexCommands(cli, {withDatabase});
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });
   registerEmbeddingsCommands(cli, {
     withDatabase: (operation) => withEmbeddingDatabase(dependencies, operation, { databasePath: getGlobalDatabasePath(dependencies.setupEnvironment) }),

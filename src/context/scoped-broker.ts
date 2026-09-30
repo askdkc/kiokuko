@@ -1,3 +1,4 @@
+import { indexArtifact, observeIndex,formatIndexSourceReferences } from '../memory/index-state.js';
 import type { TaskProfile } from '../akinator/types.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -35,6 +36,8 @@ export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
 
 export interface ScopedContextQuery {
+  /** Private maintenance snapshot; only refresh may supply this. */
+  indexingSourceIds?: string[];
   signal?: AbortSignal;
   cwd?: string;
   project?: ResolvedProjectWorkspace;
@@ -52,6 +55,8 @@ export interface ScopedContextQuery {
 }
 
 export interface ScopedContextItem {
+  knowledgeType?: "atomic" | "bridge";
+  sources?: import("../memory/index-state.js").IndexSource[];
   entryId: string;
   revision: number;
   origin: FederatedOrigin;
@@ -84,6 +89,7 @@ export interface ScopedContextItem {
 }
 
 export interface ScopedContextResult {
+  memoryIndexDiagnostics?: ReturnType<typeof observeIndex>;
   retrieval?: RetrievalDiagnostics;
   project: ResolvedProjectWorkspace | null;
   taskProfileHash: string;
@@ -350,12 +356,18 @@ function fitScopedItems(
 ): FittedScopedItems {
   const items: ScopedContextItem[] = [];
   let remaining = characterBudget;
+  let generatedCost=0, bridgeCost=0, bridges=0;
+  const represented=new Set<string>();
   let truncated = false;
   for (const item of ordered) {
     if (items.length >= limit) {
       truncated = true;
       break;
     }
+    const fullCost=characterCount(item.title)+characterCount(item.summary??'')+characterCount(item.bodyPreview);
+    const family=item.knowledgeType==='atomic'?item.sources?.[0]?.entryId:item.knowledgeType===undefined?item.entryId:undefined;
+    if (family && represented.has(family)) continue;
+    if(item.knowledgeType && (fullCost>remaining || generatedCost+fullCost>characterBudget*.5 || (item.knowledgeType==='bridge' && (bridges>=3 || bridgeCost+fullCost>characterBudget*.3)))) {truncated=true;continue;}
     const metadataCost = characterCount(item.title) + characterCount(item.summary ?? '');
     if (metadataCost > remaining) {
       if (items.length === 0) {
@@ -389,6 +401,8 @@ function fitScopedItems(
       selectionReasons: [...item.selectionReasons],
     });
     remaining -= cost;
+    if(family) represented.add(family);
+    if(item.knowledgeType){generatedCost+=cost;if(item.knowledgeType==='bridge'){bridges++;bridgeCost+=cost;}}
   }
   return { items, charCount: characterBudget - remaining, truncated };
 }
@@ -590,7 +604,8 @@ function storedScopedItems(
       revision: item.entryRevision,
     });
     const scoreComponents = item.scoreComponents as ScopedContextItem['scoreComponents'];
-    const sourceSuffix = relatedMode === 'active'
+    const artifact=indexArtifact(database,current);
+    const sourceSuffix = artifact ? formatIndexSourceReferences(artifact) : relatedMode === 'active'
       ? formatLessonSourceReferences(readDeliverableLessonSourceReferences(database, current))
       : '';
     if (sourceSuffix.length > 0) suffixes.set(item.entryId, sourceSuffix);
@@ -600,6 +615,7 @@ function storedScopedItems(
       origin: item.origin ?? 'project',
       title: revision.title,
       summary: revision.summary,
+      ...(artifact ? {knowledgeType:artifact.knowledgeType,sources:artifact.sources}:{}),
       bodyPreview: `${revision.body}${sourceSuffix}`,
       score: Object.values(scoreComponents).reduce((total, component) => total + component, 0),
       scoreComponents: { ...scoreComponents },
@@ -738,6 +754,7 @@ async function prepareScopedContext(
     policyVersion: SCOPED_CONTEXT_POLICY_VERSION,
     retrievalStateHash,
     runStateHash: run?.stateHash ?? null,
+    indexingSourceIds: raw.indexingSourceIds ?? null,
     semanticQuery: semanticIdentity,
   });
   const replay = replayableDelivery(
@@ -772,7 +789,7 @@ async function prepareScopedContext(
   }
   let retrieval: RetrievalDiagnostics = { status: "no_entries", searchedEntryCount: 0, excludedCount: 0 };
   const candidates = new Map<string, ScopedContextItem>();
-  const federated = project === undefined ? [] : await federatedEntries(database, {
+  const federated = project === undefined ? [] : raw.indexingSourceIds !== undefined ? raw.indexingSourceIds.map(entryId => ({entry:readEntry(database,{workspace:project.workspace,entryId}),origin:'project' as const,score:0,selectionReasons:[] as string[]})) : await federatedEntries(database, {
     project,
     ...(fingerprint === undefined ? {} : { fingerprint }),
     query: queryText,
@@ -794,8 +811,11 @@ async function prepareScopedContext(
   for (const hit of federated) {
     const entry = hit.entry;
     if (suppressedIds.has(entry.id)) continue;
+    if (raw.indexingSourceIds !== undefined && characterCount(entry.title)+characterCount(entry.summary??'')+characterCount(entry.body) > characterBudget) continue;
     entriesById.set(entry.id, entry);
     const item = entryScore(entry, hit.origin, hit.score, hit.selectionReasons.includes('exact_signal_match'), queryText);
+    const artifact = indexArtifact(database, entry);
+    if (artifact) { item.knowledgeType=artifact.knowledgeType; item.sources=artifact.sources; sourceNotes.set(entry.id, formatIndexSourceReferences(artifact)); }
     item.selectionReasons.push(...hit.selectionReasons);
     if (retainedIds.has(entry.id)) item.selectionReasons.push('duplicate_source_suppressed');
     const sourceNote = sourceNotes.get(entry.id);
@@ -867,8 +887,10 @@ async function prepareScopedContext(
       }
     }
   }
+  const maintenanceItems = raw.indexingSourceIds === undefined ? undefined : ordered.filter((item)=>{const entry=entriesById.get(item.entryId)!;return entry.body===item.bodyPreview;});
+  if(maintenanceItems){let remaining=characterBudget;for(let i=0;i<maintenanceItems.length;){const item=maintenanceItems[i]!;const cost=characterCount(item.title)+characterCount(item.summary??'')+characterCount(item.bodyPreview);if(cost>remaining)maintenanceItems.splice(i,1);else{remaining-=cost;i++;}}}
   const fitted = fitScopedItems(
-    [...repeatedItems, ...preferenceItems, ...ordered.filter((item) => !preferred.has(item.entryId))],
+    maintenanceItems ?? [...repeatedItems, ...preferenceItems, ...ordered.filter((item) => !preferred.has(item.entryId))],
     limit,
     characterBudget,
     sourceNotes,
@@ -879,6 +901,7 @@ async function prepareScopedContext(
       taskProfileHash,
       queryHash,
       policyVersion: SCOPED_CONTEXT_POLICY_VERSION,
+      ...(project ? {memoryIndexDiagnostics:observeIndex(database,project.workspace,queryText,runtime)} : {}),
       items: fitted.items,
       retrieval,
       deliveryId: null,

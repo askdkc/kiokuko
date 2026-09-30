@@ -22,10 +22,11 @@ export const executionEvidenceSchema = z.object({
 }).strict().refine(v => v.outcome !== 'passed' || v.exitCode === 0, 'Passing evidence requires exit code zero');
 export const memoryRefreshSchema = z.object({
   ...assuranceBase, capabilities: z.array(z.unknown()).optional(),
+  indexing: z.object({ stage: z.enum(['atomic','bridge']), cursor: z.string().max(256).default('') }).strict().optional(),
   changedPaths: z.array(z.string().min(1).max(500)).max(100).default([]),
   errorSignatures: z.array(z.string().min(1).max(1000)).max(50).default([]),
   maxContextChars: z.number().int().min(1).max(100000).optional(),
-}).strict().refine(v => v.changedPaths.length + v.errorSignatures.length > 0, 'Refresh requires new retrieval signals');
+}).strict().refine(v => v.indexing !== undefined || v.changedPaths.length + v.errorSignatures.length > 0, 'Refresh requires new retrieval signals');
 export function parseAssurance<T>(schema: z.ZodType<T>, raw: unknown): T {
   const result = schema.safeParse(raw);
   if (!result.success) throw new KiokukoError('VALIDATION_ERROR', 'Task assurance input is invalid');

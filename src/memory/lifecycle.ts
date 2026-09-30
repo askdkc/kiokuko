@@ -1,3 +1,4 @@
+import { assertNotIndexArtifact } from './index-state.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
@@ -42,6 +43,7 @@ export function promoteEntry(database: SqliteDatabase, input: PromoteInput): Ent
   const actor = input.actor ?? 'kiokuko-cli';
   return withImmediateTransaction(database, () => {
     const current = readEntry(database, { workspace: input.workspace, entryId: input.entryId });
+    assertNotIndexArtifact(current);
     const managedExternal = database.prepare('SELECT 1 AS present FROM external_skill_entries WHERE entry_id = ? LIMIT 1').get<{ present: number }>(input.entryId);
     if (managedExternal) throw new KiokukoError('CONFLICT', 'Managed external Skill entries cannot be promoted');
     if (current.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
@@ -59,7 +61,9 @@ export function supersedeEntryInTransaction(database: SqliteDatabase, input: Sup
   const now = input.now ?? new Date().toISOString();
   const actor = input.actor ?? 'kiokuko-cli';
   const oldEntry = readEntry(database, { workspace: input.workspace, entryId: input.oldEntryId });
+  assertNotIndexArtifact(oldEntry);
   const replacement = readEntry(database, { workspace: input.workspace, entryId: input.replacementEntryId });
+  assertNotIndexArtifact(replacement);
   const managedExternal = database.prepare('SELECT 1 AS present FROM external_skill_entries WHERE entry_id IN (?, ?) LIMIT 1').get<{ present: number }>(input.oldEntryId, input.replacementEntryId);
   if (managedExternal) throw new KiokukoError('CONFLICT', 'Managed external Skill entries cannot be superseded');
   if (oldEntry.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');

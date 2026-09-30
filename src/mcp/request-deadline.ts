@@ -15,6 +15,8 @@ export type McpToolOperation =
   | 'task_memory_review'
   | 'task_execution_evidence'
   | 'task_memory_refresh'
+  | 'memory_index_submit'
+  | 'memory_index_review'
   | 'task_memory_status'
   | 'memory_checkpoint'
   | 'memory_capture'
@@ -93,6 +95,8 @@ const MUTATION_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
   'task_memory_review',
   'task_execution_evidence',
   'task_memory_refresh',
+  'memory_index_submit',
+  'memory_index_review',
   'memory_capture',
   'memory_derive_lesson',
   'handoff_save',

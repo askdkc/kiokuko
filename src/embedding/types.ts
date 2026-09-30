@@ -91,6 +91,8 @@ export interface EmbeddingDocument {
 }
 
 export interface VectorSearchInput {
+  readonly indexEvaluation?: boolean;
+  readonly indexOriginalsOnly?:boolean;
   readonly profileId: string;
   readonly dimensions: number;
   readonly queryVector: Float32Array;

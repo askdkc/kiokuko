@@ -1,0 +1,1394 @@
+{
+  "date": "2026-09-30",
+  "model": "current connected Codex assistant",
+  "modelVersion": null,
+  "settings": {
+    "temperature": null,
+    "seed": null
+  },
+  "contextBudget": 8000,
+  "evaluationType": "exploratory non-blind connected-model answer evaluation",
+  "limitations": [
+    "Answer generator and reviewer are the same connected assistant. The answer key was visible earlier in this conversation. This is not an independent blind accuracy estimate.",
+    "The fixed cases contain two very short originals, and baseline retrieval already has complete evidence. The atomic outputs duplicate their originals. The set cannot establish benefit from compaction or difficult retrieval.",
+    "One answer per case/variant; no statistical estimate, repetition or production workload benchmark.",
+    "No pinned model snapshot or inference sampling controls are exposed for the current connected assistant."
+  ],
+  "summary": {
+    "current": {
+      "cases": 8,
+      "selfReviewedCorrect": 8,
+      "unsupportedAssertions": 0,
+      "singleSourceRegressions": 0,
+      "meanRetrievalMs": 14.43734375000001
+    },
+    "atomic": {
+      "cases": 8,
+      "selfReviewedCorrect": 8,
+      "unsupportedAssertions": 0,
+      "singleSourceRegressions": 0,
+      "meanRetrievalMs": 24.749828250000036
+    },
+    "atomic+bridge": {
+      "cases": 8,
+      "selfReviewedCorrect": 8,
+      "unsupportedAssertions": 0,
+      "singleSourceRegressions": 0,
+      "meanRetrievalMs": 28.593557375000017
+    },
+    "bridge-hint-only": {
+      "cases": 8,
+      "selfReviewedCorrect": 8,
+      "unsupportedAssertions": 0,
+      "singleSourceRegressions": 0,
+      "meanRetrievalMs": 28.327020999999988
+    }
+  },
+  "conclusion": "No answer-quality improvement was observed in this exploratory set; all four variants support the same correct answers. Active workspace use is an explicitly requested operational trial, not evidence of superior accuracy.",
+  "results": [
+    {
+      "caseId": "dependency-en",
+      "variant": "current",
+      "question": "How does Kiokuko obtain transactional locking?",
+      "contextHash": "c0b4692e0270d48a05e4ba62c426e1625ca435c886513d840eb4ec9e583dbd4c",
+      "context": [
+        {
+          "body": "Kiokuko depends on SQLite.",
+          "sources": [
+            {
+              "entryId": "eada709f-f44f-4964-aad7-f902f5ab6690"
+            }
+          ]
+        },
+        {
+          "body": "SQLite uses transactional locking.",
+          "sources": [
+            {
+              "entryId": "407d88bf-b754-4918-8fc4-92b6272b8a1c"
+            }
+          ]
+        }
+      ],
+      "answer": "Kiokuko depends on SQLite, and SQLite uses transactional locking. Kiokuko therefore uses that locking through its SQLite storage.",
+      "citations": [
+        "eada709f-f44f-4964-aad7-f902f5ab6690",
+        "407d88bf-b754-4918-8fc4-92b6272b8a1c"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "Both premises are present; the conclusion only composes the dependency and the stated locking behavior.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 15.786875000000009
+    },
+    {
+      "caseId": "dependency-en",
+      "variant": "atomic",
+      "question": "How does Kiokuko obtain transactional locking?",
+      "contextHash": "c0b4692e0270d48a05e4ba62c426e1625ca435c886513d840eb4ec9e583dbd4c",
+      "context": [
+        {
+          "body": "Kiokuko depends on SQLite.",
+          "sources": [
+            {
+              "entryId": "eada709f-f44f-4964-aad7-f902f5ab6690"
+            }
+          ]
+        },
+        {
+          "body": "SQLite uses transactional locking.",
+          "sources": [
+            {
+              "entryId": "407d88bf-b754-4918-8fc4-92b6272b8a1c"
+            }
+          ]
+        }
+      ],
+      "answer": "Kiokuko depends on SQLite, and SQLite uses transactional locking. Kiokuko therefore uses that locking through its SQLite storage.",
+      "citations": [
+        "eada709f-f44f-4964-aad7-f902f5ab6690",
+        "407d88bf-b754-4918-8fc4-92b6272b8a1c"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "Both premises are present; the conclusion only composes the dependency and the stated locking behavior.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 23.033791000000065
+    },
+    {
+      "caseId": "dependency-en",
+      "variant": "atomic+bridge",
+      "question": "How does Kiokuko obtain transactional locking?",
+      "contextHash": "e262018923760a383768351f1794603590053b41f2dca5cc37983070dc48a7d6",
+      "context": [
+        {
+          "body": "Kiokuko depends on SQLite.",
+          "sources": [
+            {
+              "entryId": "eada709f-f44f-4964-aad7-f902f5ab6690"
+            }
+          ]
+        },
+        {
+          "body": "SQLite uses transactional locking.",
+          "sources": [
+            {
+              "entryId": "407d88bf-b754-4918-8fc4-92b6272b8a1c"
+            }
+          ]
+        },
+        {
+          "body": "Kiokuko inherits SQLite transactional locking.\n\nSources: [{\"workspace\":\"project:repo-61479041c5ee\",\"entryId\":\"407d88bf-b754-4918-8fc4-92b6272b8a1c\",\"revision\":1,\"contentHash\":\"647968e844b437eec1b31be0800bfe4653bf3e772ae6fe3e1292fb5ac7d15149\"},{\"workspace\":\"project:repo-61479041c5ee\",\"entryId\":\"eada709f-f44f-4964-aad7-f902f5ab6690\",\"revision\":2,\"contentHash\":\"fc3f3c3c26ccfb8e570459968d24b0f93efcb8702febb9ad8dd7c9dd8cf6863c\"}]\nQuotes: [{\"entryId\":\"eada709f-f44f-4964-aad7-f902f5ab6690\",\"start\":0,\"end\":26,\"text\":\"Kiokuko depends on SQLite.\"},{\"entryId\":\"407d88bf-b754-4918-8fc4-92b6272b8a1c\",\"start\":0,\"end\":34,\"text\":\"SQLite uses transactional locking.\"}]\nConnection: The first source depends on the entity whose behavior the second source describes.",
+          "sources": [
+            {
+              "workspace": "project:repo-61479041c5ee",
+              "entryId": "407d88bf-b754-4918-8fc4-92b6272b8a1c",
+              "revision": 1,
+              "contentHash": "647968e844b437eec1b31be0800bfe4653bf3e772ae6fe3e1292fb5ac7d15149"
+            },
+            {
+              "workspace": "project:repo-61479041c5ee",
+              "entryId": "eada709f-f44f-4964-aad7-f902f5ab6690",
+              "revision": 2,
+              "contentHash": "fc3f3c3c26ccfb8e570459968d24b0f93efcb8702febb9ad8dd7c9dd8cf6863c"
+            }
+          ]
+        }
+      ],
+      "answer": "Kiokuko depends on SQLite, and SQLite uses transactional locking. Kiokuko therefore uses that locking through its SQLite storage.",
+      "citations": [
+        "eada709f-f44f-4964-aad7-f902f5ab6690",
+        "407d88bf-b754-4918-8fc4-92b6272b8a1c"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "Both premises are present; the conclusion only composes the dependency and the stated locking behavior.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 26.804167000000007
+    },
+    {
+      "caseId": "dependency-en",
+      "variant": "bridge-hint-only",
+      "question": "How does Kiokuko obtain transactional locking?",
+      "contextHash": "c0b4692e0270d48a05e4ba62c426e1625ca435c886513d840eb4ec9e583dbd4c",
+      "context": [
+        {
+          "body": "Kiokuko depends on SQLite.",
+          "sources": [
+            {
+              "entryId": "eada709f-f44f-4964-aad7-f902f5ab6690"
+            }
+          ]
+        },
+        {
+          "body": "SQLite uses transactional locking.",
+          "sources": [
+            {
+              "entryId": "407d88bf-b754-4918-8fc4-92b6272b8a1c"
+            }
+          ]
+        }
+      ],
+      "answer": "Kiokuko depends on SQLite, and SQLite uses transactional locking. Kiokuko therefore uses that locking through its SQLite storage.",
+      "citations": [
+        "eada709f-f44f-4964-aad7-f902f5ab6690",
+        "407d88bf-b754-4918-8fc4-92b6272b8a1c"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "Both premises are present; the conclusion only composes the dependency and the stated locking behavior.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 28.540874999999915
+    },
+    {
+      "caseId": "dependency-ja",
+      "variant": "current",
+      "question": "記憶庫はどの仕組みで排他制御しますか？",
+      "contextHash": "8964f5332fd94dfa3fbc334b6ca3e73d3227577b6064e01d44a3853b23876812",
+      "context": [
+        {
+          "body": "記憶庫の保存先はSQLiteです。",
+          "sources": [
+            {
+              "entryId": "3a4ee100-f3c3-489c-b797-026862d130ea"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteはトランザクションで排他制御します。",
+          "sources": [
+            {
+              "entryId": "d3f257a8-84d2-42f8-97db-289af5d2aa59"
+            }
+          ]
+        }
+      ],
+      "answer": "保存先のSQLiteがトランザクションで排他制御するため、記憶庫もその仕組みを使います。",
+      "citations": [
+        "3a4ee100-f3c3-489c-b797-026862d130ea",
+        "d3f257a8-84d2-42f8-97db-289af5d2aa59"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "保存先がSQLiteであることとSQLiteの排他制御の二つの記述を結び付けている。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 15.146082999999976
+    },
+    {
+      "caseId": "dependency-ja",
+      "variant": "atomic",
+      "question": "記憶庫はどの仕組みで排他制御しますか？",
+      "contextHash": "8964f5332fd94dfa3fbc334b6ca3e73d3227577b6064e01d44a3853b23876812",
+      "context": [
+        {
+          "body": "記憶庫の保存先はSQLiteです。",
+          "sources": [
+            {
+              "entryId": "3a4ee100-f3c3-489c-b797-026862d130ea"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteはトランザクションで排他制御します。",
+          "sources": [
+            {
+              "entryId": "d3f257a8-84d2-42f8-97db-289af5d2aa59"
+            }
+          ]
+        }
+      ],
+      "answer": "保存先のSQLiteがトランザクションで排他制御するため、記憶庫もその仕組みを使います。",
+      "citations": [
+        "3a4ee100-f3c3-489c-b797-026862d130ea",
+        "d3f257a8-84d2-42f8-97db-289af5d2aa59"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "保存先がSQLiteであることとSQLiteの排他制御の二つの記述を結び付けている。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 23.644542
+    },
+    {
+      "caseId": "dependency-ja",
+      "variant": "atomic+bridge",
+      "question": "記憶庫はどの仕組みで排他制御しますか？",
+      "contextHash": "4f36cca2e3c77894f6da81cb949bbcf28e5842699df06a4c8628c2155643882b",
+      "context": [
+        {
+          "body": "記憶庫の保存先はSQLiteです。",
+          "sources": [
+            {
+              "entryId": "3a4ee100-f3c3-489c-b797-026862d130ea"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteはトランザクションで排他制御します。",
+          "sources": [
+            {
+              "entryId": "d3f257a8-84d2-42f8-97db-289af5d2aa59"
+            }
+          ]
+        },
+        {
+          "body": "記憶庫はSQLiteのトランザクションによる排他制御を使います。\n\nSources: [{\"workspace\":\"project:repo-d17287d3d06e\",\"entryId\":\"3a4ee100-f3c3-489c-b797-026862d130ea\",\"revision\":2,\"contentHash\":\"4d936870a0d2b5a2b7ae214bd8d4dbd3bbfaeb7b73ce365877037eaf8ca925dc\"},{\"workspace\":\"project:repo-d17287d3d06e\",\"entryId\":\"d3f257a8-84d2-42f8-97db-289af5d2aa59\",\"revision\":2,\"contentHash\":\"8beb479704e0623886b6daa0fc5af77809dda3b3d7666d7ec9b3b5e3ba659ec1\"}]\nQuotes: [{\"entryId\":\"3a4ee100-f3c3-489c-b797-026862d130ea\",\"start\":0,\"end\":17,\"text\":\"記憶庫の保存先はSQLiteです。\"},{\"entryId\":\"d3f257a8-84d2-42f8-97db-289af5d2aa59\",\"start\":0,\"end\":24,\"text\":\"SQLiteはトランザクションで排他制御します。\"}]\nConnection: The first source depends on the entity whose behavior the second source describes.",
+          "sources": [
+            {
+              "workspace": "project:repo-d17287d3d06e",
+              "entryId": "3a4ee100-f3c3-489c-b797-026862d130ea",
+              "revision": 2,
+              "contentHash": "4d936870a0d2b5a2b7ae214bd8d4dbd3bbfaeb7b73ce365877037eaf8ca925dc"
+            },
+            {
+              "workspace": "project:repo-d17287d3d06e",
+              "entryId": "d3f257a8-84d2-42f8-97db-289af5d2aa59",
+              "revision": 2,
+              "contentHash": "8beb479704e0623886b6daa0fc5af77809dda3b3d7666d7ec9b3b5e3ba659ec1"
+            }
+          ]
+        }
+      ],
+      "answer": "保存先のSQLiteがトランザクションで排他制御するため、記憶庫もその仕組みを使います。",
+      "citations": [
+        "3a4ee100-f3c3-489c-b797-026862d130ea",
+        "d3f257a8-84d2-42f8-97db-289af5d2aa59"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "保存先がSQLiteであることとSQLiteの排他制御の二つの記述を結び付けている。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 24.742999999999938
+    },
+    {
+      "caseId": "dependency-ja",
+      "variant": "bridge-hint-only",
+      "question": "記憶庫はどの仕組みで排他制御しますか？",
+      "contextHash": "8964f5332fd94dfa3fbc334b6ca3e73d3227577b6064e01d44a3853b23876812",
+      "context": [
+        {
+          "body": "記憶庫の保存先はSQLiteです。",
+          "sources": [
+            {
+              "entryId": "3a4ee100-f3c3-489c-b797-026862d130ea"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteはトランザクションで排他制御します。",
+          "sources": [
+            {
+              "entryId": "d3f257a8-84d2-42f8-97db-289af5d2aa59"
+            }
+          ]
+        }
+      ],
+      "answer": "保存先のSQLiteがトランザクションで排他制御するため、記憶庫もその仕組みを使います。",
+      "citations": [
+        "3a4ee100-f3c3-489c-b797-026862d130ea",
+        "d3f257a8-84d2-42f8-97db-289af5d2aa59"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "保存先がSQLiteであることとSQLiteの排他制御の二つの記述を結び付けている。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 28.533416999999986
+    },
+    {
+      "caseId": "configuration-en",
+      "variant": "current",
+      "question": "What should be configured when competing writers write the worker queue?",
+      "contextHash": "14ef2345eae915ed16ee9c6dcebcbab95b613b36114aaf9b43e21676b1bec16e",
+      "context": [
+        {
+          "body": "The worker stores its queue in SQLite.",
+          "sources": [
+            {
+              "entryId": "c26f8cbc-f69e-43c5-8711-4dadf2243e58"
+            }
+          ]
+        },
+        {
+          "body": "SQLite requires a busy timeout for competing queue writers.",
+          "sources": [
+            {
+              "entryId": "46b6fb5d-fe11-4729-9757-144273294962"
+            }
+          ]
+        }
+      ],
+      "answer": "Configure a SQLite busy timeout when competing writers write the worker queue stored in SQLite.",
+      "citations": [
+        "c26f8cbc-f69e-43c5-8711-4dadf2243e58",
+        "46b6fb5d-fe11-4729-9757-144273294962"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "The queue storage and the competing-writer condition are both retained; no timeout duration or universal requirement is invented.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 14.10308299999997
+    },
+    {
+      "caseId": "configuration-en",
+      "variant": "atomic",
+      "question": "What should be configured when competing writers write the worker queue?",
+      "contextHash": "14ef2345eae915ed16ee9c6dcebcbab95b613b36114aaf9b43e21676b1bec16e",
+      "context": [
+        {
+          "body": "The worker stores its queue in SQLite.",
+          "sources": [
+            {
+              "entryId": "c26f8cbc-f69e-43c5-8711-4dadf2243e58"
+            }
+          ]
+        },
+        {
+          "body": "SQLite requires a busy timeout for competing queue writers.",
+          "sources": [
+            {
+              "entryId": "46b6fb5d-fe11-4729-9757-144273294962"
+            }
+          ]
+        }
+      ],
+      "answer": "Configure a SQLite busy timeout when competing writers write the worker queue stored in SQLite.",
+      "citations": [
+        "c26f8cbc-f69e-43c5-8711-4dadf2243e58",
+        "46b6fb5d-fe11-4729-9757-144273294962"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "The queue storage and the competing-writer condition are both retained; no timeout duration or universal requirement is invented.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 25.733999999999924
+    },
+    {
+      "caseId": "configuration-en",
+      "variant": "atomic+bridge",
+      "question": "What should be configured when competing writers write the worker queue?",
+      "contextHash": "dd4378b8f9bbd91b0b5f44c28fa032566d7fe47ede80ab667e18a567f4e460ff",
+      "context": [
+        {
+          "body": "The worker stores its queue in SQLite.",
+          "sources": [
+            {
+              "entryId": "c26f8cbc-f69e-43c5-8711-4dadf2243e58"
+            }
+          ]
+        },
+        {
+          "body": "SQLite requires a busy timeout for competing queue writers.",
+          "sources": [
+            {
+              "entryId": "46b6fb5d-fe11-4729-9757-144273294962"
+            }
+          ]
+        },
+        {
+          "body": "The worker queue needs a SQLite busy timeout for competing writers.\n\nSources: [{\"workspace\":\"project:repo-e88c8a48922f\",\"entryId\":\"46b6fb5d-fe11-4729-9757-144273294962\",\"revision\":2,\"contentHash\":\"5982e387da62026bd1004ae59379fcaf78dffe15f4bc686c1f0ab28972d10dab\"},{\"workspace\":\"project:repo-e88c8a48922f\",\"entryId\":\"c26f8cbc-f69e-43c5-8711-4dadf2243e58\",\"revision\":2,\"contentHash\":\"eb71890b53cb424d206c1d099c3452955acdf67486b5449f5db4247f359e4163\"}]\nQuotes: [{\"entryId\":\"c26f8cbc-f69e-43c5-8711-4dadf2243e58\",\"start\":0,\"end\":38,\"text\":\"The worker stores its queue in SQLite.\"},{\"entryId\":\"46b6fb5d-fe11-4729-9757-144273294962\",\"start\":0,\"end\":59,\"text\":\"SQLite requires a busy timeout for competing queue writers.\"}]\nConnection: The first source depends on the entity whose behavior the second source describes.",
+          "sources": [
+            {
+              "workspace": "project:repo-e88c8a48922f",
+              "entryId": "46b6fb5d-fe11-4729-9757-144273294962",
+              "revision": 2,
+              "contentHash": "5982e387da62026bd1004ae59379fcaf78dffe15f4bc686c1f0ab28972d10dab"
+            },
+            {
+              "workspace": "project:repo-e88c8a48922f",
+              "entryId": "c26f8cbc-f69e-43c5-8711-4dadf2243e58",
+              "revision": 2,
+              "contentHash": "eb71890b53cb424d206c1d099c3452955acdf67486b5449f5db4247f359e4163"
+            }
+          ]
+        }
+      ],
+      "answer": "Configure a SQLite busy timeout when competing writers write the worker queue stored in SQLite.",
+      "citations": [
+        "c26f8cbc-f69e-43c5-8711-4dadf2243e58",
+        "46b6fb5d-fe11-4729-9757-144273294962"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "The queue storage and the competing-writer condition are both retained; no timeout duration or universal requirement is invented.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 30.923125000000027
+    },
+    {
+      "caseId": "configuration-en",
+      "variant": "bridge-hint-only",
+      "question": "What should be configured when competing writers write the worker queue?",
+      "contextHash": "14ef2345eae915ed16ee9c6dcebcbab95b613b36114aaf9b43e21676b1bec16e",
+      "context": [
+        {
+          "body": "The worker stores its queue in SQLite.",
+          "sources": [
+            {
+              "entryId": "c26f8cbc-f69e-43c5-8711-4dadf2243e58"
+            }
+          ]
+        },
+        {
+          "body": "SQLite requires a busy timeout for competing queue writers.",
+          "sources": [
+            {
+              "entryId": "46b6fb5d-fe11-4729-9757-144273294962"
+            }
+          ]
+        }
+      ],
+      "answer": "Configure a SQLite busy timeout when competing writers write the worker queue stored in SQLite.",
+      "citations": [
+        "c26f8cbc-f69e-43c5-8711-4dadf2243e58",
+        "46b6fb5d-fe11-4729-9757-144273294962"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "The queue storage and the competing-writer condition are both retained; no timeout duration or universal requirement is invented.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 27.810624999999845
+    },
+    {
+      "caseId": "configuration-ja",
+      "variant": "current",
+      "question": "同期処理のキューに並行書き込みする場合、何を設定しますか？",
+      "contextHash": "8565363a9813c0a596867180e5cb57ad5be62fc51ccd0abc25d602bcf8e1afdd",
+      "context": [
+        {
+          "body": "同期処理のキューはSQLiteに保存します。",
+          "sources": [
+            {
+              "entryId": "a8e5b096-c674-46f5-a92c-4c178d142ab2"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteでキューに並行書き込みする場合はbusy timeoutを設定します。",
+          "sources": [
+            {
+              "entryId": "6fcc6589-41a4-4878-8cc5-8408775262da"
+            }
+          ]
+        }
+      ],
+      "answer": "キューの保存先はSQLiteなので、並行書き込みする場合はSQLiteのbusy timeoutを設定します。",
+      "citations": [
+        "a8e5b096-c674-46f5-a92c-4c178d142ab2",
+        "6fcc6589-41a4-4878-8cc5-8408775262da"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "SQLite保存と並行書き込み時の設定条件を維持し、設定値や全状況での必須性は断定しない。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 13.989291999999978
+    },
+    {
+      "caseId": "configuration-ja",
+      "variant": "atomic",
+      "question": "同期処理のキューに並行書き込みする場合、何を設定しますか？",
+      "contextHash": "8565363a9813c0a596867180e5cb57ad5be62fc51ccd0abc25d602bcf8e1afdd",
+      "context": [
+        {
+          "body": "同期処理のキューはSQLiteに保存します。",
+          "sources": [
+            {
+              "entryId": "a8e5b096-c674-46f5-a92c-4c178d142ab2"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteでキューに並行書き込みする場合はbusy timeoutを設定します。",
+          "sources": [
+            {
+              "entryId": "6fcc6589-41a4-4878-8cc5-8408775262da"
+            }
+          ]
+        }
+      ],
+      "answer": "キューの保存先はSQLiteなので、並行書き込みする場合はSQLiteのbusy timeoutを設定します。",
+      "citations": [
+        "a8e5b096-c674-46f5-a92c-4c178d142ab2",
+        "6fcc6589-41a4-4878-8cc5-8408775262da"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "SQLite保存と並行書き込み時の設定条件を維持し、設定値や全状況での必須性は断定しない。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 24.68733300000008
+    },
+    {
+      "caseId": "configuration-ja",
+      "variant": "atomic+bridge",
+      "question": "同期処理のキューに並行書き込みする場合、何を設定しますか？",
+      "contextHash": "7f253f081f1bb36c4214affe3484b76cc97f89ffcfd5d3f8a926bf5825c81837",
+      "context": [
+        {
+          "body": "同期処理のキューはSQLiteに保存します。",
+          "sources": [
+            {
+              "entryId": "a8e5b096-c674-46f5-a92c-4c178d142ab2"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteでキューに並行書き込みする場合はbusy timeoutを設定します。",
+          "sources": [
+            {
+              "entryId": "6fcc6589-41a4-4878-8cc5-8408775262da"
+            }
+          ]
+        },
+        {
+          "body": "同期処理のキューへ並行書き込みする場合はSQLiteのbusy timeoutを設定します。\n\nSources: [{\"workspace\":\"project:repo-e11197427798\",\"entryId\":\"6fcc6589-41a4-4878-8cc5-8408775262da\",\"revision\":2,\"contentHash\":\"790dd667fe71845f597bc06e3e5d2ae6ad62b9e22bb1a8d68e9933ef849c10fa\"},{\"workspace\":\"project:repo-e11197427798\",\"entryId\":\"a8e5b096-c674-46f5-a92c-4c178d142ab2\",\"revision\":2,\"contentHash\":\"d205ff93a8c711fe89abdb2b5d17e3078ab981ae0a1b4a62d5cac3b26236fdd7\"}]\nQuotes: [{\"entryId\":\"a8e5b096-c674-46f5-a92c-4c178d142ab2\",\"start\":0,\"end\":22,\"text\":\"同期処理のキューはSQLiteに保存します。\"},{\"entryId\":\"6fcc6589-41a4-4878-8cc5-8408775262da\",\"start\":0,\"end\":41,\"text\":\"SQLiteでキューに並行書き込みする場合はbusy timeoutを設定します。\"}]\nConnection: The first source depends on the entity whose behavior the second source describes.",
+          "sources": [
+            {
+              "workspace": "project:repo-e11197427798",
+              "entryId": "6fcc6589-41a4-4878-8cc5-8408775262da",
+              "revision": 2,
+              "contentHash": "790dd667fe71845f597bc06e3e5d2ae6ad62b9e22bb1a8d68e9933ef849c10fa"
+            },
+            {
+              "workspace": "project:repo-e11197427798",
+              "entryId": "a8e5b096-c674-46f5-a92c-4c178d142ab2",
+              "revision": 2,
+              "contentHash": "d205ff93a8c711fe89abdb2b5d17e3078ab981ae0a1b4a62d5cac3b26236fdd7"
+            }
+          ]
+        }
+      ],
+      "answer": "キューの保存先はSQLiteなので、並行書き込みする場合はSQLiteのbusy timeoutを設定します。",
+      "citations": [
+        "a8e5b096-c674-46f5-a92c-4c178d142ab2",
+        "6fcc6589-41a4-4878-8cc5-8408775262da"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "SQLite保存と並行書き込み時の設定条件を維持し、設定値や全状況での必須性は断定しない。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 30.973874999999907
+    },
+    {
+      "caseId": "configuration-ja",
+      "variant": "bridge-hint-only",
+      "question": "同期処理のキューに並行書き込みする場合、何を設定しますか？",
+      "contextHash": "8565363a9813c0a596867180e5cb57ad5be62fc51ccd0abc25d602bcf8e1afdd",
+      "context": [
+        {
+          "body": "同期処理のキューはSQLiteに保存します。",
+          "sources": [
+            {
+              "entryId": "a8e5b096-c674-46f5-a92c-4c178d142ab2"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteでキューに並行書き込みする場合はbusy timeoutを設定します。",
+          "sources": [
+            {
+              "entryId": "6fcc6589-41a4-4878-8cc5-8408775262da"
+            }
+          ]
+        }
+      ],
+      "answer": "キューの保存先はSQLiteなので、並行書き込みする場合はSQLiteのbusy timeoutを設定します。",
+      "citations": [
+        "a8e5b096-c674-46f5-a92c-4c178d142ab2",
+        "6fcc6589-41a4-4878-8cc5-8408775262da"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "SQLite保存と並行書き込み時の設定条件を維持し、設定値や全状況での必須性は断定しない。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 25.84608400000002
+    },
+    {
+      "caseId": "failure-en",
+      "variant": "current",
+      "question": "Why does the recorder exit flush fail when the disk is full?",
+      "contextHash": "62186148e342580877c23141888ee8b65f99fe8b034ee829e230fa6b7b204dda",
+      "context": [
+        {
+          "body": "The recorder flushes to SQLite on exit.",
+          "sources": [
+            {
+              "entryId": "288415d3-f9bb-41f1-b91b-fdb401bfe113"
+            }
+          ]
+        },
+        {
+          "body": "SQLite flush fails when the disk is full.",
+          "sources": [
+            {
+              "entryId": "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5"
+            }
+          ]
+        }
+      ],
+      "answer": "The recorder flushes to SQLite on exit, and the supplied memory says SQLite flush fails when the disk is full. Disk exhaustion therefore explains this exit-flush failure.",
+      "citations": [
+        "288415d3-f9bb-41f1-b91b-fdb401bfe113",
+        "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "The stated exit-flush destination and disk-full failure condition support the cause; no other cause or recovery behavior is asserted.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 13.906999999999925
+    },
+    {
+      "caseId": "failure-en",
+      "variant": "atomic",
+      "question": "Why does the recorder exit flush fail when the disk is full?",
+      "contextHash": "62186148e342580877c23141888ee8b65f99fe8b034ee829e230fa6b7b204dda",
+      "context": [
+        {
+          "body": "The recorder flushes to SQLite on exit.",
+          "sources": [
+            {
+              "entryId": "288415d3-f9bb-41f1-b91b-fdb401bfe113"
+            }
+          ]
+        },
+        {
+          "body": "SQLite flush fails when the disk is full.",
+          "sources": [
+            {
+              "entryId": "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5"
+            }
+          ]
+        }
+      ],
+      "answer": "The recorder flushes to SQLite on exit, and the supplied memory says SQLite flush fails when the disk is full. Disk exhaustion therefore explains this exit-flush failure.",
+      "citations": [
+        "288415d3-f9bb-41f1-b91b-fdb401bfe113",
+        "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "The stated exit-flush destination and disk-full failure condition support the cause; no other cause or recovery behavior is asserted.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 24.27341700000011
+    },
+    {
+      "caseId": "failure-en",
+      "variant": "atomic+bridge",
+      "question": "Why does the recorder exit flush fail when the disk is full?",
+      "contextHash": "c0fa67904f084d027f5c8d37b359cad7b2489e3a580d0646f3d6a2c67e73bb2d",
+      "context": [
+        {
+          "body": "The recorder flushes to SQLite on exit.",
+          "sources": [
+            {
+              "entryId": "288415d3-f9bb-41f1-b91b-fdb401bfe113"
+            }
+          ]
+        },
+        {
+          "body": "SQLite flush fails when the disk is full.",
+          "sources": [
+            {
+              "entryId": "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5"
+            }
+          ]
+        },
+        {
+          "body": "The recorder exit flush to SQLite fails when the disk is full.\n\nSources: [{\"workspace\":\"project:repo-109fd73e18bb\",\"entryId\":\"288415d3-f9bb-41f1-b91b-fdb401bfe113\",\"revision\":2,\"contentHash\":\"3941d40009fa983ea3ffe352c33c55104f203ba4fa76dfb79a2f476c89efdc52\"},{\"workspace\":\"project:repo-109fd73e18bb\",\"entryId\":\"e3a98cbb-1c70-46bb-bd82-fe50d0f235c5\",\"revision\":2,\"contentHash\":\"017c65cca0ca563c6432e0510188baa728fd711c5997e71b39bf7da2b7b5f8b8\"}]\nQuotes: [{\"entryId\":\"288415d3-f9bb-41f1-b91b-fdb401bfe113\",\"start\":0,\"end\":39,\"text\":\"The recorder flushes to SQLite on exit.\"},{\"entryId\":\"e3a98cbb-1c70-46bb-bd82-fe50d0f235c5\",\"start\":0,\"end\":41,\"text\":\"SQLite flush fails when the disk is full.\"}]\nConnection: The first source depends on the entity whose behavior the second source describes.",
+          "sources": [
+            {
+              "workspace": "project:repo-109fd73e18bb",
+              "entryId": "288415d3-f9bb-41f1-b91b-fdb401bfe113",
+              "revision": 2,
+              "contentHash": "3941d40009fa983ea3ffe352c33c55104f203ba4fa76dfb79a2f476c89efdc52"
+            },
+            {
+              "workspace": "project:repo-109fd73e18bb",
+              "entryId": "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5",
+              "revision": 2,
+              "contentHash": "017c65cca0ca563c6432e0510188baa728fd711c5997e71b39bf7da2b7b5f8b8"
+            }
+          ]
+        }
+      ],
+      "answer": "The recorder flushes to SQLite on exit, and the supplied memory says SQLite flush fails when the disk is full. Disk exhaustion therefore explains this exit-flush failure.",
+      "citations": [
+        "288415d3-f9bb-41f1-b91b-fdb401bfe113",
+        "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "The stated exit-flush destination and disk-full failure condition support the cause; no other cause or recovery behavior is asserted.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 32.01025000000004
+    },
+    {
+      "caseId": "failure-en",
+      "variant": "bridge-hint-only",
+      "question": "Why does the recorder exit flush fail when the disk is full?",
+      "contextHash": "62186148e342580877c23141888ee8b65f99fe8b034ee829e230fa6b7b204dda",
+      "context": [
+        {
+          "body": "The recorder flushes to SQLite on exit.",
+          "sources": [
+            {
+              "entryId": "288415d3-f9bb-41f1-b91b-fdb401bfe113"
+            }
+          ]
+        },
+        {
+          "body": "SQLite flush fails when the disk is full.",
+          "sources": [
+            {
+              "entryId": "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5"
+            }
+          ]
+        }
+      ],
+      "answer": "The recorder flushes to SQLite on exit, and the supplied memory says SQLite flush fails when the disk is full. Disk exhaustion therefore explains this exit-flush failure.",
+      "citations": [
+        "288415d3-f9bb-41f1-b91b-fdb401bfe113",
+        "e3a98cbb-1c70-46bb-bd82-fe50d0f235c5"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "The stated exit-flush destination and disk-full failure condition support the cause; no other cause or recovery behavior is asserted.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 27.838874999999916
+    },
+    {
+      "caseId": "failure-ja",
+      "variant": "current",
+      "question": "ディスク容量がないと記録器の終了時処理が失敗するのはなぜですか？",
+      "contextHash": "85a6545ab4cf01481da7fecb6a4dcb1e3abd61989f02bd3d2dfcaeae72959f97",
+      "context": [
+        {
+          "body": "記録器は終了時にSQLiteへ書き込みます。",
+          "sources": [
+            {
+              "entryId": "983e4d41-b3aa-409e-91aa-9059be0782fb"
+            }
+          ]
+        },
+        {
+          "body": "ディスクの空き容量がないとSQLiteへの書き込みは失敗します。",
+          "sources": [
+            {
+              "entryId": "88c88f3c-69a0-4f89-9168-1d8d95716ecf"
+            }
+          ]
+        }
+      ],
+      "answer": "記録器は終了時にSQLiteへ書き込みます。空き容量がないとSQLiteへの書き込みが失敗するため、その終了時処理も失敗します。",
+      "citations": [
+        "983e4d41-b3aa-409e-91aa-9059be0782fb",
+        "88c88f3c-69a0-4f89-9168-1d8d95716ecf"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "終了時の保存先と空き容量不足による書き込み失敗の二つを結び付けている。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 13.534750000000031
+    },
+    {
+      "caseId": "failure-ja",
+      "variant": "atomic",
+      "question": "ディスク容量がないと記録器の終了時処理が失敗するのはなぜですか？",
+      "contextHash": "85a6545ab4cf01481da7fecb6a4dcb1e3abd61989f02bd3d2dfcaeae72959f97",
+      "context": [
+        {
+          "body": "記録器は終了時にSQLiteへ書き込みます。",
+          "sources": [
+            {
+              "entryId": "983e4d41-b3aa-409e-91aa-9059be0782fb"
+            }
+          ]
+        },
+        {
+          "body": "ディスクの空き容量がないとSQLiteへの書き込みは失敗します。",
+          "sources": [
+            {
+              "entryId": "88c88f3c-69a0-4f89-9168-1d8d95716ecf"
+            }
+          ]
+        }
+      ],
+      "answer": "記録器は終了時にSQLiteへ書き込みます。空き容量がないとSQLiteへの書き込みが失敗するため、その終了時処理も失敗します。",
+      "citations": [
+        "983e4d41-b3aa-409e-91aa-9059be0782fb",
+        "88c88f3c-69a0-4f89-9168-1d8d95716ecf"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "終了時の保存先と空き容量不足による書き込み失敗の二つを結び付けている。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 22.301625000000058
+    },
+    {
+      "caseId": "failure-ja",
+      "variant": "atomic+bridge",
+      "question": "ディスク容量がないと記録器の終了時処理が失敗するのはなぜですか？",
+      "contextHash": "bec1885cf96c3eb0b145bfab44bc57185ff80a8f1f7e713bbec0c4703fba3a98",
+      "context": [
+        {
+          "body": "記録器は終了時にSQLiteへ書き込みます。",
+          "sources": [
+            {
+              "entryId": "983e4d41-b3aa-409e-91aa-9059be0782fb"
+            }
+          ]
+        },
+        {
+          "body": "ディスクの空き容量がないとSQLiteへの書き込みは失敗します。",
+          "sources": [
+            {
+              "entryId": "88c88f3c-69a0-4f89-9168-1d8d95716ecf"
+            }
+          ]
+        },
+        {
+          "body": "ディスクの空き容量がないと記録器の終了時のSQLite書き込みは失敗します。\n\nSources: [{\"workspace\":\"project:repo-eda8f4fd9c02\",\"entryId\":\"88c88f3c-69a0-4f89-9168-1d8d95716ecf\",\"revision\":2,\"contentHash\":\"3b8839180727381eba38a9f77a4d6faed0bf4d428ebe6ada869a144d5da4277b\"},{\"workspace\":\"project:repo-eda8f4fd9c02\",\"entryId\":\"983e4d41-b3aa-409e-91aa-9059be0782fb\",\"revision\":2,\"contentHash\":\"f4afd6673dcffbe958f06a300baa35c859c1dcbc83cd2e72436af804e6e386f6\"}]\nQuotes: [{\"entryId\":\"983e4d41-b3aa-409e-91aa-9059be0782fb\",\"start\":0,\"end\":22,\"text\":\"記録器は終了時にSQLiteへ書き込みます。\"},{\"entryId\":\"88c88f3c-69a0-4f89-9168-1d8d95716ecf\",\"start\":0,\"end\":32,\"text\":\"ディスクの空き容量がないとSQLiteへの書き込みは失敗します。\"}]\nConnection: The first source depends on the entity whose behavior the second source describes.",
+          "sources": [
+            {
+              "workspace": "project:repo-eda8f4fd9c02",
+              "entryId": "88c88f3c-69a0-4f89-9168-1d8d95716ecf",
+              "revision": 2,
+              "contentHash": "3b8839180727381eba38a9f77a4d6faed0bf4d428ebe6ada869a144d5da4277b"
+            },
+            {
+              "workspace": "project:repo-eda8f4fd9c02",
+              "entryId": "983e4d41-b3aa-409e-91aa-9059be0782fb",
+              "revision": 2,
+              "contentHash": "f4afd6673dcffbe958f06a300baa35c859c1dcbc83cd2e72436af804e6e386f6"
+            }
+          ]
+        }
+      ],
+      "answer": "記録器は終了時にSQLiteへ書き込みます。空き容量がないとSQLiteへの書き込みが失敗するため、その終了時処理も失敗します。",
+      "citations": [
+        "983e4d41-b3aa-409e-91aa-9059be0782fb",
+        "88c88f3c-69a0-4f89-9168-1d8d95716ecf"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "終了時の保存先と空き容量不足による書き込み失敗の二つを結び付けている。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 25.86158300000011
+    },
+    {
+      "caseId": "failure-ja",
+      "variant": "bridge-hint-only",
+      "question": "ディスク容量がないと記録器の終了時処理が失敗するのはなぜですか？",
+      "contextHash": "85a6545ab4cf01481da7fecb6a4dcb1e3abd61989f02bd3d2dfcaeae72959f97",
+      "context": [
+        {
+          "body": "記録器は終了時にSQLiteへ書き込みます。",
+          "sources": [
+            {
+              "entryId": "983e4d41-b3aa-409e-91aa-9059be0782fb"
+            }
+          ]
+        },
+        {
+          "body": "ディスクの空き容量がないとSQLiteへの書き込みは失敗します。",
+          "sources": [
+            {
+              "entryId": "88c88f3c-69a0-4f89-9168-1d8d95716ecf"
+            }
+          ]
+        }
+      ],
+      "answer": "記録器は終了時にSQLiteへ書き込みます。空き容量がないとSQLiteへの書き込みが失敗するため、その終了時処理も失敗します。",
+      "citations": [
+        "983e4d41-b3aa-409e-91aa-9059be0782fb",
+        "88c88f3c-69a0-4f89-9168-1d8d95716ecf"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": null,
+      "reviewBasis": "終了時の保存先と空き容量不足による書き込み失敗の二つを結び付けている。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 0.75,
+      "retrievalElapsedMs": 25.96554200000014
+    },
+    {
+      "caseId": "single-en",
+      "variant": "current",
+      "question": "In which mode does the service use SQLite?",
+      "contextHash": "2ec3941393b89b98559ab8149bb2fa5e7422b3c75a5210d0a762019ad8062bbc",
+      "context": [
+        {
+          "body": "The service uses SQLite only in local mode.",
+          "sources": [
+            {
+              "entryId": "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6"
+            }
+          ]
+        },
+        {
+          "body": "SQLite supports offline local transactions.",
+          "sources": [
+            {
+              "entryId": "f8180891-5a2b-4ec3-94d0-d492d158e944"
+            }
+          ]
+        }
+      ],
+      "answer": "The service uses SQLite only in local mode.",
+      "citations": [
+        "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": false,
+      "reviewBasis": "The answer retains only and does not substitute offline capability for the service mode restriction.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 1,
+      "retrievalElapsedMs": 13.92758300000014
+    },
+    {
+      "caseId": "single-en",
+      "variant": "atomic",
+      "question": "In which mode does the service use SQLite?",
+      "contextHash": "2ec3941393b89b98559ab8149bb2fa5e7422b3c75a5210d0a762019ad8062bbc",
+      "context": [
+        {
+          "body": "The service uses SQLite only in local mode.",
+          "sources": [
+            {
+              "entryId": "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6"
+            }
+          ]
+        },
+        {
+          "body": "SQLite supports offline local transactions.",
+          "sources": [
+            {
+              "entryId": "f8180891-5a2b-4ec3-94d0-d492d158e944"
+            }
+          ]
+        }
+      ],
+      "answer": "The service uses SQLite only in local mode.",
+      "citations": [
+        "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": false,
+      "reviewBasis": "The answer retains only and does not substitute offline capability for the service mode restriction.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 1,
+      "retrievalElapsedMs": 24.694458999999824
+    },
+    {
+      "caseId": "single-en",
+      "variant": "atomic+bridge",
+      "question": "In which mode does the service use SQLite?",
+      "contextHash": "641c64eb25852129a0da7c234e229a8e6a28fd3e1429e0427c51967a143ad0e6",
+      "context": [
+        {
+          "body": "The service uses SQLite only in local mode.",
+          "sources": [
+            {
+              "entryId": "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6"
+            }
+          ]
+        },
+        {
+          "body": "SQLite supports offline local transactions.",
+          "sources": [
+            {
+              "entryId": "f8180891-5a2b-4ec3-94d0-d492d158e944"
+            }
+          ]
+        },
+        {
+          "body": "In local mode the service can use SQLite offline transactions.\n\nSources: [{\"workspace\":\"project:repo-26f8fa000816\",\"entryId\":\"b681c1a8-3b3c-45c1-9c21-5ac72132a3a6\",\"revision\":2,\"contentHash\":\"f5d84726b82a5037f8c61d1ec0c9cb6c46c6543e6fbc6d243cebc0d5f2e4eddc\"},{\"workspace\":\"project:repo-26f8fa000816\",\"entryId\":\"f8180891-5a2b-4ec3-94d0-d492d158e944\",\"revision\":2,\"contentHash\":\"dd33c1cc1bca773e28f842b30e3805fa2bdb72cd8fb0b7bbdf49302e670525de\"}]\nQuotes: [{\"entryId\":\"b681c1a8-3b3c-45c1-9c21-5ac72132a3a6\",\"start\":0,\"end\":43,\"text\":\"The service uses SQLite only in local mode.\"},{\"entryId\":\"f8180891-5a2b-4ec3-94d0-d492d158e944\",\"start\":0,\"end\":43,\"text\":\"SQLite supports offline local transactions.\"}]\nConnection: The first source depends on the entity whose behavior the second source describes.",
+          "sources": [
+            {
+              "workspace": "project:repo-26f8fa000816",
+              "entryId": "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6",
+              "revision": 2,
+              "contentHash": "f5d84726b82a5037f8c61d1ec0c9cb6c46c6543e6fbc6d243cebc0d5f2e4eddc"
+            },
+            {
+              "workspace": "project:repo-26f8fa000816",
+              "entryId": "f8180891-5a2b-4ec3-94d0-d492d158e944",
+              "revision": 2,
+              "contentHash": "dd33c1cc1bca773e28f842b30e3805fa2bdb72cd8fb0b7bbdf49302e670525de"
+            }
+          ]
+        }
+      ],
+      "answer": "The service uses SQLite only in local mode.",
+      "citations": [
+        "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": false,
+      "reviewBasis": "The answer retains only and does not substitute offline capability for the service mode restriction.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 1,
+      "retrievalElapsedMs": 28.987167000000227
+    },
+    {
+      "caseId": "single-en",
+      "variant": "bridge-hint-only",
+      "question": "In which mode does the service use SQLite?",
+      "contextHash": "2ec3941393b89b98559ab8149bb2fa5e7422b3c75a5210d0a762019ad8062bbc",
+      "context": [
+        {
+          "body": "The service uses SQLite only in local mode.",
+          "sources": [
+            {
+              "entryId": "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6"
+            }
+          ]
+        },
+        {
+          "body": "SQLite supports offline local transactions.",
+          "sources": [
+            {
+              "entryId": "f8180891-5a2b-4ec3-94d0-d492d158e944"
+            }
+          ]
+        }
+      ],
+      "answer": "The service uses SQLite only in local mode.",
+      "citations": [
+        "b681c1a8-3b3c-45c1-9c21-5ac72132a3a6"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": false,
+      "reviewBasis": "The answer retains only and does not substitute offline capability for the service mode restriction.",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 1,
+      "retrievalElapsedMs": 32.72154099999989
+    },
+    {
+      "caseId": "single-ja",
+      "variant": "current",
+      "question": "サービスがSQLiteを使うのはどのモードの場合ですか？",
+      "contextHash": "b1267f0d89b25c820f31c566b5ac1b83e1389dbd47bcf24322d8d5615377728a",
+      "context": [
+        {
+          "body": "サービスはローカルモードの場合だけSQLiteを使います。",
+          "sources": [
+            {
+              "entryId": "b84f67bc-d747-4c6e-85fd-2392d815887b"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteはオフラインのローカルトランザクションを扱えます。",
+          "sources": [
+            {
+              "entryId": "fe005ed5-1253-44bc-b135-a173ca87f4de"
+            }
+          ]
+        }
+      ],
+      "answer": "ローカルモードの場合だけSQLiteを使います。",
+      "citations": [
+        "b84f67bc-d747-4c6e-85fd-2392d815887b"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": false,
+      "reviewBasis": "サービス固有のローカルモード限定条件を保持し、SQLiteの一般的なオフライン能力へ置き換えていない。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 1,
+      "retrievalElapsedMs": 15.104084000000057
+    },
+    {
+      "caseId": "single-ja",
+      "variant": "atomic",
+      "question": "サービスがSQLiteを使うのはどのモードの場合ですか？",
+      "contextHash": "b1267f0d89b25c820f31c566b5ac1b83e1389dbd47bcf24322d8d5615377728a",
+      "context": [
+        {
+          "body": "サービスはローカルモードの場合だけSQLiteを使います。",
+          "sources": [
+            {
+              "entryId": "b84f67bc-d747-4c6e-85fd-2392d815887b"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteはオフラインのローカルトランザクションを扱えます。",
+          "sources": [
+            {
+              "entryId": "fe005ed5-1253-44bc-b135-a173ca87f4de"
+            }
+          ]
+        }
+      ],
+      "answer": "ローカルモードの場合だけSQLiteを使います。",
+      "citations": [
+        "b84f67bc-d747-4c6e-85fd-2392d815887b"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": false,
+      "reviewBasis": "サービス固有のローカルモード限定条件を保持し、SQLiteの一般的なオフライン能力へ置き換えていない。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 1,
+      "retrievalElapsedMs": 29.629459000000224
+    },
+    {
+      "caseId": "single-ja",
+      "variant": "atomic+bridge",
+      "question": "サービスがSQLiteを使うのはどのモードの場合ですか？",
+      "contextHash": "9a3d11086b70dc87a58d6f40e9ca283dbcb8b937d0ad7df6e9fdcfc94c8ac885",
+      "context": [
+        {
+          "body": "サービスはローカルモードの場合だけSQLiteを使います。",
+          "sources": [
+            {
+              "entryId": "b84f67bc-d747-4c6e-85fd-2392d815887b"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteはオフラインのローカルトランザクションを扱えます。",
+          "sources": [
+            {
+              "entryId": "fe005ed5-1253-44bc-b135-a173ca87f4de"
+            }
+          ]
+        },
+        {
+          "body": "ローカルモードのサービスはSQLiteのオフライントランザクションを使えます。\n\nSources: [{\"workspace\":\"project:repo-56445907a594\",\"entryId\":\"b84f67bc-d747-4c6e-85fd-2392d815887b\",\"revision\":2,\"contentHash\":\"385e898b94f416d3ef2b279690c5c434e5a19fbe6564c70babe35740f1d79eeb\"},{\"workspace\":\"project:repo-56445907a594\",\"entryId\":\"fe005ed5-1253-44bc-b135-a173ca87f4de\",\"revision\":2,\"contentHash\":\"c80f7faf247c113431ab14a23389b1b889e95ff6a4a1d894cc423d4a58ead42d\"}]\nQuotes: [{\"entryId\":\"b84f67bc-d747-4c6e-85fd-2392d815887b\",\"start\":0,\"end\":29,\"text\":\"サービスはローカルモードの場合だけSQLiteを使います。\"},{\"entryId\":\"fe005ed5-1253-44bc-b135-a173ca87f4de\",\"start\":0,\"end\":31,\"text\":\"SQLiteはオフラインのローカルトランザクションを扱えます。\"}]\nConnection: The first source depends on the entity whose behavior the second source describes.",
+          "sources": [
+            {
+              "workspace": "project:repo-56445907a594",
+              "entryId": "b84f67bc-d747-4c6e-85fd-2392d815887b",
+              "revision": 2,
+              "contentHash": "385e898b94f416d3ef2b279690c5c434e5a19fbe6564c70babe35740f1d79eeb"
+            },
+            {
+              "workspace": "project:repo-56445907a594",
+              "entryId": "fe005ed5-1253-44bc-b135-a173ca87f4de",
+              "revision": 2,
+              "contentHash": "c80f7faf247c113431ab14a23389b1b889e95ff6a4a1d894cc423d4a58ead42d"
+            }
+          ]
+        }
+      ],
+      "answer": "ローカルモードの場合だけSQLiteを使います。",
+      "citations": [
+        "b84f67bc-d747-4c6e-85fd-2392d815887b"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": false,
+      "reviewBasis": "サービス固有のローカルモード限定条件を保持し、SQLiteの一般的なオフライン能力へ置き換えていない。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 1,
+      "retrievalElapsedMs": 28.44529199999988
+    },
+    {
+      "caseId": "single-ja",
+      "variant": "bridge-hint-only",
+      "question": "サービスがSQLiteを使うのはどのモードの場合ですか？",
+      "contextHash": "b1267f0d89b25c820f31c566b5ac1b83e1389dbd47bcf24322d8d5615377728a",
+      "context": [
+        {
+          "body": "サービスはローカルモードの場合だけSQLiteを使います。",
+          "sources": [
+            {
+              "entryId": "b84f67bc-d747-4c6e-85fd-2392d815887b"
+            }
+          ]
+        },
+        {
+          "body": "SQLiteはオフラインのローカルトランザクションを扱えます。",
+          "sources": [
+            {
+              "entryId": "fe005ed5-1253-44bc-b135-a173ca87f4de"
+            }
+          ]
+        }
+      ],
+      "answer": "ローカルモードの場合だけSQLiteを使います。",
+      "citations": [
+        "b84f67bc-d747-4c6e-85fd-2392d815887b"
+      ],
+      "correct": true,
+      "sourceConsistent": true,
+      "unsupportedAssertionCount": 0,
+      "singleSourceRegression": false,
+      "reviewBasis": "サービス固有のローカルモード限定条件を保持し、SQLiteの一般的なオフライン能力へ置き換えていない。",
+      "reviewProvenance": "same connected assistant, non-blind manual review",
+      "recall": 1,
+      "mrr": 1,
+      "retrievalElapsedMs": 29.35920900000019
+    }
+  ]
+}

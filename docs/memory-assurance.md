@@ -125,3 +125,8 @@ The dedicated CLI test exits nonzero when the required runtime or observations
 are missing. Protocol fixtures, real CLI operation, desktop operation and
 model memory-application quality are separate evidence. A CLI pass does not
 establish desktop acceptance or a measured improvement in application rate.
+
+Explicit memory maintenance may use `task_memory_refresh.indexing` after intake.
+`memory_index_submit` and `memory_index_review` bind the resulting immutable work
+batch to that run, delivery and assurance revision. See [memory indexing](memory-index.md)
+for quote validation, modes, budgets, HTTP routes and evaluation.

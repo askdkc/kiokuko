@@ -66,6 +66,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'memory_capture',
       'memory_checkpoint',
       'memory_derive_lesson',
+      'memory_index_review',
+      'memory_index_submit',
       'memory_recall',
       'task_answer',
       'task_execution_evidence',

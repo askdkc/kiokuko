@@ -1,0 +1,17 @@
+{
+  "model": null,
+  "modelVersion": null,
+  "settings": {"temperature": null, "seed": null},
+  "contextBudget": 8000,
+  "instructions": "Use the printed four contexts per fixed case with identical model settings. null means not evaluated; do not treat deterministic coverage as answer quality.",
+  "results": [{
+    "caseId": "dependency-en",
+    "variant": "current | atomic | atomic+bridge | bridge-hint-only",
+    "answer": null,
+    "correct": null,
+    "sourceConsistent": null,
+    "unsupportedAssertionCount": null,
+    "singleSourceRegression": null,
+    "reviewBasis": null
+  }]
+}

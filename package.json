@@ -44,7 +44,8 @@
     "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run pack:check",
     "test:evaluation:akinator": "npm run build && node scripts/run-akinator-memory-evaluation.mjs",
     "test:benchmark:akinator": "npm run build && node scripts/run-akinator-memory-benchmark.mjs",
-    "test:memory-assurance:live": "npm run build && node scripts/run-memory-assurance-live.mjs"
+    "test:memory-assurance:live": "npm run build && node scripts/run-memory-assurance-live.mjs",
+    "test:memory-index:evaluation": "node --import tsx --test --test-name-pattern=\"fixed bilingual index evaluation\" tests/integration/memory-index.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -67,7 +67,7 @@ test('remote tools are an explicit read-only allowlist with strict published sch
     assert.equal(tool.outputSchema?.type, 'object');
   }
   const recall = list.find(tool => tool.name === 'memory_recall')!;
-  assert.deepEqual(Object.keys(recall.inputSchema.properties!).sort(), ['limit', 'maxContextChars', 'policy', 'query', 'subjects']);
+  assert.deepEqual(Object.keys(recall.inputSchema.properties!).sort(), ['limit', 'maxContextChars', 'policy', 'query', 'relatedMode', 'subjects', 'temporal']);
   for (const name of ['memory_capture', 'task_prepare', 'task_answer', 'task_inspect', 'memory_checkpoint',
     'task_memory_review', 'task_memory_refresh', 'task_memory_status', 'task_execution_evidence',
     'curator_check', 'curator_globalize', 'handoff_save', 'handoff_load', 'handoff_discard', '/private/sentinel']) {

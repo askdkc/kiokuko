@@ -1,3 +1,4 @@
+import { indexMode, isIndexArtifact, indexArtifact } from './index-state.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import type { PreparedSemanticQuery, VectorSearchBackend } from '../embedding/types.js';
 import { KiokukoError } from '../errors.js';
@@ -27,6 +28,10 @@ export interface HybridSearchRuntime {
 }
 
 export interface HybridSearchInput {
+  /** Internal evaluation only; never exposed by public search schemas. */
+  indexEvaluation?: boolean;
+  /** Internal baseline pass protects the original candidate pool. */
+  indexOriginalsOnly?:boolean;
   workspace: string;
   query: string;
   limit: number;
@@ -77,7 +82,8 @@ interface ExternalMappingRow extends SqliteRow {
 }
 
 /** Decide eligibility only after the entry and the complete parent snapshot decode. */
-export function isRetrievableEntry(database: SqliteDatabase, entry: EntryRecord): boolean {
+export function isRetrievableEntry(database: SqliteDatabase, entry: EntryRecord, indexEvaluation = false): boolean {
+  if (isIndexArtifact(entry)) return (indexEvaluation || indexMode(database, entry.workspace) === 'active') && indexArtifact(database, entry) !== undefined;
   if (entry.provenance.type === 'agent_derived_lesson' && !isDeliverableDerivedLesson(database, entry)) return false;
   const mappingRows = database.prepare(`
     SELECT skill_id
@@ -179,15 +185,26 @@ function containsTokenSequence(source: readonly string[], expected: readonly str
   return false;
 }
 
+function readRetrievalEntry(database:SqliteDatabase,workspace:string,entryId:string):EntryRecord|undefined {
+  try {return readEntry(database,{workspace,entryId});}
+  catch(error) {
+    const managed=database.prepare("SELECT 1 FROM entries WHERE id=? AND created_by='kiokuko-memory-index'").get(entryId);
+    if(managed && error instanceof KiokukoError && ['INTEGRITY_ERROR','VALIDATION_ERROR','NOT_FOUND'].includes(error.code)) return undefined;
+    throw error;
+  }
+}
+
 function hasCanonicalWordMatch(database: SqliteDatabase, input: HybridSearchInput, row: SearchRow, value: string): boolean {
-  const entry = readEntry(database, { workspace: input.workspace, entryId: row.id });
+  const entry = readRetrievalEntry(database,input.workspace,row.id);
+  if(!entry)return false;
   const expected = wordTokens(value);
   const source = wordTokens([entry.title, entry.body, entry.summary ?? '', ...entry.tags].join('\n'));
   return containsTokenSequence(source, expected);
 }
 
 function filterSql(input: HybridSearchInput, parameters: Array<string | number>): string {
-  const clauses = ['e.workspace = ?'];
+  const clauses = ['e.workspace = ?', `((COALESCE(json_extract(r.provenance_json,'$.type'),'') <> 'memory_index' AND e.created_by <> 'kiokuko-memory-index') OR EXISTS(SELECT 1 FROM memory_index_artifacts a JOIN memory_index_settings ims ON ims.workspace=e.workspace WHERE a.entry_id=e.id AND a.state='supported' AND (ims.mode='active' OR ${input.indexEvaluation ? '1' : '0'})))`];
+  if(input.indexOriginalsOnly) clauses.push("e.created_by <> 'kiokuko-memory-index' AND COALESCE(json_extract(r.provenance_json,'$.type'),'') <> 'memory_index'");
   parameters.push(input.workspace);
   if (input.subjects !== undefined) {
     clauses.push(`EXISTS (SELECT 1 FROM entry_revision_tags st WHERE st.entry_id = e.id
@@ -374,15 +391,23 @@ function semanticLane(database: SqliteDatabase, input: HybridSearchInput, runtim
     || query.backendId !== backend.id) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Prepared semantic query is invalid');
   }
-  const hits = backend.search(database, {
+  const vectorInput = {
     profileId: query.profileId,
     dimensions: query.dimensions,
     queryVector: query.vector,
     distanceCeiling: query.distanceCeiling,
     workspace: input.workspace,
+    ...(input.indexEvaluation ? {indexEvaluation:true} : {}),
+    ...(input.indexOriginalsOnly ? {indexOriginalsOnly:true} : {}),
     limit: MAX_LANE_CANDIDATES,
     ...(input.subjects === undefined ? {} : { subjects: input.subjects }),
-  });
+  };
+  let hits;
+  try {hits=backend.search(database,vectorInput);}
+  catch(error) {
+    if(!input.indexOriginalsOnly && (input.indexEvaluation || indexMode(database,input.workspace)==='active') && error instanceof KiokukoError && ['INTEGRITY_ERROR','SERVICE_UNAVAILABLE','BACKPRESSURE'].includes(error.code)) hits=backend.search(database,{...vectorInput,indexOriginalsOnly:true});
+    else throw error;
+  }
   if (!Array.isArray(hits) || hits.length > MAX_LANE_CANDIDATES) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Semantic backend returned too many candidates');
   }
@@ -543,8 +568,9 @@ export function hybridSearch(
       .sort((left, right) => right.fusedScore - left.fusedScore || compareCanonicalStrings(left.entryId, right.entryId))
       .slice(0, relatedSeedLimit)
       .filter((candidate) => {
-        const entry = readEntry(database, { workspace: input.workspace, entryId: candidate.entryId });
-        return isRetrievableEntry(database, entry) && (temporal?.mode !== 'restrict'
+        const entry = readRetrievalEntry(database,input.workspace,candidate.entryId);
+        if(!entry)return false;
+        return isRetrievableEntry(database, entry, input.indexEvaluation) && (temporal?.mode !== 'restrict'
           || matchesTemporalConstraint(database, entry, temporal));
       })
       .map((candidate) => candidate.entryId);
@@ -571,9 +597,12 @@ export function hybridSearch(
     .sort((left, right) => right.fusedScore - left.fusedScore || compareCanonicalStrings(left.entryId, right.entryId));
   // Candidate generation may use projections, but every semantic predicate is
   // applied only to the canonical decoded record.
-  return candidates.filter((candidate) => {
-    const entry = readEntry(database, { workspace: input.workspace, entryId: candidate.entryId });
-    if (!isRetrievableEntry(database, entry)) return false;
+  const generatedIds=new Set<string>();
+  const eligibleCandidates=candidates.filter((candidate) => {
+    const entry = readRetrievalEntry(database,input.workspace,candidate.entryId);
+        if(!entry)return false;
+    if (input.indexOriginalsOnly && isIndexArtifact(entry))return false;
+    if (!isRetrievableEntry(database, entry, input.indexEvaluation)) return false;
     if (temporal !== undefined) {
       const matches = matchesTemporalConstraint(database, entry, temporal);
       if (temporal.mode === 'restrict' && !matches) return false;
@@ -588,7 +617,14 @@ export function hybridSearch(
     if (input.tag !== undefined && !entry.tags.includes(input.tag)) return false;
     if (input.subjects !== undefined && !input.subjects.some((subject) => entry.tags.includes(`subject:${subject}`))) return false;
     if (lessonReinforcement(database, entry).priority === 'reinforced') candidate.reasons.push('repeated_lesson');
+    if(isIndexArtifact(entry))generatedIds.add(entry.id);
     return true;
   }).sort((left, right) => Number(right.reasons.includes('repeated_lesson')) - Number(left.reasons.includes('repeated_lesson'))
     || right.fusedScore - left.fusedScore || compareCanonicalStrings(left.entryId, right.entryId));
+  if(!input.indexOriginalsOnly && (input.indexEvaluation || indexMode(database,input.workspace)==='active') && eligibleCandidates.some(hit=>generatedIds.has(hit.entryId))) {
+    const originals=hybridSearch(database,{...input,indexOriginalsOnly:true},runtime);
+    const generated=eligibleCandidates.filter(hit=>generatedIds.has(hit.entryId)).slice(0,Math.max(1,Math.floor(input.limit/2)));
+    return [...originals,...generated].sort((left,right)=>Number(right.reasons.includes('repeated_lesson'))-Number(left.reasons.includes('repeated_lesson')) || right.fusedScore-left.fusedScore || compareCanonicalStrings(left.entryId,right.entryId));
+  }
+  return eligibleCandidates;
 }

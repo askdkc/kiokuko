@@ -1,3 +1,4 @@
+import { submitIndex, reviewIndex } from '../../memory/index-service.js';
 import { KiokukoError } from '../../errors.js';
 import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCwd } from '../../assurance/service.js';
 import { refreshTaskMemory } from '../../assurance/refresh.js';
@@ -5,7 +6,7 @@ import { repositoryStateDigest } from '../../assurance/snapshot.js';
 import { successEnvelope } from '../../serialization/envelope.js';
 import { decodeRunId, requireIdempotencyKey, requireNoQuery, runIdSegment, type AgentRouteContext } from './agent-runs.js';
 import type { V1RouteHandler } from '../router.js';
-const suffixes = ['memory-review', 'execution-evidence', 'memory-refresh', 'memory-status'] as const;
+const suffixes = ['memory-index-submit', 'memory-index-review', 'memory-review', 'execution-evidence', 'memory-refresh', 'memory-status'] as const;
 export function taskAssuranceOperation(method: string, pathname: string): string | undefined {
   const suffix = method === 'POST' ? suffixes.find(s => runIdSegment(pathname, s) !== undefined) : undefined;
   return suffix ? `agent.${suffix}` : undefined;
@@ -19,10 +20,12 @@ export function createTaskAssuranceRoute(context: Pick<AgentRouteContext, 'datab
     const runId = decodeRunId(runIdSegment(request.url.pathname, suffix)!);
     if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body)) throw new KiokukoError('VALIDATION_ERROR', 'Invalid assurance body');
     const body = request.body as Record<string, unknown>;
-    if (Object.hasOwn(body, 'runId') || Object.hasOwn(body, 'requestId')) throw new KiokukoError('VALIDATION_ERROR', 'Run and request identities belong in path and header');
+    if (Object.hasOwn(body, 'runId') || Object.hasOwn(body, 'requestId') || Object.hasOwn(body, 'operationId')) throw new KiokukoError('VALIDATION_ERROR', 'Run and request identities belong in path and header');
     const input = { ...body, runId, requestId: requireIdempotencyKey(request) };
     const data = await context.enqueueWrite(async () => {
       switch (suffix) {
+        case 'memory-index-submit': {const {requestId,...args}=input;return submitIndex(context.database,{...args,operationId:requestId});}
+        case 'memory-index-review': {const {requestId,...args}=input;return reviewIndex(context.database,{...args,operationId:requestId});}
         case 'memory-review': return reviewTaskMemory(context.database, input);
         case 'execution-evidence': return recordTaskEvidence(context.database, input);
         case 'memory-refresh': return refreshTaskMemory(context.database, input);

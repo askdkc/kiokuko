@@ -1,3 +1,4 @@
+import { indexVectorFilter, validIndexVector } from '../memory/index-state.js';
 import { normalizeSubject } from '../memory/interaction-subjects.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
@@ -11,6 +12,8 @@ export const MAX_VECTOR_SEARCH_LIMIT = 120;
 
 interface VectorRow extends SqliteRow {
   entry_id: unknown;
+  index_generated: number;
+  workspace: string;
   dimensions: unknown;
   embedding: unknown;
   vector_hash: unknown;
@@ -137,6 +140,7 @@ export class JavaScriptVectorSearchBackend implements VectorSearchBackend {
       'ee.dimensions = ?',
       'ee.revision = e.current_revision',
       'ee.content_hash = r.content_hash',
+      indexVectorFilter(input.indexEvaluation ?? false,input.indexOriginalsOnly??false),
     ];
     const parameters: Array<string | number> = [normalized.profileId, normalized.dimensions];
     if (normalized.workspace !== undefined) {
@@ -154,7 +158,7 @@ export class JavaScriptVectorSearchBackend implements VectorSearchBackend {
     }
     parameters.push(MAX_JAVASCRIPT_BACKEND_ENTRIES + 1);
     const rows = database.prepare(`
-      SELECT ee.entry_id, ee.dimensions, ee.embedding, ee.vector_hash
+      SELECT ee.entry_id, e.workspace, (e.created_by='kiokuko-memory-index' OR json_extract(r.provenance_json,'$.type')='memory_index') AS index_generated, ee.dimensions, ee.embedding, ee.vector_hash
         FROM entry_embeddings AS ee
         JOIN entries AS e ON e.id = ee.entry_id
         JOIN entry_revisions AS r
@@ -169,12 +173,14 @@ export class JavaScriptVectorSearchBackend implements VectorSearchBackend {
     const heap = new WorstFirstHeap(normalized.limit);
     for (const row of rows) {
       const id = entryId(row.entry_id);
+      if(row.index_generated && !validIndexVector(database,row.workspace,id)) continue;
       if (typeof row.dimensions !== 'number' || row.dimensions !== normalized.dimensions) integrity('Stored vector dimensions do not match the search profile');
       const vectorHash = typeof row.vector_hash === 'string' ? row.vector_hash : integrity('Stored vector hash is invalid');
       let vector: Float32Array;
       try {
         vector = decodeVector(row.embedding, normalized.dimensions, vectorHash);
       } catch {
+        if(row.index_generated) continue;
         integrity('Stored vector is invalid');
       }
       const distance = cosineDistance(normalized.queryVector, vector);

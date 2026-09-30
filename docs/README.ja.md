@@ -14,3 +14,5 @@
 実装者向けは[architecture](architecture.md)、[database](database.md)、[execution ledger](execution-ledger.md)、
 [client compatibility](client-compatibility.md)、[retrieval evaluation](retrieval-evaluation.md)を参照してください。
 英語目次は[こちら](README.md)です。
+
+- [Atomic Factとbridging fact](memory-index.md): 接続中のAIによる記憶整備、根拠レビュー、段階導入と評価。

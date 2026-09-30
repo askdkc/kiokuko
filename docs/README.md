@@ -17,3 +17,5 @@ Implementation references: [architecture](architecture.md), [database](database.
 and [retrieval evaluation](retrieval-evaluation.md).
 
 The Japanese user guides are available from the [日本語目次](README.ja.md).
+
+- [Atomic and bridging memory index](memory-index.md): explicit AI maintenance, modes, evidence, budgets and evaluation.
