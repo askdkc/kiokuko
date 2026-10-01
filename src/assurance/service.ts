@@ -104,13 +104,22 @@ export function recordTaskEvidence(db: SqliteDatabase, raw: unknown, provenance:
   return assuranceMutation(db, { ...input, provenance }, state => {
     assertCurrentDelivery(state, input.deliveryId);
     if (repositoryStateDigest(state.repository_root!) !== input.stateDigest) throw new KiokukoError('CONFLICT', 'Validation target changed');
-    const evidenceId = randomUUID();
-    db.prepare('INSERT INTO task_execution_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(evidenceId, input.runId, input.deliveryId, state.repository_root!, realpathSync(input.cwd), observed?.executionDigest ?? canonicalContentHash(input.execution), input.stateDigest,
-        input.outcome, input.exitCode, provenance, new Date().toISOString());
+    const evidenceId = insertTaskEvidence(db, { runId: input.runId, deliveryId: input.deliveryId, root: state.repository_root!, cwd: input.cwd,
+      executionDigest: observed?.executionDigest ?? canonicalContentHash(input.execution), stateDigest: input.stateDigest,
+      outcome: input.outcome, exitCode: input.exitCode, provenance });
     observed?.onRecorded(evidenceId);
     return { evidenceId, provenance, outcome: input.outcome };
   });
+}
+/** Insert only; callers own the transaction, authorization and revision transition. */
+export function insertTaskEvidence(db: SqliteDatabase, input: { runId: string; deliveryId: string | null; root: string; cwd: string;
+  executionDigest: string; stateDigest: string; outcome: 'passed' | 'failed' | 'skipped' | 'unknown'; exitCode: number | null;
+  provenance: 'model_reported' | 'client_observed' }): string {
+  const evidenceId = randomUUID();
+  db.prepare('INSERT INTO task_execution_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(evidenceId, input.runId, input.deliveryId, input.root, realpathSync(input.cwd), input.executionDigest, input.stateDigest,
+      input.outcome, input.exitCode, input.provenance, new Date().toISOString());
+  return evidenceId;
 }
 export interface AssuranceReport {
   mode: 'legacy_unobserved' | 'tracked'; revision: number | null; retrieval: string;

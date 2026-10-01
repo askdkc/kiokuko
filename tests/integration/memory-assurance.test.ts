@@ -4,15 +4,17 @@ import { mkdtempSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { runDoctor } from '../../src/commands/doctor.js';
 import { openConnection } from '../../src/db/connection.js';
 import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 import { recordEntry } from '../../src/memory/entries.js';
-import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCompletion } from '../../src/assurance/service.js';
+import { assuranceState, reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCompletion } from '../../src/assurance/service.js';
 import { repositoryStateDigest } from '../../src/assurance/snapshot.js';
-import { handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
+import { codexHookFailureCode, handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
+import { KiokukoError } from '../../src/errors.js';
 import { refreshTaskMemory } from '../../src/assurance/refresh.js';
 const caps = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }];
 async function fixture() {
@@ -125,6 +127,147 @@ test('Codex blocks unprepared edits and does not inherit another agent or interr
     assert.equal((handleCodexHook(f.db, { ...edit, agent_id: 'child' }) as any).hookSpecificOutput.permissionDecision, 'deny');
     handleCodexHook(f.db, { ...common, hook_event_name: 'Interrupt' });
     assert.deepEqual(handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }), {});
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+async function boundHookFixture() {
+  const f = await fixture();
+  reviewTaskMemory(f.db, { runId: f.prepared.run.runId, requestId: 'hook-fixture-review', expectedRevision: taskAssuranceReport(f.db, f.prepared.run.runId).revision!, cwd: f.root,
+    deliveryId: f.prepared.context!.deliveryId!, entryId: f.entry.id, entryRevision: f.entry.revision, decision: 'inapplicable',
+    basis: 'Migration expectation memory does not govern Codex hook completion.', evidenceIds: [] });
+  const common = { session_id: 'concurrent-client', turn_id: 'request', cwd: f.root };
+  handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
+  const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{ request_id: string }>()!.request_id;
+  const args = { cwd: f.root, requestId };
+  handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
+    tool_use_id: 'prepare', tool_input: args, tool_response: { structuredContent: f.prepared } });
+  const event = (id: string) => ({ ...common, tool_name: 'exec_command', tool_use_id: id, tool_input: { cmd: 'true' } });
+  return { ...f, common, event };
+}
+test('independent PostToolUse completions commit across a revision change, and duplicate delivery is idempotent', async () => {
+  const f = await boundHookFixture();
+  const second = openConnection(f.databasePath);
+  try {
+    const a = f.event('a'); const b = f.event('b');
+    for (const call of [a, b]) assert.deepEqual(handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' }), {});
+    let interleaved = false;
+    const wrapped = new Proxy(f.db, { get(target, key) {
+      if (key === 'exec') return (sql: string) => {
+        if (sql === 'BEGIN IMMEDIATE' && !interleaved) {
+          interleaved = true;
+          handleCodexHook(second, { ...b, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
+        }
+        return target.exec(sql);
+      };
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    assert.match((handleCodexHook(wrapped, { ...a, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }) as any).hookSpecificOutput.additionalContext, /outcome: passed/u);
+    const ids = f.db.prepare('SELECT call_id, evidence_id FROM codex_hook_tools WHERE call_id IN (?, ?) ORDER BY call_id').all('a', 'b') as Array<{ call_id: string; evidence_id: string }>;
+    assert.equal(ids.length, 2);
+    assert.ok(ids.every(row => row.evidence_id));
+    assert.notEqual(ids[0]!.evidence_id, ids[1]!.evidence_id);
+    const revision = taskAssuranceReport(f.db, f.prepared.run.runId).revision;
+    handleCodexHook(f.db, { ...a, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
+    assert.equal(taskAssuranceReport(f.db, f.prepared.run.runId).revision, revision);
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, 2);
+    assert.throws(() => handleCodexHook(f.db, { ...a, tool_input: { cmd: 'other' }, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }), /matching start/u);
+    const changed = f.event('changed');
+    handleCodexHook(f.db, { ...changed, hook_event_name: 'PreToolUse' });
+    writeFileSync(path.join(f.root, 'source.ts'), 'updated after tool start\n');
+    handleCodexHook(f.db, { ...changed, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
+    const afterChange = taskAssuranceReport(f.db, f.prepared.run.runId).revision;
+    handleCodexHook(f.db, { ...changed, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
+    assert.equal(taskAssuranceReport(f.db, f.prepared.run.runId).revision, afterChange);
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, 2);
+    assert.equal(codexHookFailureCode(new KiokukoError('CONFLICT', 'Task assurance revision changed')), 'state_conflict');
+    assert.equal(codexHookFailureCode(new KiokukoError('BACKPRESSURE', 'busy')), 'database_busy');
+    assert.equal(codexHookFailureCode(new KiokukoError('SERVICE_UNAVAILABLE', 'Repository state digest unavailable')), 'state_digest_unavailable');
+  } finally { second.close(); f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+test('hook diagnostics distinguish an unpaired completion without exposing its command', async () => {
+  const f = await boundHookFixture();
+  try {
+    const { spawnSync } = await import('node:child_process');
+    const event = { ...f.event('missing-start'), tool_input: { cmd: 'private-command-body' }, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } };
+    const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
+      { cwd: process.cwd(), input: JSON.stringify(event), encoding: 'utf8' });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /event=PostToolUse stage=post_completion reason=state_conflict id=[0-9a-f]{16}.*Tool already executed/u);
+    assert.doesNotMatch(result.stderr, /private-command-body/u);
+    const observation = f.db.prepare("SELECT response_shape FROM codex_hook_observations WHERE event_name='PostToolUse' AND decision='CONFLICT' ORDER BY rowid DESC LIMIT 1")
+      .get<{ response_shape: string }>();
+    assert.ok(observation);
+    assert.match(result.stderr, new RegExp(`id=${JSON.parse(observation.response_shape).call}\\.`));
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+test('observation write failure does not replace a completed hook result', async () => {
+  const f = await boundHookFixture();
+  const call = f.event('observation-failure');
+  try {
+    handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
+    const faulty = new Proxy(f.db, { get(target, key) {
+      if (key === 'prepare') return (sql: string) => {
+        if (sql.startsWith('INSERT INTO codex_hook_observations')) throw new Error('observation unavailable');
+        return target.prepare(sql);
+      };
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const original = process.stderr.write;
+    let diagnostic = '';
+    process.stderr.write = ((chunk: string) => { diagnostic += chunk; return true; }) as typeof process.stderr.write;
+    try {
+      assert.match((handleCodexHook(faulty, { ...call, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }) as any).hookSpecificOutput.additionalContext, /outcome: passed/u);
+    } finally { process.stderr.write = original; }
+    assert.match(diagnostic, /observation_write_failed/u);
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, 1);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+test('parallel codex-hook processes retain each completed call on one database', async () => {
+  const f = await boundHookFixture();
+  try {
+    const calls = Array.from({ length: 4 }, (_, i) => f.event(`process-${i}`));
+    for (const call of calls) handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
+    const results = await Promise.all(calls.map(call => new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+      let stderr = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('close', code => resolve({ code, stderr }));
+      child.stdin.end(JSON.stringify({ ...call, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }));
+    })));
+    assert.deepEqual(results, calls.map(() => ({ code: 0, stderr: '' })));
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, calls.length);
+    const duplicate = f.event('same-call');
+    handleCodexHook(f.db, { ...duplicate, hook_event_name: 'PreToolUse' });
+    const copies = await Promise.all(Array.from({ length: 3 }, () => new Promise<number | null>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath], { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'] });
+      child.stderr.resume(); child.stdout.resume();
+      child.on('error', reject);
+      child.on('close', resolve);
+      child.stdin.end(JSON.stringify({ ...duplicate, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }));
+    })));
+    assert.deepEqual(copies, [0, 0, 0]);
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, calls.length + 1);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+test('PostToolUse cannot attach evidence after delivery replacement or interruption', async () => {
+  const f = await boundHookFixture();
+  try {
+    const stale = f.event('stale-delivery');
+    handleCodexHook(f.db, { ...stale, hook_event_name: 'PreToolUse' });
+    const previousDelivery = assuranceState(f.db, f.prepared.run.runId)!.delivery_id;
+    await refreshTaskMemory(f.db, { runId: f.prepared.run.runId, cwd: f.root, requestId: 'replace-delivery',
+      expectedRevision: taskAssuranceReport(f.db, f.prepared.run.runId).revision!, capabilities: caps, changedPaths: ['source.ts'] });
+    assert.notEqual(assuranceState(f.db, f.prepared.run.runId)!.delivery_id, previousDelivery);
+    assert.match((handleCodexHook(f.db, { ...stale, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }) as any)
+      .hookSpecificOutput.additionalContext, /Delivery changed/u);
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, 0);
+
+    handleCodexHook(f.db, { ...f.common, hook_event_name: 'Interrupt' });
+    assert.deepEqual(handleCodexHook(f.db, { ...stale, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }), {});
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, 0);
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 

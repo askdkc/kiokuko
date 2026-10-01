@@ -1,5 +1,5 @@
 import * as z from 'zod/v4';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
@@ -7,7 +7,7 @@ import { withImmediateTransaction } from '../db/transaction.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import { LedgerStore } from '../ledger/store.js';
 import { KiokukoError } from '../errors.js';
-import { assuranceState, taskAssuranceReport, recordTaskEvidence } from './service.js';
+import { assuranceState, taskAssuranceReport, insertTaskEvidence } from './service.js';
 import { repositoryStateDigest } from './snapshot.js';
 import { parseAssurance } from './contracts.js';
 
@@ -20,6 +20,12 @@ const hookSchema = z.object({
   stop_hook_active: z.boolean().optional(),
 }).passthrough();
 interface HookRequest extends SqliteRow { identity_digest: string; repository_root: string; run_id: string | null; request_id: string; state: string; }
+interface HookCall extends SqliteRow { run_id: string; delivery_id: string | null; input_digest: string; state_digest: string; evidence_id: string | null; post_state_digest: string | null; }
+export function codexHookCorrelationId(fields: Record<string, unknown>): string {
+  const parts = [fields.session_id, fields.turn_id, fields.tool_use_id];
+  return parts.every(value => typeof value === 'string')
+    ? createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16) : 'unavailable';
+}
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -119,10 +125,23 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     if (report.pending.length || report.stale.length) return deny('Resolve current memory application decisions before editing or executing.');
     const state = assuranceState(db, request.run_id)!;
     const inputDigest = canonicalContentHash(input.tool_input ?? null);
-    const prior = db.prepare('SELECT input_digest FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<{ input_digest: string }>(identity, input.tool_use_id);
-    if (prior && prior.input_digest !== inputDigest) return deny('Tool call identity was reused with different input');
-    db.prepare('INSERT OR IGNORE INTO codex_hook_tools(identity_digest, call_id, run_id, delivery_id, input_digest, state_digest, evidence_id) VALUES (?, ?, ?, ?, ?, ?, NULL)')
-      .run(identity, input.tool_use_id, request.run_id, state.delivery_id, inputDigest, repositoryStateDigest(root));
+    let stateDigest: string;
+    try { stateDigest = repositoryStateDigest(root); }
+    catch { throw new KiokukoError('SERVICE_UNAVAILABLE', 'Repository state digest unavailable'); }
+    const admission = withImmediateTransaction(db, () => {
+      const current = db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest = ?').get<HookRequest>(identity);
+      const currentRun = current?.run_id ? new LedgerStore(db).readRun(current.run_id) : null;
+      const currentState = current?.run_id ? assuranceState(db, current.run_id) : null;
+      if (!current || current.state !== 'bound' || current.run_id !== request!.run_id || currentRun?.status !== 'active'
+        || currentState?.delivery_id !== state.delivery_id) return 'stale';
+      const prior = db.prepare('SELECT input_digest FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<{ input_digest: string }>(identity, input.tool_use_id!);
+      if (prior) return prior.input_digest === inputDigest ? 'accepted' : 'conflict';
+      db.prepare('INSERT INTO codex_hook_tools(identity_digest, call_id, run_id, delivery_id, input_digest, state_digest, evidence_id) VALUES (?, ?, ?, ?, ?, ?, NULL)')
+        .run(identity, input.tool_use_id!, request!.run_id, state.delivery_id, inputDigest, stateDigest);
+      return 'accepted';
+    });
+    if (admission === 'stale') return deny('Task state changed before tool admission');
+    if (admission === 'conflict') return deny('Tool call identity was reused with different input');
     return {};
   }
   if (operation === 'task_prepare' || operation === 'task_answer') {
@@ -137,30 +156,42 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     return {};
   }
   if (operation || !request.run_id) return {};
-  const call = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<SqliteRow>(identity, input.tool_use_id);
-  if (!call || call.run_id !== request.run_id || call.input_digest !== canonicalContentHash(input.tool_input ?? null)) throw new KiokukoError('CONFLICT', 'Tool completion has no matching start');
-  if (call.evidence_id) return context('PostToolUse', `Execution evidence: ${call.evidence_id}`);
-  const digest = repositoryStateDigest(root);
-  const state = assuranceState(db, request.run_id)!;
-  if (digest !== call.state_digest) {
-    if (!call.post_state_digest) withImmediateTransaction(db, () => {
-      db.prepare('UPDATE task_assurance SET observed_changes=1, revision=revision+1 WHERE run_id=?').run(request!.run_id);
-      db.prepare('UPDATE codex_hook_tools SET post_state_digest=? WHERE identity_digest=? AND call_id=?').run(digest, identity, input.tool_use_id!);
-    });
-    return context('PostToolUse', 'Repository state changed; earlier verification is stale. Implementation evidence is now required for adopted code memories.');
-  }
-  if (call.delivery_id !== state.delivery_id) return context('PostToolUse', 'Delivery changed during execution; completion cannot verify the new delivery.');
-  if (!['Bash', 'exec_command'].includes(input.tool_name)) return {};
   const response = responseData(input.tool_response);
   // Unknown or unfinished client result shapes must never become passing evidence.
   const exitCode = observedExitCode(input.tool_response);
-  if (response.session_id !== undefined && exitCode === null) return context('PostToolUse', 'Process still running; verification remains pending.');
-  const evidence = recordTaskEvidence(db, { runId: request.run_id, requestId: `hook-${input.tool_use_id}`, expectedRevision: state.revision,
-    cwd: root, deliveryId: state.delivery_id, execution: JSON.stringify(input.tool_input).slice(0, 4000), stateDigest: digest,
-    outcome: exitCode === null ? 'unknown' : exitCode === 0 ? 'passed' : 'failed', exitCode }, 'client_observed', { executionDigest: canonicalContentHash(input.tool_input ?? null), onRecorded: evidenceId => {
+  // Each completion reads its own call and the current assurance revision under
+  // the writer lock. A different call may have advanced that revision already.
+  return withImmediateTransaction(db, () => {
+    const current = db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest = ?').get<HookRequest>(identity);
+    const call = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<HookCall>(identity, input.tool_use_id!);
+    if (!current || current.run_id !== request!.run_id || current.state !== 'bound'
+      || !call || call.run_id !== current.run_id || call.input_digest !== canonicalContentHash(input.tool_input ?? null))
+      throw new KiokukoError('CONFLICT', 'Tool completion has no matching start');
+    const run = new LedgerStore(db).readRun(current.run_id!);
+    if (!run || run.status !== 'active') throw new KiokukoError('CONFLICT', 'Tool completion belongs to a terminal run');
+    const state = assuranceState(db, current.run_id!);
+    if (!state || state.repository_root !== root) throw new KiokukoError('CONFLICT', 'Tool completion repository changed');
+    if (call.delivery_id !== state.delivery_id) return context('PostToolUse', 'Delivery changed during execution; completion cannot verify the new delivery.');
+    if (call.evidence_id) return context('PostToolUse', `Execution evidence: ${call.evidence_id}`);
+    let digest: string;
+    try { digest = repositoryStateDigest(root); }
+    catch { throw new KiokukoError('SERVICE_UNAVAILABLE', 'Repository state digest unavailable'); }
+    if (digest !== call.state_digest) {
+      if (!call.post_state_digest) {
+        db.prepare('UPDATE task_assurance SET observed_changes=1, revision=revision+1 WHERE run_id=?').run(current.run_id);
+        db.prepare('UPDATE codex_hook_tools SET post_state_digest=? WHERE identity_digest=? AND call_id=?').run(digest, identity, input.tool_use_id!);
+      }
+      return context('PostToolUse', 'Repository state changed; earlier verification is stale. Implementation evidence is now required for adopted code memories.');
+    }
+    if (!['Bash', 'exec_command'].includes(input.tool_name!)) return {};
+    if (response.session_id !== undefined && exitCode === null) return context('PostToolUse', 'Process still running; verification remains pending.');
+    const outcome = exitCode === null ? 'unknown' : exitCode === 0 ? 'passed' : 'failed';
+    const evidenceId = insertTaskEvidence(db, { runId: current.run_id!, deliveryId: state.delivery_id, root, cwd: root,
+      executionDigest: call.input_digest, stateDigest: digest, outcome, exitCode, provenance: 'client_observed' });
     db.prepare('UPDATE codex_hook_tools SET evidence_id = ? WHERE identity_digest = ? AND call_id = ?').run(evidenceId, identity, input.tool_use_id!);
-  } });
-  return context('PostToolUse', `Execution evidence: ${evidence.evidenceId}; outcome: ${evidence.outcome}. Link it with task_memory_review.`);
+    db.prepare('UPDATE task_assurance SET revision=revision+1, updated_at=? WHERE run_id=?').run(now, current.run_id);
+    return context('PostToolUse', `Execution evidence: ${evidenceId}; outcome: ${outcome}. Link it with task_memory_review.`);
+  });
 }
 
 /** Record protocol shape and decision only, never arguments or tool output. */
@@ -168,20 +199,34 @@ export function handleCodexHook(db: SqliteDatabase, raw: unknown): object {
   const input = parseAssurance(hookSchema, raw);
   const response = record(input.tool_response);
   const args = record(input.tool_input);
-  const shape = JSON.stringify({ hasArguments: !!args.arguments, hasParameters: !!args.parameters, hasRequestId: !!args.requestId, hasSoulRead: !!args.soulRead, type: typeof input.tool_response, structured: !!response.structuredContent,
-    content: Array.isArray(response.content), exitCode: typeof response.exit_code, status: typeof response.status });
-  const save = (decision: string) => withImmediateTransaction(db, () => {
+  const shape = { hasArguments: !!args.arguments, hasParameters: !!args.parameters, hasRequestId: !!args.requestId, hasSoulRead: !!args.soulRead, type: typeof input.tool_response, structured: !!response.structuredContent,
+    content: Array.isArray(response.content), exitCode: typeof response.exit_code, status: typeof response.status };
+  const save = (decision: string, reason?: string) => withImmediateTransaction(db, () => {
+    const diagnostic = { ...shape, reason, call: codexHookCorrelationId(input) };
     db.prepare('INSERT INTO codex_hook_observations VALUES (?, ?, ?, ?, ?, ?)')
-      .run(randomUUID(), input.hook_event_name, input.tool_name ?? null, shape, decision, new Date().toISOString());
+      .run(randomUUID(), input.hook_event_name, input.tool_name ?? null, JSON.stringify(diagnostic), decision, new Date().toISOString());
     db.prepare('DELETE FROM codex_hook_observations WHERE rowid NOT IN (SELECT rowid FROM codex_hook_observations ORDER BY rowid DESC LIMIT 1000)').run();
   });
   try {
     const result = handleCodexHookEvent(db, input);
     const specific = record(record(result).hookSpecificOutput);
-    save(specific.permissionDecision === 'deny' ? 'denied' : 'handled');
+    try { save(specific.permissionDecision === 'deny' ? 'denied' : 'handled', specific.permissionDecision === 'deny' ? 'policy_denied' : undefined); }
+    catch { process.stderr.write('Kiokuko hook observation unavailable: observation_write_failed.\n'); }
     return result;
   } catch (error) {
-    save(error instanceof KiokukoError ? error.code : 'adapter_error');
+    try { save(error instanceof KiokukoError ? error.code : 'adapter_error', codexHookFailureCode(error)); }
+    catch { /* Preserve the primary failure. */ }
     throw error;
   }
+}
+export function codexHookFailureCode(error: unknown): string {
+  if (error instanceof KiokukoError) {
+    if (error.code === 'CONFLICT') return 'state_conflict';
+    if (error.code === 'BACKPRESSURE') return 'database_busy';
+    if (error.code === 'SERVICE_UNAVAILABLE' && error.message === 'Repository state digest unavailable') return 'state_digest_unavailable';
+    if (error.code === 'VALIDATION_ERROR' || error.code === 'INTEGRITY_ERROR') return 'validation_unavailable';
+    return 'kiokuko_error';
+  }
+  if (error instanceof Error && 'code' in error && typeof error.code === 'string' && error.code.startsWith('ERR_SQLITE')) return 'database_error';
+  return 'adapter_error';
 }
