@@ -125,6 +125,11 @@ export interface AssuranceReport {
   mode: 'legacy_unobserved' | 'tracked'; revision: number | null; retrieval: string;
   pending: string[]; stale: string[]; missingVerification: string[]; observed: boolean; complete: boolean;
 }
+/** Execution may start after decisions; passing evidence is required only for completion. */
+export function memoryReviewNextAction(report: AssuranceReport): 'refresh_memory' | 'review_memory_application' | 'proceed' {
+  if (report.stale.length) return 'refresh_memory';
+  return report.pending.length ? 'review_memory_application' : 'proceed';
+}
 export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true): AssuranceReport {
   const state = assuranceState(db, runId);
   const report: AssuranceReport = { mode: state ? 'tracked' : 'legacy_unobserved', revision: state?.revision ?? null,

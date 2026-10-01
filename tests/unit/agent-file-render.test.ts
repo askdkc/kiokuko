@@ -41,6 +41,8 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /simple-work route minimizes the solution but never replaces the code contract/u);
   assert.match(rendered, /Never substitute, install, or execute fetched external Skill content/u);
   assert.match(rendered, /task_prepare/);
+  assert.match(rendered, /nextAction=review_memory_application.*before ordinary tools, code search or execution/u);
+  assert.match(rendered, /task_inspect.*natural-japanese-output/u);
   assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);
   assert.match(rendered, /Every descriptor must include its kind and canonical name/u);
   assert.match(rendered, /bounded opaque `requestId`/);

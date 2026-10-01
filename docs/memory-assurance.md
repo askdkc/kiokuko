@@ -10,10 +10,16 @@ stated rationale is correct, or that a chosen verifier is sufficient.
    Complete the existing Akinator intake with `task_answer`.
 2. Read `assurance` in the preparation response or call `task_memory_status`.
    It reports the current revision, missing decisions and stale verification.
+   `nextAction=review_memory_application` requires decisions before ordinary
+   tools or code search; `refresh_memory` requires refreshing the same run first.
+   Use `task_inspect` for evidence and bundled Skills while these gates are open.
 3. Call `task_memory_review` for selected actionable entries. Bind the run,
    delivery ID, entry ID/revision and expected assurance revision. Choose
    `adopted`, `inapplicable` or `contradicted`. All decisions need current evidence;
    adoption also needs an invariant, counterexample and verifier.
+   Submit decisions sequentially using the latest returned revision, then check
+   `task_memory_status`. Its `nextAction=proceed` permits implementation and tests;
+   missing verification still prevents completion. Do not repeat `task_prepare`.
 4. For implementation, run the verifier and link its evidence IDs with another
    review. `task_memory_status` with `snapshot: true` returns the pre-execution
    state digest required by `task_execution_evidence`. Public evidence is always
@@ -106,7 +112,11 @@ in `permissionDecisionReason` for the blocked tool, and on stderr for hook
 diagnostics. Pending-memory blocks show pending/stale counts and direct the agent
 to `task_memory_status` and `task_memory_review` with the latest returned revision;
 reusing an old `expectedRevision` produces a conflict. Allowed tool calls stay
-quiet. Diagnostics never echo tool arguments or command output. Existing hook
+quiet. Preparation, review and refresh completions proactively report the current
+next step before another ordinary tool is attempted. The initial prompt directs
+all preparation Skill reads, including `natural-japanese-output`, through
+`task_inspect`; no shell read is needed to bootstrap. Diagnostics never echo tool
+arguments or command output. Existing hook
 history is not rewritten; the new messages require the updated Kiokuko executable.
 
 Hooks are not execution isolation. Unsupported tool paths, disabled/untrusted

@@ -249,7 +249,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(preparedContent.intake.reasoning.stage, 'actionable');
     assert.match(preparedContent.intake.reasoning.selectedAction, /src\/beacon\.ts/u);
     assert.equal(preparedContent.intake.reasoning.silo.completeness, 1);
-    assert.equal(preparedContent.nextAction, 'proceed');
+    assert.equal(preparedContent.nextAction, 'review_memory_application');
     assert.equal(preparedContent.capabilities.availability, 'known-nonempty');
     assert.deepEqual(preparedContent.memoryPolicy, {
       memoryReasoningRequired: true,
@@ -386,7 +386,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       nextAction: string;
     };
     assert.equal(completedContent.intake.status, 'ready');
-    assert.equal(completedContent.nextAction, 'proceed');
+    assert.equal(completedContent.nextAction, 'review_memory_application');
     assert.deepEqual(completedContent.executionContext, {
       canonicalCwd: canonicalRoot,
       repositoryRoot: canonicalRoot,
@@ -832,7 +832,7 @@ test('task_prepare degrades safely for oversized and malformed capability items'
       nextAction: string;
       memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
     };
-    assert.equal(availableContent.nextAction, 'proceed');
+    assert.equal(availableContent.nextAction, 'review_memory_application');
     assert.deepEqual(availableContent.memoryPolicy, {
       memoryReasoningRequired: true,
       contextWithheld: false,
@@ -1030,7 +1030,7 @@ test('task_prepare proceeds without memory-reasoning for managed curator global 
       memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
       context: { items: Array<{ entryId: string }> };
     };
-    assert.equal(content.nextAction, 'proceed');
+    assert.equal(content.nextAction, 'review_memory_application');
     assert.equal(content.memoryPolicy.memoryReasoningRequired, false);
     assert.equal(content.memoryPolicy.contextWithheld, false);
     assert.equal(content.memoryPolicy.withheldReason, null);

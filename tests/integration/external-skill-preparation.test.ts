@@ -467,7 +467,7 @@ test('discovers reference-only context when a build client lacks or does not rep
 
       assert.equal(prepared.skillDiscovery.attempted, true);
       assert.ok(prepared.skillDiscovery.selected.length > 0, JSON.stringify(prepared.skillDiscovery));
-      assert.equal(prepared.nextAction, 'proceed');
+      assert.equal(prepared.nextAction, 'review_memory_application');
       assert.ok(prepared.context?.deliveryId);
       assert.ok((prepared.context?.items.length ?? 0) > 0);
       assert.ok(prepared.context?.items.every((item) => item.origin === 'ecosystem'));

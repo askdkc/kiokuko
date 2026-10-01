@@ -7,7 +7,7 @@ import { withImmediateTransaction } from '../db/transaction.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import { LedgerStore } from '../ledger/store.js';
 import { KiokukoError } from '../errors.js';
-import { assuranceState, taskAssuranceReport, insertTaskEvidence } from './service.js';
+import { assuranceState, taskAssuranceReport, insertTaskEvidence, memoryReviewNextAction } from './service.js';
 import { repositoryStateDigest } from './snapshot.js';
 import { parseAssurance } from './contracts.js';
 
@@ -57,6 +57,14 @@ function deny(reason: string) {
 function context(event: string, text: string) {
   return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
 }
+function memoryStepContext(db: SqliteDatabase, runId: string, root: string) {
+  const report = taskAssuranceReport(db, runId, false);
+  const nextAction = memoryReviewNextAction(report);
+  const identity = JSON.stringify({ cwd: root, runId });
+  if (nextAction === 'refresh_memory') return context('PostToolUse', `Next action: refresh_memory. Call task_memory_status with ${identity}, then task_memory_refresh on this run with the latest revision and bound capability catalog. Review the new delivery before ordinary tools. Use task_inspect for bounded evidence reads.`);
+  if (nextAction === 'review_memory_application') return context('PostToolUse', `Next action: review_memory_application (${report.pending.length} pending). Call task_memory_status with ${identity}, then task_memory_review for every pending entry. Use task_inspect for evidence and bundled Skills, including natural-japanese-output; do not use shell commands or code search yet. Submit reviews sequentially with the revision from the latest response. Register grounded adoption, inapplicability or contradiction; never invent decisions to unlock execution. After the last review, check task_memory_status. Do not repeat task_prepare.`);
+  return context('PostToolUse', 'Memory decisions are current; ordinary tools may proceed for this active run. Adopted code memories still require passing verification before completion.');
+}
 const preparationTools = new Set(['memory_index_submit', 'memory_index_review', 'task_inspect', 'task_prepare', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'memory_checkpoint', 'memory_capture', 'memory_recall', 'handoff_save', 'handoff_load', 'handoff_discard', 'curator_check']);
 function kiokukoTool(name: string): string | null {
   const match = /^mcp__kiokuko__(\w+)$/.exec(name);
@@ -75,7 +83,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
       db.prepare("INSERT INTO codex_hook_requests VALUES (?, ?, NULL, ?, 'pending', 0, ?, ?) ON CONFLICT(identity_digest) DO UPDATE SET last_event=excluded.last_event, updated_at=excluded.updated_at")
         .run(identity, root, requestId, input.hook_event_name, now);
     });
-    return context(input.hook_event_name, `Kiokuko request ${requestId}. Before project work, call task_inspect with {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path to read kiokuko-soul), then call task_prepare with this requestId and soulRead=true. Use task_inspect for bounded preparation reads. Ordinary conversation needs no project run. ${CODEX_HOOK_LIMITATION}`);
+    return context(input.hook_event_name, `Kiokuko request ${requestId}. Before project work, call task_inspect with {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path to read kiokuko-soul). Read memory-reasoning through task_inspect before advertising it, then call task_prepare with this requestId and soulRead=true. Use task_inspect for all preparation reads and bundled Skills, including natural-japanese-output; do not read Skills through shell commands. After intake, resolve every pending or stale memory decision before ordinary tools, code search or execution. Follow nextAction; use task_memory_status and sequential task_memory_review calls with the latest revision. Ordinary conversation needs no project run. ${CODEX_HOOK_LIMITATION}`);
   }
   if (!request) {
     if (input.hook_event_name === 'Interrupt' || input.hook_event_name === 'SubagentStop') return {};
@@ -125,7 +133,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     const run = new LedgerStore(db).readRun(request.run_id);
     if (!run || run.status !== 'active') return deny('Kiokuko intake is unfinished or the run is terminal');
     const report = taskAssuranceReport(db, request.run_id, false);
-    if (report.pending.length || report.stale.length) return deny(`Memory review is incomplete (${report.pending.length} pending, ${report.stale.length} stale). The agent must call task_memory_status, then task_memory_review for each unresolved entry using the current revision returned by the latest response. Use task_inspect for bounded reads while reviews are pending. This tool call did not execute.`);
+    if (report.pending.length || report.stale.length) return deny(`Memory review is incomplete (${report.pending.length} pending, ${report.stale.length} stale). The agent must call task_memory_status, ${report.stale.length ? 'then task_memory_refresh on the same run for stale entries,' : ''} then task_memory_review for each unresolved entry using the current revision returned by the latest response. Use task_inspect for bounded reads while reviews are pending. This tool call did not execute.`);
     const state = assuranceState(db, request.run_id)!;
     const inputDigest = canonicalContentHash(input.tool_input ?? null);
     let stateDigest: string;
@@ -155,9 +163,15 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     if (!state || state.repository_root !== root || (operation === 'task_prepare' && args.requestId !== requestId)
       || (operation === 'task_answer' && runId !== request.run_id)) throw new KiokukoError('CONFLICT', 'Preparation response does not match the observed client request');
     if (request.run_id && request.run_id !== runId) throw new KiokukoError('CONFLICT', 'Client request already binds another run');
-    db.prepare('UPDATE codex_hook_requests SET run_id = ?, state = ? WHERE identity_digest = ?').run(runId, result.nextAction === 'proceed' ? 'bound' : 'pending', identity);
-    return {};
+    // Intake binding and memory admission are separate: reviews must be able to
+    // unlock a prepared run without replaying task_prepare or task_answer.
+    const prepared = ['proceed', 'review_memory_application', 'refresh_memory'].includes(String(result.nextAction));
+    db.prepare('UPDATE codex_hook_requests SET run_id = ?, state = ? WHERE identity_digest = ?').run(runId, prepared ? 'bound' : 'pending', identity);
+    return prepared ? memoryStepContext(db, runId, root) : {};
   }
+  if (['task_memory_review', 'task_memory_refresh'].includes(operation ?? '') && request.state === 'bound'
+    && request.run_id && record(input.tool_response).isError !== true
+    && new LedgerStore(db).readRun(request.run_id)?.status === 'active') return memoryStepContext(db, request.run_id, root);
   if (operation || !request.run_id) return {};
   const response = responseData(input.tool_response);
   // Unknown or unfinished client result shapes must never become passing evidence.

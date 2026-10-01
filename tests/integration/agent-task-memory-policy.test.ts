@@ -184,7 +184,7 @@ test('withholds actionable memory but continues the repair task when memory-reas
     const availableRecommendation = available.capabilities.recommendations.find((item) => item.name === 'memory-reasoning');
     assert.equal(availableRecommendation?.availability, 'available');
     assert.deepEqual(available.memoryPolicy, AVAILABLE_MEMORY_POLICY);
-    assert.equal(available.nextAction, 'proceed');
+    assert.equal(available.nextAction, 'review_memory_application');
     assert.notEqual(available.context, null);
   } finally {
     database.close();
@@ -267,7 +267,7 @@ test('fresh default setup supplies the exact memory capability that unlocks buil
       };
       const available = await prepareAgentTask(database, availableInput);
       assert.deepEqual(available.memoryPolicy, AVAILABLE_MEMORY_POLICY);
-      assert.equal(available.nextAction, 'proceed');
+      assert.equal(available.nextAction, 'review_memory_application');
       assert.equal(available.context?.items.some((item) => item.entryId === entry.id), true);
       assert.ok(available.context?.deliveryId);
       assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
@@ -327,7 +327,7 @@ test('does not require memory-reasoning when only a managed curator global memor
       skillDiscoveryMode: 'off',
     });
 
-    assert.equal(prepared.nextAction, 'proceed');
+    assert.equal(prepared.nextAction, 'review_memory_application');
     assert.deepEqual(prepared.memoryPolicy, NO_MEMORY_POLICY);
     assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.required === true), false);
     assert.equal(prepared.context?.items.some((item) => item.entryId === curated.id), true);
@@ -1231,7 +1231,7 @@ test('exact task_prepare replay gates the current ledger-revised profile', async
     const replay = await prepareAgentTask(database, request);
     assert.equal(replay.run.runId, first.run.runId);
     assert.equal(replay.intake.profile.taskType, 'build');
-    assert.equal(replay.nextAction, 'proceed');
+    assert.equal(replay.nextAction, 'review_memory_application');
     assert.equal(replay.context, null);
     assert.ok(replay.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.required === true
@@ -1333,7 +1333,7 @@ test('missing memory-reasoning still discovers reference-only external skills wh
     assert.ok(networkCalls > 0);
     assert.equal(prepared.skillDiscovery.attempted, true);
     assert.ok(prepared.skillDiscovery.selected.length > 0, JSON.stringify(prepared.skillDiscovery));
-    assert.equal(prepared.nextAction, 'proceed', JSON.stringify(prepared));
+    assert.equal(prepared.nextAction, 'review_memory_application', JSON.stringify(prepared));
     assert.notEqual(prepared.context, null);
     assert.ok((prepared.context?.items.length ?? 0) > 0);
     assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'), false);

@@ -12,7 +12,7 @@ import { readTaskContextRequestBinding } from '../akinator/agent-task.js';
 import { resolveProjectWorkspaceReadOnly } from '../memory/workspaces.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import { memoryRefreshSchema, parseAssurance } from './contracts.js';
-import { assertAssuranceCwd, assuranceState, bindAssuranceRoot, taskAssuranceReport } from './service.js';
+import { assertAssuranceCwd, assuranceState, bindAssuranceRoot, taskAssuranceReport, memoryReviewNextAction } from './service.js';
 
 export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -79,7 +79,8 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
       unprocessed: (indexing ?? []).filter(entry => !context?.items.some(item => item.entryId === entry.id))
         .map(entry => ({ entryId: entry.id, reason: 'context_budget_or_capability' })),
     } : undefined;
-    response = { ...(indexResult ? { indexing: indexResult } : {}), context, memoryPolicy: policy, assurance: taskAssuranceReport(db, input.runId, false) };
+    const assurance = taskAssuranceReport(db, input.runId, false);
+    response = { ...(indexResult ? { indexing: indexResult } : {}), context, memoryPolicy: policy, assurance, nextAction: memoryReviewNextAction(assurance) };
     db.prepare('INSERT INTO task_assurance_requests VALUES (?, ?, ?, ?)').run(input.runId, input.requestId, digest, JSON.stringify(response));
   });
   return response;

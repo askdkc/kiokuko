@@ -1,6 +1,6 @@
 import { submitIndex, reviewIndex } from '../../memory/index-service.js';
 import { KiokukoError } from '../../errors.js';
-import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCwd } from '../../assurance/service.js';
+import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCwd, memoryReviewNextAction } from '../../assurance/service.js';
 import { refreshTaskMemory } from '../../assurance/refresh.js';
 import { repositoryStateDigest } from '../../assurance/snapshot.js';
 import { successEnvelope } from '../../serialization/envelope.js';
@@ -32,7 +32,8 @@ export function createTaskAssuranceRoute(context: Pick<AgentRouteContext, 'datab
         default: {
           if (Object.keys(body).some(k => !['cwd', 'snapshot'].includes(k)) || typeof body.cwd !== 'string' || (body.snapshot !== undefined && typeof body.snapshot !== 'boolean')) throw new KiokukoError('VALIDATION_ERROR', 'Invalid status body');
           const state = assertAssuranceCwd(context.database, runId, body.cwd);
-          return { ...taskAssuranceReport(context.database, runId), deliveryId: state.delivery_id,
+          const assurance = taskAssuranceReport(context.database, runId);
+          return { ...assurance, nextAction: memoryReviewNextAction(assurance), deliveryId: state.delivery_id,
             ...(body.snapshot === true ? { stateDigest: repositoryStateDigest(state.repository_root!) } : {}) };
         }
       }

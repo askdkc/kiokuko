@@ -2,7 +2,7 @@ import { indexSubmitSchema, indexReviewSchema, submitIndex, reviewIndex } from '
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { inspectTask, inspectTaskSchema, TaskInspectionError } from '../assurance/inspect.js';
 import { memoryReviewSchema, executionEvidenceSchema, memoryRefreshSchema } from '../assurance/contracts.js';
-import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCwd } from '../assurance/service.js';
+import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCwd, memoryReviewNextAction } from '../assurance/service.js';
 import { repositoryStateDigest } from '../assurance/snapshot.js';
 import { refreshTaskMemory } from '../assurance/refresh.js';
 import { captureInteractionMemory } from '../memory/interaction-capture.js';
@@ -504,7 +504,8 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     inputSchema: z.object({ runId, cwd: absoluteCwdSchema, snapshot: z.boolean().default(false) }).strict(),
   }, async (input, extra) => withMcpToolDeadline('task_memory_status', deadlinePolicy, extra.signal, () => withPublicToolError(() => withDatabase(dependencies, async db => {
     const state = assertAssuranceCwd(db, input.runId, input.cwd);
-    return toolResult({ ...taskAssuranceReport(db, input.runId), deliveryId: state.delivery_id,
+    const assurance = taskAssuranceReport(db, input.runId);
+    return toolResult({ ...assurance, nextAction: memoryReviewNextAction(assurance), deliveryId: state.delivery_id,
       ...(input.snapshot ? { stateDigest: repositoryStateDigest(state.repository_root!) } : {}) });
   }))));
 

@@ -75,6 +75,12 @@ before terminal `memory_checkpoint`; do not call tools afterward.
 
 Read this Skill before any other bundled Kiokuko Skill.
 
+When Codex hooks supply a request ID, use `task_inspect` with `operation: "skill"`
+and no path to read this router. Read `memory-reasoning` through the same tool
+before advertising it. Use `task_inspect` for all bounded preparation reads and
+bundled Skills, including `natural-japanese-output`; do not use shell commands
+to read Skills before preparation and memory decisions permit ordinary tools.
+
 For every `task_prepare` call, set `soulRead: true` only after reading this
 complete local `SKILL.md` for the current logical request. `task_prepare` also
 requires the exact local `kiokuko-soul` capability for every task. Omission,
@@ -102,6 +108,17 @@ Follow the returned intake state without inventing missing facts:
 - **`needs_answer`** or **`nextAction=answer_from_evidence_or_ask_user`**: Akinator controls progress. Use its hypotheses and question purpose only to understand the distinction being tested. Answer the exact current question through `task_answer` only when the value is grounded in the user request or verified repository evidence; otherwise ask the user that question. Repeat the same capability catalog and context budget, inspect the new question and state after every answer, and continue until `ready` or `exhausted`. Do not plan, implement, verify, enter the simple/code/UI routes, or call `memory_checkpoint` while unresolved.
 - **`ready`**: obey top-level `nextAction`, capability requirements, memory policy. Only then select the applicable routes below.
 - **`exhausted`**: no further Akinator question is available, but `intake.missingFields` may remain. Preserve that uncertainty, do not invent the missing answers or describe the intake as fully specified, and route only when top-level `nextAction` permits.
+
+After intake, `nextAction=review_memory_application` requires decisions before
+ordinary tools, code search or execution. Inspect `task_memory_status`, gather
+current evidence with `task_inspect`, then call `task_memory_review` sequentially
+for every pending entry using the revision returned by the latest response.
+Register grounded adoption, inapplicability or contradiction; never invent a
+decision to unlock execution. `nextAction=refresh_memory` requires
+`task_memory_refresh` on the same run with the bound capability catalog before
+reviewing the new delivery. After reviews, check `task_memory_status`; do not
+repeat `task_prepare`. `nextAction=proceed` permits ordinary tools, but adopted
+code memories still require passing verification before completion.
 
 If `task_prepare` is unavailable before a non-trivial build or debug request can obtain its policy, stop and report the unavailable policy. The sole exception is diagnosing or repairing Kiokuko itself after `task_prepare` fails before returning scoped context: continue only from repository evidence, and do not call `task_answer` or `memory_checkpoint` for that failed request.
 
