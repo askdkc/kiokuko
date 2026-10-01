@@ -15,7 +15,14 @@ export function registerCodexHookCommand(cli: Command): void {
         }
         event = JSON.parse(raw);
         const database = openConnection(options.database);
-        try { process.stdout.write(JSON.stringify(handleCodexHook(database, event)) + '\n'); }
+        try {
+          const result = handleCodexHook(database, event);
+          process.stdout.write(JSON.stringify(result) + '\n');
+          // Keep the supported UI warning in JSON and a readable copy in hook diagnostics.
+          if ('systemMessage' in result && typeof result.systemMessage === 'string') {
+            process.stderr.write(result.systemMessage + '\n');
+          }
+        }
         finally { database.close(); }
       } catch (error) {
         const fields = event && typeof event === 'object' ? event as Record<string, unknown> : {};

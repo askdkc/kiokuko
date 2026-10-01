@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { runDoctor } from '../../src/commands/doctor.js';
@@ -129,6 +129,39 @@ test('Codex blocks unprepared edits and does not inherit another agent or interr
     assert.deepEqual(handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }), {});
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
+test('hook command exposes policy block reasons to the user without leaking tool input', async () => {
+  const f = await fixture();
+  try {
+    const common = { session_id: 'visible-block', turn_id: 'request', cwd: f.root };
+    const event = { ...common, hook_event_name: 'PreToolUse', tool_name: 'exec_command', tool_use_id: 'blocked',
+      tool_input: { cmd: 'private-command-body' } };
+    const checkBlock = (expected: RegExp) => {
+      const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
+        { cwd: process.cwd(), input: JSON.stringify(event), encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, expected);
+      assert.equal(output.systemMessage, `Kiokuko blocked this tool call: ${output.hookSpecificOutput.permissionDecisionReason}`);
+      assert.match(result.stderr, expected);
+      assert.ok(result.stderr.includes(output.systemMessage));
+      assert.doesNotMatch(result.stdout + result.stderr, /private-command-body/u);
+      assert.equal(output.continue, undefined);
+      assert.equal(output.stopReason, undefined);
+      assert.equal(output.suppressOutput, undefined);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM codex_hook_tools').get<{ n: number }>()!.n, 0);
+    };
+    checkBlock(/request start/u);
+    handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
+    checkBlock(/task_prepare/u);
+    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{ request_id: string }>()!.request_id;
+    handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
+      tool_use_id: 'prepare', tool_input: { cwd: f.root, requestId }, tool_response: { structuredContent: f.prepared } });
+    checkBlock(/1 pending.*0 stale.*task_memory_status.*task_memory_review/u);
+    handleCodexHook(f.db, { ...common, hook_event_name: 'Interrupt' });
+    checkBlock(/interrupted/u);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
 async function boundHookFixture() {
   const f = await fixture();
   reviewTaskMemory(f.db, { runId: f.prepared.run.runId, requestId: 'hook-fixture-review', expectedRevision: taskAssuranceReport(f.db, f.prepared.run.runId).revision!, cwd: f.root,
@@ -143,6 +176,16 @@ async function boundHookFixture() {
   const event = (id: string) => ({ ...common, tool_name: 'exec_command', tool_use_id: id, tool_input: { cmd: 'true' } });
   return { ...f, common, event };
 }
+test('hook command stays quiet for an admitted tool call', async () => {
+  const f = await boundHookFixture();
+  try {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
+      { cwd: process.cwd(), input: JSON.stringify({ ...f.event('quiet'), hook_event_name: 'PreToolUse' }), encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {});
+    assert.equal(result.stderr, '');
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
 test('independent PostToolUse completions commit across a revision change, and duplicate delivery is idempotent', async () => {
   const f = await boundHookFixture();
   const second = openConnection(f.databasePath);

@@ -101,6 +101,14 @@ hook events, never from a model-supplied session ID. It does not fabricate
 Unidentified child execution cannot inherit a parent's run. Delegation is denied
 on paths where distinct child tool identities cannot be established.
 
+Policy denials include the reason in `systemMessage` for the Codex UI warning,
+in `permissionDecisionReason` for the blocked tool, and on stderr for hook
+diagnostics. Pending-memory blocks show pending/stale counts and direct the agent
+to `task_memory_status` and `task_memory_review` with the latest returned revision;
+reusing an old `expectedRevision` produces a conflict. Allowed tool calls stay
+quiet. Diagnostics never echo tool arguments or command output. Existing hook
+history is not rewritten; the new messages require the updated Kiokuko executable.
+
 Hooks are not execution isolation. Unsupported tool paths, disabled/untrusted
 hooks, adapter startup failures and already running processes remain outside
 complete enforcement. In particular, `write_stdin` does not repeat PreToolUse.

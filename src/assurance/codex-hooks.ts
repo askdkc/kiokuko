@@ -49,7 +49,10 @@ export function observedExitCode(value: unknown): number | null {
   return typeof response.exit_code === 'number' && Number.isSafeInteger(response.exit_code) ? response.exit_code : null;
 }
 function deny(reason: string) {
-  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
+  return {
+    systemMessage: `Kiokuko blocked this tool call: ${reason}`,
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason },
+  };
 }
 function context(event: string, text: string) {
   return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
@@ -122,7 +125,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     const run = new LedgerStore(db).readRun(request.run_id);
     if (!run || run.status !== 'active') return deny('Kiokuko intake is unfinished or the run is terminal');
     const report = taskAssuranceReport(db, request.run_id, false);
-    if (report.pending.length || report.stale.length) return deny('Resolve current memory application decisions before editing or executing.');
+    if (report.pending.length || report.stale.length) return deny(`Memory review is incomplete (${report.pending.length} pending, ${report.stale.length} stale). The agent must call task_memory_status, then task_memory_review for each unresolved entry using the current revision returned by the latest response. Use task_inspect for bounded reads while reviews are pending. This tool call did not execute.`);
     const state = assuranceState(db, request.run_id)!;
     const inputDigest = canonicalContentHash(input.tool_input ?? null);
     let stateDigest: string;
