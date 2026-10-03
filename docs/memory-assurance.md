@@ -76,9 +76,11 @@ because its contents cannot be verified by a Git snapshot.
 
 Capability normalization v2 reserves identity space before spending description
 space. More than 200 valid capabilities are accepted. Oversized descriptions are
-omitted without losing identities. Malformed inputs or identity-budget exhaustion
-remain explicitly `unknown`. Digest version 2 conflicts with older bound runs;
-start a new logical request after upgrading instead of resuming a v1 binding.
+omitted without losing identities. Preparation rejects malformed catalogs or
+identity-budget exhaustion before creating a run; correct them under the same
+logical request ID when `runCreated=false`. A successfully bound catalog remains
+fixed. Legacy recovery requires validation against the stored catalog digest;
+an incompatible digest version cannot be silently replaced.
 
 Scoped retrieval distinguishes `no_entries`, `no_match`, `out_of_scope`,
 `capability_withheld`, and `delivered` in assurance diagnostics. Search exceptions

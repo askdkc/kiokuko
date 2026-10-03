@@ -454,6 +454,13 @@ test('discovers reference-only context when a build client lacks or does not rep
     await initializeDatabase({ databasePath });
     const database = openConnection(databasePath);
     try {
+      if (request.client.sessionId === 'unknown-memory-reasoning') {
+        const before = networkCalls;
+        await assert.rejects(prepareAgentTask(database, {requestId:'invalid-catalog',cwd:root,task:'Implement a component',capabilities:request.capabilities,fetchImpl:async (...args)=>{networkCalls += 1; return successfulProvider(...args);}}), /before run creation/);
+        assert.equal(networkCalls,before);
+        assert.equal(database.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{count:number}>()?.count,0);
+        continue;
+      }
       const prepared = await prepareAgentTask(database, {
         requestId: `external-skill-post-gate-${request.client.sessionId}`,
         cwd: root,

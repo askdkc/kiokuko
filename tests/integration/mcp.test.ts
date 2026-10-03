@@ -1,3 +1,4 @@
+import { initializeDatabase } from '../../src/commands/init.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import assert from 'node:assert/strict';
@@ -76,6 +77,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'task_memory_review',
       'task_memory_status',
       'task_prepare',
+      'task_prepare_recover',
     ]);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_answer')?.annotations?.idempotentHint, false);
@@ -139,6 +141,10 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskAnswerSchema.properties?.value?.description ?? '', /options is null, provide grounded non-empty text/);
     for (const schema of [taskPrepareSchema, taskAnswerSchema]) {
       assert.equal(schema.properties?.capabilities?.type, 'array');
+      assert.equal(schema.properties?.capabilities?.items?.additionalProperties, false);
+      assert.deepEqual(schema.properties?.capabilities?.items?.properties?.kind?.enum, ['skill', 'mcp_tool']);
+      assert.ok(schema.properties?.capabilities?.items?.required?.includes('kind'));
+      assert.ok(schema.properties?.capabilities?.items?.required?.includes('name'));
       assert.match(
         schema.properties?.capabilities?.description ?? '',
         /Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>/u,
@@ -199,7 +205,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
         soulRead: true,
         task: 'Implement the durable beacon and add tests',
         profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The durable beacon tests pass' },
-        capabilities: [],
+        capabilities: [SOUL_CAPABILITY],
       },
     });
     assert.equal(missingRequestId.isError, true);
@@ -309,10 +315,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       nextAction: string;
       capabilities: { recommendations: Array<{ name: string; availability: string; required?: boolean }> };
     };
-    assert.equal(researchContent.nextAction, 'required_capability_unavailable');
-    assert.ok(researchContent.capabilities.recommendations.some((item) => item.name === 'kiokuko-soul'
-      && item.availability === 'missing'
-      && item.required === true));
+    assert.equal(research.isError, true);
+    assert.equal((research.structuredContent as any).reason, 'required_capability_unavailable');
+    assert.equal((research.structuredContent as any).runCreated, false);
 
     const incomplete = await client.callTool({
       name: 'task_prepare',
@@ -401,89 +406,21 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       && item.required === true));
 
     for (const catalogAvailability of ['missing', 'unknown'] as const) {
-      const catalogArguments = catalogAvailability === 'missing' ? { capabilities: [] } : {};
-      const pending = await client.callTool({
+      const refused = await client.callTool({
         name: 'task_prepare',
         arguments: {
           soulRead: true,
           requestId: `mcp-gated-${catalogAvailability}-request`,
           task: 'Implement the durable beacon and add tests',
-          profileHints: { taskType: 'build' },
-          client: { kind: 'test', sessionId: `task-answer-${catalogAvailability}` },
-          ...catalogArguments,
+          ...(catalogAvailability === 'missing' ? { capabilities: [] } : {}),
         },
       });
-      const pendingContent = pending.structuredContent as {
-        intake: { status: string; sessionId: string; question: { id: string } };
-        run: { runId: string };
-        nextAction: string;
-      };
-      assert.equal(pendingContent.intake.status, 'needs_answer');
-      assert.equal(pendingContent.intake.question.id, 'target');
-      assert.equal(pendingContent.nextAction, 'required_capability_unavailable');
-
-      const target = await client.callTool({
-        name: 'task_answer',
-        arguments: {
-          sessionId: pendingContent.intake.sessionId,
-          runId: pendingContent.run.runId,
-          questionId: 'target',
-          value: 'src/beacon.ts',
-          ...catalogArguments,
-        },
-      });
-      const targetContent = target.structuredContent as { intake: { status: string; question: { id: string } }; nextAction: string };
-      assert.equal(targetContent.intake.status, 'needs_answer');
-      assert.equal(targetContent.intake.question.id, 'expected');
-      assert.equal(targetContent.nextAction, 'required_capability_unavailable');
-
-      const stopped = await client.callTool({
-        name: 'task_answer',
-        arguments: {
-          sessionId: pendingContent.intake.sessionId,
-          runId: pendingContent.run.runId,
-          questionId: 'expected',
-          value: 'The durable beacon tests pass',
-          ...catalogArguments,
-        },
-      });
-      const stoppedContent = stopped.structuredContent as {
-        intake: { status: string };
-        context: unknown;
-        capabilities: Record<string, unknown> & {
-          recommendations: Array<{ name: string; source: string; availability: string; required?: boolean }>;
-        };
-        skillDiscovery: { attempted: boolean; selected: unknown[] };
-        memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
-        nextAction: string;
-      } & Record<string, unknown>;
-      assert.equal(stoppedContent.intake.status, 'ready');
-      assert.equal(stoppedContent.nextAction, 'required_capability_unavailable');
-      assert.deepEqual(stoppedContent.memoryPolicy, {
-        memoryReasoningRequired: true,
-        contextWithheld: true,
-        withheldReason: catalogAvailability === 'missing'
-          ? 'memory_reasoning_missing'
-          : 'memory_reasoning_unknown',
-        deliveryEmpty: true,
-        storedEntryCount: 1,
-      });
-      assert.equal(stoppedContent.context, null);
-      assert.equal('memory' in stoppedContent, false);
-      assert.equal('references' in stoppedContent, false);
-      assert.ok(stoppedContent.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
-        && item.source === 'akinator_policy'
-        && item.availability === catalogAvailability
-        && item.required === true));
-      assert.ok(stoppedContent.capabilities.recommendations.some((item) => item.name === 'kiokuko-soul'
-        && item.source === 'akinator_policy'
-        && item.availability === catalogAvailability
-        && item.required === true));
-      assert.equal(stoppedContent.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
-        && item.source === 'catalog_similarity'), false);
-      assert.equal('externalSkillFallback' in stoppedContent.capabilities, false);
-      assert.equal(stoppedContent.skillDiscovery.attempted, false);
-      assert.deepEqual(stoppedContent.skillDiscovery.selected, []);
+      assert.equal(refused.isError, true);
+      const refusal = refused.structuredContent as Record<string, unknown>;
+      assert.equal(refusal.runCreated, false);
+      assert.equal(refusal.reason, 'required_capability_unavailable');
+      assert.equal('run' in refusal, false);
+      assert.equal('context' in refusal, false);
     }
   } finally {
     await client.close();
@@ -717,255 +654,43 @@ test('checkpoint reports pending reviews and evidence-only success without claim
   } finally { await client.close(); await server.close(); }
 });
 
-test('task_prepare degrades safely for oversized and malformed capability items', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-capability-repo-'));
+test('task_prepare rejects malformed catalogs before opening a run and compacts valid descriptions', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-catalog-boundary-'));
   execFileSync('git', ['init', '-q', root]);
-  const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-capability-data-'));
-  const databasePath = path.join(data, 'kiokuko.sqlite3');
+  const databasePath = path.join(root, 'test.sqlite3');
+  await initializeDatabase({ databasePath });
   const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
-  const client = new Client({ name: 'kiokuko-capability-test', version: '1.0.0' });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
+  const client = new Client({ name: 'catalog-test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await server.connect(st);
+  await client.connect(ct);
   try {
-    await client.callTool({
-      name: 'memory_checkpoint',
-      arguments: { memories: [{ kind: 'lesson', title: 'Oversized catalog beacon', body: 'Keep capability handling bounded and ephemeral.' }] },
-    });
-    const knownMissing = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-known-missing-memory-catalog-request',
-        task: 'Implement the oversized catalog beacon and add tests',
-        profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
-        capabilities: [SOUL_CAPABILITY],
-      },
-    });
-    const knownMissingContent = knownMissing.structuredContent as {
-      context: null;
-      nextAction: string;
-      capabilities: { availability: string; recommendations: Array<{ name: string; availability: string }> };
-      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
-    };
-    assert.equal(knownMissingContent.context, null);
-    assert.equal(knownMissingContent.nextAction, 'proceed');
-    assert.deepEqual(knownMissingContent.memoryPolicy, {
-      memoryReasoningRequired: true,
-      contextWithheld: true,
-      withheldReason: 'memory_reasoning_missing',
-      deliveryEmpty: true,
-      storedEntryCount: 1,
-    });
-    assert.equal(knownMissingContent.capabilities.availability, 'known-nonempty');
-    assert.ok(knownMissingContent.capabilities.recommendations.some(
-      (item) => item.name === 'memory-reasoning' && item.availability === 'missing',
-    ));
-
-    const sentinel = 'capability-secret-sentinel-private-path';
-    const oversizedCapabilities = [
-      SOUL_CAPABILITY,
-      { kind: 'skill', name: 'tdd', description: `${sentinel}${'x'.repeat(64_001)}` },
-      { kind: 'mcp_tool', name: 'repository_search', description: `${sentinel}${'y'.repeat(64_001)}` },
-      { kind: 'invalid', name: 'discarded' },
-    ];
-    const result = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-oversized-catalog-request',
-        task: 'Implement the oversized catalog beacon and add tests',
-        profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
-        capabilities: oversizedCapabilities,
-      },
-    });
-    assert.equal(result.isError, undefined);
-    const content = result.structuredContent as {
-      run: { runId: string };
-      nextAction: string;
-      context: null;
-      capabilities: {
-        availability: string;
-        diagnostics: { received: number; accepted: number; truncated: number; dropped: number };
-        recommendations: Array<{ name: string; availability: string }>;
-        warnings: Array<{ message: string }>;
-      };
-      warnings: Array<{ message: string }>;
-      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
-    } & Record<string, unknown>;
-    assert.equal(content.context, null);
-    assert.deepEqual(content.memoryPolicy, {
-      memoryReasoningRequired: true,
-      contextWithheld: true,
-      withheldReason: 'memory_reasoning_unknown',
-      deliveryEmpty: true,
-      storedEntryCount: 1,
-    });
-    assert.equal('memory' in content, false);
-    assert.equal('references' in content, false);
-    assert.equal(content.capabilities.availability, 'unknown');
-    assert.deepEqual(content.capabilities.diagnostics, { received: 4, accepted: 3, truncated: 2, dropped: 1 });
-    assert.ok(content.capabilities.recommendations.some((item) => item.name === 'kiokuko-soul' && item.availability === 'available'));
-    assert.ok(content.capabilities.recommendations.some((item) => item.name === 'tdd' && item.availability === 'available'));
-    assert.ok(content.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.availability === 'unknown'));
-    assert.equal(content.nextAction, 'proceed');
-    assert.equal(content.capabilities.warnings.length, 3);
-    assert.deepEqual(content.warnings, content.capabilities.warnings);
-    assert.match(JSON.stringify(content), /CAPABILITY_CATALOG_UNAVAILABLE|could not be safely classified/u);
-    assert.equal(JSON.stringify(content).includes(sentinel), false);
-    const available = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-available-catalog-request',
-        task: 'Implement the oversized catalog beacon and add tests',
-        profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
-        capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
-      },
-    });
-    const availableContent = available.structuredContent as {
-      context: { policyVersion: string; deliveryId: string };
-      capabilities: {
-        availability: string;
-        diagnostics: { received: number; accepted: number; truncated: number; dropped: number };
-      };
-      nextAction: string;
-      memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
-    };
-    assert.equal(availableContent.nextAction, 'review_memory_application');
-    assert.deepEqual(availableContent.memoryPolicy, {
-      memoryReasoningRequired: true,
-      contextWithheld: false,
-      withheldReason: null,
-    });
-    assert.equal(availableContent.capabilities.availability, 'known-nonempty');
-    assert.deepEqual(availableContent.capabilities.diagnostics, { received: 2, accepted: 2, truncated: 0, dropped: 0 });
-    assert.equal(availableContent.context.policyVersion, 'context-ranking-v8');
-
-    const exactBoundary = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-exact-boundary-catalog-request',
-        task: 'Implement the oversized catalog beacon and add tests',
-        profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
-        capabilities: Array.from({ length: 200 }, (_, index) => ({ kind: 'mcp_tool', name: `tool-${index}` })),
-      },
-    });
-    const exactBoundaryContent = exactBoundary.structuredContent as { run: { runId: string }; capabilities: { availability: string; diagnostics: unknown } };
-    assert.equal(exactBoundaryContent.capabilities.availability, 'known-nonempty');
-    assert.deepEqual(
-      exactBoundaryContent.capabilities.diagnostics,
-      { received: 200, accepted: 200, truncated: 0, dropped: 0 },
-    );
-
-    const boundary = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-over-boundary-catalog-request',
-        task: 'Implement the oversized catalog beacon and add tests',
-        profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
-        capabilities: Array.from({ length: 201 }, (_, index) => ({ kind: 'mcp_tool', name: `tool-${index}` })),
-      },
-    });
-    const boundaryContent = boundary.structuredContent as { run: { runId: string }; capabilities: { availability: string; diagnostics: unknown } };
-    assert.notEqual(exactBoundaryContent.run.runId, content.run.runId);
-    assert.notEqual(boundaryContent.run.runId, exactBoundaryContent.run.runId);
-    assert.equal(boundaryContent.capabilities.availability, 'known-nonempty');
-    assert.deepEqual(boundaryContent.capabilities.diagnostics, { received: 201, accepted: 201, truncated: 0, dropped: 0 });
-
-    const finalExactDescription = MAX_RAW_CAPABILITY_CATALOG_CODE_POINTS
-      - (7 * MAX_RAW_CAPABILITY_DESCRIPTION_CHARS)
-      - 8;
-    const budgetCapabilities = [
-      ...Array.from({ length: 7 }, () => ({ kind: 'mcp_tool', name: 'x', description: 'a'.repeat(MAX_RAW_CAPABILITY_DESCRIPTION_CHARS) })),
-      { kind: 'skill', name: 'y', description: 'b'.repeat(finalExactDescription + 1) },
-    ];
-    const budget = await client.callTool({
-      name: 'task_prepare',
-      arguments: {
-        soulRead: true,
-        requestId: 'mcp-budget-catalog-request',
-        task: 'Implement the oversized catalog beacon and add tests',
-        profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
-        capabilities: budgetCapabilities,
-      },
-    });
-    const budgetContent = budget.structuredContent as { capabilities: { availability: string; diagnostics: unknown; warnings: Array<{ code: string }> } };
-    assert.equal(budgetContent.capabilities.availability, 'known-nonempty');
-    assert.deepEqual(budgetContent.capabilities.diagnostics, { received: 8, accepted: 8, truncated: 8, dropped: 0 });
-    assert.ok(budgetContent.capabilities.warnings.some((warning) => warning.code === 'CAPABILITY_CATALOG_COMPACTED'));
-
-    const incomplete = await client.callTool({
-      name: 'task_prepare',
-      arguments: { soulRead: true, requestId: 'mcp-oversized-incomplete-request', task: 'Implement the oversized catalog beacon', profileHints: { taskType: 'build' }, capabilities: oversizedCapabilities },
-    });
-    const incompleteContent = incomplete.structuredContent as { intake: { sessionId: string; question: { id: string } }; run: { runId: string } };
-    const target = await client.callTool({
-      name: 'task_answer',
-      arguments: {
-        sessionId: incompleteContent.intake.sessionId,
-        runId: incompleteContent.run.runId,
-        questionId: 'target',
-        value: 'src/beacon.ts',
-        capabilities: oversizedCapabilities,
-      },
-    });
-    assert.equal((target.structuredContent as { intake: { question: { id: string } } }).intake.question.id, 'expected');
-    const answered = await client.callTool({
-      name: 'task_answer',
-      arguments: {
-        sessionId: incompleteContent.intake.sessionId,
-        runId: incompleteContent.run.runId,
-        questionId: 'expected',
-        value: 'The tests pass',
-        capabilities: oversizedCapabilities,
-      },
-    });
-    assert.equal((answered.structuredContent as { intake: { status: string }; capabilities: { availability: string } }).intake.status, 'ready');
-    assert.equal((answered.structuredContent as { capabilities: { availability: string } }).capabilities.availability, 'unknown');
-
-    const catalogBase = {
-      task: 'Implement the oversized catalog beacon and add tests',
-      profileHints: { taskType: 'build', target: 'src/beacon.ts', expected: 'The tests pass' },
-    };
-    const explicitEmpty = await client.callTool({ name: 'task_prepare', arguments: { soulRead: true, ...catalogBase, requestId: 'mcp-explicit-empty-catalog-request', capabilities: [] } });
-    const omitted = await client.callTool({ name: 'task_prepare', arguments: { soulRead: true, ...catalogBase, requestId: 'mcp-omitted-catalog-request' } });
-    const whollyInvalid = await client.callTool({ name: 'task_prepare', arguments: { soulRead: true, ...catalogBase, requestId: 'mcp-invalid-catalog-request', capabilities: [{ kind: 'invalid', name: 'invalid' }] } });
-    const nonArray = await client.callTool({ name: 'task_prepare', arguments: { soulRead: true, ...catalogBase, requestId: 'mcp-non-array-catalog-request', capabilities: { kind: 'skill', name: 'memory-reasoning' } } });
-    assert.equal((explicitEmpty.structuredContent as { capabilities: { availability: string } }).capabilities.availability, 'known-empty');
-    assert.equal((omitted.structuredContent as { capabilities: { availability: string } }).capabilities.availability, 'unknown');
-    assert.equal((whollyInvalid.structuredContent as { capabilities: { availability: string } }).capabilities.availability, 'unknown');
-    assert.equal(nonArray.isError, true);
-
-    const database = openConnection(databasePath);
+    const args = { soulRead: true, requestId: 'correctable', task: 'Review capability validation', profileHints: { taskType: 'review', target: 'catalog', expected: 'validated' } };
+    const rejected = await client.callTool({ name: 'task_prepare', arguments: { ...args, capabilities: [] } });
+    assert.equal(rejected.isError, true);
+    assert.equal((rejected.structuredContent as any).runCreated, false);
+    const malformed = await client.callTool({ name: 'task_prepare', arguments: { ...args, capabilities: ['kiokuko-soul'] } });
+    assert.equal(malformed.isError, true);
+    assert.equal((malformed.structuredContent as any).runCreated, false);
+    assert.equal((malformed.structuredContent as any).reason, 'invalid_capability_catalog');
+    assert.deepEqual((malformed.structuredContent as any).issues, [{ index: 0, reason: 'invalid_type' }]);
+    const db = openConnection(databasePath);
     try {
-      const persisted = JSON.stringify({
-        runs: database.prepare('SELECT * FROM ledger_runs').all(),
-        sessions: database.prepare('SELECT * FROM akinator_sessions').all(),
-        events: database.prepare('SELECT * FROM ledger_events').all(),
-        deliveries: database.prepare('SELECT * FROM context_deliveries').all(),
-      });
-      assert.equal(persisted.includes(sentinel), false);
-      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(content.run.runId)?.count, 0);
-      assert.equal(database.prepare('SELECT policy_version FROM context_deliveries WHERE delivery_id = ?').get<{ policy_version: string }>(availableContent.context.deliveryId)?.policy_version, 'context-ranking-v8');
-      const storedReasons = database.prepare(`
-        SELECT selection_reason_json
-          FROM context_delivery_entries
-         WHERE delivery_id = ?
-         ORDER BY rank ASC
-         LIMIT 1
-      `).get<{ selection_reason_json: string }>(availableContent.context.deliveryId);
-      assert.ok(storedReasons);
-      const parsedReasons = JSON.parse(storedReasons.selection_reason_json) as string[];
-      assert.ok(parsedReasons.some((reason) => ['word_match', 'lexical_match', 'substring_match', 'literal_fallback_match', 'tag_match'].includes(reason)));
-    } finally {
-      database.close();
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM ledger_runs').get<{
+        n: number;
+      }>()!.n, 0);
     }
-  } finally {
+    finally {
+      db.close();
+    }
+    const corrected = await client.callTool({ name: 'task_prepare', arguments: { ...args, capabilities: [SOUL_CAPABILITY, { kind: 'mcp_tool', name: 'catalog-helper', description: 'x'.repeat(64001) }] } });
+    assert.notEqual(corrected.isError, true);
+    assert.ok((corrected.structuredContent as any).run.runId);
+    assert.equal((corrected.structuredContent as any).capabilities.availability, 'known-nonempty');
+  }
+  finally {
     await client.close();
-    if (server.isConnected()) await server.close();
+    await server.close();
   }
 });
 
@@ -1056,7 +781,7 @@ test('MCP tool failures redact arbitrary internal error messages', async () => {
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { soulRead: true, requestId: 'untyped-error-boundary-request', task: 'Boundary failure', profileHints: { taskType: 'review' }, capabilities: [] },
+      arguments: { soulRead: true, requestId: 'untyped-error-boundary-request', task: 'Boundary failure', profileHints: { taskType: 'review' }, capabilities: [SOUL_CAPABILITY] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -1104,7 +829,7 @@ test('MCP generic tool errors expose the complete stable public classification',
     try {
       const result = await client.callTool({
         name: 'task_prepare',
-        arguments: { soulRead: true, requestId: `public-${entry.code.toLowerCase()}`, task: 'Classify failure', capabilities: [] },
+        arguments: { soulRead: true, requestId: `public-${entry.code.toLowerCase()}`, task: 'Classify failure', capabilities: [SOUL_CAPABILITY] },
       });
       assert.equal(result.isError, true, entry.code);
       assert.deepEqual(result.content, [{ type: 'text', text: entry.message }], entry.code);
@@ -1132,7 +857,7 @@ test('MCP cwd-bearing tools reject relative paths without reporting an internal 
     const calls = [
       {
         name: 'task_prepare',
-        arguments: { soulRead: true, requestId: 'relative-cwd-request', task: 'Review', cwd: 'Sites/project', capabilities: [] },
+        arguments: { soulRead: true, requestId: 'relative-cwd-request', task: 'Review', cwd: 'Sites/project', capabilities: [SOUL_CAPABILITY] },
       },
       {
         name: 'task_answer',
@@ -1142,7 +867,7 @@ test('MCP cwd-bearing tools reject relative paths without reporting an internal 
           questionId: 'taskType',
           value: 'review',
           cwd: 'Sites/project',
-          capabilities: [],
+          capabilities: [SOUL_CAPABILITY],
         },
       },
       { name: 'curator_check', arguments: { cwd: 'Sites/project' } },
@@ -1179,7 +904,7 @@ test('task_prepare reports a missing absolute cwd as not found instead of an int
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { soulRead: true, requestId: 'missing-cwd-request', task: 'Review', cwd: missing, capabilities: [] },
+      arguments: { soulRead: true, requestId: 'missing-cwd-request', task: 'Review', cwd: missing, capabilities: [SOUL_CAPABILITY] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -1222,7 +947,7 @@ test('task_prepare reports exhausted SQLite locking as service backpressure', as
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { soulRead: true, requestId: 'locked-database-request', task: 'Review', cwd: root, capabilities: [] },
+      arguments: { soulRead: true, requestId: 'locked-database-request', task: 'Review', cwd: root, capabilities: [SOUL_CAPABILITY] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -1249,7 +974,7 @@ test('MCP identity schemas reject padding instead of normalizing identities', as
   await client.connect(clientTransport);
   try {
     const calls = [
-      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'identity-prepare', task: 'Review', client: { sessionId: ' padded-client-session ' } } },
+      { name: 'task_prepare', arguments: { soulRead: true, requestId: 'identity-prepare', task: 'Review', capabilities: [SOUL_CAPABILITY], client: { sessionId: ' padded-client-session ' } } },
       { name: 'task_answer', arguments: { sessionId: ' padded-session ', runId: 'run-1', questionId: 'taskType', value: 'review' } },
       { name: 'task_answer', arguments: { sessionId: 'session-1', runId: ' padded-run ', questionId: 'taskType', value: 'review' } },
       { name: 'curator_check', arguments: { workspace: ' project:workspace ' } },
@@ -1281,7 +1006,7 @@ test('MCP preserves only typed database failures as DATABASE_ERROR', async () =>
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { soulRead: true, requestId: 'database-error-request', task: 'Database failure', capabilities: [] },
+      arguments: { soulRead: true, requestId: 'database-error-request', task: 'Database failure', capabilities: [SOUL_CAPABILITY] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -1311,7 +1036,7 @@ test('MCP tool failures sanitize typed Kiokuko errors instead of trusting their 
   try {
     const result = await client.callTool({
       name: 'task_prepare',
-      arguments: { soulRead: true, requestId: 'typed-error-boundary-request', task: 'Typed boundary failure', profileHints: { taskType: 'review' }, capabilities: [] },
+      arguments: { soulRead: true, requestId: 'typed-error-boundary-request', task: 'Typed boundary failure', profileHints: { taskType: 'review' }, capabilities: [SOUL_CAPABILITY] },
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);

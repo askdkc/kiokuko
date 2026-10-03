@@ -1,7 +1,7 @@
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
 import { HANDOFF_INSTRUCTIONS } from '../memory/handoff.js';
-import { SOUL_ROUTING_ENTRY_CONTRACT } from '../akinator/instructions.js';
+import { SOUL_ROUTING_ENTRY_CONTRACT, TASK_PREPARATION_REQUEST_CONTRACT } from '../akinator/instructions.js';
 import { KiokukoError } from '../errors.js';
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
 import { isSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
@@ -30,7 +30,7 @@ export function renderGlobalInstructions(existing = ''): DelimitedBlockResult {
     SOUL_ROUTING_ENTRY_CONTRACT,
     MEMORY_ASSURANCE_INSTRUCTIONS,
     '',
-    '1. For project work, read `kiokuko-soul`, create one bounded opaque `requestId` for the current logical user request, then call `task_prepare` at most once with `soulRead: true`, that ID, the actual task, current working directory, and only profile hints supported by the user request or repository evidence. Use a new ID for every new logical request, even when the task text is identical. Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict. Reuse the successful result for the rest of the request; never call `task_prepare` again after `memory_checkpoint`.',
+    `1. ${TASK_PREPARATION_REQUEST_CONTRACT}`,
     "2. Include complete capability descriptors for every skill and MCP tool available in the current client as `Array<{kind:'skill'|'mcp_tool';name:string;description?:string}>`. Every descriptor must include its kind and canonical name; description is an optional short one- or two-sentence summary. Do not send schemas or implementation metadata. Pass `[]` only when the client explicitly has no capabilities; omit the catalog when availability is unknown. The catalog is ephemeral and is not stored.",
     '3. Optional external skill discovery is feature-flagged and reference-only. It uses project technology gaps, validates current source commits, and never installs or executes a fetched skill.',
     `4. Retain the returned \`run.runId\` and \`context.deliveryId\` for the final checkpoint. If \`task_prepare\` returns \`needs_answer\`, use the returned Akinator hypotheses and question purpose to narrow the abstract intent toward a concrete action. Call \`task_answer\` with the same capability catalog, run ID, and context budget only when the answer is grounded in current evidence; otherwise ask the user the discriminating question. ${TASK_ANSWER_CONTRACT_FRAGMENT}`,

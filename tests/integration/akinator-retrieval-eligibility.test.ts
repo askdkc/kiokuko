@@ -62,7 +62,7 @@ test('Akinator retrieval fails closed for an external marker without a managed i
           expected: 'tests pass',
           constraints: null,
         },
-        capabilities: [{ kind: 'skill', name: 'memory-reasoning' }],
+        capabilities: [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }],
         client: { kind: 'test', sessionId: 'akinator-retrieval-eligibility' },
         skillDiscoveryMode: 'off',
       }),

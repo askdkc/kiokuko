@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -149,6 +149,18 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   assert.deepEqual(installedHooks.Stop[0], userHook);
   for (const event of ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop']) {
     assert.ok(installedHooks[event].some(group => group.hooks.some(hook => hook.command.includes(' codex-hook --database '))), `Installed hook missing: ${event}`);
+  }
+  if (process.platform !== 'win32') {
+    const pinnedEnvironment = { ...environment, CODEX_HOME: path.join(fixtureRoot, 'pinned-codex') };
+    await run(process.execPath, [path.join(installedRoot, 'dist/bin/kiokuko.js'), 'setup', '--clients', 'codex', '--no-standard-skills', '--no-embeddings', '--json'], fixtureRoot, pinnedEnvironment);
+    const pinned = JSON.parse(await readFile(path.join(pinnedEnvironment.CODEX_HOME, 'hooks.json'), 'utf8'));
+    const command = pinned.hooks.UserPromptSubmit[0].hooks[0].command;
+    const result = spawnSync('/bin/sh', ['-c', command], {
+      cwd: repositoryRoot, env: { ...pinnedEnvironment, PATH: '/usr/bin:/bin' }, encoding: 'utf8',
+      input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'package-path-smoke', turn_id: 'request', cwd: repositoryRoot }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(typeof JSON.parse(result.stdout).hookSpecificOutput.additionalContext, 'string');
   }
   await verifyFiles(created, new Map([...expected.keys()].map((file) => [file, 'created'])));
   const beforeRepair = new Map();

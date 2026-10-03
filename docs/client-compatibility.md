@@ -4,7 +4,7 @@ Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-sco
 
 | Client | Global MCP registration | Global instructions | Managed standard skills | Hooks/plugins |
 |---|---|---|---|---|
-| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | seven bundled skills below `~/.agents/skills/` | none |
+| Codex | managed table in `~/.codex/config.toml` (or `$CODEX_HOME`) | managed block in global `AGENTS.md` | seven bundled skills below `~/.agents/skills/` | managed memory assurance hooks |
 | OpenCode | managed `mcp.kiokuko` property in global `opencode.json`/`opencode.jsonc` | managed block in global `AGENTS.md` | seven bundled skills below global config `skills/` | none |
 | Claude Code | managed `mcpServers.kiokuko` property in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) | managed block in global `CLAUDE.md` | seven bundled skills below Claude config `skills/` | none |
 | Hermes Agent | managed `mcp_servers.kiokuko` in the effective profile `config.yaml` | none | seven bundled skills below effective profile `skills/` | none |
@@ -72,6 +72,21 @@ session; `/reload-mcp` only reloads MCP registration. Smoke-test with
 
 ## Guarantees and non-guarantees
 
+Default Codex assurance hooks pin the setup process's Node executable and the
+package's compiled CLI with absolute paths. This avoids both `kiokuko` lookup
+and `/usr/bin/env node` lookup in a GUI client's restricted PATH. An explicit
+custom `--command` remains a caller-owned executable or wrapper. Rerun setup
+after relocating Node or the package. Updating a package that active hooks use
+can temporarily remove its files: switch to a separately installed, validated
+runtime before replacing that installation, or update while the client is stopped.
+
+`codex-hook --database <path> --diagnose-call <16-hex-id>` reads only the retained
+protocol metadata for that exact diagnostic ID. It reads no command bodies or
+conversation text and changes no task state. `completion_without_admission`
+means completion lacks a recorded start; `completion_input_mismatch` means the
+input differs from the admitted call. Both reject passing evidence. An already
+executed tool must not be automatically rerun to repair a missing observation.
+
 Setup guarantees safe, repeatable configuration merging and makes the Kiokuko MCP
 tools available in each configured client scope after that client reloads its
 configuration and makes the bundled standard skills discoverable after a client
@@ -91,7 +106,7 @@ instruction surfaces require it before another bundled Kiokuko skill. Every
 complete local Skill was read for that logical request, and the capability gate
 requires an exact local `kiokuko-soul` descriptor for every task. Omission or
 false attestation is invalid; missing or unknown capability availability returns
-`required_capability_unavailable` even while intake needs an answer. A
+`reason=required_capability_unavailable` with `runCreated=false` before creating a run, retrieving memory or discovering skills. Invalid catalog items instead return `reason=invalid_capability_catalog` and bounded item indices and issue codes. A
 namespaced, fetched, or reference-only skill does not satisfy the required
 master SOUL. The boolean attestation is enforceable protocol evidence, not
 remote proof that a model understood or followed the Skill.
@@ -146,3 +161,37 @@ Handoff state is untrusted and is not searchable long-term memory. The MCP serve
 does not observe model settings, compact native history, or guarantee a tool call
 on every turn. A client reload is needed for newly installed tool descriptions
 and Skill instructions; configuration alone does not prove live behavior.
+
+### Correcting capability preparation
+
+A refused `task_prepare` with `runCreated=false` has not bound the logical request.
+Correct the complete `{kind, name, description?}` catalog and resend with the same
+`requestId`. After a successful preparation, input remains immutable.
+`task_memory_refresh` requires retrieval signals and cannot repair capabilities.
+
+For a legacy capability-blocked run, use `task_prepare_recover` with its original
+`requestId`, `runId`, current assurance revision, a stable `operationId`,
+`soulRead: true`, `previousCapabilities`, and the corrected `capabilities`.
+Omit `previousCapabilities` only when the original prepare omitted the catalog.
+The server checks the saved digest and original prepare receipt. Runs without
+these verifiable bindings, terminal runs, executed/captured/checkpointed runs,
+and runs with in-flight discovery cannot be automatically recovered.
+
+Recovery atomically closes the predecessor as failed and records exactly one
+successor. The new intake session retains answers, their provenance and the
+question budget. Retrieval budgets, time filters and related mode are retained;
+capability and discovery bindings are rebuilt. Old deliveries and reviews stay
+on the predecessor; the successor retrieves and reviews its own context.
+Repeat the exact recovery input after a transport or retrieval failure: it
+reuses that successor. Changed input, another operation ID or a terminal
+successor is a conflict. Neither catalogs nor operation IDs are stored verbatim.
+
+HTTP uses the same recovery service at
+`POST /api/v1/agent/runs/:runId/prepare-recovery`. Put `operationId` in the
+`Idempotency-Key` header, omit `runId` and `operationId` from the body, and retain
+the original logical `requestId` in the body. Codex hooks verify the persisted
+predecessor/successor receipt before rebinding; ordinary tools still require
+completed intake and current memory reviews.
+
+The new API requires the updated package and MCP process. Updating repository
+source does not change an already running server or its client's tool catalog.

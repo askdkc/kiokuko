@@ -254,6 +254,23 @@ export function startAkinatorInTransaction(
   return resultForSession(session);
 }
 
+/** Clone intake progress into a fresh session inside the caller's transaction. */
+export function cloneAkinatorInTransaction(
+  database: SqliteDatabase,
+  input: { workspace: string; sessionId: string; successorSessionId: string; now: string },
+): AkinatorResult {
+  const previous = readAkinatorSession(database, { workspace: input.workspace, sessionId: input.sessionId });
+  const session = insertAkinatorSession(database, {
+    id: input.successorSessionId, workspace: previous.workspace, task: previous.task,
+    profile: previous.profile, status: previous.status, questionCount: previous.questionCount,
+    createdAt: input.now, updatedAt: input.now,
+  });
+  database.prepare(`INSERT INTO akinator_answers (session_id, question_id, answer_json, created_at)
+    SELECT ?, question_id, answer_json, created_at FROM akinator_answers WHERE session_id=?`)
+    .run(session.id, previous.id);
+  return resultForSession(session);
+}
+
 export async function startAkinatorService(
   database: SqliteDatabase,
   input: StartAkinatorInput,

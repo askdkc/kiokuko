@@ -65,7 +65,7 @@ function memoryStepContext(db: SqliteDatabase, runId: string, root: string) {
   if (nextAction === 'review_memory_application') return context('PostToolUse', `Next action: review_memory_application (${report.pending.length} pending). Call task_memory_status with ${identity}, then task_memory_review for every pending entry. Use task_inspect for evidence and bundled Skills, including natural-japanese-output; do not use shell commands or code search yet. Submit reviews sequentially with the revision from the latest response. Register grounded adoption, inapplicability or contradiction; never invent decisions to unlock execution. After the last review, check task_memory_status. Do not repeat task_prepare.`);
   return context('PostToolUse', 'Memory decisions are current; ordinary tools may proceed for this active run. Adopted code memories still require passing verification before completion.');
 }
-const preparationTools = new Set(['memory_index_submit', 'memory_index_review', 'task_inspect', 'task_prepare', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'memory_checkpoint', 'memory_capture', 'memory_recall', 'handoff_save', 'handoff_load', 'handoff_discard', 'curator_check']);
+const preparationTools = new Set(['memory_index_submit', 'memory_index_review', 'task_inspect', 'task_prepare', 'task_prepare_recover', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'memory_checkpoint', 'memory_capture', 'memory_recall', 'handoff_save', 'handoff_load', 'handoff_discard', 'curator_check']);
 function kiokukoTool(name: string): string | null {
   const match = /^mcp__kiokuko__(\w+)$/.exec(name);
   return match && preparationTools.has(match[1]!) ? match[1]! : null;
@@ -118,6 +118,16 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
   const args = record(input.tool_input);
   if (input.hook_event_name === 'PreToolUse') {
     if (['spawn_agent', 'Agent'].includes(input.tool_name)) return deny('Delegation requires a client adapter that supplies distinct agent identity on every child tool event.');
+    if (operation === 'task_prepare_recover') {
+      const receipt = db.prepare('SELECT successor_run_id FROM task_preparation_recoveries WHERE predecessor_run_id=?')
+        .get<{ successor_run_id: string }>(String(args.runId));
+      if (args.requestId !== requestId
+        || (args.runId !== request.run_id && receipt?.successor_run_id !== request.run_id)
+        || typeof args.cwd !== 'string' || realpathSync(args.cwd) !== root) {
+        return deny('Recovery must match the pending client request and predecessor');
+      }
+      return {};
+    }
     if (operation === 'task_prepare') {
       // Validate rather than rewrite: MCP updatedInput can trigger client approval.
       // The model must supply its own read attestation and request binding.
@@ -155,6 +165,24 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     if (admission === 'conflict') return deny('Tool call identity was reused with different input');
     return {};
   }
+  if (operation === 'task_prepare_recover') {
+    const result = responseData(input.tool_response);
+    const successor = record(result.run).runId;
+    if (typeof successor !== 'string') return {};
+    const receipt = db.prepare('SELECT * FROM task_preparation_recoveries WHERE predecessor_run_id=?')
+      .get<{ successor_run_id: string; logical_request_hash: string; operation_hash: string }>(String(args.runId));
+    if (!receipt || receipt.successor_run_id !== successor
+      || receipt.logical_request_hash !== canonicalContentHash(requestId)
+      || receipt.operation_hash !== canonicalContentHash(args.operationId)
+      || (result.recoveredFromRunId !== request.run_id && successor !== request.run_id)
+      || assuranceState(db, successor)?.repository_root !== root) {
+      throw new KiokukoError('CONFLICT', 'Recovery response does not match durable client binding');
+    }
+    const admitted = ['proceed', 'review_memory_application', 'refresh_memory'].includes(String(result.nextAction));
+    db.prepare('UPDATE codex_hook_requests SET run_id=?,state=? WHERE identity_digest=?')
+      .run(successor, admitted ? 'bound' : 'pending', identity);
+    return admitted ? memoryStepContext(db, successor, root) : {};
+  }
   if (operation === 'task_prepare' || operation === 'task_answer') {
     const result = responseData(input.tool_response);
     const runId = record(result.run).runId;
@@ -181,9 +209,12 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
   return withImmediateTransaction(db, () => {
     const current = db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest = ?').get<HookRequest>(identity);
     const call = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<HookCall>(identity, input.tool_use_id!);
-    if (!current || current.run_id !== request!.run_id || current.state !== 'bound'
-      || !call || call.run_id !== current.run_id || call.input_digest !== canonicalContentHash(input.tool_input ?? null))
-      throw new KiokukoError('CONFLICT', 'Tool completion has no matching start');
+    if (!current || current.run_id !== request!.run_id || current.state !== 'bound')
+      throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
+    if (!call) throw new KiokukoError('CONFLICT', 'Tool completion has no matching start');
+    if (call.run_id !== current.run_id) throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
+    if (call.input_digest !== canonicalContentHash(input.tool_input ?? null))
+      throw new KiokukoError('CONFLICT', 'Tool completion input changed');
     const run = new LedgerStore(db).readRun(current.run_id!);
     if (!run || run.status !== 'active') throw new KiokukoError('CONFLICT', 'Tool completion belongs to a terminal run');
     const state = assuranceState(db, current.run_id!);
@@ -238,7 +269,12 @@ export function handleCodexHook(db: SqliteDatabase, raw: unknown): object {
 }
 export function codexHookFailureCode(error: unknown): string {
   if (error instanceof KiokukoError) {
-    if (error.code === 'CONFLICT') return 'state_conflict';
+    if (error.code === 'CONFLICT') {
+      if (error.message === 'Tool completion has no matching start') return 'completion_without_admission';
+      if (error.message === 'Tool completion input changed') return 'completion_input_mismatch';
+      if (error.message === 'Tool completion binding changed') return 'completion_binding_changed';
+      return 'state_conflict';
+    }
     if (error.code === 'BACKPRESSURE') return 'database_busy';
     if (error.code === 'SERVICE_UNAVAILABLE' && error.message === 'Repository state digest unavailable') return 'state_digest_unavailable';
     if (error.code === 'VALIDATION_ERROR' || error.code === 'INTEGRITY_ERROR') return 'validation_unavailable';

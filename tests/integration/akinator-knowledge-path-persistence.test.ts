@@ -54,6 +54,7 @@ test('reasoning-path persistence rejects duplicate identities, path-id collision
   const database = openConnection(databasePath);
   try {
     const prepared = await prepareAgentTask(database, {
+        capabilities: [{kind:"skill",name:"kiokuko-soul"}],
       requestId: 'knowledge-path-persistence',
       cwd: root,
       task: 'SQLite migration failuresを安全に復旧する',

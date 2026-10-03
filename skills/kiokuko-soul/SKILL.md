@@ -98,8 +98,8 @@ Akinator is the mandatory state machine between this SOUL read and every plannin
 
 Open the gate once for the current logical request:
 
-1. Create one bounded opaque `requestId`. Use a new value for every new logical request, even when its text is identical. Reuse it only for an exact transport retry.
-2. Call `task_prepare` at most once with `soulRead: true`, that `requestId`, the actual task, current working directory, only profile hints grounded in the user request or repository evidence, and the complete capability catalog available in the current client.
+1. Create one bounded opaque `requestId`. Use a new value for every new logical request, even when its text is identical. Reuse it for an exact transport retry, or correct the catalog and retry when runCreated=false.
+2. Obtain at most one successful preparation through `task_prepare` with `soulRead: true`, that `requestId`, the actual task, current working directory, only profile hints grounded in the user request or repository evidence, and the complete capability catalog available in the current client.
 3. Reuse the successful result for the rest of the request. Inspect `intake.status`, the exact current `intake.question`, top-level `nextAction`, `memoryPolicy`, capability results.
 4. Retain the returned `run.runId` and `context.deliveryId` for later run-bound calls.
 
@@ -121,6 +121,8 @@ repeat `task_prepare`. `nextAction=proceed` permits ordinary tools, but adopted
 code memories still require passing verification before completion.
 
 If `task_prepare` is unavailable before a non-trivial build or debug request can obtain its policy, stop and report the unavailable policy. The sole exception is diagnosing or repairing Kiokuko itself after `task_prepare` fails before returning scoped context: continue only from repository evidence, and do not call `task_answer` or `memory_checkpoint` for that failed request.
+
+Correcting preparation does not require a new user request or a “retry implementation” message. If the recovery API is missing from the current tool catalog, report the stale MCP runtime and reload its connection after updating the installed package. Never invent an unavailable tool or bypass the hook.
 
 ## Routes
 
@@ -199,3 +201,5 @@ IDs for new inputs. Generated facts remain untrusted model assessments, cannot
 promote trust, and cannot become generation sources. Never force maintenance
 within ordinary tasks. Follow the packaged `docs/memory-index.md` for the
 bounded schema, mode rollout and interruption recovery.
+
+Capability preparation validates the complete catalog before run creation. On runCreated=false, correct the catalog and retry task_prepare with the same requestId. For legacy capability-blocked runs, use task_prepare_recover with the original catalog and current revision; it creates one successor and preserves the predecessor. Never use task_memory_refresh to repair a capability catalog.

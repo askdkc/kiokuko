@@ -1,3 +1,4 @@
+import { assertPreparationCapabilities } from './capability-contract.js';
 import { scopedMemoryUseSignal } from '../context/scoped-memory-use.js';
 import { readContextDelivery } from '../context/delivery.js';
 import { assuranceState, enrollAssurance, bindAssuranceDelivery, bindAssuranceRoot, taskAssuranceReport, memoryReviewNextAction, type AssuranceReport } from '../assurance/service.js';
@@ -158,7 +159,7 @@ function emptySkillDiscovery(mode: SkillDiscoveryMode): SkillDiscoverySummary {
   return { attempted: false, mode, requirements: [], queries: [], cacheHits: 0, candidates: 0, selected: [], failures: [] };
 }
 
-function skillDiscoveryRequestIdentity(mode: SkillDiscoveryMode, capabilities: unknown): {
+export function skillDiscoveryRequestIdentity(mode: SkillDiscoveryMode, capabilities: unknown): {
   mode: SkillDiscoveryMode;
   capabilityCatalogDigest: string;
 } {
@@ -172,7 +173,7 @@ function skillDiscoveryRequestIdentity(mode: SkillDiscoveryMode, capabilities: u
 
 type SkillDiscoveryRequestIdentity = ReturnType<typeof skillDiscoveryRequestIdentity>;
 
-function bindSkillDiscoveryRequest(metadata: JsonObject, request: SkillDiscoveryRequestIdentity): JsonObject {
+export function bindSkillDiscoveryRequest(metadata: JsonObject, request: SkillDiscoveryRequestIdentity): JsonObject {
   if (Object.hasOwn(metadata, AGENT_TASK_DISCOVERY_BINDING_METADATA_KEY)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Run metadata contains a reserved task discovery binding');
   }
@@ -186,7 +187,7 @@ function bindSkillDiscoveryRequest(metadata: JsonObject, request: SkillDiscovery
   };
 }
 
-function assertSkillDiscoveryRequestBinding(metadata: JsonObject, request: SkillDiscoveryRequestIdentity): void {
+export function assertSkillDiscoveryRequestBinding(metadata: JsonObject, request: SkillDiscoveryRequestIdentity): void {
   const binding = metadata[AGENT_TASK_DISCOVERY_BINDING_METADATA_KEY];
   if (typeof binding !== 'object'
     || binding === null
@@ -206,7 +207,7 @@ function assertSkillDiscoveryRequestBinding(metadata: JsonObject, request: Skill
   }
 }
 
-function bindTaskContextRequest(
+export function bindTaskContextRequest(
   metadata: JsonObject,
   maxContextChars: number,
   temporal: TemporalConstraint | undefined,
@@ -759,7 +760,7 @@ async function selectFinalTaskContext(
   return { context, run, scopedContext, memoryUse: gated.value.memoryUse };
 }
 
-async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<PreparedAgentTask> {
+export async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<PreparedAgentTask> {
   let context = currentAgentTaskContext(input.database, input.runId, input.context);
   let run = authoritativeTaskRun(input.database, input.runId, context.status);
   if (context.status === 'needs_answer') {
@@ -769,6 +770,14 @@ async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<Prepare
     }, null, emptySkillDiscovery(input.discoveryMode), 'none');
   }
 
+  const requiredCapabilities = resolveCapabilities({
+    task: context.session.task, profile: context.session.profile,
+    recommendedTags: context.recommendedTags, capabilities: input.capabilities, memoryUse: 'none',
+  });
+  if (hasBlockingRequiredCapability(requiredCapabilities)) {
+    return buildPreparedTaskBase(input.database, input.project, input.executionContext, context, input.capabilities,
+      { runId: input.runId, status: run.status }, null, emptySkillDiscovery(input.discoveryMode), 'none');
+  }
   const prepared = prepareTaskContextQuery(input, context);
   const replayedAttempt = input.discoveryMode === 'off'
     ? undefined
@@ -824,6 +833,7 @@ function failTaskRunAfterAbort(database: SqliteDatabase, runId: string, cause: u
 
 export async function prepareAgentTask(database: SqliteDatabase, input: PrepareAgentTaskInput): Promise<PreparedAgentTask> {
   const requestId = taskRequestId(input.requestId);
+  assertPreparationCapabilities(input.capabilities);
   const maxContextChars = taskContextCharacterBudget(input.maxContextChars);
   const temporal = normalizeTemporalConstraint(input.temporal);
   const relatedMode = input.relatedMode ?? 'off';

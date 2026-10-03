@@ -31,6 +31,7 @@ import { AKINATOR_POLICY_VERSION, deriveProfile, evaluateProfile, profileHash } 
 import {
   answerAkinatorInTransaction,
   startAkinatorInTransaction,
+  cloneAkinatorInTransaction,
 } from '../akinator/service.js';
 import {
   finalizeRunIntakeLink,
@@ -404,6 +405,11 @@ export class AgentGatewayService {
   }
 
   openRun(input: unknown): GatewayIntakeResponse {
+    return withImmediateTransaction(this.database, () => this.openRunInTransaction(input));
+  }
+
+  /** Caller owns the writer transaction. */
+  openRunInTransaction(input: unknown, recovery?: { predecessorRunId: string }): GatewayIntakeResponse {
     const envelope = operationEnvelope(input);
     const request = normalizeOpenRequest(envelope.request);
     const task = sanitizeTask(request.task, { workspace: request.workspace, ...(this.options.home === undefined ? {} : { home: this.options.home }) }).value;
@@ -424,7 +430,7 @@ export class AgentGatewayService {
       ...(request.startedAt === undefined ? {} : { startedAt: request.startedAt }),
     });
     const now = this.currentTime();
-    return withImmediateTransaction(this.database, () => executeGateway(
+    return executeGateway(
       this.database,
       { scope: 'agent.run.open', key: envelope.idempotencyKey, request: hashRequest, createdAt: now },
       () => {
@@ -448,7 +454,12 @@ export class AgentGatewayService {
           ...(request.parentRunId === undefined ? {} : { parentRunId: request.parentRunId }),
           ...(request.startedAt === undefined ? {} : { startedAt: request.startedAt }),
         }, now);
-        const result = startAkinatorInTransaction(this.database, {
+        const predecessor = recovery ? readRunIntakeLink(this.database, {
+          workspace: request.workspace, runId: recovery.predecessorRunId,
+        }) : undefined;
+        const result = predecessor ? cloneAkinatorInTransaction(this.database, {
+          workspace: request.workspace, sessionId: predecessor.sessionId, successorSessionId: sessionId, now,
+        }) : startAkinatorInTransaction(this.database, {
           workspace: request.workspace,
           task: task.query,
           profileHints: probe?.profile ?? task.profileHints,
@@ -461,7 +472,7 @@ export class AgentGatewayService {
           workspace: request.workspace,
           policyVersion: AKINATOR_POLICY_VERSION,
           profileSchemaVersion: 1,
-          profileSources: { ...sourceMap(request, result.session.profile), ...(probe?.resolution.adoptedRunId ? { target: 'memory' as const } : {}) },
+          profileSources: { ...(predecessor?.profileSources ?? sourceMap(request, result.session.profile)), ...(probe?.resolution.adoptedRunId ? { target: 'memory' as const } : {}) },
           initialProfileHash: null,
           recommendedTags: result.recommendedTags,
           linkedAt: now,
@@ -501,7 +512,7 @@ export class AgentGatewayService {
         syncProfileDocument(this.database, request.workspace, runId);
         return this.intakeResponse(runId, finalRun.status, result);
       },
-    ));
+    );
   }
 
   answerIntake(input: unknown, options: AgentGatewayAnswerOptions = {}): GatewayIntakeResponse {

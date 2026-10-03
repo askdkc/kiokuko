@@ -15,6 +15,7 @@ import { recordEntry } from '../../src/memory/entries.js';
 import { assuranceState, reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCompletion, memoryReviewNextAction } from '../../src/assurance/service.js';
 import { repositoryStateDigest } from '../../src/assurance/snapshot.js';
 import { codexHookFailureCode, handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
+import { codexHookDiagnostics } from '../../src/assurance/hook-diagnostics.js';
 import { KiokukoError } from '../../src/errors.js';
 import { refreshTaskMemory } from '../../src/assurance/refresh.js';
 const caps = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }];
@@ -275,7 +276,7 @@ test('independent PostToolUse completions commit across a revision change, and d
     handleCodexHook(f.db, { ...a, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
     assert.equal(taskAssuranceReport(f.db, f.prepared.run.runId).revision, revision);
     assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, 2);
-    assert.throws(() => handleCodexHook(f.db, { ...a, tool_input: { cmd: 'other' }, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }), /matching start/u);
+    assert.throws(() => handleCodexHook(f.db, { ...a, tool_input: { cmd: 'other' }, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }), /input changed/u);
     const changed = f.event('changed');
     handleCodexHook(f.db, { ...changed, hook_event_name: 'PreToolUse' });
     writeFileSync(path.join(f.root, 'source.ts'), 'updated after tool start\n');
@@ -297,12 +298,27 @@ test('hook diagnostics distinguish an unpaired completion without exposing its c
     const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
       { cwd: process.cwd(), input: JSON.stringify(event), encoding: 'utf8' });
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /event=PostToolUse stage=post_completion reason=state_conflict id=[0-9a-f]{16}.*Tool already executed/u);
+    assert.match(result.stderr, /event=PostToolUse stage=post_completion reason=completion_without_admission id=[0-9a-f]{16}.*Tool already executed/u);
     assert.doesNotMatch(result.stderr, /private-command-body/u);
     const observation = f.db.prepare("SELECT response_shape FROM codex_hook_observations WHERE event_name='PostToolUse' AND decision='CONFLICT' ORDER BY rowid DESC LIMIT 1")
       .get<{ response_shape: string }>();
     assert.ok(observation);
     assert.match(result.stderr, new RegExp(`id=${JSON.parse(observation.response_shape).call}\\.`));
+    const id = JSON.parse(observation.response_shape).call;
+    const before = f.db.prepare('SELECT COUNT(*) AS n FROM codex_hook_observations').get<{ n: number }>()!.n;
+    const diagnostic = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath, '--diagnose-call', id],
+      { cwd: process.cwd(), encoding: 'utf8' });
+    assert.equal(diagnostic.status, 0, diagnostic.stderr);
+    assert.deepEqual(JSON.parse(diagnostic.stdout), codexHookDiagnostics(f.db, id));
+    assert.doesNotMatch(diagnostic.stdout, /private-command-body|concurrent-client|test-request/u);
+    assert.equal(JSON.parse(diagnostic.stdout).events.length, 1);
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM codex_hook_observations').get<{ n: number }>()!.n, before);
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get<{ n: number }>()!.n, 0);
+    assert.throws(() => codexHookDiagnostics(f.db, 'not-a-call'), /16 lowercase hex/u);
+    const invalid = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', path.join(f.base, 'absent.sqlite3'), '--diagnose-call', 'invalid'],
+      { cwd: process.cwd(), encoding: 'utf8' });
+    assert.equal(invalid.status, 2);
+    assert.match(invalid.stderr, /validation_unavailable/u);
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 test('observation write failure does not replace a completed hook result', async () => {

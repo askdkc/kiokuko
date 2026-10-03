@@ -352,6 +352,10 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   assert.match(codexConfig, /\[mcp_servers\.kiokuko\]/);
   assert.match(codexConfig, /command = "kiokuko"/);
   assert.match(codexConfig, /KIOKUKO_SKILL_DISCOVERY = "official"/);
+  const codexHooks = JSON.parse(await readFile(path.join(codexDirectory, 'hooks.json'), 'utf8'));
+  const hookCommand = codexHooks.hooks.PreToolUse[0].hooks[0].command;
+  assert.ok(hookCommand.startsWith("'" + process.execPath.replaceAll("'", "'\\''") + "' "));
+  assert.match(hookCommand, /dist[\\/]bin[\\/]kiokuko\.js' codex-hook --database /u);
   const openCodeText = await readFile(path.join(openCodeDirectory, 'opencode.jsonc'), 'utf8');
   assert.match(openCodeText, /keep this comment/);
   const openCode = parse(openCodeText) as { theme: string; mcp: { kiokuko: { type: string; command: string[]; enabled: boolean; environment: { KIOKUKO_SKILL_DISCOVERY: string } } } };

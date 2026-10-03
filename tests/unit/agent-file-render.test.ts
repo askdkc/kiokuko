@@ -4,6 +4,22 @@ import test from 'node:test';
 import { BEGIN_MARKER, END_MARKER } from '../../src/agent-file/managed-block.js';
 import { AGENT_TEMPLATE_VERSION, renderAgentFile, renderManagedBlock } from '../../src/agent-file/render.js';
 import { KiokukoError } from '../../src/errors.js';
+import { TASK_PREPARATION_REQUEST_CONTRACT } from '../../src/akinator/instructions.js';
+import { renderGlobalInstructions } from '../../src/setup/render.js';
+
+test('global and project instructions share correction semantics without contradictory call limits', () => {
+  const project = renderManagedBlock({ repositoryId: 'repo-fixture', workspace: 'project:fixture', cliCommand: 'kiokuko' });
+  const global = renderGlobalInstructions('User-owned instructions.\n').content;
+  assert.ok(global.startsWith('User-owned instructions.\n'));
+  for (const rendered of [project, global]) {
+    assert.ok(rendered.includes(TASK_PREPARATION_REQUEST_CONTRACT));
+    assert.match(rendered, /at most one successful preparation per logical request/);
+    assert.match(rendered, /runCreated=false permits corrected input under the same requestId/);
+    assert.match(rendered, /does not require a new user request or a retry implementation message/);
+    assert.match(rendered, /task_prepare_recover is absent.*stale MCP runtime/);
+    assert.doesNotMatch(rendered, /call `task_prepare` at most once|call `task_prepare` once/iu);
+  }
+});
 
 test('template placeholders produce exactly the programmatic managed block', async () => {
   const values = {
@@ -41,6 +57,9 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /simple-work route minimizes the solution but never replaces the code contract/u);
   assert.match(rendered, /Never substitute, install, or execute fetched external Skill content/u);
   assert.match(rendered, /task_prepare/);
+  assert.match(rendered, /runCreated=false.*corrected.*same logical requestId/);
+  assert.match(rendered, /task_prepare_recover.*original requestId.*expectedRevision.*operationId/);
+  assert.match(rendered, /task_memory_refresh.*never repairs capabilities/);
   assert.match(rendered, /nextAction=review_memory_application.*before ordinary tools, code search or execution/u);
   assert.match(rendered, /task_inspect.*natural-japanese-output/u);
   assert.match(rendered, /`Array<\{kind:'skill'\|'mcp_tool';name:string;description\?:string\}>`/u);

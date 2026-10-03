@@ -10,6 +10,7 @@ export const MCP_MUTATION_TIMEOUT_MS = 60_000;
 
 export type McpToolOperation =
   | 'task_prepare'
+  | 'task_prepare_recover'
   | 'task_answer'
   | 'task_inspect'
   | 'task_memory_review'
@@ -88,6 +89,7 @@ export const DEFAULT_MCP_DEADLINE_POLICY: Readonly<McpDeadlinePolicy> = Object.f
 
 const EXTERNAL_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
   'task_prepare',
+  'task_prepare_recover',
   'task_answer',
 ]);
 

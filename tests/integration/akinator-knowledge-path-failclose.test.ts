@@ -31,6 +31,7 @@ test('rejects forged, contradictory, and non-canonical Akinator knowledge paths 
     let entryId = '';
     for (const [index, verified] of [true, false].entries()) {
       const prepared = await prepareAgentTask(database, {
+        capabilities: [{kind:"skill",name:"kiokuko-soul"}],
         requestId: `knowledge-path-failclose-${index}`,
         cwd: root,
         task: 'SQLite migration failuresを安全に復旧する',

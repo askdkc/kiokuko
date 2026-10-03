@@ -28,7 +28,7 @@ async function prepare(cwd: string, requestId: string, connection: ReturnType<ty
     cwd,
     task: 'Add repository tests using the canonical project root',
     profileHints,
-    capabilities: [],
+    capabilities: [{kind:"skill",name:"kiokuko-soul"}],
     client: { kind: 'test' },
     skillDiscoveryMode: 'off',
   });

@@ -128,7 +128,7 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, new RegExp(`^---\\nname: ${STANDARD_SOUL_SKILL_NAME}\\ndescription: [^\\n]+\\n---\\n`));
   assert.match(soulSkill, /Read this Skill before any other bundled Kiokuko Skill/);
   assert.match(soulSkill, /Akinator is the mandatory state machine between this SOUL read and every planning or implementation route/);
-  assert.match(soulSkill, /Call `task_prepare` at most once.*complete capability catalog available in the current client/su);
+  assert.match(soulSkill, /Obtain at most one successful preparation through `task_prepare`.*complete capability catalog available in the current client/su);
   assert.match(soulSkill, /`needs_answer`.*Akinator controls progress.*Do not plan, implement, verify, enter the simple\/code\/UI routes, or call `memory_checkpoint` while unresolved/su);
   assert.match(soulSkill, /Repeat the same capability catalog and context budget.*continue until `ready` or `exhausted`/su);
   assert.match(soulSkill, /`exhausted`.*`intake\.missingFields` may remain.*do not invent the missing answers/su);
