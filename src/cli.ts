@@ -1,3 +1,4 @@
+import { registerChatgptCommands } from './commands/chatgpt.js';
 import { registerMemoryIndexCommands } from './commands/memory-index.js';
 import { registerCodexHookCommand } from './commands/codex-hook.js';
 import { registerAkinatorMemoryCommands } from './commands/akinator-memory.js';
@@ -890,6 +891,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   cli.name('kiokuko').description('Model-agnostic external memory for AI coding agents').version(PACKAGE_VERSION);
   cli.exitOverride();
   cli.configureOutput({ outputError: () => undefined });
+
+  registerChatgptCommands(cli);
 
   cli.command('version').description('Show the Kiokuko package version').action(() => {
     process.stdout.write(`${PACKAGE_VERSION}\n`);

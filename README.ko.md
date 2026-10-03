@@ -121,7 +121,7 @@ Developer mode에서 개인용 플러그인으로 연결해 기억을 저장하�
      --tunnel-id "<tunnel_id>" \
      --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
    tunnel-client doctor --profile kiokuko-chatgpt --explain
-   tunnel-client run --profile kiokuko-chatgpt
+   kiokuko chatgpt run --profile kiokuko-chatgpt
    ```
 
    사용하는 동안 계속 실행해 둡니다. 새 터미널에서는 API 키를 다시 설정한 뒤 마지막 `run` 명령을 실행합니다.

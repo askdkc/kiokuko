@@ -1,0 +1,10 @@
+import { execFileSync } from 'node:child_process';
+import { accessSync, constants, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+const name = process.env.KIOKUKO_TUNNEL_CLIENT ?? 'tunnel-client';
+const candidates = path.isAbsolute(name) ? [name] : (process.env.PATH ?? '').split(path.delimiter).map(p => path.join(p, name));
+const binary = candidates.find(p => { try { accessSync(p, constants.X_OK); return true; } catch { return false; } });
+if (!binary) throw new Error('Install an official tunnel-client or set KIOKUKO_TUNNEL_CLIENT to its executable path');
+console.log(JSON.stringify({ binary, version: execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim(), sha256: createHash('sha256').update(readFileSync(binary)).digest('hex') }));
+execFileSync(process.execPath, ['--import', 'tsx', '--test', 'tests/integration/chatgpt-tunnel.test.ts'], { env: { ...process.env, KIOKUKO_TUNNEL_CLIENT: binary }, stdio: 'inherit' });

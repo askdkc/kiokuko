@@ -331,7 +331,7 @@ try {
   const packageFiles = new Set(JSON.parse(packed.stdout)[0].files.map((file) => file.path));
   for (const file of ['templates/chatgpt/memory-policy.json', 'dist/chatgpt/memory-policy.js',
     'dist/mcp/chatgpt-server.js', 'dist/mcp/chatgpt-runtime.js', 'dist/memory/global-conversation-query.js',
-    'docs/chatgpt.md', 'docs/chatgpt.ja.md']) {
+    'docs/chatgpt.md', 'docs/chatgpt.ja.md', 'dist/chatgpt/tunnel-runner.js', 'dist/commands/chatgpt.js']) {
     assert.ok(packageFiles.has(file), `ChatGPT memory package artifact missing: ${file}`);
   }
   for (const file of ['migrations/003_interaction_memory.sql', 'dist/memory/interaction-capture.js', 'dist/memory/interaction-recall.js', 'docs/interaction-memory.md']) {
@@ -360,6 +360,10 @@ try {
   const cliPath = path.join(prefixDirectory, 'bin', 'kiokuko');
   const version = await run(cliPath, ['--version'], repositoryRoot);
   assert.equal(version.stdout.trim(), packageJson.version, 'installed CLI version must match package.json');
+  const managedHelp = await run(cliPath, ['chatgpt', 'run', '--help'], repositoryRoot);
+  assert.match(managedHelp.stdout, /--tunnel-client/);
+  const managedStatus = await run(cliPath, ['chatgpt', 'status', '--profile', 'install-smoke-unused', '--json'], repositoryRoot);
+  assert.equal(JSON.parse(managedStatus.stdout).schemaVersion, 1);
   await verifyInstalledChatgptProfile(cliPath, path.join(temporaryRoot, 'chatgpt-fixture'));
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 

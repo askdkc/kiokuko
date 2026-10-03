@@ -126,7 +126,7 @@ Developer modeで自分用プラグインとして接続し、記憶を保存・
      --tunnel-id "<tunnel_id>" \
      --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
    tunnel-client doctor --profile kiokuko-chatgpt --explain
-   tunnel-client run --profile kiokuko-chatgpt
+   kiokuko chatgpt run --profile kiokuko-chatgpt
    ```
 
    利用中は起動したままにします。別の端末で起動する場合はAPIキーを再設定し、最後の`run`を実行します。

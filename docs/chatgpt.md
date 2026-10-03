@@ -39,3 +39,16 @@ tunnel-client doctor --profile kiokuko-chatgpt --explain
 - To stop, press Ctrl+C in the Tunnel terminal. To disconnect permanently, remove the connection from ChatGPT Plugins. The database remains.
 
 **Live ChatGPT connection and write approval remain unverified.** [Validation status](chatgpt-validation.md)
+
+## Managed connection diagnostics
+
+```bash
+kiokuko chatgpt run --profile kiokuko-chatgpt
+kiokuko chatgpt status --profile kiokuko-chatgpt --json
+```
+
+Stop the previous direct foreground daemon first. Existing profiles and environment variables are reused; credentials and MCP access stay unchanged. Override paths with `--profile-dir` and `--tunnel-client`.
+
+Polling degrades on the first failure. Transient failures warn on the third consecutive failure, then at most once per minute. Authentication, certificate and HTTP errors warn immediately. Recovery requires an observed successful poll; liveness or old metrics do not establish recovery. Unavailable or stale diagnostics are `unknown`. There is no automatic restart. Ctrl+C also stops the child process.
+
+Aggregation applies to this command only; upstream admin UI and direct daemon logs remain unchanged. Internal DNS/TLS phases and connection reuse are unknown when not exposed. Poll recovery and a successful hosted MCP invocation require separate verification.

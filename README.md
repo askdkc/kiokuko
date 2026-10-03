@@ -144,7 +144,7 @@ Connect a personal plugin in Developer mode to save and recall memory. No store-
      --tunnel-id "<tunnel_id>" \
      --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
    tunnel-client doctor --profile kiokuko-chatgpt --explain
-   tunnel-client run --profile kiokuko-chatgpt
+   kiokuko chatgpt run --profile kiokuko-chatgpt
    ```
 
    Keep it running while using the connection. In a new terminal, set the API key again and execute the final `run` command.

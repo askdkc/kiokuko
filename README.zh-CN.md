@@ -121,7 +121,7 @@ Codex、OpenCode、Claude Code、Hermes Agent。
      --tunnel-id "<tunnel_id>" \
      --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
    tunnel-client doctor --profile kiokuko-chatgpt --explain
-   tunnel-client run --profile kiokuko-chatgpt
+   kiokuko chatgpt run --profile kiokuko-chatgpt
    ```
 
    使用期间保持运行。在新终端中，先重新设置 API 密钥，再执行最后一行 `run` 命令。
