@@ -111,8 +111,25 @@ on paths where distinct child tool identities cannot be established.
 
 Policy denials include the reason in `systemMessage` for the Codex UI warning,
 in `permissionDecisionReason` for the blocked tool, and on stderr for hook
-diagnostics. Pending-memory blocks show pending/stale counts and direct the agent
-to `task_memory_status` and `task_memory_review` with the latest returned revision;
+diagnostics. **The first policy denial stops that client turn.** The existing
+durable `stop_notified` flag latches before the denial is returned, and any bound
+active/intake run becomes failed. Every later tool call for the same client
+request is denied, including `task_inspect`, preparation, recovery and checkpoint.
+Delayed completions cannot reopen the binding or supply verification evidence.
+Hook-process restarts and replaying the same prompt event do not clear the latch;
+a new user turn with a new client turn ID starts a fresh request. `Stop` and
+supported completion events return `continue: false` without requesting recovery.
+
+Before a denial, the exact user clarification tools `request_user_input` and
+`request_user_input_async`, and the observed time-read tool `clockcurr_time`,
+remain usable during preparation and pending memory reviews. This permits asking
+an intake question or checking the time without granting shell, file, network
+or other execution access. These calls do not produce execution evidence.
+Once a turn is stopped, they are denied too. Other clock tools, such as sleep,
+are not exempted.
+
+Pending-memory blocks show pending/stale counts and the required ordering of
+`task_memory_status` and `task_memory_review` with the latest returned revision;
 reusing an old `expectedRevision` produces a conflict. Allowed tool calls stay
 quiet. Preparation, review and refresh completions proactively report the current
 next step before another ordinary tool is attempted. The initial prompt directs
@@ -124,6 +141,11 @@ history is not rewritten; the new messages require the updated Kiokuko executabl
 Hooks are not execution isolation. Unsupported tool paths, disabled/untrusted
 hooks, adapter startup failures and already running processes remain outside
 complete enforcement. In particular, `write_stdin` does not repeat PreToolUse.
+`PreToolUse` does not support `continue: false` or `stopReason`; returning those
+fields can fail the hook and let the tool execute. The adapter therefore uses
+the supported deny response and a durable latch, with stop output only on events
+that support it. This prevents further supported tool admissions; it cannot
+guarantee that Codex immediately stops generating text or trying denied calls.
 Stop cannot retract text already emitted; an incomplete report stops with an
 explicit message instead of generating unlimited continuation turns. Interrupt
 never requests continuation. Unknown execution result formats stay unknown.
@@ -135,6 +157,11 @@ therefore fails its required execution-observation check on that client. The
 deterministic adapter fixture with structured exit metadata passes; it is not
 evidence that the installed CLI or desktop exposes that metadata.
 See the [official Codex hook protocol](https://developers.openai.com/ja-JP/docs/hooks).
+
+To exercise only the denial/stop path with an installed Codex CLI, run
+`node scripts/run-memory-assurance-live.mjs --hard-stop-only` after building.
+The full live check uses a separate fresh client request for successful
+preparation and execution; it never attempts recovery in the denied turn.
 
 ## Validation
 

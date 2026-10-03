@@ -131,15 +131,71 @@ test('Codex blocks unprepared edits and does not inherit another agent or interr
     assert.deepEqual(handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }), {});
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
+test('Codex policy denial stops the turn durably before every recovery and tool path', async () => {
+  const f = await fixture();
+  try {
+    const common = { session_id: 'hard-stop', turn_id: 'first', cwd: f.root };
+    const prompt = { ...common, hook_event_name: 'UserPromptSubmit' };
+    handleCodexHook(f.db, prompt);
+    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{ request_id: string }>()!.request_id;
+    const call = (name: string, args: object = {}) => ({ ...common, hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: name, tool_input: args });
+    const denied = handleCodexHook(f.db, call('exec_command')) as any;
+    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Do not retry.*new user message/u);
+    assert.equal(denied.continue, undefined); // Unsupported here would make Codex fail open.
+    const restarted = openConnection(f.databasePath);
+    try {
+      for (const name of ['exec_command', 'apply_patch', 'mcp__kiokuko__task_inspect', 'mcp__kiokuko__task_prepare',
+        'mcp__kiokuko__task_prepare_recover', 'mcp__kiokuko__memory_checkpoint', 'request_user_input_async', 'clockcurr_time']) {
+        assert.equal((handleCodexHook(restarted, call(name, { cwd: f.root, requestId })) as any).hookSpecificOutput.permissionDecision, 'deny', name);
+      }
+      assert.equal((handleCodexHook(restarted, prompt) as any).continue, false); // An event replay cannot reset it.
+      const late = handleCodexHook(restarted, { ...call('mcp__kiokuko__task_prepare', { cwd: f.root, requestId }),
+        hook_event_name: 'PostToolUse', tool_response: { structuredContent: f.prepared } }) as any;
+      assert.equal(late.continue, false);
+      assert.equal(restarted.prepare('SELECT run_id FROM codex_hook_requests').get<{ run_id: string | null }>()!.run_id, null);
+      for (const stop_hook_active of [false, true]) {
+        assert.equal((handleCodexHook(restarted, { ...common, hook_event_name: 'Stop', stop_hook_active }) as any).continue, false);
+      }
+      assert.equal(restarted.prepare('SELECT COUNT(*) AS n FROM codex_hook_tools').get<{ n: number }>()!.n, 0);
+      assert.equal(restarted.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get<{ n: number }>()!.n, 0);
+      const next = { ...common, turn_id: 'second' };
+      assert.equal((handleCodexHook(restarted, { ...next, hook_event_name: 'UserPromptSubmit' }) as any).continue, undefined);
+      assert.deepEqual(handleCodexHook(restarted, { ...call('mcp__kiokuko__task_inspect', { cwd: f.root, operation: 'skill' }), ...next }), {});
+    } finally { restarted.close(); }
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+test('Codex permits user clarification and clock reads before preparation and pending memory decisions without granting execution', async () => {
+  const f = await fixture();
+  try {
+    const common = { session_id: 'clarification', turn_id: 'request', cwd: f.root };
+    handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
+    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{ request_id: string }>()!.request_id;
+    const ask = (name: string) => ({ ...common, tool_name: name, tool_use_id: name, tool_input: { questions: [] } });
+    for (const name of ['request_user_input', 'request_user_input_async', 'clockcurr_time']) {
+      assert.deepEqual(handleCodexHook(f.db, { ...ask(name), hook_event_name: 'PreToolUse' }), {});
+      assert.deepEqual(handleCodexHook(f.db, { ...ask(name), hook_event_name: 'PostToolUse', tool_response: {} }), {});
+    }
+    handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
+      tool_use_id: 'prepare', tool_input: { cwd: f.root, requestId }, tool_response: { structuredContent: f.prepared } });
+    assert.deepEqual(handleCodexHook(f.db, { ...ask('request_user_input_async'), hook_event_name: 'PreToolUse' }), {});
+    assert.deepEqual(handleCodexHook(f.db, { ...ask('clockcurr_time'), hook_event_name: 'PreToolUse' }), {});
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get<{ n: number }>()!.n, 0);
+    const denied = handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'exec_command',
+      tool_use_id: 'premature', tool_input: { cmd: 'true' } }) as any;
+    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{ status: string }>(f.prepared.run.runId)!.status, 'failed');
+    assert.equal((handleCodexHook(f.db, { ...ask('request_user_input_async'), hook_event_name: 'PreToolUse' }) as any).hookSpecificOutput.permissionDecision, 'deny');
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
 test('hook command exposes policy block reasons to the user without leaking tool input', async () => {
   const f = await fixture();
   try {
-    const common = { session_id: 'visible-block', turn_id: 'request', cwd: f.root };
-    const event = { ...common, hook_event_name: 'PreToolUse', tool_name: 'exec_command', tool_use_id: 'blocked',
-      tool_input: { cmd: 'private-command-body' } };
+    let common = { session_id: 'visible-block', turn_id: 'request', cwd: f.root };
     const checkBlock = (expected: RegExp) => {
       const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
-        { cwd: process.cwd(), input: JSON.stringify(event), encoding: 'utf8' });
+        { cwd: process.cwd(), input: JSON.stringify({ ...common, hook_event_name: 'PreToolUse', tool_name: 'exec_command',
+          tool_use_id: 'blocked', tool_input: { cmd: 'private-command-body' } }), encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
       const output = JSON.parse(result.stdout);
       assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
@@ -154,9 +210,13 @@ test('hook command exposes policy block reasons to the user without leaking tool
       assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM codex_hook_tools').get<{ n: number }>()!.n, 0);
     };
     checkBlock(/request start/u);
+    checkBlock(/already had a policy denial/u);
+    common = { ...common, turn_id: 'unprepared' };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
     checkBlock(/task_prepare/u);
-    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{ request_id: string }>()!.request_id;
+    common = { ...common, turn_id: 'pending-review' };
+    handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
+    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE stop_notified=0').get<{ request_id: string }>()!.request_id;
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
       tool_use_id: 'prepare', tool_input: { cwd: f.root, requestId }, tool_response: { structuredContent: f.prepared } });
     checkBlock(/1 pending.*0 stale.*task_memory_status.*task_memory_review/u);
@@ -239,6 +299,46 @@ async function boundHookFixture() {
   const event = (id: string) => ({ ...common, tool_name: 'exec_command', tool_use_id: id, tool_input: { cmd: 'true' } });
   return { ...f, common, event };
 }
+test('a denial racing a delayed preparation or execution completion cannot reopen or verify the turn', async () => {
+  for (const phase of ['preparation', 'execution']) {
+    const f = await boundHookFixture();
+    const common = phase === 'execution' ? f.common : { ...f.common, turn_id: 'racing-prepare' };
+    try {
+      if (phase === 'preparation') handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
+      const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests ORDER BY rowid DESC LIMIT 1').get<{ request_id: string }>()!.request_id;
+      const call = { ...common, tool_name: phase === 'preparation' ? 'mcp__kiokuko__task_prepare' : 'exec_command',
+        tool_use_id: 'delayed', tool_input: phase === 'preparation' ? { cwd: f.root, requestId } : { cmd: 'true' } };
+      assert.deepEqual(handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' }), {});
+      const second = openConnection(f.databasePath);
+      let raced = false;
+      try {
+        const racing = new Proxy(f.db, { get(target, key) {
+          if (key === 'prepare') return (sql: string) => {
+            const statement = target.prepare(sql);
+            if (sql !== 'SELECT * FROM codex_hook_requests WHERE identity_digest = ?') return statement;
+            return { ...statement, get(...params: Parameters<typeof statement.get>) {
+              const snapshot = statement.get(...params);
+              if (!raced) {
+                raced = true;
+                handleCodexHook(second, { ...common, hook_event_name: 'PreToolUse', tool_name: 'mcp__kiokuko__task_memory_status',
+                  tool_use_id: 'deny', tool_input: { runId: 'wrong-run' } });
+              }
+              return snapshot;
+            } };
+          };
+          const value = Reflect.get(target, key);
+          return typeof value === 'function' ? value.bind(target) : value;
+        } });
+        const result = handleCodexHook(racing, { ...call, hook_event_name: 'PostToolUse',
+          tool_response: phase === 'preparation' ? { structuredContent: f.prepared } : { exit_code: 0 } }) as any;
+        assert.equal(result.continue, false, phase);
+        assert.equal(raced, true);
+        assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get<{ n: number }>()!.n, 0);
+        if (phase === 'preparation') assert.equal(f.db.prepare('SELECT run_id FROM codex_hook_requests WHERE request_id=?').get<{ run_id: string | null }>(requestId)!.run_id, null);
+      } finally { second.close(); }
+    } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+  }
+});
 test('hook command stays quiet for an admitted tool call', async () => {
   const f = await boundHookFixture();
   try {
@@ -412,19 +512,24 @@ test('next-migration counterexample fails a fixed expectation and passes derived
     assert.equal(execute().status, 0);
     const next = versions.at(-1)! + 1;
     writeFileSync(path.join(migrations, `${String(next).padStart(3, '0')}_next.sql`), 'CREATE TABLE next_case(id INTEGER);');
-    const common = { session_id: 'decisive-client', turn_id: 'request', cwd: f.root };
+    let common = { session_id: 'decisive-client', turn_id: 'request', cwd: f.root };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
     const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE last_event = ?').get<{ request_id: string }>('UserPromptSubmit')!.request_id;
-    const args = { requestId, cwd: f.root, soulRead: true, task: 'Implement migration expectations', capabilities: caps,
+    let args = { requestId, cwd: f.root, soulRead: true, task: 'Implement migration expectations', capabilities: caps,
       profileHints: { taskType: 'build' as const, target: 'migration expectations code', expected: 'next migration tests pass', constraints: 'historical fixtures are valid' } };
     const gate = handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: args });
     assert.deepEqual(gate, {});
     assert.equal(args.soulRead, true);
-    const prepared = await prepareAgentTask(f.db, { ...args, skillDiscoveryMode: 'off' });
+    let prepared = await prepareAgentTask(f.db, { ...args, skillDiscoveryMode: 'off' });
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: args, tool_response: { structuredContent: { ...prepared, nextAction: 'required_capability_unavailable' } } });
     const blocked = handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_use_id: 'blocked-edit', tool_input: {} }) as any;
     assert.equal(blocked.hookSpecificOutput.permissionDecision, 'deny');
     assert.equal((handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }) as any).continue, false);
+    common = { ...common, turn_id: 'fresh-request' };
+    handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
+    args = { ...args, requestId: f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE stop_notified=0').get<{ request_id: string }>()!.request_id };
+    assert.deepEqual(handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: args }), {});
+    prepared = await prepareAgentTask(f.db, { ...args, skillDiscoveryMode: 'off' });
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: args, tool_response: { structuredContent: prepared } });
     const runId = prepared.run.runId;
     const deliveryId = prepared.context!.deliveryId!;
