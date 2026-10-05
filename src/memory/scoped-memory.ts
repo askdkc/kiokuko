@@ -18,7 +18,8 @@ import type { HybridSearchRuntime } from './hybrid-retrieval.js';
 import type { RelatedSearchMode } from './hybrid-retrieval.js';
 import type { TemporalConstraint } from './temporal.js';
 import { analyzePortability } from './portability.js';
-import { execFileSync } from 'node:child_process';
+import { resolveCheckpointSourceCommit } from './git-provenance.js';
+export { resolveCheckpointSourceCommit } from './git-provenance.js';
 import { randomUUID } from 'node:crypto';
 import { isProxy } from 'node:util/types';
 import { LedgerStore } from '../ledger/store.js';
@@ -49,71 +50,6 @@ import {
   type NormalizedCheckpointEvidence,
   type CheckpointVerificationOutcome,
 } from '../ledger/checkpoint-contract.js';
-
-const GIT_PROVENANCE_TIMEOUT_MS = 5_000;
-const GIT_PROVENANCE_MAX_BUFFER = 64 * 1024;
-
-interface GitProvenanceExecOptions {
-  cwd: string;
-  encoding: 'utf8';
-  stdio: ['ignore', 'pipe', 'pipe'];
-  timeout: number;
-  maxBuffer: number;
-  env: NodeJS.ProcessEnv;
-}
-
-type GitProvenanceExecutor = (
-  executable: string,
-  args: string[],
-  options: GitProvenanceExecOptions,
-) => string;
-
-const executeGitProvenance: GitProvenanceExecutor = (executable, args, options) => execFileSync(executable, args, options);
-
-function processFailureText(error: unknown, field: 'stderr' | 'stdout'): string | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  const value = (error as Record<string, unknown>)[field];
-  if (typeof value === 'string') return value;
-  return Buffer.isBuffer(value) ? value.toString('utf8') : undefined;
-}
-
-function expectedMissingGitCommit(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const failure = error as Record<string, unknown>;
-  if (failure.status !== 128 || failure.signal !== null) return false;
-  const stderr = processFailureText(error, 'stderr')?.replaceAll('\r\n', '\n').trimEnd();
-  return stderr === 'fatal: Needed a single revision'
-    || stderr === 'fatal: not a git repository (or any of the parent directories): .git';
-}
-
-/** Resolve immutable checkpoint provenance without treating Git failures as an absent commit. */
-export function resolveCheckpointSourceCommit(
-  repositoryRoot: string,
-  execute: GitProvenanceExecutor = executeGitProvenance,
-): string | null {
-  let output: string;
-  try {
-    output = execute('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
-      cwd: repositoryRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: GIT_PROVENANCE_TIMEOUT_MS,
-      maxBuffer: GIT_PROVENANCE_MAX_BUFFER,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
-    });
-  } catch (error) {
-    if (expectedMissingGitCommit(error)) return null;
-    throw new KiokukoError('SERVICE_UNAVAILABLE', 'Git checkpoint provenance could not be resolved');
-  }
-  const commit = output.replace(/(?:\r\n|\n)$/u, '');
-  if (commit !== output && output !== `${commit}\n` && output !== `${commit}\r\n`) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Git checkpoint provenance is invalid');
-  }
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(commit)) {
-    throw new KiokukoError('INTEGRITY_ERROR', 'Git checkpoint provenance is invalid');
-  }
-  return commit;
-}
 
 export type MemoryScope = FederatedScope;
 

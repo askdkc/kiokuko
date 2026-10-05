@@ -1,12 +1,13 @@
 // Live Codex test: fresh sessions, natural user messages, real stdio MCP, isolated DB.
 // Uses the CLI's existing login; does not read credentials or rewrite client config.
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INTERACTION_MEMORY_INSTRUCTIONS } from '../dist/memory/interaction-contract.js';
+import { runLiveSession } from './lib/interaction-live-session.mjs';
+import { runCorrectionScenarios } from './lib/interaction-correction-scenarios.mjs';
 import { openConnection } from '../dist/db/connection.js';
 import { getGlobalDatabasePath } from '../dist/config/paths.js';
 
@@ -16,71 +17,14 @@ const data = path.join(output, 'data');
 console.log(`Evidence directory: ${output}`);
 const executable = process.env.KIOKUKO_SMOKE_CODEX ?? 'codex';
 const scenario = process.env.KIOKUKO_SMOKE_SCENARIO ?? 'all';
-assert.ok(['all', 'global', 'project'].includes(scenario), 'KIOKUKO_SMOKE_SCENARIO must be all, global, or project');
+assert.ok(['all', 'global', 'project', 'correction'].includes(scenario), 'KIOKUKO_SMOKE_SCENARIO must be all, global, project, or correction');
 const prompts = [
   'For Japanese grammar explanations, I prefer two examples about trains before grammatical terminology.',
   'Explain the difference between は and が in Japanese grammar.',
 ];
 
 async function runSession(index, options = {}) {
-  const cwd = options.cwd ?? path.join(output, 'conversation-' + (index + 1));
-  if (options.cwd === undefined) await mkdir(cwd);
-  for (const skill of ['kiokuko-soul', 'memory-reasoning']) {
-    await cp(path.join(root, 'skills', skill), path.join(cwd, 'skills', skill), { recursive: true });
-  }
-  const instructions = INTERACTION_MEMORY_INSTRUCTIONS + '\nThe exact local kiokuko-soul and memory-reasoning Skills are available at '
-    + cwd + '/skills/<name>/SKILL.md. Read them in that order. '
-    + 'Never read a database, another conversation, global memory files, personal configuration, or parent directories. '
-    + 'Use the configured Kiokuko MCP connection for memory. Do not run other agents or use networking tools. '
-    + (options.project
-      ? 'This is an isolated Git project. Read only those Skill files and this fixture README. Complete Kiokuko task intake before editing. Edit only README.md. '
-        + 'Evaluate each delivered memory against this repository and record the applicability decision. '
-        + 'Apply the user request to README and save reusable explicit corrections when appropriate.'
-      : 'This is ordinary conversation outside a project. Only read those Skill files. Do not create files. Answer the user normally.');
-  const config = {
-    developer_instructions: instructions,
-    project_doc_max_bytes: 0,
-    'memories.use_memories': false,
-    'features.memories': false,
-    'features.multi_agent': false,
-    'features.hooks': false,
-    'features.plugins': false,
-    'features.apps': false,
-    'mcp_servers.kiokuko.command': process.execPath,
-    'mcp_servers.kiokuko.args': [path.join(root, 'dist/bin/kiokuko.js'), 'mcp'],
-    'mcp_servers.kiokuko.env': { KIOKUKO_DATA_DIR: data, KIOKUKO_SKILL_DISCOVERY: 'off' },
-    'mcp_servers.kiokuko.required': true,
-  };
-  for (const tool of ['task_prepare', 'task_answer', 'task_memory_status', 'task_memory_review',
-    'task_execution_evidence', 'task_memory_refresh', 'task_inspect', 'memory_capture',
-    'memory_checkpoint', 'memory_recall', 'handoff_save', 'curator_check']) {
-    config['mcp_servers.kiokuko.tools.' + tool + '.approval_mode'] = 'approve';
-  }
-  // Inline TOML values are argv, never shell text.
-  const toml = (value) => typeof value === 'object' && !Array.isArray(value)
-    ? `{${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}=${JSON.stringify(item)}`).join(',')}}`
-    : JSON.stringify(value);
-  const args = ['exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check',
-    '--sandbox', options.project ? 'workspace-write' : 'read-only', '--json', '--cd', cwd,
-    ...Object.entries(config).flatMap(([key, value]) => ['-c', key + '=' + toml(value)]), options.prompt ?? prompts[index]];
-  const result = await new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    const deadline = setTimeout(() => child.kill('SIGTERM'), 180_000);
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('error', reject);
-    child.on('close', (code, signal) => { clearTimeout(deadline); resolve({ code, signal, stdout, stderr }); });
-  });
-  const name = options.name ?? 'conversation-' + (index + 1);
-  await writeFile(path.join(output, name + '.jsonl'), result.stdout);
-  await writeFile(path.join(output, name + '.stderr'), result.stderr);
-  assert.equal(result.code, 0, 'Codex session failed (' + (result.signal ?? result.code) + '); inspect ' + output);
-  const events = result.stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  const calls = events.filter((event) => event.type === 'item.completed' && event.item?.type === 'mcp_tool_call').map((event) => event.item);
-  const answer = events.filter((event) => event.type === 'item.completed' && event.item?.type === 'agent_message').map((event) => event.item.text).join('\n');
-  await writeFile(path.join(output, name + '.md'), answer);
-  return { calls, answer };
+  return runLiveSession({ root, output, data, executable, index, prompt: prompts[index], ...options });
 }
 
 async function runGlobalScenario() {
@@ -168,13 +112,18 @@ async function runProjectScenario() {
 }
 
 try {
-  const summary = { client: 'codex', result: 'passed', scenario,
-    ...(scenario === 'project' ? {} : { global: await runGlobalScenario() }),
-    ...(scenario === 'global' ? {} : { project: await runProjectScenario() }),
-    note: 'Disposable repositories and DB; inspect the saved JSONL, capture receipt, review call, and README files for exact behavior. Installed client configuration and desktop runtime were not changed.' };
-  await writeFile(path.join(output, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
-  console.log(JSON.stringify(summary));
+  if (scenario === 'correction') {
+    await runCorrectionScenarios({ root, output, executable });
+  } else {
+    const summary = { client: 'codex', result: 'passed', scenario,
+      ...(scenario === 'project' ? {} : { global: await runGlobalScenario() }),
+      ...(scenario === 'global' ? {} : { project: await runProjectScenario() }),
+      note: 'Disposable repositories and DB; inspect the saved JSONL, capture receipt, review call, and README files for exact behavior. Installed client configuration and desktop runtime were not changed.' };
+    await writeFile(path.join(output, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+    console.log(JSON.stringify(summary));
+  }
 } catch (error) {
+  await writeFile(path.join(output, 'failure.json'), JSON.stringify({ result: error.blocked ? 'blocked' : 'failed', error: error.message }, null, 2));
   console.error(error.message);
   process.exitCode = 1;
 }

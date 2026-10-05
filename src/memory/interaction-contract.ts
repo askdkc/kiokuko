@@ -15,7 +15,7 @@ export const interactionMemorySchema = checkpointMemorySchema.omit({ confidence:
     .describe('Use user_correction for a durable explicit correction, including its first capture when no stored entry exists.'),
   generalCommunication: z.boolean().default(false),
   replaces: z.object({ entryId: identity, expectedRevision: z.number().int().positive() }).strict().optional()
-    .describe('Only when correcting an identified stored entry: use its actual entry ID and revision. Omit for a correction not yet stored; never invent an ID.'),
+    .describe('Only when correcting an identified stored entry: use its actual entry ID and revision. Omit for a correction not yet stored; never invent an ID. If the user asks to change a stored memory but lookup finds no target, clarify its identity instead of creating a competing memory.'),
   reinforces: z.object({ entryId: identity, expectedRevision: z.number().int().positive() }).strict().optional()
     .describe('An existing project lesson independently observed again in this run. Keeps its content unchanged; use replaces for corrections.'),
 }).strict().superRefine((value, ctx) => {
@@ -50,14 +50,16 @@ export const memoryCaptureInputSchema = z.object({
 export const memoryRecallInputSchema = z.object({
   soulRead: z.literal(true),
   capabilities: z.array(z.unknown()).optional(),
-  query: z.string().trim().min(1).max(4_000),
+  query: z.string().trim().min(1).max(4_000)
+    .describe('Use concise topic words. Subject-specific preferences require literal subject wording. For cross-language recall include the original-language topic and its English wording. If empty, try one concise reformulation of the same topic; never guess exact subject filters.'),
   subjects: subjects.optional().describe('Concise topic labels, e.g. Japanese grammar, not Japanese grammar explanations. For recall, omit unless these exact stored labels are known; use query-only recall first.'),
   temporal: z.unknown().optional().transform((value) => normalizeTemporalConstraint(value))
     .describe('Optional recorded/occurred time window. Absolute bounds, anchorTime, and timezone are validated and bound for repeatable recall.'),
   relatedMode: z.enum(['off', 'observe', 'active']).optional()
     .describe('Enable bounded one-hop same-workspace related candidate discovery; off preserves the existing selection.'),
   limit: z.number().int().min(1).max(20).default(8),
-  maxContextChars: z.number().int().min(100).max(12_000).default(4_000),
+  maxContextChars: z.number().int().min(100).max(12_000).default(4_000)
+    .describe('Total recall response budget: integer from 100 to 12000 characters. Omit to use 4000. This is not the task_prepare context-lane budget.'),
 }).strict();
 
 const sourceRevision = z.object({

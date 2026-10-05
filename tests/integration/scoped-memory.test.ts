@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { access, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -245,6 +245,27 @@ test('checkpoint provenance stores the repository HEAD commit', async () => {
   } finally {
     database.close();
   }
+});
+
+test('checkpoint rejects corrupt provenance before mutating entries, ledger or run state', async (t) => {
+  const root = await gitRepository('corrupt-provenance');
+  const filePath = await databasePath('corrupt-provenance');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(path.dirname(filePath), { recursive: true, force: true }));
+  const database = openConnection(filePath);
+  try {
+    const project = await resolveProjectWorkspace(database, root);
+    assert.ok(project);
+    const runId = 'run-corrupt-provenance';
+    seedCheckpointRun(database, runId, project.workspace);
+    const before = checkpointMutationSnapshot(database);
+    await writeFile(path.join(root, '.git', 'HEAD'), 'invalid\n');
+    await assert.rejects(checkpointScopedMemory(database, {
+      cwd: root, runId, outcome: 'completed',
+      memories: [{ kind: 'lesson', title: 'Must not persist', body: 'Reject the corrupted repository before writing.' }],
+    }), { code: 'SERVICE_UNAVAILABLE' });
+    assert.deepEqual(checkpointMutationSnapshot(database), before);
+  } finally { database.close(); }
 });
 
 test('checkpoint validates delivery ownership before mutating memory or ledger state', async () => {

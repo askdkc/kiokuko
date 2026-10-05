@@ -1,31 +1,36 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { canonicalDirectory, detectRepositoryRoot } from '../../src/repository/detect-root.js';
+import { resolveRepositoryRoot } from '../../src/repository/resolve-root.js';
 import { KiokukoError } from '../../src/errors.js';
 import { createRepositoryIdentity } from '../../src/repository/identity.js';
 import { fingerprintRemoteUrl, normalizeRemoteUrl } from '../../src/repository/remote-url.js';
 
-async function temp(prefix: string): Promise<string> {
-  return realpath(await mkdtemp(path.join(tmpdir(), `kiokuko-${prefix}-`)));
+async function temp(t: TestContext, prefix: string): Promise<string> {
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), `kiokuko-${prefix}-`)));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return directory;
 }
 
-test('detects a realpath-normalized git root from a subdirectory', async () => {
-  const root = await temp('root');
+test('detects a realpath-normalized git marker from a subdirectory', async (t) => {
+  const root = await temp(t, 'root');
   await mkdir(path.join(root, '.git'));
   const nested = path.join(root, 'src', 'deep');
   await mkdir(nested, { recursive: true });
   const link = `${root}-link`;
+  t.after(() => rm(link, { force: true }));
   await symlink(root, link);
   assert.equal(detectRepositoryRoot({ cwd: nested }).root, root);
   assert.equal(detectRepositoryRoot({ cwd: path.join(link, 'src') }).root, root);
 });
 
-test('prefers an ancestor binding over a git root', async () => {
-  const root = await temp('binding-root');
-  await mkdir(path.join(root, '.git'));
+test('prefers an ancestor binding over a real git root', async (t) => {
+  const root = await temp(t, 'binding-root');
+  execFileSync('git', ['init', '-q', root]);
   await writeFile(path.join(root, '.kiokuko.json'), '{}');
   const nested = path.join(root, 'packages', 'app');
   await mkdir(nested, { recursive: true });
@@ -33,14 +38,27 @@ test('prefers an ancestor binding over a git root', async () => {
   assert.equal(detectRepositoryRoot({ cwd: nested }).root, root);
 });
 
-test('requires allowDirectory when no binding or git root exists', async () => {
-  const directory = await temp('directory');
-  assert.throws(() => detectRepositoryRoot({ cwd: directory }), /allow-directory|repository root/i);
-  assert.equal(detectRepositoryRoot({ cwd: directory, allowDirectory: true }).root, directory);
+test('requires allowDirectory when no binding or git root exists, independently of host ancestors', () => {
+  const directory = path.resolve('/closed/fixture/child');
+  const absent = { exists: () => false, gitRoot: () => undefined };
+  assert.throws(() => resolveRepositoryRoot(directory, undefined, false, absent), { code: 'NOT_FOUND' });
+  assert.deepEqual(resolveRepositoryRoot(directory, undefined, true, absent), { root: directory, source: 'directory' });
+  const parent = path.dirname(directory);
+  assert.deepEqual(resolveRepositoryRoot(directory, undefined, true, {
+    ...absent, exists: (file) => file === path.join(parent, '.git'),
+  }), { root: parent, source: 'git-marker' });
 });
 
-test('canonical directory rejects relative and missing paths with typed failures', async () => {
-  const directory = await temp('canonical-directory');
+test('real Git discovery returns the canonical root', async (t) => {
+  const root = await temp(t, 'real-git');
+  execFileSync('git', ['init', '-q', root]);
+  const child = path.join(root, 'child');
+  await mkdir(child);
+  assert.deepEqual(detectRepositoryRoot({ cwd: child }), { root, source: 'git' });
+});
+
+test('canonical directory rejects relative and missing paths with typed failures', async (t) => {
+  const directory = await temp(t, 'canonical-directory');
   const missing = path.join(directory, 'missing');
   const file = path.join(directory, 'file');
   await writeFile(file, 'not a directory');
