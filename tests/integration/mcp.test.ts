@@ -217,7 +217,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     const checkpoint = await client.callTool({
       name: 'memory_checkpoint',
       arguments: {
-        memories: [{ kind: 'lesson', title: 'Implement the durable beacon and add tests', body: 'Use the MCP durable-beacon contract.' }],
+        memories: [{ kind: 'lesson', title: 'Implement the durable beacon and add tests', body: 'Use the MCP durable-beacon contract.', tags: ['src/beacon.ts'] }],
       },
     });
     assert.equal(checkpoint.isError, undefined);
@@ -591,14 +591,14 @@ test('checkpoint reports pending reviews and evidence-only success without claim
   try {
     const seeded = await client.callTool({ name: 'memory_checkpoint', arguments: {
       memories: [{ kind: 'lesson', title: 'Migration asset review',
-        body: 'Review migration asset lists when changing migrations.' }],
+        body: 'Review migration asset lists when changing migrations.', tags: ['src/migrations.ts'] }],
     } });
     assert.notEqual(seeded.isError, true);
     const entryId = (seeded.structuredContent as { entries: Array<{ id: string }>; storedMemoryCount: number }).entries[0]!.id;
     assert.equal((seeded.structuredContent as { storedMemoryCount: number }).storedMemoryCount, 1);
     const prepared = await client.callTool({ name: 'task_prepare', arguments: {
       soulRead: true, requestId: 'checkpoint-assurance-request', task: 'Debug migration asset review',
-      profileHints: { taskType: 'debug', target: 'migration asset review', expected: 'asset list test passes' },
+      profileHints: { taskType: 'debug', target: 'src/migrations.ts', expected: 'asset list test passes' },
       capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }],
     } });
     assert.notEqual(prepared.isError, true);
@@ -759,7 +759,7 @@ test('task_prepare proceeds without memory-reasoning for managed curator global 
       memoryPolicy: { memoryReasoningRequired: boolean; contextWithheld: boolean; withheldReason: string | null };
       context: { items: Array<{ entryId: string }> };
     };
-    assert.equal(content.nextAction, 'review_memory_application');
+    assert.equal(content.nextAction, 'proceed');
     assert.equal(content.memoryPolicy.memoryReasoningRequired, false);
     assert.equal(content.memoryPolicy.contextWithheld, false);
     assert.equal(content.memoryPolicy.withheldReason, null);

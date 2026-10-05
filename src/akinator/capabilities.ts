@@ -1,3 +1,4 @@
+import { logicalSkillName } from '../setup/standard-skills.js';
 import type { TaskProfile } from './types.js';
 import {
   STANDARD_FUNCTION_SKILL_NAME,
@@ -99,20 +100,16 @@ export interface MemoryDeliveryObservation {
 const ACTIONABLE_MEMORY_SELECTION_REASONS = new Set([
   'repeated_lesson',
   'exact_signal_match',
-  'word_match',
-  'lexical_match',
-  'cjk_window_match',
   'applicability_match',
-  'tag_match',
+  'target_path_match',
   'changed_path_match',
   'error_signature_match',
-  'helpful_feedback',
 ]);
 
 export function hasActionableMemorySelection(
   items: ReadonlyArray<{ selectionReasons: ReadonlyArray<string> }>,
 ): boolean {
-  return items.some((item) => item.selectionReasons.some((reason) => ACTIONABLE_MEMORY_SELECTION_REASONS.has(reason)));
+  return items.some((item) => !item.selectionReasons.includes('general_communication_preference') && item.selectionReasons.some((reason) => ACTIONABLE_MEMORY_SELECTION_REASONS.has(reason)));
 }
 
 export function deriveMemoryUseSignal(input: {
@@ -239,7 +236,7 @@ function validateCapabilityHeader(value: unknown): Pick<CapabilityDescriptor, 'k
     || value.name.trim().length === 0
     || value.name.trim() !== value.name
     || /[\p{Cc}\p{Cf}]/u.test(value.name)) return null;
-  return { kind: value.kind, name: value.name };
+  return { kind: value.kind, name: value.kind === 'skill' ? logicalSkillName(value.name) : value.name };
 }
 
 export function normalizeCapabilityCatalog(input: unknown): NormalizedCapabilityCatalog {

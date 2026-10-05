@@ -1,7 +1,6 @@
 import { TaskStateConflict } from '../assurance/conflicts.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
-import { contextFeedbackSignals } from './feedback.js';
 import { entryOriginMatchesWorkspace } from './origin.js';
 import type { ScopedContextItem, ScopedContextResult } from './scoped-broker.js';
 import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
@@ -72,10 +71,5 @@ export function scopedMemoryUseSignal(
   scopedContext: ScopedContextResult,
 ): MemoryUseSignal {
   const items = capabilityGatedScopedItems(database, runWorkspace, scopedContext);
-  if (hasActionableMemorySelection(items)) return 'actionable';
-  return items.some((item) => contextFeedbackSignals(database, item.entryId)
-    .some((signal) => signal.verdict === 'helpful'))
-    ? 'actionable'
-    : 'none';
+  return hasActionableMemorySelection(items) ? 'actionable' : 'none';
 }
-

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -165,6 +166,7 @@ export function renderStandardSkillFile(
   destinationPath?: string,
 ): { content: string; action: 'created' | 'updated' | 'unchanged' } {
   if (existing === undefined) return { content: bundled.content, action: 'created' };
+  assertDeploymentOwnership(existing, bundled, destinationPath);
   if (markerCount(existing, bundled.managedMarker) !== 1) {
     const target = destinationPath ?? `${bundled.skillName}/${bundled.relativePath}`;
     throw new KiokukoError(
@@ -177,4 +179,49 @@ export function renderStandardSkillFile(
     content: bundled.content,
     action: existing === bundled.content ? 'unchanged' : 'updated',
   };
+}
+
+export const INTEGRATION_CONTRACT = { owner: 'kiokuko-mcp', id: 'kiokuko/model-managed', version: 2 } as const;
+const DEPLOYMENT_STAMP = /\n<!-- KIOKUKO DEPLOYMENT (.+) -->\n$/;
+
+export function deployedSkillName(name: string, host: string): string {
+  return host === 'codex' ? `kiokuko-codex-${name.replace(/^kiokuko-/, '')}` : name;
+}
+/** Fixed package manifest aliases only; arbitrary synonyms grant no capability. */
+export function logicalSkillName(name: string): string {
+  return STANDARD_SKILL_MANIFESTS.find(skill => deployedSkillName(skill.name, 'codex') === name)?.name ?? name;
+}
+export function hostSkillText(text: string, host: string): string {
+  if (host !== 'codex') return text;
+  const names = STANDARD_SKILL_MANIFESTS.map(skill => skill.name).sort((a, b) => b.length - a.length);
+  // One token-boundary replacement pass preserves already namespaced references.
+  const pattern = new RegExp(`(?<![A-Za-z0-9_-])(?:${names.join('|')})(?![A-Za-z0-9_-])`, 'g');
+  return text.replace(pattern, name => deployedSkillName(name, host));
+}
+export function hostSkillFile(file: BundledStandardSkillFile, host: string): BundledStandardSkillFile {
+  const body = hostSkillText(file.content, host)
+    + `\n<!-- KIOKUKO CONTRACT ${INTEGRATION_CONTRACT.id}@${INTEGRATION_CONTRACT.version} -->\n`;
+  const manifest = { ...INTEGRATION_CONTRACT, host, logicalName: file.skillName,
+    hash: createHash('sha256').update(body).digest('hex') };
+  return { ...file, skillName: deployedSkillName(file.skillName, host),
+    managedMarker: hostSkillText(file.managedMarker, host),
+    content: body + `\n<!-- KIOKUKO DEPLOYMENT ${JSON.stringify(manifest)} -->\n` };
+}
+function assertDeploymentOwnership(existing: string, bundled: BundledStandardSkillFile, destinationPath?: string): void {
+  try {
+    const intended = JSON.parse(DEPLOYMENT_STAMP.exec(bundled.content)?.[1] ?? 'null');
+    if (intended && isOwnedSkillDeployment(existing, intended.host, intended.logicalName)) return;
+  } catch { /* The same bounded ownership conflict applies to invalid manifests. */ }
+  const target = destinationPath ?? bundled.skillName;
+  throw new KiokukoError('CONFLICT', `Refusing to overwrite a foreign or modified Skill deployment: ${target}. Inspect and back up or rename that file, then rerun kiokuko setup.`);
+}
+/** Removal obeys the same ownership boundary as update. Legacy shared Skills are retained. */
+export function isOwnedSkillDeployment(content: string, host: string, logicalName: string): boolean {
+  try {
+    const stamp = JSON.parse(DEPLOYMENT_STAMP.exec(content)?.[1] ?? 'null');
+    return stamp?.owner === INTEGRATION_CONTRACT.owner && stamp.id === INTEGRATION_CONTRACT.id
+      && Number.isInteger(stamp.version) && stamp.version > 0 && stamp.version <= INTEGRATION_CONTRACT.version
+      && stamp.host === host && stamp.logicalName === logicalName
+      && stamp.hash === createHash('sha256').update(content.replace(DEPLOYMENT_STAMP, '')).digest('hex');
+  } catch { return false; }
 }

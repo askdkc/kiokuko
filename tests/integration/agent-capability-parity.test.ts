@@ -21,15 +21,9 @@ const profileHints = {
   expected: 'passes',
   constraints: null,
 };
-const requiredMemoryPolicy = {
-  memoryReasoningRequired: true,
-  contextWithheld: true,
-  withheldReason: 'memory_reasoning_missing',
-  deliveryEmpty: true,
-  storedEntryCount: 1,
-} as const;
+const requiredMemoryPolicy = { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null } as const;
 
-test('prior cross-run helpful feedback withholds the same weak memory without stopping MCP or generic Agent tasks', async () => {
+test('prior cross-run helpful feedback keeps the same weak memory advisory without stopping MCP or generic Agent tasks', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-capability-feedback-parity-'));
   const repositoryRoot = path.join(directory, 'repository');
   const databasePath = path.join(directory, 'data.sqlite3');
@@ -96,9 +90,9 @@ test('prior cross-run helpful feedback withholds the same weak memory without st
     });
     assert.equal(mcp.nextAction, 'proceed');
     assert.deepEqual(mcp.memoryPolicy, requiredMemoryPolicy);
-    assert.equal(mcp.context, null);
+    assert.ok(mcp.context?.items.length);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
-      .get<{ count: number }>(mcp.run.runId)?.count, 0);
+      .get<{ count: number }>(mcp.run.runId)?.count, 1);
   } finally {
     database.close();
   }
@@ -140,8 +134,8 @@ test('prior cross-run helpful feedback withholds the same weak memory without st
     runId = envelope.data.runId as string;
     assert.equal(envelope.data.nextAction, 'proceed');
     assert.deepEqual(envelope.data.memoryPolicy, requiredMemoryPolicy);
-    assert.equal(envelope.data.context, null);
-    assert.deepEqual(envelope.data.recommendations, []);
+    assert.ok(envelope.data.context?.items.length);
+    assert.ok(envelope.data.recommendations.every((item: any) => item.metadata?.missingSkill !== 'memory-reasoning'));
   } finally {
     await runtime.close();
   }
@@ -149,7 +143,7 @@ test('prior cross-run helpful feedback withholds the same weak memory without st
   const verified = openConnection(databasePath);
   try {
     assert.equal(verified.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
-      .get<{ count: number }>(runId)?.count, 0);
+      .get<{ count: number }>(runId)?.count, 1);
   } finally {
     verified.close();
   }

@@ -28,7 +28,7 @@ const args = ['exec', '--ignore-user-config', '--ephemeral', '--dangerously-bypa
   '-c', 'mcp_servers.kiokuko.tools.task_memory_status.approval_mode="approve"',
   '-c', `mcp_servers.kiokuko.env.KIOKUKO_DATA_DIR=${JSON.stringify(base)}`,
   '-c', 'mcp_servers.kiokuko.env.KIOKUKO_SKILL_DISCOVERY="off"',
-  '--json', 'This is an isolated Kiokuko hook integration test in a fresh user turn. Use task_inspect to read kiokuko-soul/SKILL.md and memory-reasoning, call task_prepare using the hook request ID, complete any intake and memory reviews, create probe.txt containing ok, run exactly the shell command true, and finish. Work only in this temporary repository. Do not use other tasks or user files.'];
+  '--json', 'This is an isolated Kiokuko hook integration test in a fresh user turn. First deliberately try an ordinary read before preparation, observe its recoverable denial, then repair this same request. Use task_inspect to read kiokuko-soul/SKILL.md and memory-reasoning, call task_prepare using the hook request ID, complete any intake and memory reviews, define a required verification check for the probe, create probe.txt containing ok, run exactly the shell command true, record and link the actual verifier result with its honest provenance, and finish. Work only in this temporary repository. Do not use other tasks or user files.'];
 // The database name expected by KIOKUKO_DATA_DIR is fixed by the public path resolver.
 const { getGlobalDatabasePath } = await import('../dist/config/paths.js');
 const actualDatabase = getGlobalDatabasePath({ env: { ...process.env, KIOKUKO_DATA_DIR: base } });
@@ -65,17 +65,18 @@ async function runClient(prompt) {
   clearTimeout(timeout);
   return code;
 }
-const denialCode = await runClient('This is an isolated Kiokuko policy-denial test. Deliberately try to create blocked-probe.txt with apply_patch before any preparation; the hook must deny it. After denial, report the blocker and end this turn without using more tools or attempting recovery. Work only in this temporary repository. Do not use other tasks or user files.');
+const denialCode = await runClient('This is an isolated Kiokuko terminal identity-denial test. Deliberately call task_prepare using requestId wrong-client-request and soulRead true; the hook must reject the request binding before preparation executes. After that identity denial, report the blocker and end the turn. Work only in this temporary repository. Do not use other tasks or user files.');
 const recoveryCode = hardStopOnly ? undefined : await runClient(args.at(-1));
 const db = openConnection(actualDatabase);
 const requests = db.prepare('SELECT state, stop_notified, last_event, run_id FROM codex_hook_requests').all();
 const observations = db.prepare('SELECT event_name, tool_name, response_shape, decision FROM codex_hook_observations').all();
 const evidence = db.prepare('SELECT provenance, outcome FROM task_execution_evidence').all();
 const protocolChecks = {
-  preparationGate: observations.some(o => o.event_name === 'PreToolUse' && o.tool_name === 'apply_patch' && o.decision === 'denied'),
+  preparationGate: observations.some(o => o.event_name === 'PreToolUse' && o.tool_name === 'mcp__kiokuko__task_prepare' && o.decision === 'denied'),
   durableTurnStop: requests.some(r => r.stop_notified === 1 && r.run_id === null),
   deniedEditAbsent: !existsSync(path.join(root, 'blocked-probe.txt')),
   ...(hardStopOnly ? {} : {
+    sameTurnRepair: observations.some(o => o.decision === 'denied' && JSON.parse(o.response_shape).recoverable === true),
     runBinding: requests.some(r => r.state === 'bound' && r.stop_notified === 0),
     observedPassingExecution: evidence.some(e => e.provenance === 'client_observed' && e.outcome === 'passed'),
     freshTurnEdit: existsSync(path.join(root, 'probe.txt')),

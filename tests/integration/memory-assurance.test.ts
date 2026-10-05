@@ -12,7 +12,7 @@ import { openConnection } from '../../src/db/connection.js';
 import { prepareAgentTask, answerAgentTask } from '../../src/akinator/agent-task.js';
 import { inspectTask } from '../../src/assurance/inspect.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
-import { recordEntry } from '../../src/memory/entries.js';
+import { recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
 import { assuranceState, reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCompletion, memoryReviewNextAction } from '../../src/assurance/service.js';
 import { repositoryStateDigest } from '../../src/assurance/snapshot.js';
 import { codexHookFailureCode, handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
@@ -30,9 +30,9 @@ async function fixture() {
   const db = openConnection(databasePath);
   const project = await resolveProjectWorkspace(db, root);
   assert.ok(project);
-  const entry = recordEntry(db, { workspace: project.workspace, kind: 'decision', title: 'migration expectations', body: 'Derive migration expectations from the bundled migration list; next migration must not need a fixed array update.', tags: ['migration'], confidence: 0.8 });
+  const entry = recordEntry(db, { workspace: project.workspace, kind: 'decision', title: 'migration expectations', body: 'Derive migration expectations from the bundled migration list; next migration must not need a fixed array update.', tags: ['migration', 'source.ts'], confidence: 0.8 });
   const prepared = await prepareAgentTask(db, { cwd: root, requestId: 'test-request', task: 'Implement migration expectations', capabilities: caps, skillDiscoveryMode: 'off', profileHints: {
-    taskType: 'build', target: 'migration expectations code', expected: 'next migration tests pass', constraints: 'preserve historical fixtures',
+    taskType: 'build', target: 'source.ts migration expectations code', expected: 'next migration tests pass', constraints: 'preserve historical fixtures',
   } });
   return { base, root, db, entry, prepared, databasePath };
 }
@@ -103,7 +103,7 @@ test('doctor inspects adopted memory across a symlink and nested Git repositorie
 
     writeFileSync(path.join(nestedRoot, 'nested.ts'), 'export const value = 2;\n');
     const changedModule = await runDoctor({ databasePath: f.databasePath });
-    assert.match(changedModule.checks.memoryAssurance.detail!, /missingVerification=1; inspectionErrors=0/u);
+    assert.match(changedModule.checks.memoryAssurance.detail!, /pending=1; stale=0; missingVerification=0; inspectionErrors=0/u);
     writeFileSync(path.join(nestedRoot, 'nested.ts'), 'export const value = 1;\n');
 
     writeFileSync(path.join(f.root, 'other.ts'), 'export const other = true;\n');
@@ -111,7 +111,7 @@ test('doctor inspects adopted memory across a symlink and nested Git repositorie
     symlinkSync('other.ts', link);
     const stale = await runDoctor({ databasePath: f.databasePath });
     assert.equal(stale.checks.memoryAssurance.ok, true);
-    assert.match(stale.checks.memoryAssurance.detail!, /missingVerification=1; inspectionErrors=0/u);
+    assert.match(stale.checks.memoryAssurance.detail!, /pending=1; stale=0; missingVerification=0; inspectionErrors=0/u);
 
     unlinkSync(link);
     const outside = path.join(f.base, 'outside.ts');
@@ -140,7 +140,7 @@ test('Codex policy denial stops the turn durably before every recovery and tool 
     handleCodexHook(f.db, prompt);
     const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{ request_id: string }>()!.request_id;
     const call = (name: string, args: object = {}) => ({ ...common, hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: name, tool_input: args });
-    const denied = handleCodexHook(f.db, call('exec_command')) as any;
+    const denied = handleCodexHook(f.db, call('mcp__kiokuko__task_prepare', {cwd:f.root,requestId:'wrong-request'})) as any;
     assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Do not retry.*new user message/u);
     assert.equal(denied.continue, undefined); // Unsupported here would make Codex fail open.
@@ -185,8 +185,8 @@ test('Codex permits user clarification and clock reads before preparation and pe
     const denied = handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'exec_command',
       tool_use_id: 'premature', tool_input: { cmd: 'true' } }) as any;
     assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
-    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{ status: string }>(f.prepared.run.runId)!.status, 'failed');
-    assert.equal((handleCodexHook(f.db, { ...ask('request_user_input_async'), hook_event_name: 'PreToolUse' }) as any).hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{ status: string }>(f.prepared.run.runId)!.status, 'active');
+    assert.deepEqual(handleCodexHook(f.db, { ...ask('request_user_input_async'), hook_event_name: 'PreToolUse' }), {});
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 test('hook command exposes policy block reasons to the user without leaking tool input', async () => {
@@ -217,7 +217,7 @@ test('hook command exposes policy block reasons to the user without leaking tool
     checkBlock(/task_prepare/u);
     common = { ...common, turn_id: 'pending-review' };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
-    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE stop_notified=0').get<{ request_id: string }>()!.request_id;
+    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE stop_notified=0 ORDER BY rowid DESC LIMIT 1').get<{ request_id: string }>()!.request_id;
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
       tool_use_id: 'prepare', tool_input: { cwd: f.root, requestId }, tool_response: { structuredContent: f.prepared } });
     checkBlock(/1 pending.*0 stale.*task_memory_status.*task_memory_review/u);
@@ -246,7 +246,7 @@ for (const withIntake of [false, true]) {
       }
       const args = { cwd: f.root, requestId, soulRead: true, task: 'Implement migration expectations', capabilities: caps,
         skillDiscoveryMode: 'off' as const, profileHints: withIntake ? {} : {
-          taskType: 'build' as const, target: 'migration expectations code', expected: 'next migration tests pass', constraints: 'preserve historical fixtures',
+          taskType: 'build' as const, target: 'source.ts migration expectations code', expected: 'next migration tests pass', constraints: 'preserve historical fixtures',
         } };
       call('task_prepare', 'prepare', args, () => undefined);
       let prepared = await prepareAgentTask(f.db, args);
@@ -254,7 +254,7 @@ for (const withIntake of [false, true]) {
         hook_event_name: 'PostToolUse', tool_name: `mcp__kiokuko__${name}`, tool_use_id: name,
         tool_input: input, tool_response: { structuredContent: result } }) as any;
       let guidance = post('task_prepare', args, prepared);
-      const answers = { taskType: 'build', target: 'migration expectations code', expected: 'next migration tests pass', constraints: 'preserve historical fixtures' };
+      const answers = { taskType: 'build', target: 'source.ts migration expectations code', expected: 'next migration tests pass', constraints: 'preserve historical fixtures' };
       while (prepared.intake.status === 'needs_answer') {
         assert.equal(prepared.nextAction, 'answer_from_evidence_or_ask_user');
         const question = prepared.intake.question!;
@@ -379,10 +379,15 @@ test('independent PostToolUse completions commit across a revision change, and d
     assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, 2);
     assert.throws(() => handleCodexHook(f.db, { ...a, tool_input: { cmd: 'other' }, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }), /input changed/u);
     const changed = f.event('changed');
-    handleCodexHook(f.db, { ...changed, hook_event_name: 'PreToolUse' });
+    const changedSibling = f.event('changed-sibling');
+    for (const call of [changed, changedSibling]) handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
     writeFileSync(path.join(f.root, 'source.ts'), 'updated after tool start\n');
     handleCodexHook(f.db, { ...changed, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
     const afterChange = taskAssuranceReport(f.db, f.prepared.run.runId).revision;
+    const sequence = taskAssuranceReport(f.db, f.prepared.run.runId).observationSequence!;
+    handleCodexHook(f.db, { ...changedSibling, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
+    assert.equal(taskAssuranceReport(f.db, f.prepared.run.runId).revision, afterChange);
+    assert.equal(taskAssuranceReport(f.db, f.prepared.run.runId).observationSequence, sequence + 1);
     handleCodexHook(f.db, { ...changed, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
     assert.equal(taskAssuranceReport(f.db, f.prepared.run.runId).revision, afterChange);
     assert.equal(f.db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get<{ count: number }>()!.count, 2);
@@ -517,7 +522,7 @@ test('next-migration counterexample fails a fixed expectation and passes derived
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
     const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE last_event = ?').get<{ request_id: string }>('UserPromptSubmit')!.request_id;
     let args = { requestId, cwd: f.root, soulRead: true, task: 'Implement migration expectations', capabilities: caps,
-      profileHints: { taskType: 'build' as const, target: 'migration expectations code', expected: 'next migration tests pass', constraints: 'historical fixtures are valid' } };
+      profileHints: { taskType: 'build' as const, target: 'source.ts migration expectations code', expected: 'next migration tests pass', constraints: 'historical fixtures are valid' } };
     const gate = handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: args });
     assert.deepEqual(gate, {});
     assert.equal(args.soulRead, true);
@@ -528,7 +533,7 @@ test('next-migration counterexample fails a fixed expectation and passes derived
     assert.equal((handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }) as any).continue, false);
     common = { ...common, turn_id: 'fresh-request' };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
-    args = { ...args, requestId: f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE stop_notified=0').get<{ request_id: string }>()!.request_id };
+    args = { ...args, requestId: f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE stop_notified=0 ORDER BY rowid DESC LIMIT 1').get<{ request_id: string }>()!.request_id };
     assert.deepEqual(handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: args }), {});
     prepared = await prepareAgentTask(f.db, { ...args, skillDiscoveryMode: 'off' });
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: args, tool_response: { structuredContent: prepared } });
@@ -549,6 +554,7 @@ test('next-migration counterexample fails a fixed expectation and passes derived
     reviewTaskMemory(f.db, { ...review, requestId: 'fixed-result', expectedRevision: taskAssuranceReport(f.db, runId).revision!, evidenceIds: [failedEvidence] });
     assert.throws(() => assertAssuranceCompletion(f.db, runId, 'completed'), /incomplete/);
     writeFileSync(verifier, moduleHeader + `const expected=loadMigrationSnapshot(${JSON.stringify(migrations)}).migrations.map(m=>m.version); assert.deepEqual(actual, expected); assert.deepEqual(actual.slice(0,2), [1,2]);\n`);
+    reviewTaskMemory(f.db, { ...review, requestId: 'changed-verifier-decision', expectedRevision: taskAssuranceReport(f.db, runId).revision!, evidenceIds: [] });
     const passedEvidence = observedRun('derived-array');
     reviewTaskMemory(f.db, { ...review, requestId: 'derived-result', expectedRevision: taskAssuranceReport(f.db, runId).revision!, evidenceIds: [passedEvidence] });
     assert.equal(taskAssuranceReport(f.db, runId).complete, true);
@@ -642,6 +648,24 @@ test('stdout cannot spoof exit metadata and unfinished processes stay unknown', 
   assert.equal(observedExitCode({ exit_code: 0 }), 0);
   assert.equal(observedExitCode({ exit_code: 1 }), 1);
   assert.equal(observedExitCode('{"exit_code":0}'), null);
+  for (const incomplete of [{session_id:12}, {timed_out:true}, {interrupted:true}, {signal:'SIGTERM'}, {status:'running'}, {error:'timeout'}]) {
+    assert.equal(observedExitCode({...incomplete,exit_code:0}),null);
+  }
+});
+
+test('legacy review history without decision dependencies is retained but cannot certify a new delivery', async () => {
+  const f = await fixture();
+  try {
+    const runId = f.prepared.run.runId;
+    const deliveryId = f.prepared.context!.deliveryId!;
+    f.db.prepare('INSERT INTO task_memory_reviews VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(runId,deliveryId,f.entry.id,1,'inapplicable','legacy basis','','','','[]',new Date().toISOString());
+    assert.deepEqual(taskAssuranceReport(f.db,runId).pending,[f.entry.id]);
+    const result = await refreshTaskMemory(f.db,{runId,cwd:f.root,requestId:'legacy-refresh',expectedRevision:taskAssuranceReport(f.db,runId).revision!,capabilities:caps,changedPaths:['source.ts']}) as any;
+    assert.deepEqual(result.assurance.pending,[f.entry.id]);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_memory_reviews WHERE run_id=?').get<{n:number}>(runId)!.n,1);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_memory_decisions WHERE run_id=?').get<{n:number}>(runId)!.n,0);
+  } finally { f.db.close();rmSync(f.base,{recursive:true,force:true}); }
 });
 test('code plans require memory decisions but no implementation test; another run cannot donate evidence', async () => {
   const f = await fixture();
@@ -649,7 +673,7 @@ test('code plans require memory decisions but no implementation test; another ru
     const originalId = f.prepared.run.runId;
     const originalDelivery = f.prepared.context!.deliveryId!;
     const evidence = recordTaskEvidence(f.db, { runId: originalId, cwd: f.root, deliveryId: originalDelivery, requestId: 'original-evidence', expectedRevision: taskAssuranceReport(f.db, originalId).revision!, execution: 'test', stateDigest: repositoryStateDigest(f.root), outcome: 'passed', exitCode: 0 });
-    const plan = await prepareAgentTask(f.db, { cwd: f.root, requestId: 'plan-request', task: 'Plan migration code changes', capabilities: caps, skillDiscoveryMode: 'off', profileHints: { taskType: 'analysis', target: 'migration code', expected: 'implementation plan only', constraints: 'do not implement' } });
+    const plan = await prepareAgentTask(f.db, { cwd: f.root, requestId: 'plan-request', task: 'Plan migration code changes', capabilities: caps, skillDiscoveryMode: 'off', profileHints: { taskType: 'analysis', target: 'source.ts migration expectations code', expected: 'implementation plan only', constraints: 'do not implement' } });
     const runId = plan.run.runId;
     assert.equal(taskAssuranceReport(f.db, runId).complete, false);
     const review = { runId, cwd: f.root, requestId: 'plan-decision', expectedRevision: taskAssuranceReport(f.db, runId).revision!, deliveryId: plan.context!.deliveryId!, entryId: f.entry.id, entryRevision: f.entry.revision, decision: 'adopted', basis: 'Plan derives current migrations', invariant: 'Next migration requires no manual expectation', counterexample: 'Add a migration', verification: 'Implementation will run the next migration case' };
@@ -679,4 +703,153 @@ test('retrieval diagnostics distinguish an empty workspace, no match and a searc
       await assert.rejects(federatedEntries(f.db, { project, query: 'migration', limit: 10, observe: () => assert.fail('Errors must not be observed as empty retrieval') }), /search outage/);
     } finally { f.db.prepare = original; }
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('A-B-A refresh rebinds replay and carries latest decisions without resurrecting an old assessment', async () => {
+ const f=await fixture();
+ try {
+  const runId=f.prepared.run.runId;
+  const refresh=async(label:string,signals:string[])=>await refreshTaskMemory(f.db,{runId,cwd:f.root,requestId:label,expectedRevision:taskAssuranceReport(f.db,runId).revision!,capabilities:caps,changedPaths:signals}) as any;
+  const a=await refresh('a',['a.ts']);
+  const review=(deliveryId:string,decision:'inapplicable'|'contradicted',label:string)=>reviewTaskMemory(f.db,{runId,cwd:f.root,requestId:label,expectedRevision:taskAssuranceReport(f.db,runId).revision!,deliveryId,entryId:f.entry.id,entryRevision:1,decision,basis:'Current fixture assessment'});
+  review(a.context.deliveryId,'inapplicable','review-a');
+  const b=await refresh('b',['b.ts']);
+  assert.equal(b.assurance.pending.length,0);
+  review(b.context.deliveryId,'contradicted','review-b');
+  const back=await refresh('a-again',['a.ts']);
+  assert.equal(back.context.deliveryId,a.context.deliveryId);
+  assert.equal(assuranceState(f.db,runId)!.delivery_id,a.context.deliveryId);
+  assert.equal(back.assurance.pending.length,0);
+  const latest=f.db.prepare('SELECT decision_id FROM task_memory_decisions ORDER BY sequence DESC LIMIT 1').get<any>()!.decision_id;
+  assert.equal(back.assurance.decisions[0].decisionId,latest);
+  review(back.context.deliveryId,'inapplicable','review-return');
+  const before=assuranceState(f.db,runId)!.delivery_id;
+  await refreshTaskMemory(f.db,{runId,cwd:f.root,requestId:'b',expectedRevision:b.assurance.revision-1,capabilities:caps,changedPaths:['b.ts']});
+  assert.equal(assuranceState(f.db,runId)!.delivery_id,before);
+ } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+test('recoverable preparation denial leaves same-turn preparation and review repair available',async()=>{
+ const f=await fixture();
+ try {
+  const common={session_id:'repair',turn_id:'same',cwd:f.root};
+  handleCodexHook(f.db,{...common,hook_event_name:'UserPromptSubmit'});
+  const requestId=f.db.prepare('SELECT request_id FROM codex_hook_requests').get<any>()!.request_id;
+  const pre=(name:string,args:object)=>handleCodexHook(f.db,{...common,hook_event_name:'PreToolUse',tool_name:name,tool_use_id:name,tool_input:args}) as any;
+  assert.equal(pre('exec_command',{}).kiokukoDecision.reason,'preparation_required');
+  assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<any>()!.stop_notified,0);
+  assert.deepEqual(pre('mcp__kiokuko__task_prepare',{requestId,cwd:f.root}),{});
+  handleCodexHook(f.db,{...common,hook_event_name:'PostToolUse',tool_name:'mcp__kiokuko__task_prepare',tool_use_id:'prepare',tool_input:{requestId,cwd:f.root},tool_response:{structuredContent:f.prepared}});
+  assert.equal(pre('exec_command',{}).kiokukoDecision.reason,'memory_review_pending');
+  assert.deepEqual(pre('mcp__kiokuko__task_memory_status',{runId:f.prepared.run.runId,cwd:f.root}),{});
+  reviewTaskMemory(f.db,{runId:f.prepared.run.runId,cwd:f.root,requestId:'repair-review',expectedRevision:taskAssuranceReport(f.db,f.prepared.run.runId).revision!,deliveryId:f.prepared.context!.deliveryId!,entryId:f.entry.id,entryRevision:1,decision:'inapplicable',basis:'Does not apply to current execution'});
+  assert.deepEqual(pre('exec_command',{}),{});
+ }finally{f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+test('three unchanged reads add observations without review revision or guidance',async()=>{
+ const f=await boundHookFixture();
+ try {
+  const before=taskAssuranceReport(f.db,f.prepared.run.runId).revision;
+  for(let i=0;i<3;i++){const call=f.event('read-'+i);handleCodexHook(f.db,{...call,hook_event_name:'PreToolUse'});const result=handleCodexHook(f.db,{...call,hook_event_name:'PostToolUse',tool_response:'{"exit_code":0}'});assert.deepEqual(result,{});}
+  const report=taskAssuranceReport(f.db,f.prepared.run.runId);
+  assert.equal(report.revision,before);assert.equal(report.observationSequence,3);
+  assert.equal(observedExitCode({exit_code:0,timed_out:true}),null);
+  assert.equal(observedExitCode({exit_code:0,session_id:3}),null);
+ }finally{f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+
+test('fifteen unchanged decisions carry across deliveries; one revised entry alone returns pending', async () => {
+  const f = await fixture();
+  try {
+    const entries = [f.entry, ...Array.from({ length: 14 }, (_, i) => recordEntry(f.db, {
+      workspace: f.prepared.project.workspace, kind: 'lesson', title: `migration expectation ${i}`,
+      body: `Migration requirement ${i}`, tags: ['source.ts'],
+    }))];
+    const runId = f.prepared.run.runId;
+    const refresh = (id: string, changedPaths: string[]) => refreshTaskMemory(f.db, {
+      runId, cwd: f.root, requestId: id, expectedRevision: taskAssuranceReport(f.db, runId).revision!, capabilities: caps,
+      changedPaths,
+    }) as Promise<any>;
+    const first = await refresh('fifteen-first', ['source.ts']);
+    assert.equal(first.context.items.length, 15);
+    for (const entry of entries) reviewTaskMemory(f.db, {
+      runId, cwd: f.root, requestId: `fifteen-${entry.id}`, expectedRevision: taskAssuranceReport(f.db, runId).revision!,
+      deliveryId: first.context.deliveryId, entryId: entry.id, entryRevision: entry.revision,
+      decision: 'inapplicable', basis: 'Current fixture contains none of this separate lesson condition',
+    });
+    const revision = taskAssuranceReport(f.db, runId).revision;
+    const same = await refresh('fifteen-same', ['source.ts']);
+    assert.equal(same.assurance.revision, revision);
+    const second = await refresh('fifteen-second', ['other.ts']);
+    assert.equal(second.assurance.pending.length, 0);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_memory_decisions').get<{n:number}>()!.n, 15);
+    updateCandidateEntry(f.db, {workspace: entries[0]!.workspace, entryId: entries[0]!.id, expectedRevision: 1,
+      kind: 'decision', title: entries[0]!.title, body: 'Changed requirement', tags: ['source.ts']});
+    const changed = await refresh('fifteen-changed', ['source.ts']);
+    assert.deepEqual(changed.assurance.pending, [entries[0]!.id]);
+    f.db.close();
+    const reopened = openConnection(f.databasePath);
+    try { assert.deepEqual(taskAssuranceReport(reopened, runId).pending, [entries[0]!.id]); }
+    finally { reopened.close(); }
+  } finally { try { f.db.close(); } catch {} rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('explicit path and error dependencies invalidate only their stated conditions', async () => {
+  const f = await fixture();
+  try {
+    const runId = f.prepared.run.runId;
+    const refreshed = await refreshTaskMemory(f.db, {runId, cwd:f.root, requestId:'dep-delivery',
+      expectedRevision:taskAssuranceReport(f.db,runId).revision!, capabilities:caps, changedPaths:['source.ts'], errorSignatures:['migration error']}) as any;
+    reviewTaskMemory(f.db, {runId, cwd:f.root, requestId:'dep-review', expectedRevision:taskAssuranceReport(f.db,runId).revision!,
+      deliveryId:refreshed.context.deliveryId, entryId:f.entry.id, entryRevision:1, decision:'inapplicable', basis:'Only source.ts and the explicit error matter',
+      dependencies:{paths:['source.ts'],errors:['migration error']}});
+    writeFileSync(path.join(f.root, 'unrelated.ts'), 'unrelated');
+    assert.equal(taskAssuranceReport(f.db,runId).pending.length,0);
+    const cleared = await refreshTaskMemory(f.db,{runId,cwd:f.root,requestId:'dep-cleared',expectedRevision:taskAssuranceReport(f.db,runId).revision!,capabilities:caps,changedPaths:['source.ts'],errorSignatures:[]}) as any;
+    assert.deepEqual(cleared.assurance.pending,[f.entry.id]);
+    writeFileSync(path.join(f.root,'source.ts'),'changed');
+    assert.deepEqual(taskAssuranceReport(f.db,runId).pending,[f.entry.id]);
+  } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+
+test('a child preparation denial does not inherit or fail the parent binding', async () => {
+  const f = await boundHookFixture();
+  try {
+    const child = { ...f.common, agent_id: 'child' };
+    handleCodexHook(f.db, { ...child, hook_event_name: 'SubagentStart' });
+    const denied = handleCodexHook(f.db, { ...child, hook_event_name: 'PreToolUse', tool_name: 'exec_command',
+      tool_use_id: 'child-work', tool_input: {cmd:'true'} }) as any;
+    assert.equal(denied.kiokukoDecision.reason, 'preparation_required');
+    assert.equal(denied.kiokukoDecision.recoverable, true);
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
+    assert.deepEqual(handleCodexHook(f.db, { ...f.event('parent-work'), hook_event_name:'PreToolUse' }), {});
+  } finally { f.db.close(); rmSync(f.base,{recursive:true,force:true}); }
+});
+
+test('MCP contract mismatch preserves diagnosis and blocks ordinary execution without latching', async () => {
+  const f = await boundHookFixture();
+  try {
+    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{request_id:string}>()!.request_id;
+    const incompatible = { ...f.prepared, assurance: {...f.prepared.assurance, contract:{id:'foreign/host-only',version:1}} };
+    const result = handleCodexHook(f.db, {...f.common, hook_event_name:'PostToolUse',tool_name:'mcp__kiokuko__task_prepare',
+      tool_use_id:'mismatch',tool_input:{requestId,cwd:f.root},tool_response:{structuredContent:incompatible}}) as any;
+    assert.match(result.hookSpecificOutput.additionalContext,/contract mismatch/);
+    assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<{stop_notified:number}>()!.stop_notified,0);
+    assert.equal((handleCodexHook(f.db,{...f.event('blocked'),hook_event_name:'PreToolUse'}) as any).kiokukoDecision.recoverable,true);
+    assert.deepEqual(handleCodexHook(f.db,{...f.common,hook_event_name:'PreToolUse',tool_name:'mcp__kiokuko__task_inspect',
+      tool_use_id:'inspect',tool_input:{cwd:f.root,operation:'skill'}}),{});
+  } finally { f.db.close();rmSync(f.base,{recursive:true,force:true}); }
+});
+
+test('concurrent exact refresh retries commit one receipt and no redundant transition', async () => {
+  const f=await fixture();
+  try {
+    const input={runId:f.prepared.run.runId,cwd:f.root,requestId:'parallel-refresh',expectedRevision:taskAssuranceReport(f.db,f.prepared.run.runId).revision!,capabilities:caps,changedPaths:['source.ts']};
+    const result=await Promise.allSettled([refreshTaskMemory(f.db,input),refreshTaskMemory(f.db,input)]);
+    assert.equal(result[0]!.status,'fulfilled');
+    if(result[1]!.status==='rejected') assert.equal((result[1]!.reason as any).code,'CONFLICT');
+    else assert.deepEqual(result[1]!.value,(result[0] as PromiseFulfilledResult<unknown>).value);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_assurance_requests WHERE request_id=?').get<{n:number}>('parallel-refresh')!.n,1);
+    const current=assuranceState(f.db,input.runId)!;
+    assert.equal(current.delivery_id,((result[0] as PromiseFulfilledResult<any>).value).context.deliveryId);
+  } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
 });

@@ -1,3 +1,4 @@
+import { hostSkillFile } from '../setup/standard-skills.js';
 import { defaultCodexHookRuntime, renderCodexAssuranceHooks } from '../setup/codex-hooks.js';
 import { mkdir, rmdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -778,7 +779,7 @@ export async function setupGlobalClients(
       const content = renderCodexAssuranceHooks(existing ?? '', command, databasePath, command === 'kiokuko' ? defaultCodexHookRuntime() : undefined);
       return { content, action: content === existing ? 'unchanged' : existing === undefined ? 'created' : 'updated' };
     }));
-    files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
+    files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'codex')));
   }
   if (clients.includes('opencode')) {
     const selectedConfig = await openCodeConfigPath(planning, pathEnvironment);
@@ -796,7 +797,7 @@ export async function setupGlobalClients(
       selectedConfig.mustRemainAbsent,
     );
     files.push(mcpFile);
-    files.push(await planFile(planning, getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
+    files.push(await planFile(planning, getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'opencode')));
   }
   if (clients.includes('claude')) {
     const mcpFile = await planFile(
@@ -812,7 +813,7 @@ export async function setupGlobalClients(
       ),
     );
     files.push(mcpFile);
-    files.push(await planFile(planning, getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '')));
+    files.push(await planFile(planning, getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'claude')));
   }
   if (clients.includes('hermes')) {
     if (hermesProfile === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Hermes profile was not bound during setup planning');
@@ -834,7 +835,8 @@ export async function setupGlobalClients(
     const bundledFiles = await loadBundledStandardSkillFiles();
     for (const client of clients) {
       const skillsDirectory = await standardSkillDirectory(client, pathEnvironment, hermesProfile);
-      for (const bundled of bundledFiles) {
+      for (const source of bundledFiles) {
+        const bundled = hostSkillFile(source,client);
         const destinationPath = setupPathJoin(
           pathEnvironment,
           skillsDirectory,

@@ -127,12 +127,12 @@ Correcting preparation does not require a new user request or a “retry impleme
 ## Recoverable state conflicts and task completion
 
 A typed `recoverable: true` task-state conflict permits one recovery before any
-host policy denial: read `task_memory_status`, preserve the run and its exact
+authorization or identity denial: read `task_memory_status`, preserve the run and its exact
 capability catalog, then submit a new requestId with the current revision.
 `retryable: false` forbids repeating the unchanged request. Review a new delivery
 before continuing. A second conflict, binding mismatch, terminal run or unknown
-failure is not automatically recoverable. A host policy denial still ends the
-turn; never attempt recovery after it.
+failure is not automatically recoverable. An authorization or identity denial ends the
+turn. A recoverable preparation or review denial permits repair within the same turn.
 
 For code implementation, define required checks per target environment with
 `task_verification_define` before editing and record their results with

@@ -67,7 +67,7 @@ async function fixture(suffix: string) {
       kind: 'reference',
       title: 'Beacon implementation regression workflow',
       body: 'Implement the beacon with its focused regression test.',
-      tags: ['build', 'beacon'],
+      tags: ['build', 'beacon', 'src/beacon.ts'],
     });
     const runtimeDirectory = path.join(directory, 'runtime');
     const runtime = await startAgentHttpServer({
@@ -153,7 +153,7 @@ async function makePriorContextActionable(
       kind: 'reference',
       title: 'Beacon implementation regression workflow',
       body: 'Implement the beacon with its focused regression test and verify the revised result.',
-      tags: ['build', 'beacon'],
+      tags: ['build', 'beacon', 'src/beacon.ts'],
     });
   } finally {
     database.close();
@@ -299,14 +299,14 @@ test('exact open replay keeps one mutation acknowledgement but re-evaluates curr
     assert.equal(replay.data.runId, first.data.runId);
     assert.equal(replay.data.intakeSessionId, first.data.intakeSessionId);
     assert.equal(replay.data.nextAction, 'proceed');
-    assert.equal(replay.data.context, null);
+    assert.ok(replay.data.context?.items.length);
 
     const after = openConnection(databasePath);
     try {
       assert.equal(after.prepare('SELECT COUNT(*) AS count FROM ledger_runs').get<{ count: number }>()?.count, 1);
       assert.equal(after.prepare(`SELECT COUNT(*) AS count FROM gateway_idempotency WHERE scope = 'agent.run.open'`).get<{ count: number }>()?.count, 1);
       assert.equal(after.prepare(`SELECT response_json AS response FROM gateway_idempotency WHERE scope = 'agent.run.open'`).get<{ response: string }>()?.response, acknowledgementBefore);
-      assert.equal(after.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(first.data.runId)?.count, 1);
+      assert.equal(after.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(first.data.runId)?.count, 2);
     } finally {
       after.close();
     }
@@ -346,7 +346,7 @@ test('exact open replay gates against the current broker profile after a checkpo
         kind: 'lesson',
         title: 'Beacon implementation regression workflow current profile guidance',
         body: 'Implement the beacon workflow only after verifying the current profile.',
-        tags: ['beacon', 'build'],
+        tags: ['beacon', 'build', 'src/beacon.ts'],
       });
     } finally {
       newlyRelevant.close();

@@ -269,8 +269,7 @@ test('refresh losing a concurrent update returns typed revisions without committ
       if (key === 'exec') return (sql: string) => {
         if (sql === 'BEGIN IMMEDIATE' && !interleaved) {
           interleaved = true;
-          recordTaskEvidence(second, { cwd: f.cwd, runId: f.runId, expectedRevision: input.expectedRevision, requestId: 'concurrent-evidence', deliveryId: f.prepared.context?.deliveryId ?? null,
-            execution: 'Concurrent observed work', stateDigest: repositoryStateDigest(f.cwd), outcome: 'unknown', exitCode: null });
+          defineTaskVerification(second, { cwd: f.cwd, runId: f.runId, expectedRevision: input.expectedRevision, requestId: 'concurrent-definition', reason: 'Concurrent contract change', checks: [{id: 'race', target: 'local', expected: 'Pass', method: 'fixture'}] });
         }
         return db.exec(sql);
       };

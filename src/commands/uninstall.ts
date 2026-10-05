@@ -19,7 +19,7 @@ import { removeDelimitedBlock } from '../setup/managed-text.js';
 import { setupMcpIdentityConflictClient } from '../setup/mcp-conflict.js';
 import { listRegisteredProjectLocations } from '../setup/project-agent-refresh.js';
 import { GLOBAL_INSTRUCTIONS_BEGIN, GLOBAL_INSTRUCTIONS_END, removeCodexMcpConfig } from '../setup/render.js';
-import { STANDARD_SKILL_MANIFESTS } from '../setup/standard-skills.js';
+import { STANDARD_SKILL_MANIFESTS, deployedSkillName, hostSkillText, isOwnedSkillDeployment } from '../setup/standard-skills.js';
 import { successEnvelope } from '../serialization/envelope.js';
 import { promptCheckboxes, supportsKeyboardSelection } from '../terminal/checkbox.js';
 import {
@@ -80,21 +80,21 @@ async function planEmptyDirectory(plan: UninstallPlan, target: string): Promise<
   if (info?.isDirectory()) plan.directories.push({ path: target, identity: { device: info.dev, inode: info.ino } });
 }
 
-async function planSkills(plan: UninstallPlan, skillsDirectory: string): Promise<void> {
+async function planSkills(plan: UninstallPlan, skillsDirectory: string, host: string): Promise<void> {
   const manifests = [...STANDARD_SKILL_MANIFESTS, {
     name: 'kiokuko-enno-oduno', managedMarker: '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-enno-oduno -->',
   }];
   for (const skill of manifests) {
     const files: DataFileRemoval[] = [];
     // This is a bounded walk of a known Kiokuko skill directory, including retired references.
-    await inventoryOwnedTree(path.join(skillsDirectory, skill.name), files, plan.directories);
+    await inventoryOwnedTree(path.join(skillsDirectory, deployedSkillName(skill.name, host)), files, plan.directories);
     for (const file of files) {
       if (!file.path.endsWith('.md')) {
         plan.preserved.push({ path: file.path, action: 'preserved', reason: 'not a bundled Markdown skill file' });
         continue;
       }
       await planText(plan, file.path, source => {
-        if (source.split(skill.managedMarker).length === 2) return undefined;
+        if (source.split(hostSkillText(skill.managedMarker, host)).length === 2 && isOwnedSkillDeployment(source, host, skill.name)) return undefined;
         plan.preserved.push({ path: file.path, action: 'preserved', reason: 'no unique Kiokuko management marker' });
         return source;
       });
@@ -159,7 +159,7 @@ async function planClients(plan: UninstallPlan, options: PathEnvironment, client
       skills.add(path.join(home, 'skills'));
     }
   }
-  for (const directory of skills) await planSkills(plan, directory);
+  for (const directory of skills) await planSkills(plan, directory, directory === getCodexSkillsDirectory(options) ? 'codex' : directory === getClaudeSkillsDirectory(options) ? 'claude' : directory === getOpenCodeSkillsDirectory(options) ? 'opencode' : 'hermes');
 }
 
 async function planProjects(plan: UninstallPlan, databasePath: string): Promise<void> {

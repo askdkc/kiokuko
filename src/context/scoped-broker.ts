@@ -1,3 +1,5 @@
+import { hasTargetPathMatch } from './memory-obligation.js';
+import { bindAssuranceDelivery } from '../assurance/service.js';
 import { TaskStateConflict } from '../assurance/conflicts.js';
 import { indexArtifact, observeIndex,formatIndexSourceReferences } from '../memory/index-state.js';
 import type { TaskProfile } from '../akinator/types.js';
@@ -32,7 +34,7 @@ import { readRerankerConfig } from '../reranker/config.js';
 import { reorderScoredCandidates, scoreLocalReranker } from '../reranker/service.js';
 import { deduplicateDeliverableLessonSources, formatLessonSourceReferences, readDeliverableLessonSourceReferences, type LessonDeduplicationResult } from '../memory/lesson-derivation.js';
 
-export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v8' as const;
+export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v9' as const;
 export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
 
@@ -818,6 +820,8 @@ async function prepareScopedContext(
     const artifact = indexArtifact(database, entry);
     if (artifact) { item.knowledgeType=artifact.knowledgeType; item.sources=artifact.sources; sourceNotes.set(entry.id, formatIndexSourceReferences(artifact)); }
     item.selectionReasons.push(...hit.selectionReasons);
+    const signals = entry.scope.signals as { paths?: string[] } | undefined;
+    if (hasTargetPathMatch(raw.taskProfile.target, [entry.title, ...entry.tags, ...(signals?.paths ?? [])])) item.selectionReasons.push('target_path_match');
     if (retainedIds.has(entry.id)) item.selectionReasons.push('duplicate_source_suppressed');
     const sourceNote = sourceNotes.get(entry.id);
     if (sourceNote !== undefined) item.bodyPreview = `${item.bodyPreview}${sourceNote}`;
@@ -980,6 +984,7 @@ function persistPreparedScopedContext(
         assertBeforePersist();
         assertPreparedScopedState(database, prepared);
       }
+      if (prepared.replayDelivery !== null) bindAssuranceDelivery(database, prepared.replayDelivery);
       afterPersist?.(prepared.result);
       return prepared.result;
     });

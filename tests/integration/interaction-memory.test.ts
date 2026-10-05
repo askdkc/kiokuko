@@ -278,7 +278,7 @@ test('project memory_capture survives a server restart and is delivered from its
   } finally { await second.client.close(); await second.server.close(); }
 });
 
-test('project preparation includes general preferences but withholds them without memory-reasoning', async (t) => {
+test('project preparation delivers general preferences without code review obligations', async (t) => {
   const { root, db, capture } = await fixture(t);
   await capture('general', [general]);
   execFileSync('git', ['init', '-q', root]);
@@ -288,8 +288,9 @@ test('project preparation includes general preferences but withholds them withou
   const ready = await prepare('with-memory', capabilities);
   assert.ok(ready.context?.items.some((item) => item.bodyPreview.includes('short headings')));
   const withheld = await prepare('without-memory', [capabilities[0]]);
-  assert.equal(withheld.memoryPolicy.contextWithheld, true);
-  assert.equal(withheld.context, null);
+  assert.equal(withheld.memoryPolicy.contextWithheld, false);
+  assert.ok(withheld.context?.items.some(item => item.bodyPreview.includes('short headings')));
+  assert.equal(withheld.assurance.pending.length, 0);
 });
 
 test('MCP publishes usable schemas, transport provenance, disable switch, and two-session recall', async (t) => {

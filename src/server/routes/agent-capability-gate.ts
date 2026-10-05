@@ -1,7 +1,6 @@
 import { assuranceState, enrollAssurance } from '../../assurance/service.js';
 import type { GatewayIntakeResponse } from '../../gateway/agent-service.js';
 import type { ContextBrokerContextItem, ContextBrokerResult } from '../../context/broker.js';
-import { contextFeedbackSignals } from '../../context/feedback.js';
 import { entryOriginMatchesWorkspace } from '../../context/origin.js';
 import { KiokukoError } from '../../errors.js';
 import { LedgerStore } from '../../ledger/store.js';
@@ -64,14 +63,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-function hasHelpfulFeedbackEvidence(
-  context: Pick<AgentRouteContext, 'database'>,
-  items: ReadonlyArray<{ entryId: string }>,
-): boolean {
-  return items.some((item) => contextFeedbackSignals(context.database, item.entryId)
-    .some((signal) => signal.verdict === 'helpful'));
-}
-
 function capabilityGatedBrokerItems(
   context: Pick<AgentRouteContext, 'database'>,
   broker: Pick<ContextBrokerResult, 'context'>,
@@ -128,11 +119,7 @@ export function deriveBrokerMemoryUseSignal(
 ): 'none' | 'actionable' {
   if (broker.context === null) return 'none';
   const items = capabilityGatedBrokerItems(context, broker);
-  const derived = deriveMemoryUseSignal({ ...broker.context, items });
-  if (derived === 'actionable') return derived;
-  return items.length > 0 && hasHelpfulFeedbackEvidence(context, items)
-    ? 'actionable'
-    : 'none';
+  return deriveMemoryUseSignal({ ...broker.context, items });
 }
 
 export function brokerIntakeStatus(

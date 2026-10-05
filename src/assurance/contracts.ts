@@ -8,6 +8,7 @@ export const assuranceBase = {
 };
 export const memoryReviewSchema = z.object({
   ...assuranceBase, deliveryId: id, entryId: id, entryRevision: z.number().int().min(1),
+  dependencies: z.object({ paths: z.array(z.string().min(1).max(500)).max(100).default([]), errors: z.array(z.string().min(1).max(1000)).max(50).default([]) }).strict().optional(),
   decision: z.enum(['adopted', 'inapplicable', 'contradicted']), basis: text,
   invariant: text.optional(), counterexample: text.optional(), verification: text.optional(),
   evidenceIds: z.array(id).max(50).default([]),

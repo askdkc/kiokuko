@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { PACKAGE_VERSION } from '../package-version.js';
 import * as z from 'zod/v4';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -5,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { KiokukoError } from '../errors.js';
 import { parseAssurance } from './contracts.js';
-import { STANDARD_SKILL_MANIFESTS } from '../setup/standard-skills.js';
+import { logicalSkillName, INTEGRATION_CONTRACT, STANDARD_SKILL_MANIFESTS } from '../setup/standard-skills.js';
 
 const inspectionFailures = {
   skill: ['VALIDATION_ERROR', 'For bundled Skill reads, omit path to read kiokuko-soul, or pass a Skill name such as kiokuko-soul. References use skill-name/references/file.md. Installed client paths are not bundled paths.'],
@@ -31,6 +33,7 @@ export const inspectTaskSchema = z.object({
 
 function bundledSkillPath(input: string | undefined): string {
   let name = input ?? 'kiokuko-soul';
+  name = name.split('/').map((part,index)=>index===0 ? logicalSkillName(part) : part).join('/');
   if (name.split(/[\\/]/u).includes('..')) throw new TaskInspectionError('skill');
   if (path.isAbsolute(name)) name = path.relative(skillRoot, name);
   name = name.replaceAll('\\', '/').replace(/^skills\//u, '');
@@ -62,7 +65,10 @@ function readInspectionFile(base: string, name: string): { text: string } {
 export function inspectTask(raw: unknown) {
   const input = parseAssurance(inspectTaskSchema, raw);
   // Bundled Skills belong to this package, not to the target checkout or its submodules.
-  if (input.operation === 'skill') return readInspectionFile(skillRoot, bundledSkillPath(input.path));
+  if (input.operation === 'skill') {
+    const result = readInspectionFile(skillRoot, bundledSkillPath(input.path));
+    return { ...result, contract: INTEGRATION_CONTRACT, loadedPackageVersion: PACKAGE_VERSION, contentHash: createHash('sha256').update(result.text).digest('hex') };
+  }
   let root: string;
   try {
     root = realpathSync(execFileSync('git', ['-C', realpathSync(input.cwd), 'rev-parse', '--show-toplevel'], {

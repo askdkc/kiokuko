@@ -1,3 +1,4 @@
+import { inheritDecisions } from './decisions.js';
 import { TaskStateConflict } from './conflicts.js';
 import { indexingSources, createIndexWork,assertIndexingRunReady } from '../memory/index-service.js';
 import { scopedMemoryUseSignal } from '../context/scoped-memory-use.js';
@@ -46,7 +47,7 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
   if(input.indexing)assertIndexingRunReady(db,input.runId);
   const indexing = input.indexing ? indexingSources(db, run.workspace, input.indexing.stage, input.indexing.cursor) : undefined;
   let response: Record<string, unknown> = {};
-  await queryScopedContextGated(db, {
+  try { await queryScopedContextGated(db, {
     ...(indexing === undefined ? {} : { indexingSourceIds: indexing.map(e => e.id) }),
     project, task: run.title ?? current.taskProfile.target ?? "task", taskProfile: current.taskProfile, runId: input.runId,
     recommendedTags: current.recommendedTags, changedPaths: input.changedPaths, errorSignatures: input.errorSignatures,
@@ -58,14 +59,18 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
     const policy = deriveMemoryPolicy(current.taskProfile, memoryUse, input.capabilities);
     return { persist: !policy.contextWithheld, value: policy, assertBeforePersist: () => {
       signal?.throwIfAborted();
+      if (db.prepare('SELECT 1 FROM task_assurance_requests WHERE run_id=? AND request_id=?').get(input.runId, input.requestId)) throw new TaskStateConflict('request_id_reused');
       if (scopedMemoryUseSignal(db, run.workspace, candidate) !== memoryUse) throw new TaskStateConflict('retrieval_state_changed');
       const latest = assertAssuranceCwd(db, input.runId, input.cwd);
       if (latest.revision !== input.expectedRevision) throw new TaskStateConflict('assurance_revision_changed', { expectedRevision: input.expectedRevision, currentRevision: latest.revision });
     } };
   }, {}, (context, policy) => {
+    if (context?.deliveryId) db.prepare('INSERT INTO task_delivery_signals VALUES (?,?) ON CONFLICT(delivery_id) DO UPDATE SET errors_json=excluded.errors_json').run(context.deliveryId,JSON.stringify(input.errorSignatures));
+    if (context?.deliveryId) inheritDecisions(db, input.runId, context.deliveryId, project.repositoryRoot);
     const after = assuranceState(db, input.runId)!;
-    if (after.revision === input.expectedRevision) db.prepare('UPDATE task_assurance SET revision=revision+1 WHERE run_id=?').run(input.runId);
-    bindAssuranceRoot(db, input.runId, project.repositoryRoot, policy.contextWithheld ? 'capability_withheld' : context?.retrieval?.status);
+    const retrievalStatus = policy.contextWithheld ? 'capability_withheld' : context?.retrieval?.status ?? after.retrieval_status;
+    if (after.revision === input.expectedRevision && after.retrieval_status !== retrievalStatus) db.prepare('UPDATE task_assurance SET revision=revision+1 WHERE run_id=?').run(input.runId);
+    bindAssuranceRoot(db, input.runId, project.repositoryRoot, retrievalStatus);
     const indexWork = input.indexing && context?.deliveryId && !policy.contextWithheld ? createIndexWork(db, {
       runId: input.runId,
       deliveryId: context.deliveryId,
@@ -83,7 +88,16 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
     } : undefined;
     const assurance = taskAssuranceReport(db, input.runId, false);
     response = { ...(indexResult ? { indexing: indexResult } : {}), context, memoryPolicy: policy, assurance, nextAction: memoryReviewNextAction(assurance) };
-    db.prepare('INSERT INTO task_assurance_requests VALUES (?, ?, ?, ?)').run(input.runId, input.requestId, digest, JSON.stringify(response));
-  });
+    const receipt = JSON.stringify(response);
+    db.prepare('INSERT INTO task_assurance_requests VALUES (?, ?, ?, ?)').run(input.runId, input.requestId, digest, receipt);
+    // First delivery and transport replay expose the same persisted representation.
+    response = JSON.parse(receipt) as Record<string, unknown>;
+  }); } catch (error) {
+    if (error instanceof TaskStateConflict && error.reason === 'request_id_reused') {
+      const saved = db.prepare('SELECT request_digest, response_json FROM task_assurance_requests WHERE run_id=? AND request_id=?').get<{request_digest:string;response_json:string}>(input.runId,input.requestId);
+      if (saved?.request_digest === digest) return JSON.parse(saved.response_json) as Record<string, unknown>;
+    }
+    throw error;
+  }
   return response;
 }

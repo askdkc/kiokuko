@@ -1,3 +1,4 @@
+import { hostSkillText, INTEGRATION_CONTRACT } from './standard-skills.js';
 import { TASK_RECOVERY_INSTRUCTIONS } from '../assurance/conflicts.js';
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
@@ -16,12 +17,13 @@ export const GLOBAL_INSTRUCTIONS_END = '<!-- END KIOKUKO GLOBAL MEMORY -->';
 export const CODEX_MCP_BEGIN = '# BEGIN KIOKUKO MCP';
 export const CODEX_MCP_END = '# END KIOKUKO MCP';
 
-export function renderGlobalInstructions(existing = ''): DelimitedBlockResult {
+export function renderGlobalInstructions(existing = '', host?: string): DelimitedBlockResult {
   const block = [
     GLOBAL_INSTRUCTIONS_BEGIN,
     '<!-- Managed by `kiokuko setup`. Edit outside these markers. -->',
     '',
     '## Kiokuko global memory',
+    `<!-- KIOKUKO CONTRACT ${INTEGRATION_CONTRACT.id}@${INTEGRATION_CONTRACT.version} -->`,
     '',
     'When the Kiokuko MCP tools are available:',
     '',
@@ -51,7 +53,8 @@ export function renderGlobalInstructions(existing = ''): DelimitedBlockResult {
     '',
     GLOBAL_INSTRUCTIONS_END,
   ].join('\n');
-  return upsertDelimitedBlock(existing, block, GLOBAL_INSTRUCTIONS_BEGIN, GLOBAL_INSTRUCTIONS_END, 'Global instruction file');
+  const rendered = host ? hostSkillText(block, host) : block;
+  return upsertDelimitedBlock(existing, rendered, GLOBAL_INSTRUCTIONS_BEGIN, GLOBAL_INSTRUCTIONS_END, 'Global instruction file');
 }
 
 function occurrences(content: string, marker: string): number[] {

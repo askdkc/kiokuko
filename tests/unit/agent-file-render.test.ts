@@ -50,6 +50,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
+  assert.match(rendered, /On Codex, read `kiokuko-codex-soul` and `kiokuko-codex-memory-reasoning`/u);
   assert.match(rendered, /Akinator is the mandatory intake state machine before every planning or implementation route/u);
   assert.match(rendered, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
   assert.match(rendered, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);

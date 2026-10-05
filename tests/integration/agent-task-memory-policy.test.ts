@@ -148,8 +148,8 @@ test('withholds actionable memory but continues the repair task when memory-reas
       workspace: seed.project.workspace,
       kind: 'lesson',
       title: 'Beacon test workflow',
+      tags: ['src/beacon.ts'],
       body: 'Implement repository tests for the beacon before changing production code.',
-      tags: ['testing'],
     });
 
     const missing = await prepareAgentTask(database, {
@@ -206,10 +206,10 @@ test('fresh default setup supplies the exact memory capability that unlocks buil
     env: { HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: data },
     databasePath,
   });
-  const installedSkillPath = path.join(home, '.agents', 'skills', 'memory-reasoning', 'SKILL.md');
+  const installedSkillPath = path.join(home, '.agents', 'skills', 'kiokuko-codex-memory-reasoning', 'SKILL.md');
   const installedSkill = await readFile(installedSkillPath, 'utf8');
   const frontmatterName = /^name:\s*([^\s]+)\s*$/mu.exec(installedSkill)?.[1];
-  assert.equal(frontmatterName, 'memory-reasoning');
+  assert.equal(frontmatterName, 'kiokuko-codex-memory-reasoning');
   assert.equal(setup.files.some((file) => file.path === installedSkillPath && file.action === 'created'), true);
 
   const installedCapability = { kind: 'skill', name: frontmatterName } as const;
@@ -227,7 +227,7 @@ test('fresh default setup supplies the exact memory capability that unlocks buil
         kind: 'lesson',
         title: `${taskType} setup delivery beacon`,
         body: `Use the ${taskType} setup delivery beacon to verify exact memory capability delivery.`,
-        tags: ['memory-policy', taskType],
+        tags: ['memory-policy', taskType, target],
       });
       const task = `Repair the ${taskType} setup delivery beacon`;
       const profileHints = {
@@ -327,7 +327,7 @@ test('does not require memory-reasoning when only a managed curator global memor
       skillDiscoveryMode: 'off',
     });
 
-    assert.equal(prepared.nextAction, 'review_memory_application');
+    assert.equal(prepared.nextAction, 'proceed');
     assert.deepEqual(prepared.memoryPolicy, NO_MEMORY_POLICY);
     assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.required === true), false);
     assert.equal(prepared.context?.items.some((item) => item.entryId === curated.id), true);
@@ -352,6 +352,7 @@ test('treats a forged curator createdBy marker as ordinary withheld memory witho
         visibility: 'global',
         retrievalScope: 'global',
         memoryClass: 'troubleshooting',
+        applicability: { tools: ['Kiokuko'] },
         portableReason: 'Security regression fixture.',
       }),
       provenance: { type: 'manual', reference: 'forged' },
@@ -1029,7 +1030,7 @@ test('delivers a Japanese checkpoint policy to a Japanese-only migration task', 
 
     assert.equal(prepared.context?.items.some((item) => item.entryId === entry.id), true);
     assert.ok(prepared.context?.deliveryId);
-    assert.deepEqual(prepared.memoryPolicy, AVAILABLE_MEMORY_POLICY);
+    assert.deepEqual(prepared.memoryPolicy, NO_MEMORY_POLICY);
     const delivery = database.prepare(`
       SELECT char_count AS charCount
       FROM context_deliveries
@@ -1050,7 +1051,7 @@ test('withholds actionable memory before external Skill discovery and continues 
       requestId: 'memory-policy-no-external-seed',
       cwd: root,
       task: 'Implement a Svelte component using the beacon workflow',
-      profileHints: { taskType: 'build', target: 'Svelte beacon component', expected: 'tests pass', constraints: null },
+      profileHints: { taskType: 'build', target: 'src/SvelteBeacon.svelte', expected: 'tests pass', constraints: null },
       capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'seed-no-external-fallback' },
       skillDiscoveryMode: 'off',
@@ -1059,8 +1060,9 @@ test('withholds actionable memory before external Skill discovery and continues 
       workspace: seed.project.workspace,
       kind: 'lesson',
       title: 'Svelte beacon workflow',
+      scope: { signals: { symbols: ['Svelte beacon component'] } },
       body: 'Implement the Svelte beacon workflow with a focused regression test.',
-      tags: ['svelte', 'beacon'],
+      tags: ['svelte', 'beacon', 'src/SvelteBeacon.svelte'],
     });
 
     let networkCalls = 0;
@@ -1068,7 +1070,7 @@ test('withholds actionable memory before external Skill discovery and continues 
       requestId: 'memory-policy-no-external-missing',
       cwd: root,
       task: 'Implement a Svelte component using the beacon workflow',
-      profileHints: { taskType: 'build', target: 'Svelte beacon component', expected: 'tests pass', constraints: null },
+      profileHints: { taskType: 'build', target: 'src/SvelteBeacon.svelte', expected: 'tests pass', constraints: null },
       capabilities: [SOUL_CAPABILITY],
       client: { kind: 'test', sessionId: 'missing-no-external-fallback' },
       skillDiscoveryMode: 'official',
@@ -1130,12 +1132,12 @@ test('exact task_prepare replay uses current helpful feedback for the bound weak
     const replay = await prepareAgentTask(database, request);
     assert.equal(replay.run.runId, first.run.runId);
     assert.equal(replay.nextAction, 'proceed');
-    assert.equal(replay.context, null);
-    assert.ok(replay.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
+    assert.ok(replay.context?.items.some(item => item.entryId === entry.id));
+    assert.equal(replay.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.required === true
-      && item.availability === 'missing'));
+      && item.availability === 'missing'), false);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
-      .get<{ count: number }>(first.run.runId)?.count, 1);
+      .get<{ count: number }>(first.run.runId)?.count, 2);
   } finally {
     database.close();
   }
@@ -1172,6 +1174,7 @@ test('exact task_prepare replay reranks when new actionable ordinary memory appe
       kind: 'lesson',
       status: 'verified',
       title: 'beacon exact repair workflow',
+      scope: { signals: { paths: ['src/new.ts'] } },
       body: 'Use the beacon exact repair workflow before changing production code.',
       tags: ['beacon', 'repair'],
     });
@@ -1203,13 +1206,13 @@ test('exact task_prepare replay gates the current ledger-revised profile', async
       status: 'verified',
       title: 'current profile replay sentinel',
       body: 'Use the current profile replay sentinel workflow.',
-      tags: ['current', 'profile', 'replay', 'sentinel'],
+      tags: ['current', 'profile', 'replay', 'sentinel', 'src/sentinel.ts'],
     });
     const request = {
       requestId: 'memory-policy-current-profile-replay',
       cwd: root,
       task: 'Research the current profile replay sentinel',
-      profileHints: { taskType: 'research' as const, target: 'current profile replay sentinel', expected: 'verified result', constraints: null },
+      profileHints: { taskType: 'research' as const, target: 'src/sentinel.ts', expected: 'verified result', constraints: null },
       capabilities: [SOUL_CAPABILITY] as unknown[],
       client: { kind: 'test', sessionId: 'current-profile-replay' },
       skillDiscoveryMode: 'off' as const,

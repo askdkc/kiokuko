@@ -1,3 +1,5 @@
+import { INTEGRATION_CONTRACT, hostSkillText } from '../setup/standard-skills.js';
+import { PACKAGE_VERSION } from '../package-version.js';
 import * as z from 'zod/v4';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
@@ -44,14 +46,17 @@ function responseData(value: unknown): Record<string, unknown> {
   return outer;
 }
 /** stdout strings are never completion metadata, even when they contain JSON or exit headers. */
+export const CODEX_EXECUTION_ADAPTER = { id: 'codex-hook/structured-exit-code-v1', rawOutputExitMetadata: false, structuredExitMetadata: true } as const;
 export function observedExitCode(value: unknown): number | null {
   const response = record(value);
+  if (response.session_id !== undefined || response.timed_out === true || response.interrupted === true || response.signal !== undefined || (response.status !== undefined && !['completed', 'finished'].includes(String(response.status))) || response.error !== undefined) return null;
   return typeof response.exit_code === 'number' && Number.isSafeInteger(response.exit_code) ? response.exit_code : null;
 }
 const turnStopReason = 'Kiokuko stopped this turn after a policy denial. Do not retry tools or attempt preparation/recovery. Report the blocker and wait for a new user message.';
-function deny(reason: string) {
-  const message = `${reason} ${turnStopReason}`;
+function deny(reason: string, code = 'identity_violation', recoverable = false) {
+  const message = recoverable ? reason : `${reason} ${turnStopReason}`;
   return {
+    kiokukoDecision: { reason: code, recoverable, nextAction: recoverable ? 'repair_current_request' : 'stop_and_report' },
     systemMessage: `Kiokuko blocked this tool call: ${message}`,
     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: message },
   };
@@ -62,7 +67,7 @@ function stopTurn(event: string) {
   return { continue: false, stopReason: turnStopReason, systemMessage: turnStopReason };
 }
 function context(event: string, text: string) {
-  return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
+  return { hookSpecificOutput: { hookEventName: event, additionalContext: hostSkillText(text, 'codex') } };
 }
 function memoryStepContext(db: SqliteDatabase, runId: string, root: string) {
   const report = taskAssuranceReport(db, runId, false);
@@ -86,7 +91,8 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
   const identity = canonicalContentHash({ session: input.session_id, turn: input.turn_id, agent: input.agent_id ?? 'main', root });
   const requestId = `codex-${identity}`;
   const now = new Date().toISOString();
-  const denyTurn = (reason: string) => {
+  const recoverableDeny = (reason: string, code: string) => deny(reason, code, true);
+  const denyTurn = (reason: string, code = 'identity_violation') => {
     withImmediateTransaction(db, () => {
       // Reuse the existing durable stop flag; exact event replay never clears it.
       db.prepare(`INSERT INTO codex_hook_requests
@@ -101,7 +107,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
         if (run && (run.status === 'active' || run.status === 'intake')) store.updateRunStatusInTransaction(run.runId, 'failed', now);
       }
     });
-    return deny(reason);
+    return deny(reason, code);
   };
   let request = db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest = ?').get<HookRequest>(identity);
   if (input.hook_event_name === 'UserPromptSubmit' || input.hook_event_name === 'SubagentStart') {
@@ -111,11 +117,11 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
         .run(identity, root, requestId, input.hook_event_name, now);
     });
     if (db.prepare('SELECT stop_notified FROM codex_hook_requests WHERE identity_digest=?').get<HookRequest>(identity)?.stop_notified) return stopTurn(input.hook_event_name);
-    return context(input.hook_event_name, `Kiokuko request ${requestId}. Before project work, call task_inspect with {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path to read kiokuko-soul). Read memory-reasoning through task_inspect before advertising it, then call task_prepare with this requestId and soulRead=true. Use task_inspect for all preparation reads and bundled Skills, including natural-japanese-output; do not read Skills through shell commands. After intake, resolve every pending or stale memory decision before ordinary tools, code search or execution. Follow nextAction; use task_memory_status and sequential task_memory_review calls with the latest revision. User clarification tools request_user_input and request_user_input_async, and the clockcurr_time read, remain available before preparation and memory review. A policy denial ends this turn: do not retry or recover within it; report the blocker and wait for a new user message. Ordinary conversation needs no project run. ${CODEX_HOOK_LIMITATION}`);
+    return context(input.hook_event_name, `Kiokuko request ${requestId}. Before project work, call task_inspect with {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path to read kiokuko-soul). Read memory-reasoning through task_inspect before advertising it, then call task_prepare with this requestId and soulRead=true. Use task_inspect for all preparation reads and bundled Skills, including natural-japanese-output; do not read Skills through shell commands. After intake, resolve every pending or stale memory decision before ordinary tools, code search or execution. Follow nextAction; use task_memory_status and sequential task_memory_review calls with the latest revision. User clarification tools request_user_input and request_user_input_async, and the clockcurr_time read, remain available before preparation and memory review. Recoverable preparation or review denials block only the call; repair the same request through task_inspect, task_prepare/task_answer, task_memory_status/task_memory_refresh/task_memory_review. Identity or authorization denials end the turn. Ordinary conversation needs no project run. ${CODEX_HOOK_LIMITATION}`);
   }
   if (!request) {
     if (input.hook_event_name === 'Interrupt' || input.hook_event_name === 'SubagentStop') return {};
-    if (input.hook_event_name === 'PreToolUse') return denyTurn('Kiokuko has not observed this request start. Parent-agent preparation is not inherited.');
+    if (input.hook_event_name === 'PreToolUse') return denyTurn('Kiokuko has not observed this request start. Parent-agent preparation is not inherited.', 'request_not_observed');
     throw new KiokukoError('CONFLICT', 'Hook request start was not observed');
   }
   db.prepare('UPDATE codex_hook_requests SET last_event = ?, updated_at = ? WHERE identity_digest = ?').run(input.hook_event_name, now, identity);
@@ -130,7 +136,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     });
     return {}; // Never request continuation after cancellation.
   }
-  if (request.state === 'cancelled') return input.hook_event_name === 'PreToolUse' ? denyTurn('Request was interrupted') : {};
+  if (request.state === 'cancelled') return input.hook_event_name === 'PreToolUse' ? denyTurn('Request was interrupted', 'request_interrupted') : {};
   if (request.stop_notified) return input.hook_event_name === 'PreToolUse' ? deny('This turn already had a policy denial.') : stopTurn(input.hook_event_name);
   if (input.hook_event_name === 'Stop' || input.hook_event_name === 'SubagentStop') {
     if (!request.run_id) return {}; // Ordinary conversation never required a run.
@@ -165,15 +171,24 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
       return {};
     }
     if (operation) {
-      if (args.runId !== undefined && args.runId !== request.run_id) return denyTurn('Tool run is not bound to this client request');
+      const boundRun = request.run_id ? new LedgerStore(db).readRun(request.run_id) : null;
+      if (boundRun && !['active', 'intake'].includes(boundRun.status)) return denyTurn('Bound run is terminal', 'run_terminal');
+      if (typeof args.cwd === 'string' && realpathSync(args.cwd) !== root) return denyTurn('Tool repository is not bound to this client request', 'repository_binding_mismatch');
+      if (args.runId !== undefined && args.runId !== request.run_id) return denyTurn('Tool run is not bound to this client request', 'run_binding_mismatch');
+      if (args.runId !== undefined && !request.run_id) return denyTurn('No run is bound to this request');
+      const report = request.run_id && request.state === 'bound' ? taskAssuranceReport(db, request.run_id, false) : null;
+      const repairTools = new Set(['handoff_save', 'handoff_load', 'handoff_discard', 'memory_recall', 'memory_capture', 'task_inspect', 'task_answer', 'task_memory_status', 'task_memory_refresh', 'task_memory_review']);
+      if ((!request.run_id || request.state !== 'bound' || report?.pending.length || report?.stale.length) && !repairTools.has(operation)) {
+        return recoverableDeny('Complete preparation and memory review before this operation.', 'preparation_or_review_required');
+      }
       return {};
     }
-    if (!request.run_id) return denyTurn(`Preparation was missing: read kiokuko-soul with task_inspect {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path), then complete task_prepare in a new turn. task_inspect also permits bounded preparation reads.`);
-    if (request.state !== 'bound') return denyTurn('Kiokuko preparation has not permitted progress; the current intake or required capability gate is unresolved.');
+    if (!request.run_id) return recoverableDeny(`Preparation was missing: read kiokuko-soul with task_inspect {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path), then complete task_prepare in this turn. task_inspect also permits bounded preparation reads.`, 'preparation_required');
+    if (request.state !== 'bound') return recoverableDeny('Complete the current intake or required capability gate.', 'intake_pending');
     const run = new LedgerStore(db).readRun(request.run_id);
-    if (!run || run.status !== 'active') return denyTurn('Kiokuko intake is unfinished or the run is terminal');
+    if (!run || run.status !== 'active') return denyTurn('Kiokuko intake is unfinished or the run is terminal', 'run_terminal');
     const report = taskAssuranceReport(db, request.run_id, false);
-    if (report.pending.length || report.stale.length) return denyTurn(`Memory review is incomplete (${report.pending.length} pending, ${report.stale.length} stale). Required order: task_memory_status, ${report.stale.length ? 'then task_memory_refresh for stale entries,' : ''} then task_memory_review for each unresolved entry using the latest revision. Use task_inspect for bounded reads before attempting ordinary tools. This tool call did not execute.`);
+    if (report.pending.length || report.stale.length) return recoverableDeny(`Memory review is incomplete (${report.pending.length} pending, ${report.stale.length} stale). Required order: task_memory_status, ${report.stale.length ? 'then task_memory_refresh for stale entries,' : ''} then task_memory_review for each unresolved entry using the latest revision. Use task_inspect for bounded reads before attempting ordinary tools. This tool call did not execute.`, report.stale.length ? 'memory_stale' : 'memory_review_pending');
     const state = assuranceState(db, request.run_id)!;
     const inputDigest = canonicalContentHash(input.tool_input ?? null);
     let stateDigest: string;
@@ -184,15 +199,20 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
       const currentRun = current?.run_id ? new LedgerStore(db).readRun(current.run_id) : null;
       const currentState = current?.run_id ? assuranceState(db, current.run_id) : null;
       if (!current || current.stop_notified || current.state !== 'bound' || current.run_id !== request!.run_id || currentRun?.status !== 'active'
-        || currentState?.delivery_id !== state.delivery_id) return 'stale';
+        ) return 'terminal';
+      if (currentState?.delivery_id !== state.delivery_id) return 'stale';
+      const latestReport = taskAssuranceReport(db, current.run_id!, false);
+      if (latestReport.pending.length || latestReport.stale.length) return 'review';
       const prior = db.prepare('SELECT input_digest FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<{ input_digest: string }>(identity, input.tool_use_id!);
       if (prior) return prior.input_digest === inputDigest ? 'accepted' : 'conflict';
+      db.prepare('UPDATE task_assurance SET observed_state_digest=COALESCE(observed_state_digest,?) WHERE run_id=?').run(stateDigest,current.run_id);
       db.prepare('INSERT INTO codex_hook_tools(identity_digest, call_id, run_id, delivery_id, input_digest, state_digest, evidence_id) VALUES (?, ?, ?, ?, ?, ?, NULL)')
         .run(identity, input.tool_use_id!, request!.run_id, state.delivery_id, inputDigest, stateDigest);
       return 'accepted';
     });
-    if (admission === 'stale') return denyTurn('Task state changed before tool admission');
-    if (admission === 'conflict') return denyTurn('Tool call identity was reused with different input');
+    if (admission === 'review' || admission === 'stale') return recoverableDeny('Task state changed before tool admission; inspect current status.', 'state_changed');
+    if (admission === 'terminal') return denyTurn('Client binding became terminal before tool admission', 'run_terminal');
+    if (admission === 'conflict') return denyTurn('Tool call identity was reused with different input', 'call_id_reused');
     return {};
   }
   if (operation === 'task_prepare_recover') {
@@ -208,10 +228,13 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
       || assuranceState(db, successor)?.repository_root !== root) {
       throw new KiokukoError('CONFLICT', 'Recovery response does not match durable client binding');
     }
-    const admitted = ['proceed', 'review_memory_application', 'refresh_memory'].includes(String(result.nextAction));
+    const contract = record(record(result.assurance).contract);
+    const compatible = contract.id === INTEGRATION_CONTRACT.id && contract.version === INTEGRATION_CONTRACT.version;
+    const admitted = compatible && ['proceed', 'review_memory_application', 'refresh_memory'].includes(String(result.nextAction));
     const updated = db.prepare('UPDATE codex_hook_requests SET run_id=?,state=? WHERE identity_digest=? AND stop_notified=0 RETURNING identity_digest')
       .get(successor, admitted ? 'bound' : 'pending', identity);
     if (!updated) return stopTurn('PostToolUse');
+    if (!compatible) return context('PostToolUse', 'Integration contract mismatch after recovery: ordinary execution remains blocked; inspect and reload matching MCP and hook components.');
     return admitted ? memoryStepContext(db, successor, root) : {};
   }
   if (operation === 'task_prepare' || operation === 'task_answer') {
@@ -224,9 +247,12 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     if (request.run_id && request.run_id !== runId) throw new KiokukoError('CONFLICT', 'Client request already binds another run');
     // Intake binding and memory admission are separate: reviews must be able to
     // unlock a prepared run without replaying task_prepare or task_answer.
-    const prepared = ['proceed', 'review_memory_application', 'refresh_memory'].includes(String(result.nextAction));
+    const contract = record(record(result.assurance).contract);
+    const compatible = contract.id === INTEGRATION_CONTRACT.id && contract.version === INTEGRATION_CONTRACT.version;
+    const prepared = compatible && ['proceed', 'review_memory_application', 'refresh_memory'].includes(String(result.nextAction));
     const updated = db.prepare('UPDATE codex_hook_requests SET run_id = ?, state = ? WHERE identity_digest = ? AND stop_notified=0 RETURNING identity_digest').get(runId, prepared ? 'bound' : 'pending', identity);
     if (!updated) return stopTurn('PostToolUse');
+    if (!compatible) return context('PostToolUse', 'Integration contract mismatch: ordinary execution remains blocked. Inspect the loaded MCP and hook contract versions, reload matching components, and prepare a new request. Diagnosis and bounded inspection remain available.');
     return prepared ? memoryStepContext(db, runId, root) : {};
   }
   if (['task_memory_review', 'task_memory_refresh'].includes(operation ?? '') && request.state === 'bound'
@@ -259,7 +285,8 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     catch { throw new KiokukoError('SERVICE_UNAVAILABLE', 'Repository state digest unavailable'); }
     if (digest !== call.state_digest) {
       if (!call.post_state_digest) {
-        db.prepare('UPDATE task_assurance SET observed_changes=1, revision=revision+1 WHERE run_id=?').run(current.run_id);
+        db.prepare('UPDATE task_assurance SET observed_changes=1, observed_state_digest=?, revision=revision+1 WHERE run_id=? AND observed_state_digest IS NOT ?').run(digest,current.run_id,digest);
+        db.prepare('UPDATE task_assurance SET observation_sequence=observation_sequence+1 WHERE run_id=?').run(current.run_id);
         db.prepare('UPDATE codex_hook_tools SET post_state_digest=? WHERE identity_digest=? AND call_id=?').run(digest, identity, input.tool_use_id!);
       }
       return context('PostToolUse', 'Repository state changed; earlier verification is stale. Implementation evidence is now required for adopted code memories.');
@@ -270,8 +297,9 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     const evidenceId = insertTaskEvidence(db, { runId: current.run_id!, deliveryId: state.delivery_id, root, cwd: root,
       executionDigest: call.input_digest, stateDigest: digest, outcome, exitCode, provenance: 'client_observed' });
     db.prepare('UPDATE codex_hook_tools SET evidence_id = ? WHERE identity_digest = ? AND call_id = ?').run(evidenceId, identity, input.tool_use_id!);
-    db.prepare('UPDATE task_assurance SET revision=revision+1, updated_at=? WHERE run_id=?').run(now, current.run_id);
-    return context('PostToolUse', `Execution evidence: ${evidenceId}; outcome: ${outcome}. Link it with task_memory_review.`);
+    db.prepare('UPDATE task_assurance SET observation_sequence=observation_sequence+1 WHERE run_id=?').run(current.run_id);
+    if (outcome === 'unknown') return {};
+    return context('PostToolUse', `Execution evidence: ${evidenceId}; outcome: ${outcome}.${outcome === 'passed' && (taskAssuranceReport(db, current.run_id!).missingVerification.length || taskAssuranceReport(db, current.run_id!).verification.checks.some(check => check.status !== 'passed')) ? ' Link it to the unresolved verification requirement.' : ''}`);
   });
 }
 
@@ -281,9 +309,9 @@ export function handleCodexHook(db: SqliteDatabase, raw: unknown): object {
   const response = record(input.tool_response);
   const args = record(input.tool_input);
   const shape = { hasArguments: !!args.arguments, hasParameters: !!args.parameters, hasRequestId: !!args.requestId, hasSoulRead: !!args.soulRead, type: typeof input.tool_response, structured: !!response.structuredContent,
-    content: Array.isArray(response.content), exitCode: typeof response.exit_code, status: typeof response.status };
-  const save = (decision: string, reason?: string) => withImmediateTransaction(db, () => {
-    const diagnostic = { ...shape, reason, call: codexHookCorrelationId(input) };
+    content: Array.isArray(response.content), exitCode: typeof response.exit_code, exitMetadata: observedExitCode(input.tool_response) === null ? 'unavailable' : 'structured', exitAdapter: CODEX_EXECUTION_ADAPTER.id, contractVersion: INTEGRATION_CONTRACT.version, contractId: INTEGRATION_CONTRACT.id, hookPackageVersion: PACKAGE_VERSION, status: typeof response.status };
+  const save = (decision: string, reason?: string, recovery?: Record<string, unknown>) => withImmediateTransaction(db, () => {
+    const diagnostic = { ...shape, reason, recoverable: recovery?.recoverable, nextAction: recovery?.nextAction, call: codexHookCorrelationId(input) };
     db.prepare('INSERT INTO codex_hook_observations VALUES (?, ?, ?, ?, ?, ?)')
       .run(randomUUID(), input.hook_event_name, input.tool_name ?? null, JSON.stringify(diagnostic), decision, new Date().toISOString());
     db.prepare('DELETE FROM codex_hook_observations WHERE rowid NOT IN (SELECT rowid FROM codex_hook_observations ORDER BY rowid DESC LIMIT 1000)').run();
@@ -291,7 +319,7 @@ export function handleCodexHook(db: SqliteDatabase, raw: unknown): object {
   try {
     const result = handleCodexHookEvent(db, input);
     const specific = record(record(result).hookSpecificOutput);
-    try { save(specific.permissionDecision === 'deny' ? 'denied' : 'handled', specific.permissionDecision === 'deny' ? 'policy_denied' : undefined); }
+    try { save(specific.permissionDecision === 'deny' ? 'denied' : 'handled', specific.permissionDecision === 'deny' ? String(record(record(result).kiokukoDecision).reason ?? 'policy_denied') : undefined, record(record(result).kiokukoDecision)); }
     catch { process.stderr.write('Kiokuko hook observation unavailable: observation_write_failed.\n'); }
     return result;
   } catch (error) {

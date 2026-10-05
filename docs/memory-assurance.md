@@ -26,11 +26,13 @@ stated rationale is correct, or that a chosen verifier is sufficient.
    **model-reported**. The Codex adapter records **client-observed** results only
    when the client supplies a recognized completed exit status.
 5. Use `task_memory_refresh` when new paths or errors change the search. Preserve
-   the run and exact capability catalog. A different delivery or entry revision
-   requires reconfirming affected reviews. Finish with the existing checkpoint.
+   the run and exact capability catalog. A delivery ID or query change alone preserves compatible decisions. Changed
+   entry revisions or decision dependencies require reconfirming affected reviews. Finish with the existing checkpoint.
 
-Only memories selected as actionable require decisions. Incidental retrieval
-results do not impose formal checklists. Code PLAN/review requires grounded
+Only memories with explicit applicability, target path/error matches or a
+repeated lesson require decisions. Word/tag matches and helpful feedback remain
+advisory. Adopting an advisory candidate explicitly still requires a review.
+General communication preferences do not create code verification requirements. Code PLAN/review requires grounded
 application decisions; implementation requires passing regression evidence.
 Failure, cancellation and interruption can terminate without passing evidence.
 Existing non-terminal server checkpoints remain non-terminal. Legacy callers
@@ -42,6 +44,30 @@ records are durable. The repository state hash covers Git-visible tracked and
 unignored files plus conventional local environment and Codex/Kiokuko config
 files; edits invalidate prior results. Other ignored files are outside that snapshot. Symlinks, non-regular files, more than 20,000 files or 64 MiB of content
 make snapshot verification unavailable rather than silently incomplete.
+
+## Decision and observation storage
+
+Migration 011 preserves existing history without certifying legacy decisions,
+clearing stopped runs or converting unknown evidence. New decisions are immutable
+run-scoped records linked from deliveries. Status exposes decision IDs, original
+delivery IDs, invalidation codes, `observationSequence`, and the loaded integration
+contract. The latest decision is checked first; an older matching assessment is
+never resurrected after a newer one changes the conclusion.
+
+A decision defaults to the whole repository state digest. An optional
+`dependencies: { paths: ["src/file.ts"], errors: ["explicit error"] }` records only
+those path conditions plus the listed error conditions. No dependencies are
+inferred from prose. Run, root, task profile, scope, policy and entry revision must
+also match. General communication preferences exclude code state by default.
+Evidence retains its original provenance and delivery. Reuse additionally checks
+run, root, source digest, exit status and the attached verification definitions.
+
+New execution observations increment their own sequence. Unchanged reads add no
+review revision and request no evidence association. A target-state transition
+increments the review revision once even if multiple completions observe it.
+Unknown/raw output results never satisfy a verification check. Public
+`task_execution_evidence` stays model-reported and does not advance review
+revision merely by adding an observation.
 
 ## API
 
@@ -108,9 +134,11 @@ For a typed recoverable conflict, the agent may read `task_memory_status` and
 submit one new requestId using the current revision, same run and bound catalog.
 Review a new delivery before continuing. This is a bounded agent workflow, not
 an internal server retry loop. A second conflict or unknown failure must be
-reported with the unfinished work. A host policy denial always stops the turn
-and cannot be bypassed by this workflow. Skill inspection alone does not advance
-the assurance revision; ordinary execution observations can do so.
+reported with the unfinished work. A denial stops the turn
+for authorization or identity violations and cannot be bypassed by this workflow.
+Preparation, intake, pending review and stale delivery denials are recoverable
+and permit repair in the same turn. Skill reads and execution observation
+sequence increments do not advance the review revision; target changes do.
 
 After updating the package, refresh managed instructions through setup and
 reconnect the MCP client. Check the connected tools and exercise
@@ -173,6 +201,21 @@ lifecycle. Configuration presence does not prove that the current client execute
 hooks. Doctor distinguishes configured hooks, historical observations and the
 unconfirmed current client, plus pending reviews and verification.
 
+Codex deploys host-specific names such as `kiokuko-codex-soul` and
+`kiokuko-codex-memory-reasoning` under `.agents/skills`. Legacy shared paths are
+retained, including DSH-owned files with matching old markers. Each deployed file
+has an owner, host, contract ID/version and content hash. Updates and removal
+require matching ownership and the previous hash; edits and foreign files cause
+an update conflict. Setup planning and commit rollback cover these deployments.
+Only names in the bundled manifest are mapped to logical capabilities.
+
+MCP assurance/status and bundled Skill inspection expose the loaded contract;
+inspection also returns package version and content hash. Hook diagnostics expose
+the observed hook version and exit-metadata capability. Preparation from a
+mismatched MCP contract remains blocked with diagnosis available. These describe
+different surfaces: configured/deployed files, loaded MCP and observed hooks.
+Matching hashes do not prove the model read or applied a Skill.
+
 The adapter handles UserPromptSubmit, PreToolUse, PostToolUse, Stop, Interrupt and
 explicit child lifecycle identities. It derives request bindings from client
 hook events, never from a model-supplied session ID. It does not fabricate
@@ -181,16 +224,18 @@ hook events, never from a model-supplied session ID. It does not fabricate
 Unidentified child execution cannot inherit a parent's run. Delegation is denied
 on paths where distinct child tool identities cannot be established.
 
-Policy denials include the reason in `systemMessage` for the Codex UI warning,
-in `permissionDecisionReason` for the blocked tool, and on stderr for hook
-diagnostics. **The first policy denial stops that client turn.** The existing
-durable `stop_notified` flag latches before the denial is returned, and any bound
-active/intake run becomes failed. Every later tool call for the same client
-request is denied, including `task_inspect`, preparation, recovery and checkpoint.
-Delayed completions cannot reopen the binding or supply verification evidence.
-Hook-process restarts and replaying the same prompt event do not clear the latch;
-a new user turn with a new client turn ID starts a fresh request. `Stop` and
-supported completion events return `continue: false` without requesting recovery.
+Preparation/intake and pending/stale review denials block only the attempted
+call. They return fixed reason codes, `recoverable: true` and the required next
+operation. They neither set `stop_notified` nor fail the run. Complete preparation,
+status, refresh and review using the same client request, agent, repository and
+run binding; ordinary execution becomes available in the same turn.
+
+Authorization/identity violations and conflicting call-ID reuse remain terminal.
+The durable `stop_notified` latch is set before returning that denial and the bound
+active/intake run fails. Interrupted and terminal runs cannot be reopened by
+preparation, recovery or a delayed completion. Hook restarts do not clear existing
+latches. Child preparation is independent; a child's missing preparation cannot
+fail its parent run.
 
 Before a denial, the exact user clarification tools `request_user_input` and
 `request_user_input_async`, and the observed time-read tool `clockcurr_time`,
@@ -215,7 +260,7 @@ hooks, adapter startup failures and already running processes remain outside
 complete enforcement. In particular, `write_stdin` does not repeat PreToolUse.
 `PreToolUse` does not support `continue: false` or `stopReason`; returning those
 fields can fail the hook and let the tool execute. The adapter therefore uses
-the supported deny response and a durable latch, with stop output only on events
+the supported deny response, and a durable latch for terminal violations, with stop output only on events
 that support it. This prevents further supported tool admissions; it cannot
 guarantee that Codex immediately stops generating text or trying denied calls.
 Stop cannot retract text already emitted; an incomplete report stops with an
@@ -232,8 +277,8 @@ See the [official Codex hook protocol](https://developers.openai.com/ja-JP/docs/
 
 To exercise only the denial/stop path with an installed Codex CLI, run
 `node scripts/run-memory-assurance-live.mjs --hard-stop-only` after building.
-The full live check uses a separate fresh client request for successful
-preparation and execution; it never attempts recovery in the denied turn.
+The full live check uses a separate fresh client request for a recoverable
+unprepared denial followed by preparation and execution in that same turn.
 
 ## Validation
 

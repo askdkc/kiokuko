@@ -186,8 +186,8 @@ test('setup then uninstall cleans all clients, Hermes profiles, custom project i
   const ignorePath = await f.put('project/.gitignore', 'node_modules/\n');
   await useRepository({ root: path.join(f.root, 'project'), allowDirectory: true, databasePath: f.databasePath, agentFile: 'docs/AI.md', ensureNewBindingIgnored: true });
   const agentBefore = await readFile(agentPath, 'utf8');
-  const unmanagedSkill = await f.put('home/.agents/skills/kiokuko-soul/notes.txt', 'user notes');
-  const userImage = await f.put('home/.agents/skills/kiokuko-soul/image.png', new Uint8Array([255, 254]));
+  const unmanagedSkill = await f.put('home/.agents/skills/kiokuko-codex-soul/notes.txt', 'user notes');
+  const userImage = await f.put('home/.agents/skills/kiokuko-codex-soul/image.png', new Uint8Array([255, 254]));
   await f.put('data/kiokuko/models/embeddings/local-small/revision/model.bin', new Uint8Array([255, 0, 254]));
   const unrelated = await f.put('data/kiokuko/backup-chosen-by-user.sqlite', 'preserve backup');
   const before = await snapshot(f.root);
@@ -257,7 +257,7 @@ test('unrecognized MCP entries are preserved across clients while uninstall comp
   for (const [target, content] of configs) assert.equal(await readFile(path.join(f.root, target), 'utf8'), content);
   await assert.rejects(access(f.databasePath), { code: 'ENOENT' });
   await assert.rejects(access(path.join(f.home, '.codex/AGENTS.md')), { code: 'ENOENT' });
-  await assert.rejects(access(path.join(f.home, '.agents/skills/kiokuko-soul')), { code: 'ENOENT' });
+  await assert.rejects(access(path.join(f.home, '.agents/skills/kiokuko-codex-soul')), { code: 'ENOENT' });
   // opencode.json was recognized and removed independently of the unknown JSONC entry.
   await assert.rejects(access(path.join(f.config, 'opencode/opencode.json')), { code: 'ENOENT' });
 });
@@ -317,7 +317,7 @@ test('linked skill subdirectories are never followed', async t => {
   const f = await fixture(t);
   await setupGlobalClients({ ...f.options, clients: ['codex'] });
   const target = await f.put('outside/private.txt', 'keep');
-  await symlink(path.dirname(target), path.join(f.home, '.agents/skills/kiokuko-soul/linked'));
+  await symlink(path.dirname(target), path.join(f.home, '.agents/skills/kiokuko-codex-soul/linked'));
   await assert.rejects(uninstallKiokuko(f.options), { code: 'SECURITY_REJECTION' });
   assert.equal(await readFile(target, 'utf8'), 'keep');
   await access(f.databasePath);
@@ -337,7 +337,7 @@ test('retired hooks, plugins and Skills are removed without deleting adjacent ho
   assert.deepEqual(hooks.hooks.Stop[0].hooks, [{ type: 'command', command: 'user-hook' }]);
   assert.equal(hooks.enabled, true);
   await assert.rejects(access(path.join(f.config, 'opencode/plugins/kiokuko-enno-oduno.js')));
-  await assert.rejects(access(path.join(f.home, '.agents/skills/kiokuko-enno-oduno')));
+  assert.equal(await readFile(path.join(f.home, '.agents/skills/kiokuko-enno-oduno/SKILL.md'), 'utf8'), '<!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-enno-oduno -->\nold');
   assert.equal(removeLegacyHooks('{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"mcp_tool","server":"kiokuko","tool":"claude_prompt_context"}]}]}}', 'claude'), undefined);
 });
 

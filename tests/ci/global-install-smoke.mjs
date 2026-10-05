@@ -1,3 +1,5 @@
+import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -115,12 +117,15 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   await writeFile(hookPath, JSON.stringify({ hooks: { Stop: [userHook] } }));
   const skillFiles = packedFiles.filter((file) => file.path.startsWith('skills/'));
   assert.ok(skillFiles.length > 0, 'the package must contain standard skills');
+  const { hostSkillFile } = await import(pathToFileURL(path.join(installedRoot, 'dist/setup/standard-skills.js')).href);
   const expected = new Map();
   for (const file of skillFiles) {
     const source = await readFile(path.join(repositoryRoot, file.path));
     assert.deepEqual(await readFile(path.join(installedRoot, file.path)), source, file.path);
     for (const [client, directory] of Object.entries(skillDirectories)) {
-      expected.set(path.join(directory, file.path.slice('skills/'.length)), { client, content: source });
+      const [skillName, ...rest] = file.path.slice('skills/'.length).split('/');
+      const deployed = hostSkillFile({skillName, relativePath: rest.join('/'), managedMarker: `<!-- KIOKUKO MANAGED STANDARD SKILL: ${skillName} -->`, content: source.toString('utf8')}, client);
+      expected.set(path.join(directory, deployed.skillName, deployed.relativePath), {client, content: Buffer.from(deployed.content)});
     }
   }
   const args = ['setup', '--clients', Object.keys(skillDirectories).join(','), '--command', cliPath, '--no-embeddings', '--json'];
@@ -171,7 +176,12 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
       beforeRepair.set(file, undefined);
       repairActions.set(file, 'created');
     } else {
-      const stale = Buffer.concat([target.content, Buffer.from('\nold managed version\n')]);
+      const text = target.content.toString('utf8');
+      const stampPattern = /\n<!-- KIOKUKO DEPLOYMENT (.+) -->\n$/;
+      const stamp = JSON.parse(stampPattern.exec(text)[1]);
+      const body = text.replace(stampPattern, '') + '\nold managed version\n';
+      stamp.hash = createHash('sha256').update(body).digest('hex');
+      const stale = Buffer.from(body + `\n<!-- KIOKUKO DEPLOYMENT ${JSON.stringify(stamp)} -->\n`);
       await writeFile(file, stale);
       beforeRepair.set(file, stale);
       repairActions.set(file, 'updated');

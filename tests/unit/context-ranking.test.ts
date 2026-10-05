@@ -284,6 +284,7 @@ test('orders selection reasons by the fixed policy rather than object insertion 
     'task_tag_affinity',
     'recommended_tag_match',
     'target_match',
+    'target_path_match',
     'changed_path_match',
     'error_signature_match',
     'helpful_feedback',

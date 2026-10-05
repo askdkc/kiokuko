@@ -707,11 +707,11 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
     assert.equal(replay.response.status, 200);
     const replayData = dataOf(replay.value);
     assert.equal(replayData.nextAction, 'proceed');
-    assert.deepEqual(replayData.memoryPolicy, missingMemoryPolicy(21));
-    assert.equal(replayData.context, null);
-    assert.ok(replayData.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
+    assert.deepEqual(replayData.memoryPolicy, {memoryReasoningRequired:false,contextWithheld:false,withheldReason:null});
+    assert.ok(replayData.context?.items.length);
+    assert.equal(replayData.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
       && item.required === true
-      && item.availability === 'missing'));
+      && item.availability === 'missing'), false);
   } finally {
     await runtime.close();
   }

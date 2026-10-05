@@ -39,7 +39,7 @@ async function fixture(intake = false, options: {
   const db = openConnection(databasePath);
   const project = (await resolveProjectWorkspace(db, root))!;
   const requestId = 'legacy-request';
-  const opened = new AgentGatewayService(db).openRun({ idempotencyKey: `mcp-task-prepare-${canonicalContentHash({ version: 1, requestId })}`, request: { apiVersion: '1', workspace: project.workspace, client: { kind: 'test' }, captureProfile: 'minimal', coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' }, task: { title: 'Repair capability preparation', query: 'Repair capability preparation', profileHints: { taskType: 'debug', target: intake ? null : 'capability preparation', expected: 'tests pass', constraints: null } }, ...(previousCapabilities === undefined ? {} : {capabilities: previousCapabilities}), metadata: bindTaskContextRequest(bindSkillDiscoveryRequest(bindProjectManifestSnapshot({ source: 'mcp' }, project, captureProjectManifestSnapshot(project)), skillDiscoveryRequestIdentity('off', previousCapabilities)), 12000, undefined, 'off') } });
+  const opened = new AgentGatewayService(db).openRun({ idempotencyKey: `mcp-task-prepare-${canonicalContentHash({ version: 1, requestId })}`, request: { apiVersion: '1', workspace: project.workspace, client: { kind: 'test' }, captureProfile: 'minimal', coverage: { run: 'unavailable', tool: 'unavailable', command: 'unavailable', file: 'unavailable', approval: 'unavailable' }, task: { title: 'Repair capability preparation', query: 'Repair capability preparation', profileHints: { taskType: 'debug', target: intake ? null : 'src/capability.ts', expected: 'tests pass', constraints: null } }, ...(previousCapabilities === undefined ? {} : {capabilities: previousCapabilities}), metadata: bindTaskContextRequest(bindSkillDiscoveryRequest(bindProjectManifestSnapshot({ source: 'mcp' }, project, captureProjectManifestSnapshot(project)), skillDiscoveryRequestIdentity('off', previousCapabilities)), 12000, undefined, 'off') } });
   enrollAssurance(db, opened.runId, new Date().toISOString());
   bindAssuranceRoot(db, opened.runId, root, 'pending');
   const input = { cwd: root, runId: opened.runId, requestId, operationId: 'recover-once', expectedRevision: 0, soulRead: true as const, previousCapabilities, capabilities: caps };
@@ -193,7 +193,7 @@ test('HTTP recovery and Codex hook bind only the durable successor and permit ex
 });
 async function legacyDelivery(f: Awaited<ReturnType<typeof fixture>>) {
   const entry = recordEntry(f.db, {
-    workspace: f.project.workspace, kind: 'decision', title: 'capability preparation',
+    workspace: f.project.workspace, kind: 'decision', title: 'capability preparation', tags: ['src/capability.ts'],
     body: 'Repair capability preparation using strict catalogs and a successor run.', confidence: 0.8,
   });
   const sessionId = f.db.prepare('SELECT session_id FROM run_intakes WHERE run_id=?')
@@ -261,7 +261,7 @@ test('recovery preserves real answers, question budget and user-answer provenanc
   try {
     new AgentGatewayService(f.db).answerIntake({
       runId: f.input.runId, idempotencyKey: 'legacy-answer',
-      request: { apiVersion: '1', questionId: 'target', value: 'capability preparation',
+      request: { apiVersion: '1', questionId: 'target', value: 'src/capability.ts',
         capabilities: f.input.previousCapabilities },
     });
     const result = await recoverTaskPreparation(f.db, f.input);
@@ -352,7 +352,7 @@ test('recovered client still waits for intake and fresh memory reviews before or
   const f = await fixture(true);
   try {
     const entry = recordEntry(f.db, { workspace: f.project.workspace, kind: 'decision',
-      title: 'capability preparation', body: 'Use strict catalogs and successor recovery for capability preparation.', confidence: 0.8 });
+      title: 'capability preparation', tags: ['src/capability.ts'], body: 'Use strict catalogs and successor recovery for capability preparation.', confidence: 0.8 });
     const common = { session_id: 'gated-client', turn_id: 'turn', cwd: f.root };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
     const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{
@@ -372,7 +372,7 @@ test('recovered client still waits for intake and fresh memory reviews before or
     const ordinary = { ...common, hook_event_name: 'PreToolUse', tool_name: 'exec_command',
       tool_use_id: 'work', tool_input: { cmd: 'true' } };
     const answer = { cwd: f.root, runId: result.run.runId, sessionId: result.intake.sessionId,
-      questionId: 'target' as const, value: 'capability preparation', maxContextChars: 12000, capabilities: caps, skillDiscoveryMode: 'off' as const };
+      questionId: 'target' as const, value: 'src/capability.ts', maxContextChars: 12000, capabilities: caps, skillDiscoveryMode: 'off' as const };
     const ready = await answerAgentTask(f.db, answer);
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_answer',
       tool_use_id: 'answer', tool_input: answer, tool_response: { structuredContent: ready } });
@@ -454,7 +454,7 @@ test('operation identity cannot be reused for another predecessor', async () => 
       request: { apiVersion: '1', workspace: f.project.workspace, client: { kind: 'test' },
         captureProfile: original.captureProfile, coverage: original.coverage,
         task: { title: 'Repair capability preparation', query: 'Repair capability preparation',
-          profileHints: { taskType: 'debug', target: 'capability preparation', expected: 'tests pass' } },
+          profileHints: { taskType: 'debug', target: 'src/capability.ts', expected: 'tests pass' } },
         capabilities: f.input.previousCapabilities, metadata },
     });
     enrollAssurance(f.db, second.runId, new Date().toISOString());

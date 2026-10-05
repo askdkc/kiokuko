@@ -40,14 +40,10 @@ test('classifies only strongly matched delivered context as actionable memory', 
   assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: ['literal_fallback_match'] }] }), 'none');
   for (const reason of [
     'exact_signal_match',
-    'word_match',
-    'lexical_match',
-    'cjk_window_match',
     'applicability_match',
-    'tag_match',
     'changed_path_match',
     'error_signature_match',
-    'helpful_feedback',
+
   ]) {
     assert.equal(
       deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: [reason] }] }),
@@ -55,6 +51,10 @@ test('classifies only strongly matched delivered context as actionable memory', 
       `${reason} must make delivered memory actionable`,
     );
   }
+  for (const reason of ['word_match', 'lexical_match', 'cjk_window_match', 'tag_match', 'helpful_feedback']) {
+    assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: [reason] }] }), 'none');
+  }
+  assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: ['applicability_match', 'general_communication_preference'] }] }), 'none');
 });
 
 test('compacts capability descriptions deterministically without splitting Unicode code points', () => {
@@ -372,7 +372,7 @@ test('requires the exact master SOUL first for every task type', () => {
   assert.equal(hasBlockingRequiredCapability(unclassified), true);
 });
 
-test('does not satisfy the required master SOUL with an alias or similarly named capability', () => {
+test('does not satisfy the required master SOUL with an unlisted alias or similarly named capability', () => {
   for (const capability of [
     { kind: 'skill' as const, name: `external:${STANDARD_SOUL_SKILL_NAME}` },
     { kind: 'skill' as const, name: 'kiokuko_soul' },
@@ -398,6 +398,20 @@ test('does not satisfy the required master SOUL with an alias or similarly named
   });
   assert.equal(available.recommendations[0]?.availability, 'available');
   assert.equal(hasBlockingRequiredCapability(available), false);
+});
+
+test('fixed Codex deployment names satisfy logical Skill capabilities', () => {
+  const result = resolveCapabilities({
+    task: 'Build source.ts', profile: buildProfile, recommendedTags: [], memoryUse: 'actionable',
+    capabilities: [
+      {kind:'skill',name:'kiokuko-codex-soul'},
+      {kind:'skill',name:'kiokuko-codex-memory-reasoning'},
+    ],
+  });
+  for (const name of [STANDARD_SOUL_SKILL_NAME, MEMORY_REASONING_SKILL_NAME]) {
+    assert.equal(result.recommendations.find(item => item.name === name)?.availability,'available');
+  }
+  assert.equal(hasBlockingRequiredCapability(result),false);
 });
 
 test('requires memory-reasoning for actionable build memory and fails closed when unavailable', () => {

@@ -1,3 +1,4 @@
+import { hasTargetPathMatch } from './memory-obligation.js';
 import { KiokukoError } from '../errors.js';
 import { ENTRY_KINDS, ENTRY_STATUSES, TRUST_LEVELS, type EntryKind, type EntryStatus, type TrustLevel } from '../serialization/validate.js';
 import { TASK_TYPES, type TaskProfile, type TaskType } from '../akinator/types.js';
@@ -84,6 +85,7 @@ export const CONTEXT_SELECTION_REASON_ORDER = [
   'task_tag_affinity',
   'recommended_tag_match',
   'target_match',
+  'target_path_match',
   'changed_path_match',
   'error_signature_match',
   'helpful_feedback',
@@ -506,6 +508,7 @@ function scoreCandidate(candidate: ContextCandidateSnapshot, context: RankingCon
   if (taskTagMatch) selectionReasons.push('task_tag_affinity');
   if (scoreComponents.recommendedTags > 0) selectionReasons.push('recommended_tag_match');
   if (targetMatch) selectionReasons.push('target_match');
+  if (hasTargetPathMatch(context.taskProfile.target, candidatePathFields(candidate))) selectionReasons.push('target_path_match');
   if (changedPathMatch) selectionReasons.push('changed_path_match');
   if (scoreComponents.errorSignature > 0) selectionReasons.push('error_signature_match');
   if (feedbackVerdicts.includes('helpful')) selectionReasons.push('helpful_feedback');

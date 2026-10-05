@@ -32,7 +32,11 @@ instruction surfaces and installs the bundled `memory-reasoning`, `kiokuko-soul`
 `kiokuko-single-purpose-functions`, `kiokuko-ui-design-soul`, `veteran-programmer-skill`,
 and `natural-japanese-output` skills in the selected supported clients by
 default. The skills are copied from a fixed package manifest and never downloaded
-during setup. `--no-standard-skills`
+during setup. Codex uses host-specific names (`kiokuko-codex-soul`,
+`kiokuko-codex-memory-reasoning`, and the other manifest-listed Codex names),
+preserving legacy shared paths used by DSH. Deployment metadata records ownership,
+host, contract version and hash; user-edited or foreign files are not overwritten.
+`--no-standard-skills`
 skips placement without deleting an existing copy.
 
 `veteran-programmer-skill` checks workflows across setup, delivery, persisted
