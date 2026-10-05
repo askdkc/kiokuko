@@ -1,5 +1,8 @@
 # Interaction memory validation
 
+See [correction and provenance validation](correction-validation.md) for the
+subsequent plan audit, deterministic regressions and live correction harness.
+
 Validated locally on 2026-09-19, macOS arm64, Node.js 26.5.0. These are source and
 isolated-install results, not a published release or an update to a running client.
 

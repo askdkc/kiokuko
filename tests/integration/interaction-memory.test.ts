@@ -75,6 +75,17 @@ test('explicit subject filters precede candidate limits and preference injection
   assert.ok(!second.items.some((item) => item.entryId === saved.items[1]!.entryId));
 });
 
+test('bilingual query reformulation retrieves a captured preference without weakening literal subject isolation', async (t) => {
+  const { capture, recall } = await fixture(t);
+  const saved = await capture('japanese', [{ ...grammar, title: '日本語文法の説明順序',
+    body: '日本語文法は料理の例を1つ先に示してから説明する。', basis: 'user_correction' }]);
+  await capture('english', [{ ...grammar, title: '日本語文法と比較した英語文法の説明',
+    body: '英語文法は用語を先に示す。', subjects: ['English grammar'] }]);
+  assert.deepEqual((await recall('日本語の文法')).items, []);
+  const result = await recall('日本語文法 Japanese grammar');
+  assert.deepEqual(result.items.map((item) => item.entryId), [saved.items[0]!.entryId]);
+});
+
 test('exact captures deduplicate across operation IDs and survive restart and purge replay', async (t) => {
   const { capture, db, databasePath, options, recall } = await fixture(t);
   const first = await capture('first', [grammar]);
@@ -299,6 +310,16 @@ test('MCP publishes usable schemas, transport provenance, disable switch, and tw
   assert.ok(captureSchema);
   assert.match(captureSchema.items.properties.basis!.description ?? '', /first capture when no stored entry exists/u);
   assert.match(captureSchema.items.properties.replaces!.description ?? '', /Omit for a correction not yet stored/u);
+  const budget = tools.find((tool) => tool.name === 'memory_recall')!.inputSchema.properties?.maxContextChars as {
+    maximum: number; default: number; description: string;
+  };
+  assert.equal(budget.maximum, 12_000);
+  assert.equal(budget.default, 4_000);
+  assert.match(budget.description, /100 to 12000/u, 'Code-mode clients need the numeric bound in the rendered field description too');
+  const oversized = await first.callTool({ name: 'memory_recall', arguments: {
+    query: 'Japanese grammar', soulRead: true, capabilities, maxContextChars: 16_000,
+  } });
+  assert.equal(oversized.isError, true, 'The model-facing explanation must not weaken validation');
   const saved = await first.callTool({ name: 'memory_capture', arguments: { operationId: 'mcp-first', memories: [grammar] } });
   assert.notEqual(saved.isError, true);
   const second = await connect(false);

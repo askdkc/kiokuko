@@ -37,6 +37,15 @@ jobs:
       - name: Verify bilingual memory index evaluation
         run: npm run test:memory-index:evaluation
 
+      - name: Verify real MCP fault injection harness
+        run: node tests/ci/interaction-fault-smoke.mjs
+
+      - name: Verify repository discovery in a clean filesystem
+        run: >-
+          docker run --rm --network none
+          -v "$PWD:/workspace:ro" -w /workspace node:24-bookworm
+          node tests/ci/repository-root-smoke.mjs
+
       - name: Verify sqlite-vec package and production composition
         run: npm run test:sqlite-vec
         env:
