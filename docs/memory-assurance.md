@@ -45,6 +45,78 @@ make snapshot verification unavailable rather than silently incomplete.
 
 ## API
 
+### Task completion (verification contract v1)
+
+Newly enrolled build/debug runs and runs with observed source changes require
+task checks independently of delivered memory. `complete` still describes only
+memory application. `completionReady` combines that decision with all required
+task checks. It is `null` for historical runs, which remain unobserved; migration
+does not retroactively certify them. PLAN/review without source changes need no
+implementation checks.
+
+Before implementation, call `task_verification_define` with the usual `cwd`,
+`runId`, new `requestId`, current `expectedRevision`, a nonempty `reason`, and
+`checks: [{ id, target, expected, method }]`. Every check is required. Target
+labels distinguish environments such as `linux-x64` and `darwin-arm64`.
+Each new definition has a contract version. Unchanged checks retain results;
+changed, removed/reintroduced checks require new results. Definition history is
+retained, including the reason for a scope change; do not remove failed checks
+merely to make completion pass.
+
+`task_verification_record` accepts the same operation identity fields plus
+`contractVersion`, `checkId`, `target`, and either:
+
+- `source: { kind: "local", evidenceId }`: an execution evidence record from
+  this run, target and current source digest. `task_execution_evidence.target`
+  defaults to the host's platform/architecture; specify the actual remote or
+  container target when reporting its execution. Hook observations always use
+  the host target.
+- `source: { kind: "ci", commit, runUrl, jobUrl, conclusion }`: an HTTPS run/job
+  reference without credentials or query parameters, the exact current clean
+  commit, and `success`, `failure`, `cancelled`, `timed_out`, `skipped` or `unknown`.
+  These are model-reported assertions, not independently fetched CI results.
+
+Status returns `verification` with the contract version and each check's
+`pending`, `passed`, `failed`, `skipped` or `unknown` status, staleness and
+provenance. Only current passing results satisfy required checks. Later failure
+or unknown results replace earlier successes. Source changes invalidate results;
+CI checks also require the same clean HEAD. A null child exit status does not
+establish either success or the cause of termination.
+
+MCP completed checkpoints, the Agent close API and Codex Stop share this gate.
+Failure, cancellation and interruption remain valid terminal outcomes. The
+gate checks the consistency and presence of declared evidence; it does not prove
+that a model chose sufficient checks or interpreted external logs correctly.
+
+The HTTP equivalents are `verification-define` and `verification-record` under
+the same authenticated run route. As for other assurance mutations, use
+`Idempotency-Key` for requestId and the URL for runId. The global-only ChatGPT
+memory connector does not expose project-task tools.
+
+### Refresh conflicts and one bounded recovery
+
+Typed conflicts expose fixed `reason`, `nextAction`, `recoverable`,
+`maxRecoveryAttempts` and `retryable` fields consistently through MCP and HTTP.
+Revision values are included only after matching the run/repository binding.
+Raw exceptions, filesystem paths, capability catalogs and memory bodies are not
+diagnostic payloads. Revision mismatch and retrieval-state changes are
+recoverable; request identity reuse, binding mismatch, an inactive run and
+missing required capabilities are not automatic-recovery cases.
+
+`retryable: false` means that an unchanged failed request must not be resent.
+For a typed recoverable conflict, the agent may read `task_memory_status` and
+submit one new requestId using the current revision, same run and bound catalog.
+Review a new delivery before continuing. This is a bounded agent workflow, not
+an internal server retry loop. A second conflict or unknown failure must be
+reported with the unfinished work. A host policy denial always stops the turn
+and cannot be bypassed by this workflow. Skill inspection alone does not advance
+the assurance revision; ordinary execution observations can do so.
+
+After updating the package, refresh managed instructions through setup and
+reconnect the MCP client. Check the connected tools and exercise
+status → skill read → refresh against that runtime. Source tests and generated
+configuration alone do not prove the desktop connection has reloaded.
+
 The MCP tools and authenticated server routes share the domain implementation:
 
 | MCP tool | POST route under `/api/v1/agent/runs/:runId/` |

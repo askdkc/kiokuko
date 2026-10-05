@@ -140,7 +140,7 @@ test('binds scoped replay to semantic query and projection state, then rejects a
         return { persist: true, value: null };
       }, prepared),
       (error: unknown) => (error as { code?: string }).code === 'CONFLICT'
-        && (error as Error).message === 'Scoped context catalog changed after ranking',
+        && (error as { details: Record<string, unknown> }).details.reason === 'retrieval_state_changed',
     );
   } finally {
     database.close();

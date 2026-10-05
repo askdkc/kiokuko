@@ -137,11 +137,11 @@ test('production Agent v1 exposes all eight exact route operations over one serv
     const closed = await request(fixtureValue.runtime.url, `/api/v1/agent/runs/${runId}/close`, {
       method: 'POST',
       key: 'close-http-1',
-      body: { apiVersion: '1', status: 'completed' },
+      body: { apiVersion: '1', status: 'failed' },
     });
     assert.equal(closed.response.status, 200);
     assert.equal((closed.value as { operation: string }).operation, 'agent.close');
-    assert.equal(dataOf(closed.value).status, 'completed');
+    assert.equal(dataOf(closed.value).status, 'failed');
     assert.equal(dataOf(closed.value).untrusted, true);
   } finally {
     await fixtureValue.close();

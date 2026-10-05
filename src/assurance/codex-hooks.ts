@@ -72,7 +72,7 @@ function memoryStepContext(db: SqliteDatabase, runId: string, root: string) {
   if (nextAction === 'review_memory_application') return context('PostToolUse', `Next action: review_memory_application (${report.pending.length} pending). Call task_memory_status with ${identity}, then task_memory_review for every pending entry. Use task_inspect for evidence and bundled Skills, including natural-japanese-output; do not use shell commands or code search yet. Submit reviews sequentially with the revision from the latest response. Register grounded adoption, inapplicability or contradiction; never invent decisions to unlock execution. After the last review, check task_memory_status. Do not repeat task_prepare.`);
   return context('PostToolUse', 'Memory decisions are current; ordinary tools may proceed for this active run. Adopted code memories still require passing verification before completion.');
 }
-const preparationTools = new Set(['memory_index_submit', 'memory_index_review', 'task_inspect', 'task_prepare', 'task_prepare_recover', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'memory_checkpoint', 'memory_capture', 'memory_recall', 'handoff_save', 'handoff_load', 'handoff_discard', 'curator_check']);
+const preparationTools = new Set(['memory_index_submit', 'memory_index_review', 'task_inspect', 'task_prepare', 'task_prepare_recover', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'task_verification_define', 'task_verification_record', 'memory_checkpoint', 'memory_capture', 'memory_recall', 'handoff_save', 'handoff_load', 'handoff_discard', 'curator_check']);
 // Exact, observed non-execution tools. Never infer safety from names or shell text.
 const conversationTools = new Set(['request_user_input', 'request_user_input_async', 'clockcurr_time']);
 function kiokukoTool(name: string): string | null {
@@ -139,7 +139,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     if (run && ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)) return {};
     if (request.state !== 'bound') return { continue: false, stopReason: 'Kiokuko preparation or capability gate is incomplete' };
     const report = taskAssuranceReport(db, request.run_id);
-    if (!report.complete) return { continue: false, stopReason: 'Memory application or regression evidence is incomplete', systemMessage: JSON.stringify(report) };
+    if (!report.complete || report.completionReady === false) return { continue: false, stopReason: 'Memory application or required task verification is incomplete', systemMessage: JSON.stringify(report) };
     return {};
   }
   if (!input.tool_name || !input.tool_use_id) throw new KiokukoError('VALIDATION_ERROR', 'Hook tool identity is missing');

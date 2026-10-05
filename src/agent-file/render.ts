@@ -1,3 +1,4 @@
+import { TASK_RECOVERY_INSTRUCTIONS } from '../assurance/conflicts.js';
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { HANDOFF_INSTRUCTIONS } from '../memory/handoff.js';
@@ -6,7 +7,7 @@ import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../
 import { validateRepositoryBindingIdentity } from '../repository/identity-value.js';
 import { BEGIN_MARKER, END_MARKER, upsertManagedBlock } from './managed-block.js';
 
-export const AGENT_TEMPLATE_VERSION = 31;
+export const AGENT_TEMPLATE_VERSION = 32;
 
 export interface AgentTemplateValues {
   repositoryId: string;
@@ -60,7 +61,7 @@ export function renderManagedBlock(values: AgentTemplateValues): string {
     '1. Before `memory_checkpoint`, call `curator_check` at most once when available. Qualified hits are completed, verified Akinator reasoning paths from independent runs—not retrieval popularity. If it returns a candidate, show the skill name and exactly three overview lines, then ask whether to Globalize it. Call `curator_globalize` only after an explicit affirmative answer; never infer permission.',
     '2. Complete at most one successful terminal `memory_checkpoint` for the current user request. A rejected precondition does not count as that successful checkpoint. Include only concise, durable, verified facts, decisions, lessons, preferences, or references that will help future work.',
     '3. Treat a completed `memory_checkpoint` as terminal for tool use: do not call it or any other tool again; immediately return the final response.',
-    '4. Do not retry an unchanged tool call after it fails or returns no new information. Summarize the blocker or current result and stop tool use.',
+    `4. ${TASK_RECOVERY_INSTRUCTIONS}`,
     '5. Keep repository knowledge in project scope. Use global scope only for knowledge that truly applies across projects.',
     '6. Checkpoints remain untrusted candidates until explicitly reviewed; never auto-promote them to verified.',
     '',

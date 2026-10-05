@@ -1,3 +1,4 @@
+import { TaskStateConflict } from '../assurance/conflicts.js';
 import type { JsonObject } from '../ledger/types.js';
 import { KiokukoError } from '../errors.js';
 import { canonicalContentHash } from '../serialization/validate.js';
@@ -83,6 +84,6 @@ export function assertCapabilityCatalogBinding(
     throw new KiokukoError('INTEGRITY_ERROR', 'Run capability catalog binding is missing or invalid');
   }
   if (value.digest !== capabilityCatalogDigest(capabilities)) {
-    throw new KiokukoError('CONFLICT', 'Capability catalog differs from the catalog bound when the run was opened');
+    throw new TaskStateConflict('capability_catalog_mismatch');
   }
 }

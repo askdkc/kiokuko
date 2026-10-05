@@ -186,7 +186,7 @@ test('reports Akinator skill recommendations as unknown without a client catalog
     name: 'kiokuko-single-purpose-functions',
     availability: 'unknown',
     source: 'akinator_policy',
-  }]);
+  }, ...['task_verification_define', 'task_verification_record'].map(name => ({ kind: 'mcp_tool', name, availability: 'unknown', source: 'akinator_policy' }))]);
 });
 
 test('matches available skills and relevant MCP tools without treating missing skills as installed', () => {

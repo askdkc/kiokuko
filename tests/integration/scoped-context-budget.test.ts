@@ -499,7 +499,7 @@ test('scoped context binds the exact project fingerprint through ranking and rep
       (error: unknown) => error instanceof Error
         && 'code' in error
         && error.code === 'CONFLICT'
-        && error.message === 'Scoped context project state changed after ranking',
+        && 'details' in error && (error.details as Record<string, unknown>).reason === 'retrieval_state_changed',
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
       .get<{ count: number }>(runId)?.count, 0);
@@ -614,7 +614,7 @@ test('scoped context binds full run title, coverage, and valid same-sequence eve
         (error: unknown) => error instanceof Error
           && 'code' in error
           && error.code === 'CONFLICT'
-          && error.message === 'Scoped context run changed before persistence',
+          && 'details' in error && (error.details as Record<string, unknown>).reason === 'retrieval_state_changed',
         mutation.name,
       );
       assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
@@ -643,7 +643,7 @@ test('scoped context rejects an external Skill disable after ranking without per
       (error: unknown) => error instanceof Error
         && 'code' in error
         && error.code === 'CONFLICT'
-        && error.message === 'Scoped context selection changed before return',
+        && 'details' in error && (error.details as Record<string, unknown>).reason === 'retrieval_state_changed',
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
       .get<{ count: number }>(runId)?.count, 0);
@@ -902,7 +902,7 @@ test('gated scoped context rejects an ordinary entry committed from a second con
       (error: unknown) => error instanceof Error
         && 'code' in error
         && error.code === 'CONFLICT'
-        && error.message === 'Scoped context catalog changed after ranking',
+        && 'details' in error && (error.details as Record<string, unknown>).reason === 'retrieval_state_changed',
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count, 0);
   } finally {
@@ -950,7 +950,7 @@ test('gated scoped context rechecks after its persistence assertion and rolls ba
       (error: unknown) => error instanceof Error
         && 'code' in error
         && error.code === 'CONFLICT'
-        && error.message === 'Scoped context catalog changed after ranking',
+        && 'details' in error && (error.details as Record<string, unknown>).reason === 'retrieval_state_changed',
     );
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM entry_search_signals WHERE entry_id = ?')
       .get<{ count: number }>(selected.id)?.count, signalsBefore);

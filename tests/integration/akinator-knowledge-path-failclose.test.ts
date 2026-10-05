@@ -1,3 +1,4 @@
+import { verifyFixtureTask } from '../fixtures/task-verification.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp } from 'node:fs/promises';
@@ -45,10 +46,11 @@ test('rejects forged, contradictory, and non-canonical Akinator knowledge paths 
       });
       workspace = prepared.project.workspace;
       runs.push(prepared.run.runId);
+      if (verified) verifyFixtureTask(database, root, prepared.run.runId);
       const checkpoint = await checkpointScopedMemory(database, {
         cwd: root,
         runId: prepared.run.runId,
-        outcome: 'completed',
+        outcome: verified ? 'completed' : 'failed',
         memories: [{
           kind: 'lesson',
           title: 'Reusable SQLite migration recovery workflow',

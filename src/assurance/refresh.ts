@@ -1,3 +1,4 @@
+import { TaskStateConflict } from './conflicts.js';
 import { indexingSources, createIndexWork,assertIndexingRunReady } from '../memory/index-service.js';
 import { scopedMemoryUseSignal } from '../context/scoped-memory-use.js';
 import path from 'node:path';
@@ -21,7 +22,7 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
   if (!run) throw new KiokukoError('NOT_FOUND', 'Task run not found');
   assertCapabilityCatalogBinding(run.metadata, input.capabilities);
   const project = await resolveProjectWorkspaceReadOnly(db, input.cwd);
-  if (!project || project.workspace !== run.workspace) throw new KiokukoError('CONFLICT', 'Refresh repository differs from run');
+  if (!project || project.workspace !== run.workspace) throw new TaskStateConflict('repository_mismatch');
   for (const file of input.changedPaths) if (path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) {
     throw new KiokukoError('VALIDATION_ERROR', 'Refresh paths must stay within the repository');
   }
@@ -29,18 +30,18 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
   const prior = db.prepare('SELECT request_digest, response_json FROM task_assurance_requests WHERE run_id = ? AND request_id = ?')
     .get<{ request_digest: string; response_json: string }>(input.runId, input.requestId);
   if (prior) {
-    if (prior.request_digest !== digest) throw new KiokukoError('CONFLICT', 'Refresh request identity conflicts');
+    if (prior.request_digest !== digest) throw new TaskStateConflict('request_id_reused');
     return JSON.parse(prior.response_json) as Record<string, unknown>;
   }
   const state = assertAssuranceCwd(db, input.runId, input.cwd);
-  if (state.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Refresh revision changed');
+  if (state.revision !== input.expectedRevision) throw new TaskStateConflict('assurance_revision_changed', { expectedRevision: input.expectedRevision, currentRevision: state.revision });
   const retrievalBinding = readTaskContextRequestBinding(run.metadata);
   const boundBudget = retrievalBinding?.maxContextChars;
-  if (input.maxContextChars !== undefined && typeof boundBudget === 'number' && input.maxContextChars !== boundBudget) throw new KiokukoError('CONFLICT', 'Refresh context budget differs from the prepared run');
+  if (input.maxContextChars !== undefined && typeof boundBudget === 'number' && input.maxContextChars !== boundBudget) throw new TaskStateConflict('context_budget_mismatch');
   const budget = input.maxContextChars ?? (typeof boundBudget === 'number' ? boundBudget : undefined);
   const current = readContextBrokerRunState(db, input.runId);
   const resolution = resolveCapabilities({ task: run.title ?? current.taskProfile.target ?? "task", profile: current.taskProfile, recommendedTags: current.recommendedTags, capabilities: input.capabilities, memoryUse: 'none' });
-  if (hasBlockingRequiredCapability(resolution)) throw new KiokukoError('CONFLICT', 'Required capability unavailable');
+  if (hasBlockingRequiredCapability(resolution)) throw new TaskStateConflict('required_capability_unavailable');
   // Rank outside the write transaction; recheck the revision in the broker's atomic persistence gate.
   if(input.indexing)assertIndexingRunReady(db,input.runId);
   const indexing = input.indexing ? indexingSources(db, run.workspace, input.indexing.stage, input.indexing.cursor) : undefined;
@@ -57,8 +58,9 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
     const policy = deriveMemoryPolicy(current.taskProfile, memoryUse, input.capabilities);
     return { persist: !policy.contextWithheld, value: policy, assertBeforePersist: () => {
       signal?.throwIfAborted();
-      if (scopedMemoryUseSignal(db, run.workspace, candidate) !== memoryUse) throw new KiokukoError('CONFLICT', 'Memory capability decision changed during refresh');
-      if (assuranceState(db, input.runId)?.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Refresh lost a concurrent update');
+      if (scopedMemoryUseSignal(db, run.workspace, candidate) !== memoryUse) throw new TaskStateConflict('retrieval_state_changed');
+      const latest = assertAssuranceCwd(db, input.runId, input.cwd);
+      if (latest.revision !== input.expectedRevision) throw new TaskStateConflict('assurance_revision_changed', { expectedRevision: input.expectedRevision, currentRevision: latest.revision });
     } };
   }, {}, (context, policy) => {
     const after = assuranceState(db, input.runId)!;

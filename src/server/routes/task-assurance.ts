@@ -1,3 +1,4 @@
+import { defineTaskVerification, recordTaskVerification } from '../../assurance/verification.js';
 import { recoverTaskPreparation } from '../../akinator/preparation-recovery.js';
 import { submitIndex, reviewIndex } from '../../memory/index-service.js';
 import { KiokukoError } from '../../errors.js';
@@ -7,7 +8,7 @@ import { repositoryStateDigest } from '../../assurance/snapshot.js';
 import { successEnvelope } from '../../serialization/envelope.js';
 import { decodeRunId, requireIdempotencyKey, requireNoQuery, runIdSegment, type AgentRouteContext } from './agent-runs.js';
 import type { V1RouteHandler } from '../router.js';
-const suffixes = ['prepare-recovery', 'memory-index-submit', 'memory-index-review', 'memory-review', 'execution-evidence', 'memory-refresh', 'memory-status'] as const;
+const suffixes = ['verification-define', 'verification-record', 'prepare-recovery', 'memory-index-submit', 'memory-index-review', 'memory-review', 'execution-evidence', 'memory-refresh', 'memory-status'] as const;
 export function taskAssuranceOperation(method: string, pathname: string): string | undefined {
   const suffix = method === 'POST' ? suffixes.find(s => runIdSegment(pathname, s) !== undefined) : undefined;
   return suffix ? `agent.${suffix}` : undefined;
@@ -25,6 +26,8 @@ export function createTaskAssuranceRoute(context: Pick<AgentRouteContext, 'datab
     const input = { ...body, runId, requestId: requireIdempotencyKey(request) };
     const data = await context.enqueueWrite(async () => {
       switch (suffix) {
+        case 'verification-define': return defineTaskVerification(context.database, input);
+        case 'verification-record': return recordTaskVerification(context.database, input);
         case 'prepare-recovery': {
           const { requestId: operationId, ...args } = input;
           return recoverTaskPreparation(context.database, { ...args, requestId: body.requestId, operationId });

@@ -1,3 +1,5 @@
+import { taskVerificationReport, type TaskVerificationReport } from './verification-state.js';
+import { TaskStateConflict } from './conflicts.js';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -20,7 +22,7 @@ export function assuranceState(db: SqliteDatabase, runId: string): AssuranceStat
   return db.prepare('SELECT * FROM task_assurance WHERE run_id = ?').get<AssuranceState>(runId);
 }
 export function enrollAssurance(db: SqliteDatabase, runId: string, now: string): void {
-  db.prepare('INSERT INTO task_assurance(run_id, updated_at) VALUES (?, ?)').run(runId, now);
+  db.prepare('INSERT INTO task_assurance(run_id, updated_at, verification_version) VALUES (?, ?, 1)').run(runId, now);
 }
 export function bindAssuranceDelivery(db: SqliteDatabase, delivery: ContextDeliveryView): void {
   const state = assuranceState(db, delivery.runId);
@@ -32,15 +34,15 @@ export function bindAssuranceRoot(db: SqliteDatabase, runId: string, root: strin
   const state = assuranceState(db, runId);
   if (!state) return;
   const canonical = realpathSync(root);
-  if (state.repository_root && state.repository_root !== canonical) throw new KiokukoError('CONFLICT', 'Run repository root changed');
+  if (state.repository_root && state.repository_root !== canonical) throw new TaskStateConflict('repository_mismatch');
   db.prepare('UPDATE task_assurance SET repository_root = ?, retrieval_status = COALESCE(?, retrieval_status) WHERE run_id = ?')
     .run(canonical, retrievalStatus ?? null, runId);
 }
 export function assertAssuranceCwd(db: SqliteDatabase, runId: string, cwd: string): AssuranceState {
   const run = new LedgerStore(db).readRun(runId);
-  if (!run || run.status !== 'active') throw new KiokukoError('CONFLICT', 'Task assurance requires an active run');
+  if (!run || run.status !== 'active') throw new TaskStateConflict('run_not_active');
   const state = assuranceState(db, runId);
-  if (!state) throw new KiokukoError('CONFLICT', 'Historical run has no assurance contract');
+  if (!state) throw new TaskStateConflict('assurance_unavailable');
   const canonical = realpathSync(cwd);
   let root = state.repository_root;
   if (!root) {
@@ -48,8 +50,7 @@ export function assertAssuranceCwd(db: SqliteDatabase, runId: string, cwd: strin
       .all<{ canonical_root: string }>(run.workspace);
     root = rows.find(row => canonical === row.canonical_root || canonical.startsWith(row.canonical_root + path.sep))?.canonical_root ?? null;
   }
-  if (!root || (canonical !== root && !canonical.startsWith(root + path.sep))) throw new KiokukoError('CONFLICT', 'Evidence belongs to another repository');
-  bindAssuranceRoot(db, runId, root);
+  if (!root || (canonical !== root && !canonical.startsWith(root + path.sep))) throw new TaskStateConflict('repository_mismatch');
   return { ...state, repository_root: root };
 }
 export function assuranceMutation<T extends { runId: string; requestId: string; expectedRevision: number; cwd: string }, R extends object>(
@@ -60,11 +61,12 @@ export function assuranceMutation<T extends { runId: string; requestId: string; 
     const prior = db.prepare('SELECT request_digest, response_json FROM task_assurance_requests WHERE run_id = ? AND request_id = ?')
       .get<{ request_digest: string; response_json: string }>(input.runId, input.requestId);
     if (prior) {
-      if (prior.request_digest !== digest) throw new KiokukoError('CONFLICT', 'Assurance request identity was reused with different content');
+      if (prior.request_digest !== digest) throw new TaskStateConflict('request_id_reused');
       return JSON.parse(prior.response_json) as R & { revision: number };
     }
     const state = assertAssuranceCwd(db, input.runId, input.cwd);
-    if (state.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Task assurance revision changed');
+    if (state.revision !== input.expectedRevision) throw new TaskStateConflict('assurance_revision_changed', { expectedRevision: input.expectedRevision, currentRevision: state.revision });
+    bindAssuranceRoot(db, input.runId, state.repository_root!);
     const response = { ...effect(state), revision: state.revision + 1 };
     db.prepare('UPDATE task_assurance SET revision = ?, updated_at = ? WHERE run_id = ?')
       .run(response.revision, new Date().toISOString(), input.runId);
@@ -106,7 +108,7 @@ export function recordTaskEvidence(db: SqliteDatabase, raw: unknown, provenance:
     if (repositoryStateDigest(state.repository_root!) !== input.stateDigest) throw new KiokukoError('CONFLICT', 'Validation target changed');
     const evidenceId = insertTaskEvidence(db, { runId: input.runId, deliveryId: input.deliveryId, root: state.repository_root!, cwd: input.cwd,
       executionDigest: observed?.executionDigest ?? canonicalContentHash(input.execution), stateDigest: input.stateDigest,
-      outcome: input.outcome, exitCode: input.exitCode, provenance });
+      outcome: input.outcome, exitCode: input.exitCode, provenance, target: input.target });
     observed?.onRecorded(evidenceId);
     return { evidenceId, provenance, outcome: input.outcome };
   });
@@ -114,25 +116,26 @@ export function recordTaskEvidence(db: SqliteDatabase, raw: unknown, provenance:
 /** Insert only; callers own the transaction, authorization and revision transition. */
 export function insertTaskEvidence(db: SqliteDatabase, input: { runId: string; deliveryId: string | null; root: string; cwd: string;
   executionDigest: string; stateDigest: string; outcome: 'passed' | 'failed' | 'skipped' | 'unknown'; exitCode: number | null;
-  provenance: 'model_reported' | 'client_observed' }): string {
+  provenance: 'model_reported' | 'client_observed'; target?: string }): string {
   const evidenceId = randomUUID();
   db.prepare('INSERT INTO task_execution_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(evidenceId, input.runId, input.deliveryId, input.root, realpathSync(input.cwd), input.executionDigest, input.stateDigest,
       input.outcome, input.exitCode, input.provenance, new Date().toISOString());
+  db.prepare('INSERT INTO task_execution_targets VALUES (?, ?)').run(evidenceId, input.target ?? `${process.platform}-${process.arch}`);
   return evidenceId;
 }
-export interface AssuranceReport {
+export interface MemoryAssuranceReport {
   mode: 'legacy_unobserved' | 'tracked'; revision: number | null; retrieval: string;
   pending: string[]; stale: string[]; missingVerification: string[]; observed: boolean; complete: boolean;
 }
 /** Execution may start after decisions; passing evidence is required only for completion. */
-export function memoryReviewNextAction(report: AssuranceReport): 'refresh_memory' | 'review_memory_application' | 'proceed' {
+export function memoryReviewNextAction(report: MemoryAssuranceReport): 'refresh_memory' | 'review_memory_application' | 'proceed' {
   if (report.stale.length) return 'refresh_memory';
   return report.pending.length ? 'review_memory_application' : 'proceed';
 }
-export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true): AssuranceReport {
+function memoryAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true): MemoryAssuranceReport {
   const state = assuranceState(db, runId);
-  const report: AssuranceReport = { mode: state ? 'tracked' : 'legacy_unobserved', revision: state?.revision ?? null,
+  const report: MemoryAssuranceReport = { mode: state ? 'tracked' : 'legacy_unobserved', revision: state?.revision ?? null,
     retrieval: state?.retrieval_status ?? 'unobserved', pending: [], stale: [], missingVerification: [], observed: false, complete: true };
   if (!state) return report;
   const profile = readContextBrokerRunState(db, runId).taskProfile;
@@ -169,8 +172,19 @@ export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifySta
   report.observed = verifyState && adoptedCount > 0 && allObserved && report.complete;
   return report;
 }
+export interface AssuranceReport extends MemoryAssuranceReport {
+  verification: TaskVerificationReport;
+  completionReady: boolean | null;
+}
+/** complete remains memory-only; callers must use completionReady for the task. */
+export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true): AssuranceReport {
+  const memory = memoryAssuranceReport(db, runId, verifyState);
+  const verification = taskVerificationReport(db, runId, verifyState);
+  return { ...memory, verification, completionReady: verification.mode === 'legacy_unobserved' ? null : memory.complete && verification.ready };
+}
 export function assertAssuranceCompletion(db: SqliteDatabase, runId: string, outcome: string): void {
   if (outcome !== 'completed') return;
   const report = taskAssuranceReport(db, runId);
   if (!report.complete) throw new KiokukoError('CONFLICT', 'Memory review or regression verification is incomplete', { assurance: report });
+  if (report.completionReady === false) throw new TaskStateConflict('task_verification_incomplete');
 }

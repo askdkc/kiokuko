@@ -1,3 +1,4 @@
+import { defineTaskVerification, recordTaskVerification } from '../../src/assurance/verification.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtempSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
@@ -542,6 +543,8 @@ test('next-migration counterexample fails a fixed expectation and passes derived
       handleCodexHook(f.db, { ...event, hook_event_name: 'PostToolUse', tool_response: { exit_code: result.status } });
       return f.db.prepare('SELECT evidence_id FROM codex_hook_tools WHERE call_id = ?').get<{ evidence_id: string }>(id)!.evidence_id;
     };
+    defineTaskVerification(f.db, { runId, cwd: f.root, requestId: 'define-migration-check', expectedRevision: taskAssuranceReport(f.db, runId).revision!,
+      reason: 'Next-migration behavior is the required completion condition', checks: [{ id: 'next-migration', target: `${process.platform}-${process.arch}`, expected: 'Next migration applies without fixed expectations', method: 'Execute the migration verifier' }] });
     const failedEvidence = observedRun('fixed-array');
     reviewTaskMemory(f.db, { ...review, requestId: 'fixed-result', expectedRevision: taskAssuranceReport(f.db, runId).revision!, evidenceIds: [failedEvidence] });
     assert.throws(() => assertAssuranceCompletion(f.db, runId, 'completed'), /incomplete/);
@@ -550,6 +553,8 @@ test('next-migration counterexample fails a fixed expectation and passes derived
     reviewTaskMemory(f.db, { ...review, requestId: 'derived-result', expectedRevision: taskAssuranceReport(f.db, runId).revision!, evidenceIds: [passedEvidence] });
     assert.equal(taskAssuranceReport(f.db, runId).complete, true);
     assert.equal(taskAssuranceReport(f.db, runId).observed, true);
+    recordTaskVerification(f.db, { runId, cwd: f.root, requestId: 'record-migration-check', expectedRevision: taskAssuranceReport(f.db, runId).revision!,
+      contractVersion: 1, checkId: 'next-migration', target: `${process.platform}-${process.arch}`, source: { kind: 'local', evidenceId: passedEvidence } });
     assert.doesNotThrow(() => assertAssuranceCompletion(f.db, runId, 'completed'));
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });

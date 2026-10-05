@@ -1,3 +1,4 @@
+import { TaskStateConflict } from '../assurance/conflicts.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { contextFeedbackSignals } from './feedback.js';
@@ -26,7 +27,7 @@ function currentScopedEntry(
     { requireStructuredScope: item.origin !== 'project' },
   );
   if (entry.revision !== item.revision) {
-    throw new KiokukoError('CONFLICT', 'Scoped context entry changed after ranking');
+    throw new TaskStateConflict('retrieval_state_changed');
   }
   if (!entryOriginMatchesWorkspace({
     origin: item.origin,
@@ -46,10 +47,10 @@ function currentScopedEntry(
     throw new KiokukoError('INTEGRITY_ERROR', 'Scoped context ecosystem entry scope is invalid');
   }
   if (!isRetrievableEntry(database, entry)) {
-    throw new KiokukoError('CONFLICT', 'Scoped context entry is no longer retrievable');
+    throw new TaskStateConflict('retrieval_state_changed');
   }
   if (entry.status === 'superseded') {
-    throw new KiokukoError('CONFLICT', 'Scoped context entry is no longer retrievable');
+    throw new TaskStateConflict('retrieval_state_changed');
   }
   return entry;
 }

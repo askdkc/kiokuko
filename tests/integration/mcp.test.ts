@@ -1,3 +1,4 @@
+import { verifyMcpFixtureTask } from '../fixtures/task-verification.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -78,6 +79,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'task_memory_status',
       'task_prepare',
       'task_prepare_recover',
+      'task_verification_define', 'task_verification_record',
     ]);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_prepare')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'task_answer')?.annotations?.idempotentHint, false);
@@ -528,6 +530,7 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
     assert.equal(completedContent.intake.status, 'ready');
     assert.equal(completedContent.nextAction, 'proceed');
 
+    await verifyMcpFixtureTask(client, root, runId, databasePath);
     const finalCheckpoint = await client.callTool({
       name: 'memory_checkpoint',
       arguments: {
@@ -635,12 +638,13 @@ test('checkpoint reports pending reviews and evidence-only success without claim
     assert.deepEqual((await client.callTool({ name: 'task_memory_review', arguments: review })).structuredContent, reviewed.structuredContent);
     const reused = await client.callTool({ name: 'task_memory_review', arguments: { ...review, basis: 'Changed request' } });
     assert.deepEqual(reused.structuredContent, {
-      code: 'CONFLICT', reason: 'request_id_reused', nextAction: 'use_new_request_id_for_new_operation', retryable: false,
+      code: 'CONFLICT', reason: 'request_id_reused', nextAction: 'use_new_request_id_for_new_operation', retryable: false, recoverable: false, maxRecoveryAttempts: 0,
     });
     const staleRevision = await client.callTool({ name: 'task_memory_review', arguments: { ...review, requestId: 'review-stale', basis: 'New request', expectedRevision: state.assurance.revision } });
     assert.deepEqual(staleRevision.structuredContent, {
-      code: 'CONFLICT', reason: 'assurance_revision_changed', nextAction: 'read_task_memory_status', retryable: false,
+      code: 'CONFLICT', reason: 'assurance_revision_changed', nextAction: 'read_task_memory_status', retryable: false, recoverable: true, maxRecoveryAttempts: 1, expectedRevision: state.assurance.revision, currentRevision: (reviewed.structuredContent as { revision: number }).revision,
     });
+    await verifyMcpFixtureTask(client, root, state.run.runId, databasePath);
     const saved = await checkpoint();
     assert.notEqual(saved.isError, true);
     const result = saved.structuredContent as { storedMemoryCount: number; entries: unknown[]; run: { status: string; evidenceCount: number } };

@@ -165,14 +165,14 @@ test('generic CLI completes the gateway lifecycle over real TCP and persists one
     const feedback = await captureCli(['agent', 'feedback', runId, '--input-json', feedbackPath, '--json'], descriptorPath);
     assert.equal(feedback.data.untrusted, true);
 
-    const closePath = await writeJson(inputs, 'close.json', { idempotencyKey: 'e2e-close-key', apiVersion: '1', status: 'completed' });
+    const closePath = await writeJson(inputs, 'close.json', { idempotencyKey: 'e2e-close-key', apiVersion: '1', status: 'failed' });
     const closed = await captureCli(['agent', 'close', runId, '--input-json', closePath, '--json'], descriptorPath);
-    assert.equal(closed.data.runStatus, 'completed');
+    assert.equal(closed.data.runStatus, 'failed');
 
     const persisted = openConnection(databasePath);
     try {
       assert.equal(persisted.prepare('SELECT client_kind FROM ledger_runs WHERE run_id = ?').get<{ client_kind: string }>(runId)?.client_kind, 'generic');
-      assert.equal(persisted.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(runId)?.status, 'completed');
+      assert.equal(persisted.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(runId)?.status, 'failed');
       assert.equal(persisted.prepare('SELECT COUNT(*) AS count FROM ledger_events WHERE run_id = ? AND event_id = ?').get<{ count: number }>(runId, 'e2e-tool')?.count, 1);
       assert.equal(persisted.prepare('SELECT COUNT(*) AS count FROM run_feedback WHERE run_id = ?').get<{ count: number }>(runId)?.count, 1);
       assert.ok((persisted.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?').get<{ count: number }>(runId)?.count ?? 0) >= 1);

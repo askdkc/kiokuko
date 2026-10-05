@@ -98,3 +98,8 @@ result or direct evidence, and any remaining unverified assumption. Distinguish
 checkpoint completion, successful memory storage, and observed application to
 the current work. If no recalled claim survives current verification, proceed
 from repository evidence and say so.
+
+Memory `complete` is not task completion. For implementation also define required
+checks per target, record current results, and inspect `completionReady` before
+claiming success. Preserve evidence provenance; CI read by the model is still
+model_reported. A separate bookkeeping conflict does not diagnose a product bug.

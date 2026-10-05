@@ -1,3 +1,4 @@
+import { TaskStateConflict } from '../assurance/conflicts.js';
 import { indexArtifact, observeIndex,formatIndexSourceReferences } from '../memory/index-state.js';
 import type { TaskProfile } from '../akinator/types.js';
 import type { SqliteDatabase } from '../db/adapter.js';
@@ -344,7 +345,7 @@ function assertScopedSelectionState(
   expectedHash: string,
 ): void {
   if (contextRetrievalStateHash(database, workspaces, { includeEcosystem: workspaces.length > 0 }) !== expectedHash) {
-    throw new KiokukoError('CONFLICT', 'Scoped context catalog changed after ranking');
+    throw new TaskStateConflict('retrieval_state_changed');
   }
 }
 
@@ -696,7 +697,7 @@ async function prepareScopedContext(
   if (raw.fingerprint !== undefined
     && manifestSnapshot !== undefined
     && raw.fingerprint.manifestDigest !== manifestSnapshot.manifestDigest) {
-    throw new KiokukoError('CONFLICT', 'Project manifest changed while task context was being prepared');
+    throw new TaskStateConflict('retrieval_state_changed');
   }
   const fingerprint = project === undefined || manifestSnapshot === undefined
     ? undefined
@@ -704,7 +705,7 @@ async function prepareScopedContext(
   if (raw.fingerprint !== undefined
     && fingerprint !== undefined
     && canonicalContentHash(raw.fingerprint) !== canonicalContentHash(fingerprint)) {
-    throw new KiokukoError('CONFLICT', 'Project manifest changed while task context was being prepared');
+    throw new TaskStateConflict('retrieval_state_changed');
   }
   const projectState = project === undefined || fingerprint === undefined ? null : { project, fingerprint };
   ensureGlobalWorkspace(database);
@@ -923,6 +924,7 @@ async function prepareScopedContext(
 
 function assertPreparedScopedRun(database: SqliteDatabase, run: ScopedRunContext): void {
   const current = readContextRunRetrievalState(database, run.runId);
+  if (current.run.status !== 'active') throw new TaskStateConflict('run_not_active');
   if (run.status !== 'active'
     || current.run.workspace !== run.workspace
     || current.run.status !== run.status
@@ -930,7 +932,7 @@ function assertPreparedScopedRun(database: SqliteDatabase, run: ScopedRunContext
     || current.intakeSessionId !== run.intakeSessionId
     || current.profileHash !== run.profileHash
     || current.stateHash !== run.stateHash) {
-    throw new KiokukoError('CONFLICT', 'Scoped context run changed before persistence');
+    throw new TaskStateConflict('retrieval_state_changed');
   }
 }
 
@@ -938,7 +940,7 @@ function assertPreparedScopedState(database: SqliteDatabase, prepared: PreparedS
   if (prepared.projectState !== null) {
     const manifestSnapshot = captureProjectManifestSnapshot(prepared.projectState.project);
     if (manifestSnapshot.manifestDigest !== prepared.projectState.fingerprint.manifestDigest) {
-      throw new KiokukoError('CONFLICT', 'Scoped context project state changed after ranking');
+      throw new TaskStateConflict('retrieval_state_changed');
     }
     const currentFingerprint = resolveProjectFingerprint(
       database,
@@ -947,7 +949,7 @@ function assertPreparedScopedState(database: SqliteDatabase, prepared: PreparedS
       { readOnly: true },
     );
     if (canonicalContentHash(currentFingerprint) !== canonicalContentHash(prepared.projectState.fingerprint)) {
-      throw new KiokukoError('CONFLICT', 'Scoped context project state changed after ranking');
+      throw new TaskStateConflict('retrieval_state_changed');
     }
   }
   if (prepared.run !== null) assertPreparedScopedRun(database, prepared.run);
@@ -957,7 +959,7 @@ function assertPreparedScopedState(database: SqliteDatabase, prepared: PreparedS
     entryRevision: item.revision,
     origin: item.origin,
   }) === null)) {
-    throw new KiokukoError('CONFLICT', 'Scoped context selection changed before return');
+    throw new TaskStateConflict('retrieval_state_changed');
   }
   assertScopedSelectionState(database, prepared.selectionWorkspaces, prepared.retrievalStateHash);
   if (prepared.replayDelivery !== null) {

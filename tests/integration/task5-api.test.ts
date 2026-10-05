@@ -543,7 +543,7 @@ test('exact checkpoint replay rejects a terminal run before broker delivery', as
     const closed = await request(runtime.url, `/api/v1/agent/runs/${runId}/close`, {
       method: 'POST',
       key: 'task5-terminal-replay-close',
-      body: { apiVersion: '1', status: 'completed' },
+      body: { apiVersion: '1', status: 'failed' },
     });
     assert.equal(closed.response.status, 200);
     const replay = await request(runtime.url, `/api/v1/agent/runs/${runId}/checkpoints`, {

@@ -18,6 +18,7 @@ export const memoryReviewSchema = z.object({
 });
 export const executionEvidenceSchema = z.object({
   ...assuranceBase, deliveryId: id.nullable(), execution: text,
+  target: z.string().trim().min(1).max(1000).default(`${process.platform}-${process.arch}`),
   stateDigest: z.string().regex(/^[0-9a-f]{64}$/),
   outcome: z.enum(['passed', 'failed', 'skipped', 'unknown']), exitCode: z.number().int().nullable(),
 }).strict().refine(v => v.outcome !== 'passed' || v.exitCode === 0, 'Passing evidence requires exit code zero');

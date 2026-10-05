@@ -220,7 +220,7 @@ test('project capture requires its ready active run and preserves terminal check
   const saved = await capture('active', [projectMemory], { runId: ready.run.runId });
   assert.equal(db.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(ready.run.runId)!.status, 'active');
   await assert.rejects(captureInteractionMemory(db, { operationId: 'wrong-client', memories: [projectMemory], runId: ready.run.runId }, { ...options, clientKind: 'other' }), { code: 'CONFLICT' });
-  await checkpointScopedMemory(db, { cwd: root, runId: ready.run.runId, outcome: 'completed', memories: [], evidence: { tests: [{ runner: 'node:test', outcome: 'passed' }] } });
+  await checkpointScopedMemory(db, { cwd: root, runId: ready.run.runId, outcome: 'failed', memories: [], evidence: { tests: [{ runner: 'node:test', outcome: 'passed' }] } });
   await assert.rejects(capture('terminal', [projectMemory], { runId: ready.run.runId }), { code: 'CONFLICT' });
   assert.equal(saved.items[0]!.workspace, ready.project.workspace);
 });

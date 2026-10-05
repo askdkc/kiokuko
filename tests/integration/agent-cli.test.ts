@@ -486,7 +486,7 @@ test('generic agent CLI sends exact write paths, bodies, and one idempotency key
       events: [{ eventId: 'cli-event-1', eventType: 'step.started', actor: 'cli', occurredAt: '2026-08-20T00:00:00.000Z', payload: { step: 'build' } }],
     }));
     await writeFile(checkpointPath, JSON.stringify({ apiVersion: '1', currentStep: 'verify' }));
-    await writeFile(closePath, JSON.stringify({ apiVersion: '1', status: 'completed' }));
+    await writeFile(closePath, JSON.stringify({ apiVersion: '1', status: 'failed' }));
     await writeFile(feedbackPath, JSON.stringify({ apiVersion: '1', category: 'run', feedbackId: 'feedback-1', outcome: 'completed', rating: 5 }));
 
     const events = await invoke(['agent', 'events', runId, '--input-json', eventPath, '--json'], value.agent);
@@ -510,7 +510,7 @@ test('generic agent CLI sends exact write paths, bodies, and one idempotency key
     ]);
     assert.equal(JSON.parse(value.requests.at(-4)?.body ?? '{}').idempotencyKey, undefined);
     assert.equal(JSON.parse(value.requests.at(-3)?.body ?? '{}').apiVersion, '1');
-    assert.equal(JSON.parse(value.requests.at(-2)?.body ?? '{}').status, 'completed');
+    assert.equal(JSON.parse(value.requests.at(-2)?.body ?? '{}').status, 'failed');
     assert.equal(JSON.parse(value.requests.at(-1)?.body ?? '{}').feedbackId, 'feedback-1');
   } finally {
     await value.runtime.close();

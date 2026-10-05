@@ -264,6 +264,60 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
   process.stdout.write('Installed ChatGPT profile verified policy asset, read-only allowlist, opt-in save, replay and recall.\n');
 }
 
+async function verifyInstalledTaskVerification(cliPath, fixtureRoot) {
+  const cwd = path.join(fixtureRoot, 'repo');
+  await mkdir(cwd, { recursive: true });
+  await run('git', ['init', '-q'], cwd);
+  await writeFile(path.join(cwd, 'source.txt'), 'package consumer fixture\n');
+  const environment = { PATH: process.env.PATH ?? '', KIOKUKO_DATA_DIR: path.join(fixtureRoot, 'data'), KIOKUKO_SKILL_DISCOVERY: 'off' };
+  const capabilities = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }];
+  const connect = async () => {
+    const client = new Client({ name: 'task-verification-package-smoke', version: '1' });
+    await client.connect(new StdioClientTransport({ command: cliPath, args: ['mcp'], cwd, env: environment, stderr: 'pipe' }));
+    return client;
+  };
+  let client = await connect();
+  const call = async (name, args) => {
+    const result = await client.callTool({ name, arguments: { cwd, ...args } });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    return result.structuredContent;
+  };
+  try {
+    const names = (await client.listTools()).tools.map(tool => tool.name);
+    assert.ok(names.includes('task_verification_define') && names.includes('task_verification_record'));
+    const prepared = await call('task_prepare', { requestId: 'installed-prepare', soulRead: true, capabilities,
+      task: 'Verify the installed CLI', profileHints: { taskType: 'build', target: 'installed CLI', expected: 'CLI starts successfully' } });
+    const runId = prepared.run.runId;
+    const before = await call('task_memory_status', { runId });
+    await call('task_inspect', { operation: 'skill', path: 'one-shot-software-completion' });
+    assert.equal((await call('task_memory_status', { runId })).revision, before.revision);
+    const refresh = { runId, requestId: 'installed-refresh', expectedRevision: before.revision, capabilities, changedPaths: ['source.txt'] };
+    await call('task_memory_refresh', refresh);
+    const stale = await client.callTool({ name: 'task_memory_refresh', arguments: { cwd, ...refresh, requestId: 'installed-stale' } });
+    assert.equal(stale.isError, true);
+    assert.equal(stale.structuredContent.reason, 'assurance_revision_changed');
+    assert.equal(stale.structuredContent.recoverable, true);
+    const current = await call('task_memory_status', { runId });
+    const recovered = await call('task_memory_refresh', { ...refresh, requestId: 'installed-recovery', expectedRevision: current.revision });
+    const target = `${process.platform}-${process.arch}`;
+    const defined = await call('task_verification_define', { runId, requestId: 'installed-define', expectedRevision: recovered.assurance.revision,
+      reason: 'Verify the installed package entry point', checks: [{ id: 'startup', target, expected: 'CLI reports its version', method: 'Run installed CLI --version' }] });
+    const snapshot = await call('task_memory_status', { runId, snapshot: true });
+    assert.equal(snapshot.completionReady, false);
+    const version = await run(cliPath, ['--version'], cwd, environment);
+    assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/u);
+    const evidence = await call('task_execution_evidence', { runId, requestId: 'installed-evidence', expectedRevision: snapshot.revision,
+      deliveryId: snapshot.deliveryId, stateDigest: snapshot.stateDigest, target, execution: 'installed CLI --version', outcome: 'passed', exitCode: 0 });
+    await call('task_verification_record', { runId, requestId: 'installed-record', expectedRevision: evidence.revision,
+      contractVersion: defined.contractVersion, checkId: 'startup', target, source: { kind: 'local', evidenceId: evidence.evidenceId } });
+    assert.equal((await call('task_memory_status', { runId })).completionReady, true);
+    await client.close();
+    client = await connect();
+    assert.equal((await call('task_memory_status', { runId })).completionReady, true);
+    process.stdout.write('Installed project MCP verified typed refresh recovery, completion checks and restart persistence.\n');
+  } finally { await client.close(); }
+}
+
 async function verifyFirstInstalledEmbeddingSetup(installedRoot, prefixDirectory, fixtureRoot) {
   const packagesBefore = await installedPackageNames(path.join(prefixDirectory, 'lib', 'node_modules'));
   for (const name of ['@huggingface/hub', '@huggingface/transformers', 'sqlite-vec']) {
@@ -377,6 +431,7 @@ try {
   const managedStatus = await run(cliPath, ['chatgpt', 'status', '--profile', 'install-smoke-unused', '--json'], repositoryRoot);
   assert.equal(JSON.parse(managedStatus.stdout).schemaVersion, 1);
   await verifyInstalledChatgptProfile(cliPath, path.join(temporaryRoot, 'chatgpt-fixture'));
+  await verifyInstalledTaskVerification(cliPath, path.join(temporaryRoot, 'verification-fixture'));
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 
   await verifyInstalledSkillSetup(

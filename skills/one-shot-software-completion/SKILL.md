@@ -49,6 +49,12 @@ because the phase changed. Select repository excerpts by relevant symbols/ranges
 | Evidence or delivery is uncertain | [Verification](references/verification-and-completion.md) |
 | A check fails or progress stalls; before changing strategy | [Recovery](references/failure-recovery.md) |
 
-Never retry an unchanged failed operation. Reference deferral does not waive the
-core obligations. Follow the router's other applicable contracts without duplicating them.
+Never retry an unchanged failed operation. A typed recoverable task-state
+conflict permits at most one status read and new request with the current
+revision, preserving run and capabilities; review the new delivery first.
+Never recover after a host policy denial. Define required target checks with
+task_verification_define and record evidence with task_verification_record.
+Only completionReady=true supports a verified completion claim; memory complete
+alone does not. Unknown exit status cannot establish success or a timeout cause.
+Reference deferral does not waive the core obligations.
 <!-- /kiokuko:runtime -->

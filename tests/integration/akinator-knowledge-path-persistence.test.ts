@@ -1,3 +1,4 @@
+import { verifyFixtureTask } from '../fixtures/task-verification.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp } from 'node:fs/promises';
@@ -66,6 +67,7 @@ test('reasoning-path persistence rejects duplicate identities, path-id collision
       },
       client: { kind: 'test', sessionId: 'knowledge-path-persistence' },
     });
+    verifyFixtureTask(database, root, prepared.run.runId);
     const checkpoint = await checkpointScopedMemory(database, {
       cwd: root,
       runId: prepared.run.runId,

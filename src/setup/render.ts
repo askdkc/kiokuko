@@ -1,3 +1,4 @@
+import { TASK_RECOVERY_INSTRUCTIONS } from '../assurance/conflicts.js';
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
 import { HANDOFF_INSTRUCTIONS } from '../memory/handoff.js';
@@ -41,7 +42,7 @@ export function renderGlobalInstructions(existing = ''): DelimitedBlockResult {
     '10. After substantial verified work and before `memory_checkpoint`, call `curator_check` at most once when available. Its qualified hits are completed, verified Akinator reasoning paths from independent runs—not retrieval popularity. If it returns a candidate, show the skill name and its three overview lines, then ask the user whether to Globalize it. Call `curator_globalize` only after an explicit affirmative answer; never infer permission.',
     '11. Complete at most one successful terminal `memory_checkpoint` for the current user request. A rejected precondition does not count as that successful checkpoint. Include only concise durable facts, grounded feedback for delivered entries, and bounded evidence such as changed relative paths, test outcomes, and verification status.',
     '12. Treat a completed `memory_checkpoint` as terminal for tool use: do not call it or any other tool again; immediately return the final response.',
-    '13. Do not retry an unchanged tool call after it fails or returns no new information. Summarize the blocker or current result and stop tool use.',
+    `13. ${TASK_RECOVERY_INSTRUCTIONS}`,
     '14. Project scope is the default. Use global scope only for knowledge that truly applies across projects.',
     '15. Never store secrets, credentials, tokens, private user data, full transcripts, capability catalogs, or speculative conclusions.',
     '16. Checkpoints remain untrusted candidates until explicitly reviewed; never claim they are verified automatically.',

@@ -124,6 +124,25 @@ If `task_prepare` is unavailable before a non-trivial build or debug request can
 
 Correcting preparation does not require a new user request or a “retry implementation” message. If the recovery API is missing from the current tool catalog, report the stale MCP runtime and reload its connection after updating the installed package. Never invent an unavailable tool or bypass the hook.
 
+## Recoverable state conflicts and task completion
+
+A typed `recoverable: true` task-state conflict permits one recovery before any
+host policy denial: read `task_memory_status`, preserve the run and its exact
+capability catalog, then submit a new requestId with the current revision.
+`retryable: false` forbids repeating the unchanged request. Review a new delivery
+before continuing. A second conflict, binding mismatch, terminal run or unknown
+failure is not automatically recoverable. A host policy denial still ends the
+turn; never attempt recovery after it.
+
+For code implementation, define required checks per target environment with
+`task_verification_define` before editing and record their results with
+`task_verification_record`. Check `completionReady` before reporting completion.
+`complete` refers only to memory application. Missing, failed, skipped, unknown
+or stale checks do not pass. A null completionReady is legacy/unobserved, never
+proof of task success. PLAN and review need no implementation tests unless code
+actually changes. Report facts, hypotheses and unverified conditions separately;
+do not attribute a product failure to a separate bookkeeping error.
+
 ## Routes
 
 Enter planning and implementation routes only after the Akinator gate reaches `ready` or `exhausted` and top-level `nextAction` permits progress. Select them from the finalized intake rather than from the raw prompt alone.

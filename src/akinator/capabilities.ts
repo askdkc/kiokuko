@@ -465,12 +465,20 @@ export function resolveCapabilities(input: {
         : {}),
     };
   });
+  const verification: CapabilityRecommendation[] = input.profile.taskType === 'build' || input.profile.taskType === 'debug'
+    ? ['task_verification_define', 'task_verification_record'].map(tool => {
+      const matched = normalized.tools.find(item => item.name === tool || item.name.endsWith(`__${tool}`));
+      return { kind: 'mcp_tool', name: matched?.name ?? tool,
+        availability: matched ? 'available' : normalized.availability === 'unknown' ? 'unknown' : 'missing',
+        reason: 'New code tasks require explicit target checks and current evidence before completion. Reconnect an outdated client to expose these tools.',
+        source: 'akinator_policy' };
+    }) : [];
   return {
     availability: normalized.availability,
     catalogProvided,
     availableSkillCount: normalized.availability === 'unknown' ? null : normalized.skills.length,
     diagnostics: normalized.diagnostics,
     warnings: normalizedCatalogWarningList(normalized.availability, normalized.diagnostics, input.capabilities !== undefined, normalized.budgetExceeded),
-    recommendations: [...skills, ...relevantCatalogCapabilities(input.task, input.profile, catalog, desiredSkillNames)],
+    recommendations: [...skills, ...verification, ...relevantCatalogCapabilities(input.task, input.profile, catalog, desiredSkillNames)],
   };
 }

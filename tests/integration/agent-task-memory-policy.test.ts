@@ -447,7 +447,7 @@ test('pre-discovery memory gate rejects a concurrent ledger profile revision ins
       (error: unknown) => error instanceof Error
         && 'code' in error
         && error.code === 'CONFLICT'
-        && error.message === 'Scoped context run changed before persistence',
+        && 'details' in error && (error.details as Record<string, unknown>).reason === 'retrieval_state_changed',
     );
     assert.equal(revised, true);
     assert.equal(networkCalls, 0);

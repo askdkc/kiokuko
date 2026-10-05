@@ -1,3 +1,4 @@
+import { verifyFixtureTask } from '../fixtures/task-verification.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp } from 'node:fs/promises';
@@ -34,6 +35,7 @@ test('counts only verified independent Akinator runs and makes repeated portable
         client: { kind: 'test', sessionId },
       });
       workspace = prepared.project.workspace;
+      verifyFixtureTask(database, root, prepared.run.runId);
       const checkpoint = await checkpointScopedMemory(database, {
         cwd: root,
         runId: prepared.run.runId,
@@ -89,7 +91,7 @@ test('does not qualify retrieval-free runs without fresh verification or a passi
     const checkpoint = await checkpointScopedMemory(database, {
       cwd: root,
       runId: prepared.run.runId,
-      outcome: 'completed',
+      outcome: 'failed',
       memories: [{
         kind: 'lesson',
         title: 'Reusable configuration workflow',

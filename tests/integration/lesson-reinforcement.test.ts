@@ -1,3 +1,4 @@
+import { verifyMcpFixtureTask } from '../fixtures/task-verification.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
@@ -216,6 +217,7 @@ test('MCP restart delivers repeated lesson first and requires review plus regres
     const evidence = executed.structuredContent as { evidenceId: string; revision: number };
     assert.notEqual((await call('task_memory_review', { ...review, requestId: 'review-passed',
       expectedRevision: evidence.revision, evidenceIds: [evidence.evidenceId] })).isError, true);
+    await verifyMcpFixtureTask(second.client, f.root, runId, f.databasePath);
     assert.notEqual((await call('memory_checkpoint', checkpoint)).isError, true);
     const withheld = await call('task_prepare', { ...task, requestId: 'withheld', capabilities: [capabilities[0]] });
     assert.equal((withheld.structuredContent as { memoryPolicy: { contextWithheld: boolean } }).memoryPolicy.contextWithheld, true);
