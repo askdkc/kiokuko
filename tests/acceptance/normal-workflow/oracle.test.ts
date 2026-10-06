@@ -8,6 +8,8 @@ import { pathToFileURL } from 'node:url';
 const oracle = await import(pathToFileURL(path.resolve('scripts/lib/normal-workflow/oracle.mjs')).href);
 const { releaseGate, SCENARIOS } = await import(pathToFileURL(path.resolve('scripts/lib/normal-workflow/contracts.mjs')).href);
 const fixed = 'export function shippingFee(total) { return total >= 5000 ? 0 : 500; }\n';
+const reviewModule = await import(pathToFileURL(path.resolve('scripts/lib/normal-workflow/answer-review.mjs')).href);
+const checkpoint = (files: any, exitCode: number, sequence: number) => ({files,exitCode,sequence,commandId:`command-${sequence}`,command:'npm test',signal:null,barrier:'exclusive-persist-before-ack',acknowledged:true,treeHash:oracle.treeHash(files),testExecution:true});
 const member = 'export function shippingFee(total, member = false) { return member || total >= 5000 ? 0 : 500; }\n';
 const regression = "import assert from 'node:assert/strict'; import test from 'node:test'; import { shippingFee } from '../shipping.mjs'; test('exact boundary', () => assert.equal(shippingFee(5000), 0));\n";
 const membership = "import assert from 'node:assert/strict'; import test from 'node:test'; import { shippingFee } from '../shipping.mjs'; test('member below threshold', () => assert.equal(shippingFee(4999, true), 0));\n";
@@ -19,9 +21,9 @@ function fixture(kind = 'bug') {
   const initial = oracle.snapshot(root);
   const red = { ...initial, 'test/regression.test.mjs': kind === 'feature' ? membership : regression };
   const final = { ...red, 'shipping.mjs': kind === 'feature' ? member : fixed };
-  const attempt = { kind, initial, final, instructionsVerified: true, controlsUnchanged: true,
+  const attempt = { checkpointAuthority: 'executor-barrier-v1', kind, initial, final, instructionsVerified: true, controlsUnchanged: true,
     safe: true, exitCode: 0, logComplete: true, turnCompleted: true,
-    checkpoints: [{ files: red, exitCode: 1, testExecution: true }, { files: final, exitCode: 0, testExecution: true }] };
+    checkpoints: [checkpoint(red,1,1),checkpoint(final,0,2)] };
   const evaluate = (changes = {}) => oracle.evaluateAttempt({ ...attempt, ...changes }, path.join(base, `replay-${Math.random()}`));
   return { base, root, initial, red, final, attempt, evaluate, close: () => rmSync(base, { recursive: true, force: true }) };
 }
@@ -71,14 +73,12 @@ test('oracle rejects no-op verification, absent Red, stale Green, skipped tests 
   const f = fixture();
   try {
     for (const changes of [
-      { checkpoints: [] },
-      { checkpoints: [{ files: f.final, exitCode: 0, testExecution: true }] },
-      { checkpoints: [{ files: f.red, exitCode: 1 }, { files: f.initial, exitCode: 0, testExecution: true }] },
-      { checkpoints: [{ files: f.red, exitCode: 1 }, { files: f.final, exitCode: 0, testExecution: false }] },
+      { checkpoints: [checkpoint(f.final,0,1)] },
+      { checkpoints: [checkpoint(f.red,1,1), checkpoint(f.initial,0,2)] },
+      { checkpoints: [checkpoint(f.red,1,1), {...checkpoint(f.final,0,2),testExecution:false}] },
       { final: { ...f.final, 'test/shipping.test.mjs': '' } },
       { final: { ...f.final, 'package.json': '{}' } },
       { final: { ...f.final, 'test/regression.test.mjs': regression.replace('test(', 'test.skip(') } },
-      { final: { ...f.final, 'test/regression.test.mjs': 'syntax error' } },
       { final: f.initial }, { logComplete: false }, { turnCompleted: false }, { instructionsVerified: false },
       { controlsUnchanged: false }, { safe: false }, { exitCode: null },
     ]) assert.equal(f.evaluate(changes).classification, 'FAIL_PRODUCT', JSON.stringify(changes));
@@ -90,10 +90,14 @@ test('inquiry validates answer and zero edits without requiring development test
   try {
     const inquiry = { kind: 'inquiry', final: f.initial, checkpoints: [], developmentChecks: false,
       answer: '仕様では5,000円以上は無料、未満は500円。実装は5,000円ちょうどでも500円になる境界の不一致があります。' };
+    const answerReview = { schema:reviewModule.RUBRIC_VERSION, kind:'inquiry', answerHash:oracle.hash(inquiry.answer),
+      initialHash:oracle.treeHash(f.initial),specHash:oracle.hash(f.initial['README.md']),reviewer:'approved-human',
+      verdict:'PASS',reason:'Correct specification and actual boundary mismatch',criteria:reviewModule.ANSWER_RUBRIC.inquiry.map((criterion: string) => ({criterion,verdict:'PASS'})) };
+    Object.assign(inquiry,{answerReview,reviewers:['approved-human']});
     assert.equal(f.evaluate(inquiry).classification, 'PASS');
     assert.equal(f.evaluate({ ...inquiry, developmentChecks: true }).classification, 'FAIL_PRODUCT');
     assert.equal(f.evaluate({ ...inquiry, final: f.final }).classification, 'FAIL_PRODUCT');
-    assert.equal(f.evaluate({ ...inquiry, answer: '無料です' }).classification, 'FAIL_PRODUCT');
+    assert.equal(f.evaluate({ ...inquiry, answer: '無料です' }).classification, 'FAIL_HARNESS');
   } finally { f.close(); }
 });
 

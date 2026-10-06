@@ -35,7 +35,7 @@ export function releaseGate(candidate, reports, required) {
     missing.push('candidate must be a clean commit and a hashed artifact');
   for (const key of required) {
     const attempts = reports.filter(report => `${report.client}/${report.scenario}` === key);
-    if (!attempts.length) { missing.push(`${key}: NOT_RUN`); continue; }
+    if (attempts.length !== 1) {  missing.push(`${key}: NOT_RUN`); continue; }
     // Keep all failures: a later success cannot erase an earlier failed attempt.
     for (const report of attempts) {
       if (report.classification !== 'PASS' || report.executionMode !== 'live'
@@ -44,31 +44,12 @@ export function releaseGate(candidate, reports, required) {
         missing.push(`${key}: ${report.classification} or mismatched/unobserved evidence`);
     }
   }
+  if (reports.some(report => !required.includes(`${report.client}/${report.scenario}`))) missing.push('unexpected attempts');
   if (!required.length) missing.push('no required live scenarios');
   return { passed: missing.length === 0, missing };
 }
 
+/** Legacy summaries are diagnostic only. G4 requires verifyEvidenceBundle. */
 export function releaseCandidateGate(candidate, deterministic, summaries) {
-  const reasons = [];
-  for (const gate of ['G0', 'G1', 'G2']) {
-    const evidence = deterministic.filter(report => report.gate === gate);
-    if (!evidence.length || evidence.some(report => report.classification !== 'PASS'
-      || report.commit !== candidate.commit || report.artifactHash !== candidate.artifactHash
-      || !Array.isArray(report.commands) || !report.commands.length
-      || report.commands.some(command => command.exitCode !== 0))) reasons.push(`${gate}: missing, failed or mismatched deterministic evidence`);
-  }
-  if (!summaries.length) reasons.push('G3: no live summaries');
-  const required = candidate.required;
-  if (!Array.isArray(required) || !required.length) reasons.push('Explicit required client/scenario matrix is missing');
-  const clients = candidate.clients;
-  if (!Array.isArray(clients) || !clients.length || clients.some(client => !['codex-cli', 'codex-desktop'].includes(client))) reasons.push('Explicit client support matrix is missing');
-  else {
-    const expected = clients.flatMap(client => SCENARIOS.map(scenario => `${client}/${scenario.id}`)).sort();
-    if (JSON.stringify([...(required ?? [])].sort()) !== JSON.stringify(expected)) reasons.push('Required scenarios were removed or substituted');
-  }
-  const live = releaseGate(candidate, summaries.flatMap(summary => summary.reports ?? []), Array.isArray(required) ? required : []);
-  reasons.push(...live.missing);
-  if (typeof candidate.configurationHash !== 'string' || !/^[a-f0-9]{64}$/u.test(candidate.configurationHash)
-    || summaries.some(summary => summary.configurationHash !== candidate.configurationHash)) reasons.push('Model/limits/client configuration mismatch');
-  return { releaseReady: reasons.length === 0, reasons };
+  return { releaseReady:false, reasons:['Summary-only evidence is not release authority: actual artifact, frozen policy and authenticated raw producer evidence required'] };
 }

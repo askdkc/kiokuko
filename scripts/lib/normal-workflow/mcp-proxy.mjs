@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 // Transparent packaged MCP boundary. Record discovery and tool results; inject
 // only one documented selector error when explicitly selected by the scenario.
 import { spawn } from 'node:child_process';
@@ -15,7 +16,8 @@ const child = spawn(process.execPath, [...imports, executable, 'mcp'], { stdio: 
 let injected = existsSync(`${log}.injected`);
 const sanitize = captureSanitizer(sanitizeJson, process.env.KIOKUKO_ACCEPTANCE_AUTH_FILE
   ? JSON.parse(readFileSync(process.env.KIOKUKO_ACCEPTANCE_AUTH_FILE, 'utf8')) : {});
-const record = value => appendFileSync(log, JSON.stringify(sanitize({ time: new Date().toISOString(), ...value })) + '\n');
+const sessionId = randomUUID(); let sequence = 0;
+const record = value => appendFileSync(log, JSON.stringify(sanitize({ sessionId, sequence:++sequence, time: new Date().toISOString(), ...value })) + '\n');
 function receive(stream, callback) {
   const buffer = new ReadBuffer({ maxBufferSize: 1024 * 1024 });
   stream.on('data', chunk => {
@@ -24,7 +26,7 @@ function receive(stream, callback) {
   });
 }
 receive(process.stdin, message => {
-  if (message.method === 'tools/list' || message.method === 'tools/call') record({ direction: 'request', message });
+  if (message.id !== undefined) record({ direction: 'request', message });
   if (!injected && fault === 'selector-once' && message.method === 'tools/call'
     && message.params?.name === 'task_inspect' && message.params.arguments?.operation === 'skill') {
     injected = true; writeFileSync(`${log}.injected`, 'one injected error');

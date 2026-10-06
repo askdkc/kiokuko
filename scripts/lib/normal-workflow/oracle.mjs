@@ -1,3 +1,5 @@
+import { checkpointErrors } from './checkpoints.mjs';
+import { verifyAnswerReview } from './answer-review.mjs';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -44,15 +46,19 @@ export function replaySuite(files, root) {
   materialize(root, files);
   root = realpathSync(root);
   const tests = Object.keys(files).filter(name => /^test\/[^/]+\.test\.mjs$/u.test(name)).sort();
-  const child = spawnSync(process.execPath, ['--permission', `--allow-fs-read=${root}`, `--allow-fs-write=${root}`,
-    '--test-isolation=none', '--test', '--test-reporter=tap', ...tests], {
+  const report = path.join(path.dirname(root), `${path.basename(root)}-lifecycle.json`);
+  const supervisor = fileURLToPath(new URL('./test-results.mjs', import.meta.url));
+  const child = spawnSync(process.execPath, [supervisor, root, report, ...tests.map(name => path.join(root, name))], {
     cwd: root, encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024,
     env: { PATH: process.env.PATH, HOME: root, NODE_NO_WARNINGS: '1' },
   });
-  const output = `${child.stdout ?? ''}\n${child.stderr ?? ''}`;
-  const count = label => Number(new RegExp(`^# ${label} (\\d+)$`, 'mu').exec(output)?.[1] ?? NaN);
-  return { exitCode: child.status, output, tests: count('tests'), skipped: count('skipped'), todo: count('todo'),
-    failed: count('fail'), assertionFailure: /ERR_ASSERTION/u.test(output), signal: child.signal };
+  let result;
+  try { result = JSON.parse(readFileSync(report, 'utf8')); } catch { /* Missing channel is a harness failure. */ }
+  const complete = child.signal === null && result?.complete === true;
+  return { exitCode: child.status, signal: child.signal, complete, ...result?.counts,
+    assertionFailure: result?.results.some(file => file.events.some(event => event.type === 'test:fail' && event.assertion)) === true,
+    lifecycle: result, output: `${child.stdout ?? ''}\n${child.stderr ?? ''}` };
+
 }
 
 /** Expected values are fixed by the public fixture spec, not by product code. */
@@ -99,6 +105,12 @@ export function evaluateAttempt(attempt, replayRoot) {
   const require = (id, passed) => assertions.push({ id, passed: passed === true });
   if (attempt.blocked) return { classification: attempt.blocked, assertions, oraclePassed: false };
   const { initial, final, checkpoints = [], kind } = attempt;
+  const approvedInitial = snapshot(fixture);
+  if (kind === 'feature') approvedInitial['shipping.mjs'] = 'export function shippingFee(total) { return total >= 5000 ? 0 : 500; }\n';
+  if (!Object.entries(approvedInitial).every(([name,text]) => initial[name] === text))
+    return { classification:'FAIL_HARNESS', oraclePassed:false, assertions, reason:'Initial fixture/spec differs from reviewed fixture' };
+  if (!['inquiry','conversation'].includes(kind) && checkpointErrors(checkpoints,attempt.checkpointAuthority).length > 0)
+    return { classification:'FAIL_HARNESS', assertions, oraclePassed:false, reason:'Execution-bound checkpoint authority unavailable' };
   require('instructions loaded and capabilities discovered', attempt.instructionsVerified);
   require('client ended successfully with complete event log', attempt.exitCode === 0 && attempt.logComplete === true && attempt.turnCompleted === true);
   require('installed controls were not edited', attempt.controlsUnchanged);
@@ -107,11 +119,11 @@ export function evaluateAttempt(attempt, replayRoot) {
   if (kind === 'inquiry' || kind === 'conversation') {
     require('explanation did not edit the fixture', changed.length === 0);
     const answer = attempt.answer ?? '';
-    const amount = /5[,，]?000|５[，,]?０００/u.test(answer);
-    const free = /無料|送料無料|free/iu.test(answer);
-    const charged = /500|５００/u.test(answer);
-    require('answer explains the specified threshold', amount && free && charged);
-    if (kind === 'inquiry') require('answer distinguishes the boundary bug from the spec', /実装|不一致|ちょうど|境界|bug|implementation/iu.test(answer));
+    const reviewed = verifyAnswerReview({ answer, kind, initialHash:treeHash(initial), specHash:hash(initial['README.md'] ?? ''),
+      review:attempt.answerReview, reviewers:attempt.reviewers });
+    if (reviewed.classification === 'FAIL_HARNESS') return { ...reviewed, oraclePassed:false, assertions };
+    require('independent answer review', reviewed.passed);
+    assertions.push({ id:'answer review receipt', passed:reviewed.passed, evidence:reviewed });
     require('inquiry did not require development checks', attempt.developmentChecks === false);
   } else {
     require('protected initial files are byte-identical', Object.keys(initial).filter(name => name !== 'shipping.mjs').every(name => final[name] === initial[name]));
@@ -135,13 +147,14 @@ export function evaluateAttempt(attempt, replayRoot) {
         ? 'export function shippingFee(total, member = false) { return member || total >= 5000 ? 0 : 500; }\n'
         : 'export function shippingFee(total) { return total >= 5000 ? 0 : 500; }\n' };
       const targeted = replaySuite(corrected, path.join(replayRoot, 'targeted'));
-      require('Red is a new assertion on the requested behavior', baseline.exitCode === 0 && baseline.tests > 0
+      require('Red is a new assertion on the requested behavior', baseline.complete && redResult.complete && targeted.complete && baseline.exitCode === 0 && baseline.tests > 0
         && redResult.exitCode !== 0 && redResult.assertionFailure && redResult.failed > 0
         && targeted.exitCode === 0 && targeted.tests > baseline.tests && targeted.skipped === 0 && targeted.todo === 0);
       assertions.push({ id: 'Red replay', passed: redResult.exitCode !== 0, evidence: redResult });
     }
     const green = replaySuite(final, path.join(replayRoot, 'green'));
-    require('Green contains nonempty existing and new tests', green.exitCode === 0 && green.tests >= 3 && green.skipped === 0 && green.todo === 0);
+    if (!green.complete) return { classification:assertions.some(assertion => !assertion.passed) ? 'FAIL_PRODUCT' : 'FAIL_HARNESS', oraclePassed:false, assertions, reason:'Incomplete trusted test lifecycle' };
+    require('Green contains nonempty existing and new tests', green.complete && green.exitCode === 0 && green.tests >= 3 && green.skipped === 0 && green.todo === 0);
     require('observed Green describes final tree', checkpoints.some(checkpoint => checkpoint.exitCode === 0
       && treeHash(checkpoint.files) === treeHash(final) && checkpoint.testExecution === true));
     const behavior = checkBehavior(final, kind, path.join(replayRoot, 'behavior'));

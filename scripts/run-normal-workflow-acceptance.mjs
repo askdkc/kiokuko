@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { policyHash, validatePolicy, requiredAttempts } from './lib/normal-workflow/release-policy.mjs';
 import { SCENARIOS, approvalErrors, releaseGate } from './lib/normal-workflow/contracts.mjs';
 import { createFixture, evaluateAttempt, hash, snapshot, treeHash } from './lib/normal-workflow/oracle.mjs';
 import { runCodex } from './lib/normal-workflow/codex-adapter.mjs';
@@ -15,7 +16,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const args = process.argv.slice(2);
 const flag = name => { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1]; };
 if (args.includes('--help')) {
-  console.log('Usage: node scripts/run-normal-workflow-acceptance.mjs --offline [--output NEW_DIRECTORY]\n  or --approval APPROVAL.json [--output NEW_DIRECTORY]\nResults and a fail-closed release gate are saved; offline never passes G3. See docs/normal-workflow-acceptance.md.');
+  console.log('Usage: node scripts/run-normal-workflow-acceptance.mjs --offline [--output NEW_DIRECTORY]\n  or --approval APPROVAL.json --policy POLICY.json --policy-hash APPROVED_HASH [--output NEW_DIRECTORY]\nResults and a fail-closed release gate are saved; offline never passes G3. See docs/normal-workflow-acceptance.md.');
   process.exit(0);
 }
 const output = path.resolve(flag('--output') ?? mkdtempSync(path.join(tmpdir(), 'kiokuko-normal-results-')));
@@ -35,17 +36,27 @@ const clients = Array.isArray(approval?.clients) && approval.clients.length
   && approval.clients.every(client => ['codex-cli', 'codex-desktop'].includes(client))
   ? [...new Set(approval.clients)] : ['codex-cli', 'codex-desktop'];
 const reports = [];
-const configurationHash = hash(JSON.stringify({ clients, scenarios: SCENARIOS, provider: approval?.provider, model: approval?.model,
-  clientVersion: approval?.clientVersion, reasoningEffort: approval?.reasoningEffort,
-  maxSeconds: approval?.maxSeconds, maxTotalSeconds: approval?.maxTotalSeconds, maxTurns: approval?.maxTurns, maxToolCalls: approval?.maxToolCalls, attempts: approval?.attempts }));
+let configurationHash = null;
 const blocked = (client, scenario, classification, reason) => reports.push({ ...candidate, client, scenario: scenario.id, executionMode: offline ? 'offline' : 'live',
   classification, reason, instructionsVerified: false, oraclePassed: false });
 
 // Codex CLI has no hard dollar-spend controller. Paid API runs are unsupported;
 // only explicitly approved included-subscription test credentials may be used.
 const authorized = !approvalError && approvalErrors(approval).length === 0;
-let credentials;
+let policy;
+let policyError;
 if (authorized && !offline) {
+  try {
+    policy = validatePolicy(JSON.parse(readFileSync(flag('--policy'),'utf8')), flag('--policy-hash'));
+    for (const key of ['provider','model','clientVersion','reasoningEffort','clients','attempts','maxSeconds','maxTotalSeconds','maxTurns','maxToolCalls','maxCost','currency'])
+      if (JSON.stringify(approval[key]) !== JSON.stringify(policy[key])) throw new Error('Approval differs from frozen policy');
+    configurationHash = policyHash(policy);
+    writeFileSync(path.join(output,'policy.json'),JSON.stringify(policy));
+  } catch { policyError = 'Independently frozen approval policy/hash missing or mismatched'; }
+}
+
+let credentials;
+if (authorized && !offline && !policyError) {
   try {
     credentials = JSON.parse(readFileSync(approval.authFile, 'utf8'));
     if (credentials.auth_mode !== 'chatgpt' || credentials.OPENAI_API_KEY || typeof credentials.tokens?.access_token !== 'string') throw new Error('Wrong credential mode');
@@ -58,7 +69,7 @@ const run = (command, arguments_, cwd, environment) => execFileSync(command, arg
 let controls;
 const overallStarted = Date.now();
 try {
-  if (!offline && authorized && credentials) {
+  if (!offline && authorized && credentials && !policyError) {
     controls = mkdtempSync(path.join(tmpdir(), 'kiokuko-normal-control-'));
     const environment = { PATH: process.env.PATH, HOME: path.join(controls, 'home'), USERPROFILE: path.join(controls, 'home'),
       npm_config_cache: path.join(controls, 'npm-cache'), npm_config_userconfig: path.join(controls, 'npmrc') };
@@ -87,7 +98,7 @@ try {
     let version;
     try { version = run(clientExecutable, ['--version'], controls, environment).trim(); }
     catch { for (const client of clients) for (const scenario of SCENARIOS) blocked(client, scenario, 'BLOCKED_ENV', 'Client unavailable'); }
-    if (version && !version.endsWith(approval.clientVersion)) {
+    if (version && version !== `codex-cli ${policy.clientVersion}`) {
       for (const client of clients) for (const scenario of SCENARIOS) blocked(client, scenario, 'BLOCKED_ENV', 'Client version differs from approval');
       version = undefined;
     }
@@ -106,8 +117,11 @@ try {
       // Test credentials are never copied into saved evidence or the agent workspace.
       cpSync(approval.authFile, path.join(env.CODEX_HOME, 'auth.json'));
       run(process.execPath, [executable, 'setup', '--clients', 'codex', '--command', executable, '--no-embeddings', '--json'], repo, env);
+      const { logicalSkillName } = await import(pathToFileURL(path.join(installed,'dist/setup/standard-skills.js')).href);
+      const installedVersion = JSON.parse(readFileSync(path.join(installed,'package.json'),'utf8')).version;
       const indexes = readdirSync(path.join(env.HOME, '.agents/skills')).map(name => ({ name,
-        text: readFileSync(path.join(env.HOME, '.agents/skills', name, 'SKILL.md'), 'utf8') }));
+        text: readFileSync(path.join(env.HOME, '.agents/skills', name, 'SKILL.md'), 'utf8'), canonicalName:logicalSkillName(name),
+        bundleText:readFileSync(path.join(installed,'skills',logicalSkillName(name),'SKILL.md'),'utf8'),packageVersion:installedVersion }));
       const globalAgents = readFileSync(path.join(env.CODEX_HOME, 'AGENTS.md'), 'utf8');
       const hooks = JSON.parse(readFileSync(path.join(env.CODEX_HOME, 'hooks.json'), 'utf8'));
       const instructions = { agents: globalAgents, indexes, hooks };
@@ -149,9 +163,11 @@ try {
       const clientArgs = ['exec', '--ignore-user-config', '--dangerously-bypass-hook-trust', '--skip-git-repo-check',
         '--sandbox', ['inquiry', 'conversation'].includes(scenario.kind) ? 'read-only' : 'workspace-write', '--json', '--cd', cwd,
         ...Object.entries(config).flatMap(([key, value]) => ['-c', `${key}=${toml(value)}`]), scenario.request];
+      const candidateBefore = {...candidate,sourceDigest:sourceFingerprint(root)};
       const started = new Date().toISOString();
       writeFileSync(path.join(scenarioOutput, 'inputs.json'), JSON.stringify({ request: scenario.request, initialTreeHash: treeHash(initial), controlsHash,
-        client, version, model: approval.model, provider: approval.provider, reasoningEffort: approval.reasoningEffort,
+        client, version, requestedModel: approval.model, provider: approval.provider, reasoningEffort: approval.reasoningEffort,
+        policyHash:policyHash(policy), argv:clientArgs, cwd, modelObserved:false,
         runtime: process.version, platform: process.platform, architecture: process.arch, lockHash: hash(readFileSync(path.join(root, 'package-lock.json'))),
         limits: { maxSeconds: approval.maxSeconds, maxTurns: approval.maxTurns, maxToolCalls: approval.maxToolCalls, maxCost: 0, currency: 'USD' }, started }, null, 2));
       if (Date.now() - overallStarted >= approval.maxTotalSeconds * 1000) { blocked(client, scenario, 'NOT_RUN', 'Approved total time limit reached before client launch'); continue; }
@@ -174,10 +190,12 @@ try {
       // Derive the receipt from the client's initial instruction input, never
       // from the model's attestation or a fabricated JSON-stream event.
       const instructionEvents = receipt.observed ? [{ type: 'instructions.loaded', content_hash: receipt.contentHash }] : [];
-      const { agentsLoadObserved, instructionsVerified } = observeInstructions({ messages, events: instructionEvents,
+      const instructionObservation = observeInstructions({ messages, events: instructionEvents,
         indexes, agentsHash: hash(globalAgents), observations, kind: scenario.kind });
+      const { agentsLoadObserved, instructionsVerified } = instructionObservation;
+      writeFileSync(path.join(scenarioOutput,'skill-receipts.json'),JSON.stringify(instructionObservation));
       const updatedControls = { agents: readFileSync(path.join(env.CODEX_HOME, 'AGENTS.md'), 'utf8'),
-        indexes: indexes.map(index => ({ name: index.name, text: readFileSync(path.join(env.HOME, '.agents/skills', index.name, 'SKILL.md'), 'utf8') })),
+        indexes: indexes.map(index => ({ ...index, text: readFileSync(path.join(env.HOME, '.agents/skills', index.name, 'SKILL.md'), 'utf8') })),
         hooks: JSON.parse(readFileSync(path.join(env.CODEX_HOME, 'hooks.json'), 'utf8')) };
       const reviews = successful('task_memory_review');
       const memoryApplied = reviews.some(call => call.params.arguments.decision === 'adopted' && call.params.arguments.invariant?.includes('shippingFee')
@@ -190,27 +208,39 @@ try {
         injectedFailures: messages.filter(item => item.type === 'injected_selector').length,
         recovered: reads.length > 0, memoryApplied, memoryInapplicable }, path.join(base, 'oracle')); }
       catch { oracle = { classification: 'FAIL_HARNESS', oraclePassed: false, reason: 'Independent oracle unavailable' }; }
+      const candidateAfter = {...candidate,sourceDigest:sourceFingerprint(root),
+        dirty:execFileSync('git',['status','--porcelain','--untracked-files=all'],{cwd:root,encoding:'utf8'}).trim() !== ''};
+      const raw = { candidateBefore,candidateAfter,artifactHash:hash(readFileSync(tarball)),argv:clientArgs,cwd,requestedModel:policy.model,clientVersion:receipt.clientVersion,provider:policy.provider,reasoningEffort:policy.reasoningEffort,
+        policyHash:policyHash(policy),client,request:scenario.request,started,ended:new Date().toISOString(),
+        ...session, initial, final, kind:scenario.kind, instructionsVerified,
+        controlsBefore:controlsHash,controlsAfter:hash(JSON.stringify(updatedControls)),
+        controlsUnchanged:hash(JSON.stringify(updatedControls)) === controlsHash, safe:!session.failure,
+        developmentChecks:calls.some(call => call.params.name === 'task_verification_define'),
+        injectedFailures:messages.filter(item => item.type === 'injected_selector').length,recovered:reads.length > 0,memoryApplied,memoryInapplicable };
+      writeFileSync(path.join(scenarioOutput,'attempt.json'),JSON.stringify(sanitize(raw)));
+      writeFileSync(path.join(scenarioOutput,'identity.json'),JSON.stringify({schema:'codex-isolated-identity-v1',model:receipt.model,
+        effort:receipt.effort,clientVersion:receipt.clientVersion,modelObserved:receipt.modelObserved,authMode:credentials.auth_mode}));
       writeFileSync(path.join(scenarioOutput, 'oracle.json'), JSON.stringify(oracle, null, 2));
       const errorText = readFileSync(path.join(scenarioOutput, 'stderr.txt'), 'utf8') + JSON.stringify(session.events.filter(event => ['error', 'turn.failed'].includes(event.type)));
       const authBlocked = /not logged in|authentication|unauthorized|invalid.*credential/iu.test(errorText);
       const environmentBlocked = session.failure === 'client_unavailable' || /failed to connect|ENOTFOUND|EAI_AGAIN|model.{0,100}(?:not supported|not available|not found)/iu.test(errorText);
-      reports.push({ ...candidate, client, scenario: scenario.id, executionMode: 'live', model: approval.model, version,
-        classification: authBlocked ? 'BLOCKED_AUTH' : environmentBlocked ? 'BLOCKED_ENV' : session.failure === 'secret_output' ? 'FAIL_PRODUCT' : !agentsLoadObserved ? 'FAIL_HARNESS' : oracle.classification,
+      reports.push({ ...candidate, client, scenario: scenario.id, executionMode: 'live', requestedModel: approval.model, observedModel:receipt.model ?? null, version, policyHash:policyHash(policy),
+        classification: candidateAfter.sourceDigest !== candidate.sourceDigest ? 'FAIL_HARNESS' : (!receipt.modelObserved || receipt.model !== policy.model || receipt.effort !== policy.reasoningEffort) ? 'FAIL_HARNESS' : authBlocked ? 'BLOCKED_AUTH' : environmentBlocked ? 'BLOCKED_ENV' : session.failure === 'secret_output' ? 'FAIL_PRODUCT' : !agentsLoadObserved ? 'FAIL_HARNESS' : oracle.classification,
         reason: session.failure ?? (!agentsLoadObserved ? 'AGENTS loading unobserved; a client loader receipt is required' : undefined),
         instructionsVerified, oraclePassed: oracle.oraclePassed, controlsHash, started });
     }
   } else for (const client of clients) for (const scenario of SCENARIOS)
-    blocked(client, scenario, approvalError ? 'FAIL_HARNESS' : offline ? 'NOT_RUN' : 'BLOCKED_AUTH',
-      approvalError ?? (offline ? 'Offline: no real model executed' : authorized ? 'Test-only ChatGPT credentials unavailable or wrong credential mode' : approvalErrors(approval).join('; ')));
+    blocked(client, scenario, (approvalError || policyError) ? 'FAIL_HARNESS' : offline ? 'NOT_RUN' : 'BLOCKED_AUTH',
+      approvalError ?? policyError ?? (offline ? 'Offline: no real model executed' : authorized ? 'Test-only ChatGPT credentials unavailable or wrong credential mode' : approvalErrors(approval).join('; ')));
 } catch (error) {
   // Preserve every completed attempt; setup failure cannot become a product pass.
   for (const client of clients) for (const scenario of SCENARIOS)
     if (!reports.some(report => report.client === client && report.scenario === scenario.id)) blocked(client, scenario, 'FAIL_HARNESS', 'Isolated setup or artifact creation failed');
   console.error('Acceptance setup failed; inspect the saved summary.');
 } finally { if (controls) rmSync(controls, { recursive: true, force: true }); }
-const required = clients.flatMap(client => SCENARIOS.map(scenario => `${client}/${scenario.id}`));
+const required = policy ? requiredAttempts(policy) : clients.flatMap(client => SCENARIOS.map(scenario => `${client}/${scenario.id}`));
 const gate = releaseGate(candidate, reports, required);
-const summary = { candidate, clients, required, reports, configurationHash, liveGate: gate, releaseReady: false,
+const summary = { candidate, clients, required, reports, configurationHash, policyHash:policy ? policyHash(policy) : null, liveGate: gate, releaseReady: false,
   reason: 'G0-G2 evidence must also match this candidate; this runner reports G3/G4 only.' };
 writeFileSync(path.join(output, 'summary.json'), JSON.stringify(summary, null, 2));
 console.log(JSON.stringify({ output, livePassed: gate.passed, releaseReady: false, classifications: reports.map(report => `${report.client}/${report.scenario}: ${report.classification}`) }, null, 2));

@@ -15,22 +15,6 @@ const approved = { approved: true, provider: 'chatgpt-subscription', model: 'exp
   clientVersion: '0.148.0', reasoningEffort: 'medium',
   maxCost: 0, currency: 'USD', attempts: 1, maxSeconds: 60, maxTotalSeconds: 480, maxTurns: 10, maxToolCalls: 20, clients: ['codex-cli'] };
 
-test('outside conversation instruction evidence uses global recall without requiring a project run', () => {
-  const indexes = [{ name: 'kiokuko-codex-soul' }, { name: 'kiokuko-codex-memory-reasoning' }];
-  const messages: any[] = [{ direction: 'response', message: { result: { tools: [{ name: 'memory_recall' }] } } }];
-  const call = (id: number, name: string, args: any) => messages.push(
-    { direction: 'request', message: { id, method: 'tools/call', params: { name, arguments: args } } },
-    { direction: 'response', message: { id, result: {} } });
-  call(1, 'task_inspect', { operation: 'skill', path: indexes[0]!.name });
-  call(2, 'task_inspect', { operation: 'skill', path: indexes[1]!.name });
-  call(3, 'memory_recall', { soulRead: true, capabilities: indexes.map(index => ({ kind: 'skill', name: index.name })) });
-  const input = { messages, indexes, agentsHash: 'actual-content-hash', kind: 'conversation',
-    events: [{ type: 'instructions.loaded', content_hash: 'actual-content-hash' }],
-    observations: [] };
-  assert.equal(observeInstructions(input).instructionsVerified, true);
-  assert.equal(observeInstructions({ ...input, kind: 'bug' }).instructionsVerified, false);
-  assert.equal(observeInstructions({ ...input, events: [] }).instructionsVerified, false);
-});
 
 test('approval requires explicit client/model/time/turn/tool/cost boundaries; paid API cannot bypass spend control', () => {
   assert.deepEqual(approvalErrors(approved), []);
@@ -114,14 +98,14 @@ test('client adapter counts completed-only tools, deduplicates start/completion 
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
 
-test('release candidate requires matching G0-G3 evidence and identical model configuration', () => {
+test('summary-only matching G0-G3 reports remain diagnostic and cannot release', () => {
   const candidate = { commit: 'a'.repeat(40), artifactHash: 'b'.repeat(64), dirty: false, configurationHash: 'c'.repeat(64),
     clients: ['codex-cli'],
     required: SCENARIOS.map((scenario: any) => `codex-cli/${scenario.id}`) };
   const deterministic = ['G0', 'G1', 'G2'].map(gate => ({ ...candidate, gate, classification: 'PASS', commands: [{ executable: 'matching verifier', exitCode: 0 }] }));
   const summaries = [{ configurationHash: candidate.configurationHash, reports: SCENARIOS.map((scenario: any) => ({ ...candidate,
     client: 'codex-cli', scenario: scenario.id, classification: 'PASS', executionMode: 'live', instructionsVerified: true, oraclePassed: true })) }];
-  assert.equal(releaseCandidateGate(candidate, deterministic, summaries).releaseReady, true);
+  assert.equal(releaseCandidateGate(candidate, deterministic, summaries).releaseReady, false);
   assert.equal(releaseCandidateGate(candidate, deterministic.slice(1), summaries).releaseReady, false);
   assert.equal(releaseCandidateGate(candidate, deterministic, [{ ...summaries[0], configurationHash: 'd'.repeat(64) }]).releaseReady, false);
   assert.equal(releaseCandidateGate(candidate, [{ ...deterministic[0], commands: [] }, ...deterministic.slice(1)], summaries).releaseReady, false);

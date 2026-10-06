@@ -1,165 +1,210 @@
-# 通常依頼の受け入れテスト
+# Normal-workflow acceptance
 
-この試験は、selectorの契約、隔離インストール、実AIの通常依頼を別々に判定する。
-既存の `test:memory-assurance:live` は接続smokeのまま残す。
-`probe.txt` や `true` の成功は通常依頼の受け入れに数えない。
+G0–G2 test source and package delivery. G3 tests the real model/client. G4 verifies
+raw evidence from an independently approved producer. Local harness tests,
+synthetic transcripts, summary JSON and an artifact's own hash cannot establish
+live acceptance.
 
-## ローカルの決定的テスト（G0–G2）
+## Deterministic checks
 
 ```sh
 npm run test:normal-workflow
-npm run test:normal-workflow:gates -- --output /tmp/kiokuko-normal-gates
+npm run typecheck
+node scripts/run-normal-workflow-gates.mjs --output /tmp/kiokuko-normal-gates
 ```
 
-outputには**まだ存在しないか、空のディレクトリ**を指定する。既存の試行は上書きしない。
-gatesは型検査、既定スイート、実際の `npm pack` と隔離global installを実行する。
-型検査・スイート・インストールのログ、`G0.json`、`G1.json`、`G2.json`、
-`candidate.json`、検証した `candidate.tgz` を保存する。
-途中でソースが変われば合格にしない。dirty checkoutでのローカル検証は可能だが、
-リリースにはcleanな候補commitが必要。
+Use a new or empty output directory. The gate runner records each stage separately,
+including actual argv/cwd, start/end, exit/signal and before/after commit, dirty
+state and source digest. G0 test counts are N/A. G1 uses Node lifecycle records,
+not TAP or JSON printed by test code. G2 builds, packs once, installs that tarball,
+checks generated Skills and restart behavior, and installs the optional runtime.
+An optional-runtime download failure is a failure, not an approved skip. G0/G1
+retain their own results when a later stage fails.
 
-配布境界の試験はCodex、OpenCode、Claude、Hermesの実際の生成済みSkillの
-frontmatterとMarkdown参照からselectorを取得し、そのままpackaged MCPに渡す。
-harnessでaliasをcanonical名へ補正しない。初回と更新後、別repo、subdirectory、
-checkout外を確認する。静的な接続試験は実AIによる文面理解の証明ではない。
+The default suite's approved inventory must be reviewed separately and frozen in
+the policy. It is not learned from the result being graded. IDs include relative
+file, runtime event location and test name. An optional skip must name the exact ID in
+that inventory; zero tests, missing IDs, unexpected skips, todo/cancelled/failed
+results and incomplete streams fail acceptance. Count changes require a newly
+reviewed inventory, not editing a report to match.
 
-selectorはmanifest内のbare名、`name/SKILL.md`、宣言済みreference、固定Codex alias、
-任意の `skills/` prefix、`/` と `\` を受理する。
-空segment、`.`、`..`、未知のalias、URL decodingは受理しない。
-package自身のbundle内の絶対パスは維持する。インストール済みclientの絶対パスは別物。
-manifest entryを外部または未登録ファイルへ向けるsymlinkも拒否する。
-Windowsのsymlink負例は権限を仮定せず `NOT_RUN` を記録する。
+Dirty-checkout results are local diagnostics. Source changes during a stage
+invalidate that stage. The runner never marks a local diagnostic as release proof.
 
-## fixtureと独立oracle
+## Independent fixture oracle
 
-ネットワーク不要の送料fixtureを使う。仕様は5,000円以上が無料、未満が500円。
-バグfixtureは5,000円だけ誤り、既存の4,999円・5,001円のテストは通る。
-会員追加fixtureは非会員の境界を正常にしてから別に開始する。
-会員引数の契約はfixtureのREADMEに公開してあり、隠れたoracleだけでAPIを決めない。
+The public shipping fixture specifies free shipping at 5000 or more and a fee of
+500 below 5000. Its initial bug is exactly at 5000. Membership uses an optional
+second boolean and preserves old calls and non-members.
 
-oracleは以下を独立確認する。
+Development replays the immutable Red tree, the same tests with only the requested
+behavior corrected, and the final Green tree. Existing tests/spec/config remain
+unchanged; only shipping source and additive tests may change. A separate behavior
+oracle checks 0, 4999, 5000 and 5001, old calls and member/non-member combinations.
 
-- 問い合わせはfixtureを編集せず、仕様と実装の境界不一致を区別する。
-- 開発は既存テスト・README・設定を保持し、新規テストと製品コードだけを変更する。
-- 実装変更前のRed snapshotを再構築する。新規assertionが失敗し、要求された動作だけを
-  実装した対照では通ることを確認する。構文エラー・依存不足はRedにしない。
-- 最終treeで既存・新規テストを再実行する。テスト件数ゼロ、skip、todoは不合格。
-- 0 / 4,999 / 5,000 / 5,001円、既存呼び出し、非会員・会員を固定期待値で検証する。
-- no-op、Red欠落、古いGreen、テスト弱体化、stdoutでの成功偽装を不合格にする。
+Fixture tests cannot run arbitrary host Node code. A trusted bridge links only
+`node:test`, `node:assert/strict` (or `node:assert`) and `../shipping.mjs` into a
+separate realm without host objects/functions, process, credentials, filesystem,
+IPC or dynamic code generation. Intrinsics are frozen. Test callbacks execute
+there; a trusted Node host registers their outcomes with the actual test runner.
+A separate parent consumes lifecycle events and writes the result file outside
+the worker's readable/writable roots. Worker stdout/stderr never supply counters.
+The bridge supports synchronous top-level tests, skip/todo and the assertion
+subset used by this fixture (equal/strictEqual, deepEqual/deepStrictEqual, ok,
+notEqual, fail). Unsupported imports, async tests, empty registration and premature
+termination cannot supply acceptable proof. This is a bounded fixture runner, not
+a replacement for arbitrary repository test frameworks. VM isolation is combined
+with a separate process, Node permissions and time/output limits.
 
-replayはAIの編集範囲外で実行する。Node permissionでreplay tree以外の読み書きと
-子プロセスを許可しない。sourceがstdoutを偽装してもoracleの結果として採用しない。
-送料モジュールは別のVMコンテキストで評価し、oracleへは有限の数値だけを返す。
-hostの関数・オブジェクト、import、動的コード生成を渡さず、実装側からの
-oracleの組み込み関数・署名・出力処理の置換を防ぐ。VMだけを安全境界とはせず、
-permissionと別プロセスの時間上限も適用する。
-自己テストのPASSはharnessの検出力の証拠であり、実モデルのPASSではない。
+Explanatory answers require an independent approved reviewer. The original answer
+is retained; the execution model is not asked to produce grading JSON. A review
+contains `schema: shipping-answer-v1`, kind, answerHash, initialHash, specHash,
+reviewer, verdict, reason and ordered criteria from `ANSWER_RUBRIC` in
+`scripts/lib/normal-workflow/answer-review.mjs`. It must assess each fact, including
+negation and contradictions, rather than word presence. The exact answer, reviewed
+fixture and rubric version are bound by hashes. PASS/FAIL/UNCERTAIN are distinct:
+missing/stale/unapproved/UNCERTAIN reviews yield FAIL_HARNESS; an independently
+reviewed wrong answer yields FAIL_PRODUCT. Keep reviews outside the model tree.
+Synthetic review fixtures test this contract; they do not claim human or live
+model evaluation occurred.
 
-## 実モデル試験（G3）
+## Freeze approval before execution
+
+Create the policy outside the model workspace from the authorized run settings,
+reviewed test inventory, approved producer and approved reviewers:
 
 ```sh
-node scripts/run-normal-workflow-acceptance.mjs --offline --output /tmp/kiokuko-normal-offline
-node scripts/run-normal-workflow-acceptance.mjs --offline --require-live --output /tmp/kiokuko-normal-offline-gate
+node scripts/freeze-normal-workflow-policy.mjs \
+  --approval /path/to/approved-run.json \
+  --test-manifest /path/to/reviewed-test-inventory.json \
+  --producer /path/to/approved-producer.json \
+  --reviewers /path/to/approved-reviewers.json \
+  --output /path/to/frozen-policy.json
 ```
 
-最初のコマンドはインフラ確認として終了コード0を返せるが、全シナリオは `NOT_RUN`。
-`--require-live` は同じ未実行状態で終了コード1を返す。offlineをrelease passにしない。
+The command refuses overwrite and prints the canonical policy hash. Independently
+review and retain that hash before execution. File permissions and a self-computed
+hash alone are not approval. The policy contains the exact provider/model/client
+version/reasoning, clients, all scenario IDs and natural requests, one attempt per
+scenario, all time/turn/tool/cost limits, rubric, reviewed test inventory and the
+producer's repository/workflow/ref/immutable commit. It contains no auth secrets.
+The supported cost condition remains ChatGPT subscription, USD 0 additional spend;
+paid APIs are unsupported. Approval also requires an authFile, approved=true and
+testCredentials=true. Explicit user authorization may designate the currently
+logged-in subscription account for isolated synthetic tests; do not infer this
+from the existence of credentials. The policy excludes the credential path.
 
-実行前に、次の承認ファイルを具体化する。例の値は承認でも推奨model/versionでもない。
-`authFile` は**専用テストアカウント**の認証ファイルを指定する。
-本番の記憶、通常のHOME、client設定は読み込まない。専用認証は一時制御ディレクトリに
-コピーし、証跡に含めず、終了時に削除する。
+A producer file has `repository`, `workflow` (repository-relative workflow path),
+`ref` (branch name), and a full 40-character `commit`. Reviewer input is an array
+of approved reviewer names. Inventory entries have `id` and `optionalSkip`.
+Changing a model, version, client matrix, request, limit or rubric requires a new
+independently approved policy/run. G4 constructs the matrix from that policy;
+live summaries cannot reduce it or supply its expected hash.
 
-```json
-{
-  "approved": false,
-  "testCredentials": true,
-  "provider": "chatgpt-subscription",
-  "model": "REPLACE_WITH_APPROVED_MODEL",
-  "clientVersion": "0.0.0",
-  "reasoningEffort": "medium",
-  "clients": ["codex-cli"],
-  "authFile": "/path/to/test-only/auth.json",
-  "attempts": 1,
-  "maxSeconds": 180,
-  "maxTotalSeconds": 1440,
-  "maxTurns": 10,
-  "maxToolCalls": 60,
-  "maxCost": 0,
-  "currency": "USD"
-}
-```
+## Live execution and current limits
 
 ```sh
+node scripts/run-normal-workflow-acceptance.mjs --offline --require-live \
+  --output /tmp/kiokuko-normal-offline
+```
+
+This must exit 1 with NOT_RUN. No model runs and offline cannot pass G3.
+
+```sh
+node scripts/run-normal-workflow-gates.mjs \
+  --policy /path/to/frozen-policy.json --policy-hash APPROVED_HASH \
+  --output /tmp/kiokuko-normal-gates
 node scripts/run-normal-workflow-acceptance.mjs --require-live \
-  --approval /path/to/approved-test-run.json \
+  --approval /path/to/approved-run.json \
+  --policy /path/to/frozen-policy.json --policy-hash APPROVED_HASH \
   --candidate /tmp/kiokuko-normal-gates/candidate.json \
   --artifact /tmp/kiokuko-normal-gates/candidate.tgz \
   --output /tmp/kiokuko-normal-live
 ```
 
-CLIから有料APIのドル上限を強制する機構は未実装。したがってこのadapterは、
-追加従量課金を許可しない専用subscription試験だけを明示的な承認下で扱う。
-有料providerを指定しても `BLOCKED_AUTH` にし、支出controllerの代わりに自己申告を使わない。
-金額0でも、モデル利用、外部送信、時間、アカウント利用の承認は必要。
-自動再試行はしない。失敗を残したまま別の空outputで新しいattemptを作る。
+The live runner checks policy before reading credentials or starting a model. It
+uses isolated HOME/CODEX_HOME/data and installer-generated AGENTS/Skills/hooks.
+Only the approved tarball from G2 is installed; its bytes/source must match.
+Workspace writes exclude the control/evidence directories and the default /tmp
+exceptions. No production memories/config are loaded; credentials and raw client
+rollouts are removed with the isolated controls. Private reasoning and credential
+contents are not archived. Secret output stops capture. No automatic retry erases
+a failed attempt.
 
-シナリオは問い合わせ、境界バグ、会員追加、一度だけのselectorエラー、関連する
-合成記憶、無関係な合成記憶、subdirectory、checkout外の会話。
-最初のselector失敗だけを明示的に注入し、自然発生した失敗とは別に記録する。
-関連記憶は互換性の判断・テスト・結果に結び付ける。呼び出し回数だけで合格にしない。
+Skill evidence requires paired tools/list request/response with required schemas,
+unique call IDs within one proxy session, successful task_inspect responses for
+each required core Skill, exact canonical identity/body/package version and
+completion before task_prepare or memory_recall registration. Expected bodies
+come from the candidate package, not capability declarations. AGENTS additionally
+requires the matching isolated client loader receipt before the natural request;
+project scenarios require actual hook observations. Duplicated reads of one Skill,
+empty discovery, late reads and another session cannot prove loading.
 
-### 現在のadapterの制約
+Actual model/effort come from the isolated client's turn-context records. A
+requested model is recorded as requestedModel, not observedModel. Missing or
+unknown actual identity fails closed. Client version matches the exact approved
+version, and G4 checks actual argv, request and measured usage against policy.
 
-Codex CLI JSON streamだけでAGENTSのロードを推定しない。
-試験専用CODEX_HOMEのclientセッション記録から、同じthread ID・cwd・client版の
-初期user instructionに生成済みAGENTSの全文が入り、自然な依頼より前に記録された
-ことをcollectorで照合する。公式の[ロード確認手順](https://developers.openai.com/codex/guides/agents-md)と
-[instructionの形式](https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide)を参照する。
-raw rolloutは証跡へコピーせず、内容hash・記録位置・thread IDだけを保存し、
-元の試験セッションは隔離制御ディレクトリごと削除する。
-記録の欠落、未知の形式、別thread、内容の欠落、後からの引用、重複receiptは
-`FAIL_HARNESS`（指示ロード未確認）。生成ファイルの存在やモデルの自己申告では合格にしない。
-collectorは合成client記録で自己検証しており、承認済み実clientでのG3確認は別途必要。
+**Current CLI TDD proof is unavailable.** JSON stdout can be buffered after later
+writes. The adapter therefore records no execution checkpoints and reports
+checkpointAuthority=unavailable. Development yields FAIL_HARNESS until a trusted
+executor provides an exclusive execution barrier, command ID/exit/signal,
+monotonic sequence and immutable tree hash persisted before acknowledging the
+boundary, with parallel writers blocked. Receiver locks, sleeps, final hashes
+and model-declared snapshots do not meet this contract. The checkpoint validator
+and positive replay fixtures are in place; they are not evidence that the CLI
+supports that barrier. Adding such an executor is remaining integration work.
 
-AIのshell書き込みはfixture内に限定し、workspace-writeの `/tmp` / `$TMPDIR` 例外と
-追加writable rootsを無効にする。保護された制御ディレクトリ・oracle・セッション記録を
-編集して合格を偽装させない。これらのsandbox設定を使えないclientは対象外として扱う。
+**Desktop remains NOT_RUN.** No authoritative desktop execution/loader adapter
+is implemented. CLI success cannot replace desktop scenarios. An explicit tool
+access denial must not be bypassed with another automation path. If desktop is
+in the approved matrix it remains required. Explanation scenarios also remain
+FAIL_HARNESS until an approved independent review is supplied.
 
-desktop adapterも未実装で、`codex-desktop` は `NOT_RUN`。
-desktopを対象から外すなら、承認ファイルの対象clientとして明示する。
-desktopを対象に含めたままCLIの成功で代用しない。
+These limits prevent a current live release PASS. They do not invalidate passing
+local regression or package-delivery checks.
 
-JSONイベントのtool完了時にfixtureをsnapshotする。複合コマンドの中でテスト追加・Red・
-実装修正・Greenを一気に済ませた場合は、保護されたRed snapshotが取れないため合格にしない。
-未知のevent形状や、独立に確認できないshell wrapperも実行証拠にしない。
-ログ欠損や途中停止をモデルの動作不良と断定せず、保存した証跡で原因を判別する。
-問い合わせの意味判定は固定事実に対する保守的な条件であり、表現が曖昧なら要レビュー。
-有限のfixtureで全タスク・全model・全clientを保証する試験ではない。
+## Raw bundle and independent G4
 
-## リリース照合（G4）
+An approved supervisor can seal raw records using
+`scripts/seal-normal-workflow-evidence.mjs`. Supply deterministic/live directories,
+the frozen policy/hash, actual CI run/job IDs and an empty output directory. It
+preserves incomplete attempts rather than inventing missing records. Add an
+approved answer-review.json to the relevant live attempt directory before sealing.
 
-`candidate.json` に、承認済みの `clients`、全必須シナリオの `required`、
-live summaryの `configurationHash` を加え、次を実行する。
+The manifest binds run/producer/job, clean candidate commit/source digest, actual
+artifact and policy hashes, gate/attempt IDs and each relative raw leaf's size and
+hash. Raw records include command provenance, lifecycle counts/inventory, package
+stages, client execution/identity, protocol discovery/Skill responses, loader/hooks,
+initial/final trees, checkpoints, original answers and independent reviews. The
+verifier reopens those leaves and replays the oracle; it does not consume PASS,
+oraclePassed, instructionsVerified or releaseReady from summaries. Missing,
+mutated, duplicate, other-run, traversal and symlink evidence fails.
+
+After the producer run completes, run the verifier from the independently reviewed producer checkout (not PR-controlled code):
 
 ```sh
 node scripts/verify-normal-workflow-release.mjs \
-  --candidate /path/to/release-candidate.json \
-  --deterministic /tmp/kiokuko-normal-gates/G0.json \
-  --deterministic /tmp/kiokuko-normal-gates/G1.json \
-  --deterministic /tmp/kiokuko-normal-gates/G2.json \
-  --live /tmp/kiokuko-normal-live/summary.json
+  --artifact /path/to/candidate.tgz --evidence-root /path/to/evidence \
+  --policy /path/to/frozen-policy.json --policy-hash INDEPENDENTLY_APPROVED_HASH \
+  --trusted-run APPROVED_GITHUB_RUN_ID --trusted-artifact-id GITHUB_ARTIFACT_ID
 ```
 
-G0–G3のcommitとtarball hash、必須シナリオ、model/client/実行上限の設定が一致し、
-候補がcleanで、全必須結果がPASSのときだけ `releaseReady: true` と終了コード0を返す。
-失敗した同一候補のattemptを後の成功で消さない。必須scenarioの削除、未実行、skip、
-replay、環境・認証不足、artifact不一致、証跡欠落は不合格。
-通常のPR CIはG0–G2を確認する。manual workflowは保護された
-`normal-workflow-acceptance` environmentで承認済みの試験を実行するが、
-repository内にworkflowを追加しただけでは実行・secret・有効なreceiptの存在は証明しない。
+G4 uses authenticated `gh api` to check the approved repository/workflow/ref/SHA,
+workflow_dispatch run, successful job and artifact identity. It downloads the
+artifact and verifies its GitHub-provided SHA256 digest before safe extraction.
+The local manifest must match that independent download and every leaf must
+match the authenticated manifest. Recomputing a local manifest does not recreate
+producer authority. Archive links/devices/traversal/duplicate entries and size
+expansion are rejected. This requires gh, Python 3 and tar; missing tooling is a
+verification failure. Synthetic verifier fixtures can pass evidence validation
+but always return releaseReady=false.
 
-保存するのは、候補tarballとhash、入力fixture、生成済み指示、capability/response、
-ツールイベント、hookの判定metadata、snapshot、回答、oracle、試行別summary。
-private reasoningと認証ファイルは保存しない。実モデル・desktop・正式公開・
-稼働中clientへの適用は、ローカルソース検証から分けて報告する。
+The manual workflow runs only on main and requires the environment's separately
+reviewed NORMAL_WORKFLOW_POLICY_HASH. The frozen producer commit must equal the
+workflow SHA. PR source cannot set that trusted hash through a dispatch input.
+Repository configuration alone does not prove environment protection, approval,
+execution, raw receipts or artifact authenticity. G4 cannot authenticate a job's
+successful completion from inside that still-running job, so verification happens
+afterward. This change does not configure secrets/environment protections, dispatch
+CI, publish, push, merge or certify the running client.

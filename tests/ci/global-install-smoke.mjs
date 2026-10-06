@@ -1,3 +1,4 @@
+import { sourceFingerprint } from '../../scripts/lib/normal-workflow/source-state.mjs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -23,6 +24,13 @@ const forbiddenPackages = new Set([
 ]);
 let npmCacheDirectory;
 let npmUserConfigPath;
+let currentPackageStage = 'pack';
+const packageExecutions = [];
+const recordStage = id => {
+  const commands = packageExecutions.filter(record => record.stage === id);
+  assert.ok(commands.length > 0, `no observed commands for ${id}`);
+  packageStages.push({id,commands,complete:true,exitCode:0});
+};
 
 async function run(command, args, cwd, environment = process.env) {
   try {
@@ -35,11 +43,14 @@ async function run(command, args, cwd, environment = process.env) {
     for (const key of Object.keys(childEnvironment)) {
       if (key.toLowerCase().replaceAll('-', '_') === 'npm_config_allow_scripts') delete childEnvironment[key];
     }
-    return await execFileAsync(command, args, {
+    const started = new Date().toISOString();
+    const result = await execFileAsync(command, args, {
       cwd,
       maxBuffer: 4 * 1024 * 1024,
       env: childEnvironment,
     });
+    packageExecutions.push({stage:currentPackageStage,argv:[command,...args],cwd,started,ended:new Date().toISOString(),exitCode:0,signal:null});
+    return result;
   } catch (error) {
     const stdout = typeof error.stdout === 'string' ? error.stdout : '';
     const stderr = typeof error.stderr === 'string' ? error.stderr : '';
@@ -471,6 +482,8 @@ try {
   process.stdout.write('First installed embedding setup verified optional installation and same-process completion.\n');
 }
 
+const packagedSourceDigest = sourceFingerprint(repositoryRoot);
+const packageStages = [];
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'kiokuko-global-install-'));
 const packDirectory = path.join(temporaryRoot, 'pack');
 const prefixDirectory = path.join(temporaryRoot, 'prefix');
@@ -502,6 +515,8 @@ try {
     assert.ok(packageFiles.has(file), `Conversation handoff package artifact missing: ${file}`);
   }
   const tarball = packedFilename(packed.stdout, packDirectory);
+  recordStage('pack');
+  currentPackageStage='install';
   const artifactHash = createHash('sha256').update(await readFile(tarball)).digest('hex');
   const install = await run('npm', [
     'install',
@@ -510,6 +525,8 @@ try {
     prefixDirectory,
     tarball,
   ], repositoryRoot);
+  recordStage('install');
+  currentPackageStage='restart';
   const npmOutput = `${install.stdout}\n${install.stderr}`;
   assert.doesNotMatch(npmOutput, /deprecated\s+boolean|install-scripts/iu, 'minimal install emitted an optional-runtime warning');
 
@@ -524,6 +541,8 @@ try {
   await verifyInstalledTaskVerification(cliPath, path.join(temporaryRoot, 'verification-fixture'));
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 
+  recordStage('restart');
+  currentPackageStage='generated-skills';
   await verifyInstalledSkillSetup(
     cliPath,
     path.join(prefixDirectory, 'lib', 'node_modules', packageJson.name),
@@ -531,6 +550,8 @@ try {
     JSON.parse(packed.stdout)[0].files,
   );
 
+  recordStage('generated-skills');
+  currentPackageStage='optional-runtime';
   const installedNames = await installedPackageNames(path.join(prefixDirectory, 'lib', 'node_modules'));
   for (const forbidden of forbiddenPackages) {
     assert.equal(installedNames.has(forbidden), false, `${forbidden} must not be in the minimal dependency tree`);
@@ -540,12 +561,15 @@ try {
     prefixDirectory,
     path.join(temporaryRoot, 'embedding-setup-fixture'),
   );
+  recordStage('optional-runtime');
+  assert.equal(sourceFingerprint(repositoryRoot),packagedSourceDigest,'source changed during package verification');
   if (process.env.KIOKUKO_PACKAGE_ARTIFACT) await copyFile(tarball, process.env.KIOKUKO_PACKAGE_ARTIFACT);
   if (process.env.KIOKUKO_PACKAGE_REPORT) {
     const head = await run('git', ['rev-parse', 'HEAD'], repositoryRoot);
     const status = await run('git', ['status', '--porcelain', '--untracked-files=all'], repositoryRoot);
     await writeFile(process.env.KIOKUKO_PACKAGE_REPORT, JSON.stringify({ gate: 'G2', classification: 'PASS',
-      commit: head.stdout.trim(), dirty: status.stdout.trim() !== '', artifactHash,
+      commit: head.stdout.trim(), dirty: status.stdout.trim() !== '', artifactHash, sourceDigest:packagedSourceDigest,
+      stages:['pack','install','generated-skills','restart','optional-runtime'].map(id => packageStages.find(stage => stage.id === id)).map(stage => ({...stage,artifactHash,sourceDigest:packagedSourceDigest})),
       commands: [{ executable: 'npm run test:global-install', exitCode: 0 }],
       covered: ['INS-01', 'INS-02', 'INS-03', 'INS-04', 'INS-05', 'INS-06'],
       linkChecks: process.platform === 'win32' ? 'NOT_RUN: link privileges unavailable' : 'PASS',

@@ -51,7 +51,11 @@ export function collectInstructionReceipt({ codeHome, cwd, clientVersion, thread
         if (item?.type === 'function_call' || (item?.type === 'message' && item.role === 'assistant')) break;
       }
       if (instructionIndex < 1 || promptIndex <= instructionIndex) return unobserved;
-      receipts.push({ observed: true, schema: 'codex-rollout/user-instructions-v1', threadId,
+      const contexts = records.filter(record => record.type === 'turn_context').map(record => record.payload);
+      const models = new Set(contexts.map(context => context?.model).filter(model => typeof model === 'string'));
+      const efforts = new Set(contexts.map(context => context?.effort).filter(effort => typeof effort === 'string'));
+      receipts.push({ model:models.size === 1 ? [...models][0] : null, effort:efforts.size === 1 ? [...efforts][0] : null,
+        modelObserved:models.size === 1, clientVersion:metadata.payload.cli_version, observed: true, schema: 'codex-rollout/user-instructions-v1', threadId,
         source: path.relative(codeHome, file), record: instructionIndex,
         contentHash: createHash('sha256').update(agents).digest('hex') });
     }

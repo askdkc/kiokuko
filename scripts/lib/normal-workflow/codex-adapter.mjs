@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { appendFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { snapshot } from './oracle.mjs';
 
 // Only a complete standalone fixture-test command can supply execution evidence.
 // Logs that merely mention a command, shell branches or arbitrary wrappers do not.
@@ -13,7 +12,7 @@ export function fixtureTestCommand(command) {
   return /^(?:npm (?:run )?test|node --test(?: test\/(?:[A-Za-z0-9_.-]+|\*)\.test\.mjs)*)$/u.test(text);
 }
 
-/** Capture events at their actual completion, preserving conservative TDD order.
+/** Capture client events only; they cannot establish execution-bound TDD order.
  * A single command that edits tests and implementation provides no Red snapshot.
  * Unknown client event shapes fail closed rather than infer execution metadata.
  */
@@ -50,15 +49,9 @@ export function runCodex({ executable, args, cwd, repo, environment, output, lim
           if (typeof event.item.id !== 'string') stop('unsupported_item_identity');
           else if (!seenCalls.has(event.item.id)) { seenCalls.add(event.item.id); if (++calls > limits.maxToolCalls) stop('tool_call_limit'); }
         }
-        if (event.type === 'item.completed') {
-          try {
-            const files = snapshot(repo);
-            const checkpoint = { sequence, files, exitCode: event.item?.exit_code,
-              testExecution: event.item?.type === 'command_execution' && fixtureTestCommand(event.item.command) };
-            checkpoints.push(checkpoint);
-            writeFileSync(path.join(output, 'snapshots', `${sequence}.json`), JSON.stringify(checkpoint));
-          } catch { stop('snapshot_boundary'); }
-        }
+        // Buffered client events do not stop later edits. Never snapshot here.
+        // No execution-bound barrier is available in this adapter.
+
       }
     });
     child.stderr.on('data', chunk => { if (stderr.length + chunk.length > 1024 * 1024) stop('stderr_limit'); else stderr += chunk; });
@@ -72,7 +65,7 @@ export function runCodex({ executable, args, cwd, repo, environment, output, lim
       const answer = events.filter(event => event.type === 'item.completed' && event.item?.type === 'agent_message').at(-1)?.item.text ?? '';
       try { writeFileSync(path.join(output, 'stderr.txt'), cleanStderr); writeFileSync(path.join(output, 'answer.md'), answer); }
       catch { failure ??= 'evidence_write_failed'; }
-      resolve({ exitCode: code, signal, failure, events, checkpoints, answer,
+      resolve({ checkpointAuthority: 'unavailable', exitCode: code, signal, failure, events, checkpoints, answer,
         logComplete: !failure && events.length > 0, turnCompleted: events.some(event => event.type === 'turn.completed'),
         calls, turns, bytes });
     });
