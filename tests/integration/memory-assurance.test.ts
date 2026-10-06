@@ -20,6 +20,30 @@ import { codexHookDiagnostics } from '../../src/assurance/hook-diagnostics.js';
 import { KiokukoError } from '../../src/errors.js';
 import { refreshTaskMemory } from '../../src/assurance/refresh.js';
 const caps = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }];
+test('checkout-free inquiry permits global memory and bundled Skills, without permitting project execution', async () => {
+  const base = mkdtempSync(path.join(tmpdir(), 'kiokuko-checkout-free-'));
+  const databasePath = path.join(base, 'memory.sqlite3');
+  await initializeDatabase({ databasePath });
+  const db = openConnection(databasePath);
+  const common = { session_id: 'inquiry', turn_id: 'outside', cwd: base };
+  try {
+    const prompt = handleCodexHook(db, { ...common, hook_event_name: 'UserPromptSubmit' }) as any;
+    assert.match(prompt.hookSpecificOutput.additionalContext, /memory_recall/u);
+    for (const name of ['memory_recall', 'memory_capture', 'task_inspect']) {
+      assert.deepEqual(handleCodexHook(db, { ...common, hook_event_name: 'PreToolUse', tool_name: `mcp__kiokuko__${name}`,
+        tool_use_id: name, tool_input: name === 'task_inspect' ? { operation: 'skill', cwd: base } : {} }), {});
+    }
+    for (const [name, args] of [['exec_command', { cmd: 'true' }], ['mcp__kiokuko__task_prepare', { cwd: base }],
+      ['mcp__kiokuko__task_inspect', { cwd: base, operation: 'read', path: 'memory.sqlite3' }]] as const) {
+      const result = handleCodexHook(db, { ...common, hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: name, tool_input: args }) as any;
+      assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+      assert.equal(result.kiokukoDecision.reason, 'repository_required');
+    }
+    assert.deepEqual(handleCodexHook(db, { ...common, hook_event_name: 'Stop' }), {});
+    assert.equal(db.prepare('SELECT COUNT(*) count FROM task_execution_evidence').get<{ count: number }>()!.count, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) count FROM codex_hook_requests').get<{ count: number }>()!.count, 0);
+  } finally { db.close(); rmSync(base, { recursive: true, force: true }); }
+});
 async function fixture() {
   const base = mkdtempSync(path.join(tmpdir(), 'kiokuko-assurance-'));
   const root = path.join(base, 'repo');
@@ -239,6 +263,14 @@ for (const withIntake of [false, true]) {
         const result = execute();
         return { result, event };
       };
+      const invalid = { cwd: f.root, operation: 'skill', path: 'skills/unknown/SKILL.md' };
+      const attempt = call('task_inspect', 'invalid-selector', invalid, () => undefined);
+      assert.throws(() => inspectTask(invalid), /For bundled Skill reads/u);
+      handleCodexHook(f.db, { ...attempt.event, hook_event_name: 'PostToolUse', tool_response: {
+        isError: true, structuredContent: { code: 'VALIDATION_ERROR', reason: 'skill', recoverable: true, retryable: false },
+      } });
+      assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests WHERE request_id=?')
+        .get<{ stop_notified: number }>(requestId)!.stop_notified, 0);
       for (const skill of ['kiokuko-soul', 'memory-reasoning', 'natural-japanese-output']) {
         const args = { cwd: f.root, operation: 'skill', path: skill };
         const read = call('task_inspect', skill, args, () => inspectTask(args));

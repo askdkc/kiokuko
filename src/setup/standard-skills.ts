@@ -77,6 +77,10 @@ export const STANDARD_COMPLETION_SKILL_FILES = [
   'references/failure-recovery.md',
 ] as const;
 
+export const STANDARD_CODING_ROUTINE_SKILL_NAME = 'coding-ideal-routine-skill';
+export const STANDARD_CODING_ROUTINE_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: coding-ideal-routine-skill -->';
+export const STANDARD_CODING_ROUTINE_SKILL_FILES = ['SKILL.md'] as const;
+
 interface StandardSkillManifest {
   readonly name: string;
   readonly managedMarker: string;
@@ -111,6 +115,10 @@ export const STANDARD_SKILL_MANIFESTS = [{
   name: STANDARD_COMPLETION_SKILL_NAME,
   managedMarker: STANDARD_COMPLETION_SKILL_MANAGED_MARKER,
   files: STANDARD_COMPLETION_SKILL_FILES,
+}, {
+  name: STANDARD_CODING_ROUTINE_SKILL_NAME,
+  managedMarker: STANDARD_CODING_ROUTINE_SKILL_MANAGED_MARKER,
+  files: STANDARD_CODING_ROUTINE_SKILL_FILES,
 }, {
   name: STANDARD_SOUL_SKILL_NAME,
   managedMarker: STANDARD_SOUL_SKILL_MANAGED_MARKER,

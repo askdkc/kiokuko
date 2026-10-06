@@ -28,7 +28,7 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
-      - name: Run test suite
+      - name: Run contract, state and independent acceptance oracle suite (G0/G1)
         run: npm test
 
       - name: Run semantic retrieval evaluation

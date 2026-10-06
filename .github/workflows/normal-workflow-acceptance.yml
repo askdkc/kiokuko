@@ -1,0 +1,88 @@
+name: Normal workflow acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: 'Explicit test-only approval JSON (provider/model/clients/limits/maxCost/attempts; no credentials)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: Normal workflow live gate (G3)
+    runs-on: ubuntu-24.04
+    environment: normal-workflow-acceptance
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.16.0
+          cache: npm
+      - run: npm ci
+      - name: Install the approved pinned client into a disposable prefix
+        env:
+          APPROVAL_JSON: ${{ inputs.approval }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { appendFileSync } from 'node:fs';
+          import { approvalErrors } from './scripts/lib/normal-workflow/contracts.mjs';
+          const approval = { ...JSON.parse(process.env.APPROVAL_JSON), authFile: 'test-auth.json' };
+          const errors = approvalErrors(approval);
+          if (errors.length) throw new Error(errors.join('; '));
+          const prefix = process.env.RUNNER_TEMP + '/codex-client';
+          execFileSync('npm', ['install', '--global', '--prefix', prefix, '@openai/codex@' + approval.clientVersion], { stdio: 'inherit', timeout: 120000 });
+          appendFileSync(process.env.GITHUB_PATH, prefix + '/bin\n');
+          NODE
+      - name: Produce deterministic evidence and the exact candidate artifact
+        id: deterministic
+        run: node scripts/run-normal-workflow-gates.mjs --output "$RUNNER_TEMP/deterministic"
+      - name: Prepare explicitly approved test credentials
+        env:
+          APPROVAL_JSON: ${{ inputs.approval }}
+          TEST_CODEX_AUTH_JSON: ${{ secrets.TEST_CODEX_AUTH_JSON }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const approval = JSON.parse(process.env.APPROVAL_JSON);
+          if (!process.env.TEST_CODEX_AUTH_JSON) throw new Error('Test-only credentials unavailable');
+          const authFile = process.env.RUNNER_TEMP + '/test-auth.json';
+          writeFileSync(authFile, process.env.TEST_CODEX_AUTH_JSON, { mode: 0o600 });
+          writeFileSync(process.env.RUNNER_TEMP + '/approval.json', JSON.stringify({ ...approval, authFile }), { mode: 0o600 });
+          NODE
+      - name: Run approved real-model scenarios against the verified artifact
+        id: live
+        run: >-
+          node scripts/run-normal-workflow-acceptance.mjs --require-live
+          --approval "$RUNNER_TEMP/approval.json"
+          --candidate "$RUNNER_TEMP/deterministic/candidate.json"
+          --artifact "$RUNNER_TEMP/deterministic/candidate.tgz"
+          --output "$RUNNER_TEMP/live"
+      - name: Match G0-G3 evidence and release configuration (G4)
+        if: always() && steps.deterministic.outcome == 'success'
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const base = process.env.RUNNER_TEMP;
+          const candidate = JSON.parse(readFileSync(base + '/deterministic/candidate.json', 'utf8'));
+          const live = JSON.parse(readFileSync(base + '/live/summary.json', 'utf8'));
+          writeFileSync(base + '/release-candidate.json', JSON.stringify({ ...candidate, clients: live.clients, required: live.required, configurationHash: live.configurationHash }));
+          NODE
+          node scripts/verify-normal-workflow-release.mjs --candidate "$RUNNER_TEMP/release-candidate.json" --deterministic "$RUNNER_TEMP/deterministic/G0.json" --deterministic "$RUNNER_TEMP/deterministic/G1.json" --deterministic "$RUNNER_TEMP/deterministic/G2.json" --live "$RUNNER_TEMP/live/summary.json"
+      - name: Preserve attempts and independent oracle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: normal-workflow-evidence
+          path: |
+            ${{ runner.temp }}/deterministic
+            ${{ runner.temp }}/live
+          if-no-files-found: error
+      - name: Remove test credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/test-auth.json" "$RUNNER_TEMP/approval.json"

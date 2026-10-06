@@ -4,6 +4,7 @@ import * as z from 'zod/v4';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { canonicalContentHash } from '../serialization/validate.js';
@@ -84,10 +85,36 @@ function kiokukoTool(name: string): string | null {
   const match = /^mcp__kiokuko__(\w+)$/.exec(name);
   return match && preparationTools.has(match[1]!) ? match[1]! : null;
 }
+/** No project is invented for ordinary conversation outside a checkout. */
+function checkoutFreeHook(input: z.infer<typeof hookSchema>): object {
+  if (input.hook_event_name === 'UserPromptSubmit') return context('UserPromptSubmit',
+    'No Git checkout is available. For ordinary conversation, read kiokuko-soul and memory-reasoning with task_inspect operation skill, then use memory_recall with soulRead=true and the complete capability catalog. No project run or implementation checks are required. Project operations require an existing checkout; do not invent one.');
+  if (input.hook_event_name !== 'PreToolUse') return {};
+  const operation = kiokukoTool(input.tool_name ?? '');
+  const args = record(input.tool_input);
+  if (conversationTools.has(input.tool_name ?? '') || operation === 'memory_recall'
+    || (operation === 'memory_capture' && args.runId === undefined)
+    || (operation === 'task_inspect' && args.operation === 'skill')) return {};
+  return deny('Project operations require an existing Git checkout. Ordinary conversation can use global memory and bundled Skill reads.', 'repository_required', true);
+}
 /** stdin must come from the installed client hook. Session IDs supplied to model-facing APIs grant no authority. */
 function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
   const input = parseAssurance(hookSchema, raw);
-  const root = realpathSync(execFileSync('git', ['-C', realpathSync(input.cwd), 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 }).trim());
+  const cwd = realpathSync(input.cwd);
+  let root: string;
+  try {
+    root = realpathSync(execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, LC_ALL: 'C' },
+    }).trim());
+  } catch (error) {
+    const failure = error as { status?: number; stderr?: string };
+    if (failure.status !== 128 || !/^fatal: not a git repository/mu.test(String(failure.stderr))) throw error;
+    // Losing a checkout cannot turn an existing project run into an exempt inquiry.
+    const bound = db.prepare(`SELECT 1 FROM codex_hook_requests WHERE run_id IS NOT NULL
+      AND (repository_root=? OR substr(?,1,length(repository_root)+1)=repository_root||?) LIMIT 1`).get(cwd, cwd, path.sep);
+    if (bound) throw new KiokukoError('SERVICE_UNAVAILABLE', 'Bound repository is unavailable');
+    return checkoutFreeHook(input);
+  }
   const identity = canonicalContentHash({ session: input.session_id, turn: input.turn_id, agent: input.agent_id ?? 'main', root });
   const requestId = `codex-${identity}`;
   const now = new Date().toISOString();

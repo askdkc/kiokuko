@@ -13,8 +13,58 @@ import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { createKiokukoMcpServer } from '../../src/mcp/server.js';
+import { STANDARD_SKILL_MANIFESTS, deployedSkillName } from '../../src/setup/standard-skills.js';
 
 const capabilities = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }];
+
+test('public MCP Skill selectors preserve manifest identity across aliases, prefixes and separators', async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'kiokuko-selector-matrix-'));
+  const server = createKiokukoMcpServer({ cwd: () => cwd });
+  const client = new Client({ name: 'selector-contract', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  const read = async (selector?: string) => {
+    const result = await client.callTool({ name: 'task_inspect', arguments: { cwd, operation: 'skill', ...(selector === undefined ? {} : { path: selector }) } });
+    assert.notEqual(result.isError, true, `${selector}: ${JSON.stringify(result)}`);
+    return result.structuredContent as { text: string; contentHash: string };
+  };
+  try {
+    assert.deepEqual(await read(), await read('kiokuko-soul'));
+    assert.match((await read('coding-ideal-routine-skill')).text, /^---\nname: coding-ideal-routine-skill\n/u);
+    for (const manifest of STANDARD_SKILL_MANIFESTS) {
+      for (const file of manifest.files) {
+        const expected = await read(`${manifest.name}/${file}`);
+        assert.ok(expected.text.includes(manifest.managedMarker));
+        for (const name of [manifest.name, deployedSkillName(manifest.name, 'codex')]) {
+          const selectors = [`${name}/${file}`, `skills/${name}/${file}`];
+          if (file === 'SKILL.md') selectors.push(name, `skills/${name}`);
+          for (const selector of selectors) {
+            assert.deepEqual(await read(selector), expected, selector);
+            assert.deepEqual(await read(selector.replaceAll('/', '\\')), expected, selector);
+          }
+        }
+        assert.deepEqual(await read(path.resolve('skills', manifest.name, file)), expected);
+      }
+    }
+    const sentinel = 'external sentinel must never be returned';
+    writeFileSync(path.join(cwd, 'secret.md'), sentinel);
+    const rejected = ['', '.', 'Skills/kiokuko-soul/SKILL.md', 'skills//kiokuko-soul/SKILL.md',
+      'kiokuko-soul/./SKILL.md', 'kiokuko-soul/SKILL.md/', 'KIOKUKO-SOUL', 'kiokuko-soul/%2e%2e/secret.md',
+      '../secret.md', '..\\secret.md', 'skills/../kiokuko-soul/SKILL.md', 'skills\\..\\kiokuko-soul\\SKILL.md',
+      'skills/kiokuko-codex-soul\\..\\secret.md', '/outside/kiokuko-soul/SKILL.md',
+      'C:\\skills\\kiokuko-soul\\SKILL.md', '\\\\server\\skills\\kiokuko-soul\\SKILL.md',
+      path.join(cwd, 'secret.md'), 'unknown-skill', 'kiokuko-soul/references/not-in-manifest.md',
+      'kiokuko-soul/package.json'];
+    for (const selector of rejected) {
+      const result = await client.callTool({ name: 'task_inspect', arguments: { cwd, operation: 'skill', path: selector } });
+      assert.equal(result.isError, true, selector);
+      assert.equal((result.structuredContent as any).code, 'VALIDATION_ERROR', selector);
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(sentinel));
+      // A rejected selector does not disable legal recovery.
+      assert.deepEqual(await read('kiokuko-codex-soul'), await read());
+    }
+  } finally { await client.close(); await server.close(); rmSync(cwd, { recursive: true, force: true }); }
+});
 function git(root: string, ...args: string[]): string {
   return execFileSync('git', ['-C', root, '-c', 'protocol.file.allow=always', ...args], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
@@ -116,6 +166,9 @@ test('MCP preparation errors provide safe recovery guidance without exposing rej
     assert.notEqual(soul.isError, true);
     const rejected = await client.callTool({ name: 'task_inspect', arguments: { cwd, operation: 'skill', path: '/private-secret/kiokuko-soul/SKILL.md' } });
     assert.equal(rejected.isError, true);
+    assert.equal((rejected.structuredContent as any).recoverable, true);
+    assert.equal((rejected.structuredContent as any).retryable, false);
+    assert.equal((rejected.structuredContent as any).reason, 'skill');
     assert.match(JSON.stringify(rejected), /omit path/u);
     assert.doesNotMatch(JSON.stringify(rejected), /private-secret/u);
     const missing = await client.callTool({ name: 'task_inspect', arguments: { cwd, operation: 'read', path: 'missing.txt' } });

@@ -2,7 +2,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -168,6 +168,8 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     assert.equal(typeof JSON.parse(result.stdout).hookSpecificOutput.additionalContext, 'string');
   }
   await verifyFiles(created, new Map([...expected.keys()].map((file) => [file, 'created'])));
+  await verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories);
+  await verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environment);
   const beforeRepair = new Map();
   const repairActions = new Map();
   for (const [index, [file, target]] of [...expected].entries()) {
@@ -199,6 +201,7 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   }
 
   await verifyFiles(await setup(), repairActions);
+  await verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories);
   const beforeRepeat = new Map();
   for (const file of expected.keys()) {
     const snapshot = await stat(file, { bigint: true });
@@ -211,6 +214,82 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     assert.deepEqual({ ino: after.ino, mtimeNs: after.mtimeNs }, before, file);
   }
   process.stdout.write(`Installed setup verified ${skillFiles.length} skill files across ${Object.keys(skillDirectories).length} clients: create, repair, dry-run, skip, and unchanged rerun.\n`);
+}
+
+async function verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environment) {
+  if (process.platform === 'win32') return; // Windows link permissions are not assumed.
+  const selected = path.join(installedRoot, 'skills/kiokuko-soul/SKILL.md');
+  const backup = selected + '.original';
+  const outside = path.join(fixtureRoot, 'external-sentinel.md');
+  const unlisted = path.join(installedRoot, 'skills/unlisted.md');
+  await writeFile(outside, 'EXTERNAL_BUNDLE_SENTINEL'); await writeFile(unlisted, 'UNLISTED_BUNDLE_SENTINEL');
+  await rename(selected, backup);
+  const client = new Client({ name: 'bundle-boundary-test', version: '1' });
+  try {
+    await client.connect(new StdioClientTransport({ command: cliPath, args: ['mcp'], cwd: fixtureRoot, env: environment, stderr: 'pipe' }));
+    for (const target of [outside, unlisted]) {
+      await symlink(target, selected);
+      const rejected = await client.callTool({ name: 'task_inspect', arguments: { cwd: fixtureRoot, operation: 'skill' } });
+      assert.equal(rejected.isError, true);
+      assert.equal(rejected.structuredContent.reason, 'boundary');
+      assert.doesNotMatch(JSON.stringify(rejected), /BUNDLE_SENTINEL/u);
+      await rm(selected);
+    }
+  } finally {
+    await client.close(); await rm(selected, { force: true }); await rename(backup, selected);
+    await rm(outside, { force: true }); await rm(unlisted, { force: true });
+  }
+  process.stdout.write('Packaged manifest rejects redirects to external and unlisted internal files.\n');
+}
+
+// Use actual deployed names and Markdown links, never hostSkillText/logicalSkillName.
+// This checks the install -> public MCP handoff; it is not a real-AI acceptance run.
+async function verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories) {
+  const repo = path.join(fixtureRoot, 'different-repo');
+  const subdirectory = path.join(repo, 'nested');
+  const outside = path.join(fixtureRoot, 'outside-repo');
+  await mkdir(subdirectory, { recursive: true }); await mkdir(outside, { recursive: true });
+  await run('git', ['init', '-q'], repo, environment);
+  for (const [host, directory] of Object.entries(skillDirectories)) {
+    const deployed = [];
+    for (const name of await readdir(directory)) {
+      const index = await readFile(path.join(directory, name, 'SKILL.md'), 'utf8');
+      const identity = /^name: (\S+)$/mu.exec(index)?.[1];
+      assert.equal(identity, name, 'Deployed frontmatter and public directory identity disagree');
+      const references = [...index.matchAll(/\]\((references\/[^)]+\.md)\)/gu)].map(match => match[1]);
+      deployed.push({ name: identity, references });
+    }
+    const client = new Client({ name: host, version: 'installed-contract' });
+    await client.connect(new StdioClientTransport({ command: cliPath, args: ['mcp'], cwd: subdirectory, env: environment, stderr: 'pipe' }));
+    try {
+      const tools = (await client.listTools()).tools;
+      assert.ok(tools.some(tool => tool.name === 'task_inspect'));
+      for (const cwd of [repo, subdirectory, outside]) {
+        for (const { name, references } of deployed) {
+          let hash;
+          for (const selector of [name, `${name}/SKILL.md`, `skills/${name}/SKILL.md`]) {
+            const result = await client.callTool({ name: 'task_inspect', arguments: { cwd, operation: 'skill', path: selector } });
+            assert.notEqual(result.isError, true, `${host}: ${selector}: ${JSON.stringify(result)}`);
+            hash ??= result.structuredContent.contentHash;
+            assert.equal(result.structuredContent.contentHash, hash);
+          }
+          for (const reference of references) {
+            const result = await client.callTool({ name: 'task_inspect', arguments: { cwd, operation: 'skill', path: `${name}/${reference}` } });
+            assert.notEqual(result.isError, true, `${host}: ${name}/${reference}`);
+            assert.ok(result.structuredContent.text.length > 0);
+          }
+        }
+      }
+      const capabilities = [...deployed.map(skill => ({ kind: 'skill', name: skill.name })),
+        ...tools.map(tool => ({ kind: 'mcp_tool', name: `mcp__kiokuko__${tool.name}` }))];
+      const recall = await client.callTool({ name: 'memory_recall', arguments: { query: 'shipping fee explanation', soulRead: true, capabilities } });
+      assert.notEqual(recall.isError, true, JSON.stringify(recall));
+      const rejected = await client.callTool({ name: 'task_inspect', arguments: { cwd: outside, operation: 'read', path: 'README.md' } });
+      assert.equal(rejected.isError, true);
+      assert.equal(rejected.structuredContent.reason, 'repository');
+    } finally { await client.close(); }
+  }
+  process.stdout.write('Installed selectors verified all client aliases, references, foreign repo/subdirectory and checkout-free recall.\n');
 }
 
 async function verifyInstalledProfileRebuild(cliPath, fixtureRoot) {
@@ -423,6 +502,7 @@ try {
     assert.ok(packageFiles.has(file), `Conversation handoff package artifact missing: ${file}`);
   }
   const tarball = packedFilename(packed.stdout, packDirectory);
+  const artifactHash = createHash('sha256').update(await readFile(tarball)).digest('hex');
   const install = await run('npm', [
     'install',
     '--global',
@@ -460,6 +540,17 @@ try {
     prefixDirectory,
     path.join(temporaryRoot, 'embedding-setup-fixture'),
   );
+  if (process.env.KIOKUKO_PACKAGE_ARTIFACT) await copyFile(tarball, process.env.KIOKUKO_PACKAGE_ARTIFACT);
+  if (process.env.KIOKUKO_PACKAGE_REPORT) {
+    const head = await run('git', ['rev-parse', 'HEAD'], repositoryRoot);
+    const status = await run('git', ['status', '--porcelain', '--untracked-files=all'], repositoryRoot);
+    await writeFile(process.env.KIOKUKO_PACKAGE_REPORT, JSON.stringify({ gate: 'G2', classification: 'PASS',
+      commit: head.stdout.trim(), dirty: status.stdout.trim() !== '', artifactHash,
+      commands: [{ executable: 'npm run test:global-install', exitCode: 0 }],
+      covered: ['INS-01', 'INS-02', 'INS-03', 'INS-04', 'INS-05', 'INS-06'],
+      linkChecks: process.platform === 'win32' ? 'NOT_RUN: link privileges unavailable' : 'PASS',
+    }, null, 2));
+  }
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }
