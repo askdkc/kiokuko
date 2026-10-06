@@ -1,3 +1,5 @@
+import { firstSetupEnvironment } from '../../scripts/lib/normal-workflow/package-smoke-environment.mjs';
+import { FIRST_SETUP_SCRIPT } from '../../scripts/lib/normal-workflow/package-evidence.mjs';
 import { sourceFingerprint } from '../../scripts/lib/normal-workflow/source-state.mjs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -443,47 +445,9 @@ async function verifyFirstInstalledEmbeddingSetup(installedRoot, prefixDirectory
     await chmod(sudo, 0o755);
   }
   const fixture = path.join(installedRoot, 'first-setup-smoke.mjs');
-  await writeFile(fixture, `
-import assert from 'node:assert/strict';
-import { Command } from 'commander';
-import { registerEmbeddingsCommands } from './dist/commands/embeddings.js';
-import { openConnection } from './dist/db/connection.js';
-import { migrateDatabase } from './dist/db/migrate.js';
-import { LOCAL_SMALL_PRESET } from './dist/embedding/presets/local-small.js';
-
-const database = openConnection(':memory:');
-migrateDatabase(database);
-try {
-  const cli = new Command().exitOverride();
-  registerEmbeddingsCommands(cli, {
-    withDatabase: async (operation) => operation(database),
-    setupGlobalClients: async () => ({ clients: ['codex'], projectAgentFiles: [] }),
-    modelInstaller: async () => ({
-      installation: 'installed', directory: process.cwd(),
-      relativePath: 'models/embeddings/local-small/smoke',
-      totalBytes: LOCAL_SMALL_PRESET.files.reduce((sum, file) => sum + file.size, 0),
-      manifestHash: 'a'.repeat(64),
-    }),
-    provider: {
-      profile: { providerKind: 'local-transformers' },
-      embed: async () => { throw new Error('empty database must not need vectors'); },
-    },
-    output: (_json, _operation, data) => assert.equal(data.semanticEnabled, true),
-  });
-  await cli.parseAsync(['node', 'kiokuko', 'setup', '--clients', 'codex', '--json']);
-  await Promise.all([import('@huggingface/hub'), import('@huggingface/transformers')]);
-  process.stdout.write('FIRST_SETUP_OK\\n');
-} finally {
-  database.close();
-}
-`);
-  const environment = {
-    ...process.env,
-    PATH: `${wrapperDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
-    npm_config_prefix: prefixDirectory,
-    npm_config_audit: 'false',
-    npm_config_fund: 'false',
-  };
+  await writeFile(fixture, FIRST_SETUP_SCRIPT);
+  const environment = firstSetupEnvironment(fixtureRoot, prefixDirectory);
+  await mkdir(environment.HOME, { recursive: true });
   const { stdout } = await run(process.execPath, [fixture], fixtureRoot, environment);
   assert.match(stdout, /FIRST_SETUP_OK/u);
   const packagesAfter = await installedPackageNames(path.join(prefixDirectory, 'lib', 'node_modules'));

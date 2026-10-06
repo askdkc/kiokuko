@@ -66,9 +66,9 @@ test('executor MCP returns real command-bound receipts before response; a comple
       const result=await client.callTool({name:'run_command',arguments:{command:'npm test'}});assert.notEqual(result.isError,true);
       assert.equal((result.structuredContent as any).exitCode,0);
       const {collectExecutorReceipts}=await load('executor-receipt');
-      const receipt=collectExecutorReceipts({directory:output,nativeReadonlyObserved:true});assert.equal(receipt.checkpointAuthority,'executor-barrier-v1');
-      assert.equal(collectExecutorReceipts({directory:output,nativeReadonlyObserved:false}).checkpointAuthority,'unavailable');
       const initial=oracle.snapshot(repo);
+      const receipt=collectExecutorReceipts({directory:output,nativeReadonlyObserved:true,initial,final:initial});assert.equal(receipt.checkpointAuthority,'executor-barrier-v1');
+      assert.equal(collectExecutorReceipts({directory:output,nativeReadonlyObserved:false}).checkpointAuthority,'unavailable');
       const attempt=oracle.evaluateAttempt({initial,final:initial,kind:'bug',...receipt,exitCode:0,logComplete:true,turnCompleted:true,instructionsVerified:true,controlsUnchanged:true,safe:true},path.join(base,'no-red'));
       assert.equal(attempt.classification,'FAIL_PRODUCT');assert.ok(attempt.assertions.some((x:any)=>x.id==='observed Red precedes implementation edit' && !x.passed));
     }finally{await client.close();}

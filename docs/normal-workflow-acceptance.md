@@ -55,11 +55,13 @@ oracle checks 0, 4999, 5000 and 5001, old calls and member/non-member combinatio
 Fixture tests cannot run arbitrary host Node code. A trusted bridge links only
 `node:test`, `node:assert/strict` (or `node:assert`) and `../shipping.mjs` into a
 separate realm without host objects, process, credentials, filesystem,
-IPC or dynamic code generation. Intrinsics are frozen. Test callbacks execute
+IPC or dynamic code generation. Intrinsics are frozen and privately bound, including collection iterator prototypes;
+replacing a writable global constructor cannot change assertion serialization. Test callbacks execute
 there; a trusted Node host registers their outcomes with the actual test runner.
 A separate parent consumes lifecycle events and writes the result file outside
 the worker's readable/writable roots. Worker stdout/stderr never supply counters.
-The bridge supports synchronous top-level tests and skip/todo. Assertions are
+The bridge supports synchronous top-level tests and skip/todo, including string
+skip reasons and the native TODO status of tests without a callback. Assertions are
 performed by the real `node:assert` / `node:assert/strict` implementation, preserving
 their distinct loose/strict modes. A frozen null-prototype bridge accepts only a
 bounded primitive string and returns a primitive outcome; no fixture object or
@@ -181,7 +183,9 @@ is insufficient. If either proof is absent, development is FAIL_HARNESS.
 The separate MCP executor owns all fixture writes through one queue. It supports
 reading fixture files, writing shipping source/additive tests, and standalone
 fixture test commands. OS access, arbitrary commands, background processes and
-protected-file edits are not execution capabilities of that server.
+protected-file edits are not execution capabilities of that server. Explanation
+requests expose only file-listing and reading tools; the controller rejects
+writes and test commands even if called directly.
 Only named tools on the two isolated stdio servers are preapproved; unknown
 tools are not exposed and native escalation remains disabled. `agents.enabled`
 is false in addition to the legacy/v2 collaboration feature flags, because separate executor instances or
@@ -207,8 +211,12 @@ policy pins `executorMode: native-readonly-exclusive-fixture-v1`; development
 argv must select read-only sandbox, and the actual sandbox probe is included in
 the identity evidence. Missing or conflicting bindings fail the harness. Delayed CLI
 stdout, immediately queued edits and consecutive events cannot change saved
-Red/Green trees. Both trees are independently replayed again. A complete trace
-without actual Red still fails. The plain `exec --json` adapter remains
+Red/Green trees. Every acknowledged writer request is replayed from the original
+fixture to the final tree, including its returned operation sequence and tree hash.
+The first implementation edit must follow the qualifying Red checkpoint; an edit
+followed by a revert cannot disappear between test snapshots. Missing, reordered
+or substituted writer receipts fail closed. Both trees are independently replayed
+again. A complete trace without actual Red still fails. The plain `exec --json` adapter remains
 checkpointAuthority=unavailable when this executor and native boundary are absent;
 its events never photograph a mutable tree. This controlled fixture execution
 path is distinct from unrestricted native CLI workspace writes. The real-model
@@ -239,6 +247,13 @@ node scripts/finalize-normal-workflow-acceptance.mjs \
   --policy /path/to/frozen-policy.json --policy-hash APPROVED_HASH \
   --reviews /path/to/independent-reviews.json
 ```
+
+Memory application/inapplicability, verification-definition calls, injected
+selector failures and subsequent recovery are derived from paired raw RPCs. The
+original client stream must have a complete, ordered thread/turn lifecycle;
+its last answer, tool/turn counts, runtime and loader identity must match the
+stored attempt. Replacement answers and execution-summary booleans cannot
+supply these facts. Collection, finalization and G4 share this validation.
 
 The finalizer does not rerun the model or trust previous PASS summaries. It
 reopens original execution, identity, instructions, protocol, loader and trees,

@@ -10,6 +10,7 @@ import { parseArgs } from 'node:util';
 import { validatePolicy, requiredAttempts, executionPolicyErrors } from './lib/normal-workflow/release-policy.mjs';
 import { releaseGate } from './lib/normal-workflow/contracts.mjs';
 import { observeInstructions } from './lib/normal-workflow/instruction-observation.mjs';
+import { clientEvidenceErrors } from './lib/normal-workflow/instruction-receipt.mjs';
 import { evaluateAttempt, hash, treeHash } from './lib/normal-workflow/oracle.mjs';
 import { approvedReviewers } from './lib/normal-workflow/review-authority.mjs';
 const {values}=parseArgs({options:{live:{type:'string'},policy:{type:'string'},'policy-hash':{type:'string'},reviews:{type:'string'},'github-review':{type:'boolean'}}});
@@ -43,13 +44,16 @@ try {
       if(executionPolicyErrors(policy,actual,scenario,client).length || identity.effort!==policy.reasoningEffort
         || !['candidateBefore','candidateAfter'].every(key=>attempt[key]?.commit===summary.candidate.commit && attempt[key]?.dirty===false
           && attempt[key]?.sourceDigest===summary.candidate.sourceDigest) || attempt.artifactHash!==summary.candidate.artifactHash) throw new Error('Actual execution/source differs from collected policy/candidate');
-      if(!['inquiry','conversation'].includes(scenario.kind) && (!sandboxProbeValid(identity.nativeSandboxProbe,policy.clientVersion) || executorReceiptErrors(attempt.checkpoints,attempt.executorProtocol,identity.nativeReadonlyObserved).length)) throw new Error('Native sandbox or exclusive executor receipt proof failed');
+      if(!['inquiry','conversation'].includes(scenario.kind) && (!sandboxProbeValid(identity.nativeSandboxProbe,policy.clientVersion) || executorReceiptErrors(attempt.checkpoints,attempt.executorProtocol,identity.nativeReadonlyObserved,{initial:attempt.initial,final:attempt.final}).length)) throw new Error('Native sandbox or exclusive executor receipt proof failed');
       const instructions=read(path.join(dir,'instructions.json')), loader=read(path.join(dir,'instruction-receipt.json'));
+      const eventErrors=clientEvidenceErrors(actual,attempt.answer,loader);
+      if(eventErrors.length) throw new Error(eventErrors.join('; '));
       const messages=readFileSync(path.join(dir,'discovery.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
       const observed=observeInstructions({messages,indexes:instructions.indexes,agentsHash:hash(instructions.agents),
         events:loader.observed?[{type:'instructions.loaded',content_hash:loader.contentHash}]:[],observations:read(path.join(dir,'hooks.json')),kind:scenario.kind});
       const review=reviews.find(x=>x.id===id)?.review;
-      const outcome=evaluateAttempt({...attempt,kind:scenario.kind,memory:scenario.memory,fault:scenario.fault,
+      const outcome=evaluateAttempt({...attempt,...observed.workflowFacts,safe:!attempt.failure && observed.workflowFacts.safe,
+        kind:scenario.kind,memory:scenario.memory,fault:scenario.fault,
         instructionsVerified:observed.instructionsVerified,answerReview:review,reviewers:policy.reviewers},path.join(replay,scenarioId));
       // Write reviewed receipts only after validation; an invalid/unapproved
       // review cannot be smuggled into the sealer as an accepted receipt.

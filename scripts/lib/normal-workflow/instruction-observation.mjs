@@ -42,7 +42,7 @@ export function observeInstructions({ messages, events, indexes, agentsHash, obs
       && requiredTools.every(name => tools.some(tool => tool.name === name && schemaValid(tool)));
   });
   const calls = name => pairs.filter(pair => pair.request.message.method === 'tools/call'
-    && pair.request.message.params?.name === name && pair.response.message.result?.isError !== true);
+    && pair.request.message.params?.name === name && pair.response.message.result && pair.response.message.result.isError !== true);
   const registrations = calls(kind === 'conversation' ? 'memory_recall' : 'task_prepare').filter(pair => {
     const data = resultData(pair.response.message.result);
     return kind === 'conversation' ? Array.isArray(data?.items) && data.nextAction === 'proceed'
@@ -79,8 +79,42 @@ export function observeInstructions({ messages, events, indexes, agentsHash, obs
     if(verified) receipts.push(...registrationReceipts);
     return verified;
   });
+  // Derived facts come from paired RPC evidence, never the execution summary's
+  // booleans. A rejected call or a marker without its matching error is no proof.
+  const preparations = calls('task_prepare');
+  const reviews = calls('task_memory_review').filter(pair => resultData(pair.response.message.result)?.recorded === true
+    && typeof pair.request.message.params.arguments?.runId === 'string'
+    && preparations.some(prepared => prepared.response.sequence < pair.request.sequence
+      && resultData(prepared.response.message.result)?.run?.runId === pair.request.message.params.arguments.runId));
+  const injected = messages.filter(record => record.type === 'injected_selector');
+  const injectedPairs = injected.map(record => pairs.find(pair => pair.request.sessionId === record.sessionId
+    && pair.request.message.id === record.requestId && pair.request.message.method === 'tools/call'
+    && pair.request.message.params?.name === 'task_inspect' && pair.request.message.params.arguments?.operation === 'skill'
+    && pair.request.sequence < record.sequence && record.sequence < pair.response.sequence
+    && pair.response.message.result?.isError === true
+    && pair.response.message.result.structuredContent?.reason === 'skill'));
+  const validInjections = injectedPairs.every(Boolean)
+    && new Set(injected.map(record => `${record.sessionId}/${typeof record.requestId}/${record.requestId}`)).size === injected.length;
+  const workflowFacts = {
+    safe: valid && validInjections && !messages.some(record => ['proxy_error','spawn_error'].includes(record.type)),
+    developmentChecks: pairs.some(pair => pair.request.message.method === 'tools/call' && pair.request.message.params?.name === 'task_verification_define'),
+    injectedFailures: validInjections ? injected.length : null,
+    recovered: validInjections && injected.length > 0 && injectedPairs.every(failed => receipts.some(receipt =>
+      pairs.some(pair => pair.request.sessionId === receipt.sessionId && pair.request.message.id === receipt.callId
+        && pair.request.sequence > failed.response.sequence))),
+    memoryApplied: reviews.some(pair => {
+      const args = pair.request.message.params.arguments;
+      return args.decision === 'adopted' && typeof args.invariant === 'string' && args.invariant.includes('shippingFee')
+        && typeof args.verification === 'string' && args.verification.trim().length > 0
+        && Array.isArray(args.evidenceIds) && args.evidenceIds.length > 0;
+    }),
+    memoryInapplicable: reviews.some(pair => {
+      const args = pair.request.message.params.arguments;
+      return args.decision === 'inapplicable' && typeof args.basis === 'string' && args.basis.trim().length > 0;
+    }),
+  };
   const agentsLoadObserved = events.some(event => event.type === 'instructions.loaded' && event.content_hash === agentsHash);
-  return { discovered, loadedSkills, agentsLoadObserved, receipts, protocolValid:valid,
+  return { discovered, loadedSkills, agentsLoadObserved, receipts, protocolValid:valid, workflowFacts,
     instructionsVerified:discovered && loadedSkills && agentsLoadObserved
       && (kind === 'conversation' ? calls('task_prepare').length === 0 : observations.some(x => x.event_name === 'UserPromptSubmit' && x.decision === 'handled')) };
 }

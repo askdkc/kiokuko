@@ -63,3 +63,57 @@ export function collectInstructionReceipt({ codeHome, cwd, clientVersion, thread
     return receipts.length === 1 ? receipts[0] : unobserved;
   } catch { return unobserved; }
 }
+
+
+/** Reconcile the isolated loader receipt with the original complete client
+ * stream. Summary counters and a replacement answer are not execution proof. */
+export function clientEvidenceErrors(execution, answer, loader) {
+  const errors = [], events = execution?.events;
+  if (!Array.isArray(events) || !events.length) return ['Raw client events missing'];
+  let previous = 0, active = false, turns = 0, threadId, lastAnswer = '', complete = 0;
+  const calls = new Set(), started = new Set(), completed = new Set();
+  for (const event of events) {
+    if (!event || !Number.isSafeInteger(event.sequence) || event.sequence <= previous) {
+      errors.push('Client event order invalid'); continue;
+    }
+    previous = event.sequence;
+    if (event.type === 'thread.started') {
+      if (threadId || turns || typeof event.thread_id !== 'string' || !event.thread_id) errors.push('Client thread identity invalid');
+      threadId = event.thread_id;
+    } else if (event.type === 'turn.started') {
+      if (!threadId || active) errors.push('Client turn start invalid');
+      active = true; turns++;
+    } else if (event.type === 'turn.completed') {
+      if (!active || [...started].some(id => !completed.has(id))) errors.push('Incomplete client turn');
+      active = false; complete++;
+    } else if (['item.started','item.updated','item.completed'].includes(event.type)) {
+      const item = event.item;
+      if (!active || typeof item?.id !== 'string' || !item.id || typeof item.type !== 'string') {
+        errors.push('Client item identity or turn invalid'); continue;
+      }
+      if (event.type === 'item.started') {
+        if (started.has(item.id) || completed.has(item.id)) errors.push('Duplicate client item');
+        started.add(item.id);
+      }
+      if (event.type === 'item.completed') {
+        if (completed.has(item.id)) errors.push('Duplicate client item completion');
+        completed.add(item.id);
+        if (item.type === 'agent_message') {
+          if (typeof item.text !== 'string') errors.push('Client answer missing');
+          else lastAnswer = item.text;
+        }
+      }
+      if (item.type !== 'agent_message' && event.type !== 'item.updated') calls.add(item.id);
+    } else errors.push('Failed or unsupported client event');
+  }
+  if (!threadId || active || !turns || turns !== complete || [...started].some(id => !completed.has(id))) errors.push('Client execution is unfinished');
+  if (calls.size !== execution.calls || turns !== execution.turns) errors.push('Raw client resource counts differ');
+  const start = Date.parse(execution.started), end = Date.parse(execution.ended);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || execution.seconds !== (end - start) / 1000)
+    errors.push('Raw client runtime differs');
+  if (typeof answer !== 'string' || answer !== lastAnswer) errors.push('Answer differs from original client output');
+  if (loader?.schema !== 'codex-rollout/user-instructions-v1' || loader.observed !== true || loader.threadId !== threadId
+    || loader.clientVersion !== execution.clientVersion || loader.modelObserved !== true || loader.model !== execution.model
+    || loader.effort !== execution.reasoningEffort) errors.push('Loader receipt differs from original client identity');
+  return errors;
+}

@@ -1,4 +1,40 @@
 import { createHash } from 'node:crypto';
+// Producer and verifier use the same reviewed program bytes. Substrings in
+// comments or an unexecuted function cannot prove the optional setup ran.
+export const FIRST_SETUP_SCRIPT = `
+import assert from 'node:assert/strict';
+import { Command } from 'commander';
+import { registerEmbeddingsCommands } from './dist/commands/embeddings.js';
+import { openConnection } from './dist/db/connection.js';
+import { migrateDatabase } from './dist/db/migrate.js';
+import { LOCAL_SMALL_PRESET } from './dist/embedding/presets/local-small.js';
+
+const database = openConnection(':memory:');
+migrateDatabase(database);
+try {
+  const cli = new Command().exitOverride();
+  registerEmbeddingsCommands(cli, {
+    withDatabase: async (operation) => operation(database),
+    setupGlobalClients: async () => ({ clients: ['codex'], projectAgentFiles: [] }),
+    modelInstaller: async () => ({
+      installation: 'installed', directory: process.cwd(),
+      relativePath: 'models/embeddings/local-small/smoke',
+      totalBytes: LOCAL_SMALL_PRESET.files.reduce((sum, file) => sum + file.size, 0),
+      manifestHash: 'a'.repeat(64),
+    }),
+    provider: {
+      profile: { providerKind: 'local-transformers' },
+      embed: async () => { throw new Error('empty database must not need vectors'); },
+    },
+    output: (_json, _operation, data) => assert.equal(data.semanticEnabled, true),
+  });
+  await cli.parseAsync(['node', 'kiokuko', 'setup', '--clients', 'codex', '--json']);
+  await Promise.all([import('@huggingface/hub'), import('@huggingface/transformers')]);
+  process.stdout.write('FIRST_SETUP_OK\\n');
+} finally {
+  database.close();
+}
+`;
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const executed=c=>Array.isArray(c.argv) && c.exitCode===0 && c.signal===null && typeof c.stdout==='string' && typeof c.stderr==='string'
@@ -60,13 +96,12 @@ export function validPackageStages(report,candidate,artifactFiles,metadata) {
     }
     if(!restart.commands.some(c=>same(c.argv,[o.cliPath,'--version']) && c.stdout.trim()===metadata.version)) return false;
     const persistence=restart.outcome?.verification;
-    if(!persistence?.before?.completionReady || !persistence.after?.completionReady
+    if(persistence?.before?.completionReady !== true || persistence.after?.completionReady !== true
+      || typeof persistence.runId !== 'string' || !persistence.runId.trim()
       || persistence.runId!==persistence.beforeRunId || persistence.runId!==persistence.afterRunId) return false;
     if(!optional.outcome || optionalNames.some(x=>!optional.outcome.after?.includes(x) || optional.outcome.before?.includes(x))) return false;
     if(!optional.commands.some(c=>c.argv.length===2 && /(?:^|[\\/])node(?:\.exe)?$/u.test(c.argv[0]) && c.argv[1].endsWith('/first-setup-smoke.mjs') && c.stdout.trim().split(/\r?\n/u).at(-1)==='FIRST_SETUP_OK'
-      && hash(optional.outcome.script ?? '')===optional.outcome.scriptHash)) return false;
-    if(!optional.outcome.script.includes("await Promise.all([import('@huggingface/hub'), import('@huggingface/transformers')])")
-      || !optional.outcome.script.includes('await cli.parseAsync')) return false;
+      && optional.outcome.script===FIRST_SETUP_SCRIPT && hash(FIRST_SETUP_SCRIPT)===optional.outcome.scriptHash)) return false;
     return true;
   }catch{return false;}
 }

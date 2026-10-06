@@ -14,6 +14,7 @@ const { FIXTURE_ENVIRONMENT_INSTRUCTIONS } = await load('contracts');
 const { observeInstructions } = await load('instruction-observation');
 const { authenticateProducer } = await load('producer-auth');
 const {probeScript}=await load('native-sandbox');
+const { FIRST_SETUP_SCRIPT } = await load('package-evidence');
 const { checkpointErrors } = await load('checkpoints');
 const { verifyEvidenceBundle, bytesHash, evidenceFile } = await load('evidence-bundle');
 const approval = {approved:true,testCredentials:true,provider:'chatgpt-subscription',model:'reviewed-model',clientVersion:'0.153.4',
@@ -185,7 +186,7 @@ function bundleFixture() {
     }
   }
   const optionalNames=['@huggingface/hub','@huggingface/transformers','sqlite-vec'];
-  const script="await cli.parseAsync([]); await Promise.all([import('@huggingface/hub'), import('@huggingface/transformers')]);";
+  const script=FIRST_SETUP_SCRIPT;
   const stages=[
     {id:'pack',commands:[syntheticCommand(['npm','run','build']),syntheticCommand(['npm','pack','--pack-destination',base,'--json'],JSON.stringify([packed]))]},
     {id:'install',commands:[syntheticCommand(['npm','install','--global','--prefix','/prefix',`${base}/candidate.tgz`],'added package')],outcome:{prefix:'/prefix',cliPath:'/prefix/bin/kiokuko',files:Object.values(files),dependencies:['kiokuko']}},
@@ -202,24 +203,41 @@ function bundleFixture() {
     const red={...initial,'test/regression.test.mjs':testSource}; const final=['inquiry','conversation'].includes(scenario.kind) ? initial : {...red,'shipping.mjs':scenario.kind === 'feature' ?
       'export function shippingFee(total, member=false) {return member || total >= 5000 ? 0 : 500;}' : 'export function shippingFee(total) {return total >= 5000 ? 0 : 500;}'};
     const instructions=instructionFixture(scenario.kind);const answer=scenario.kind === 'conversation' ? '4999 costs 500; 5000 costs 0.' : 'The spec is free at 5000; the initial implementation charges 500 there. Below 5000 costs 500.';
-    write(`${prefix}/execution.json`,{started:'2026-10-06T00:00:00Z',ended:'2026-10-06T00:00:01Z',candidateBefore:candidate,candidateAfter:candidate,artifactHash:candidate.artifactHash,events:[{sequence:1,type:'turn.started'},{sequence:2,type:'item.completed',item:{id:'one',type:'mcp_tool_call'}},{sequence:3,type:'turn.completed'}],
+    // Synthetic raw producer evidence includes every claimed review/fault event.
+    const rpc=(id:string,name:string,args:any,data:any)=>instructions.messages.push(
+      {sessionId:'session',direction:'request',message:{id,method:'tools/call',params:{name,arguments:args}}},
+      {sessionId:'session',direction:'response',message:{id,result:{structuredContent:data}}});
+    if(scenario.memory) rpc('memory-review','task_memory_review',{runId:'fixture-run',decision:scenario.memory==='related'?'adopted':'inapplicable',
+      basis:'The delivered memory was checked against the fixture.',invariant:'shippingFee preserves existing non-member calls',
+      verification:'The compatibility regression passes.',evidenceIds:['fixture-evidence']},{recorded:true});
+    if(scenario.fault) instructions.messages.splice(2,0,
+      {sessionId:'session',direction:'request',message:{id:'fault',method:'tools/call',params:{name:'task_inspect',arguments:{operation:'skill'}}}},
+      {sessionId:'session',type:'injected_selector',requestId:'fault'},
+      {sessionId:'session',direction:'response',message:{id:'fault',result:{isError:true,structuredContent:{reason:'skill'}}}});
+    instructions.messages.forEach((record:any,index:number)=>record.sequence=index+1);
+    write(`${prefix}/execution.json`,{started:'2026-10-06T00:00:00Z',ended:'2026-10-06T00:00:01Z',candidateBefore:candidate,candidateAfter:candidate,artifactHash:candidate.artifactHash,events:[{sequence:1,type:'thread.started',thread_id:scenario.id},{sequence:2,type:'turn.started'},{sequence:3,type:'item.completed',item:{id:'one',type:'mcp_tool_call'}},{sequence:4,type:'item.completed',item:{id:'answer',type:'agent_message',text:answer}},{sequence:5,type:'turn.completed'}],
       controlsBefore:oracle.hash(JSON.stringify({agents:'agents',indexes:instructions.indexes})),controlsAfter:oracle.hash(JSON.stringify({agents:'agents',indexes:instructions.indexes})),...policy,client:'codex-cli',request:scenario.request,argv:['exec','--sandbox','read-only','-c',`model=${JSON.stringify(policy.model)}`,'-c',`model_reasoning_effort=${JSON.stringify(policy.reasoningEffort)}`,'-c',`developer_instructions=${JSON.stringify(FIXTURE_ENVIRONMENT_INSTRUCTIONS)}`,scenario.request],calls:1,turns:1,seconds:1,modelObserved:true,providerObserved:true,clientVersionObserved:true,
       exitCode:0,signal:null,logComplete:true,turnCompleted:true,controlsUnchanged:true,safe:true,developmentChecks:false,checkpointAuthority:'executor-barrier-v1',injectedFailures:1,recovered:true,memoryApplied:true,memoryInapplicable:true});
     write(`${prefix}/identity.json`,{schema:'codex-isolated-identity-v1',model:policy.model,effort:policy.reasoningEffort,clientVersion:policy.clientVersion,authMode:'chatgpt',modelObserved:true,nativeReadonlyObserved:true,nativeSandboxProbe:{schema:'native-readonly-probe-v1',clientVersion:policy.clientVersion,argv:['codex','sandbox','-c','sandbox_mode=\"read-only\"','--','node','--input-type=module','--eval',probeScript('/synthetic/.native-sandbox-write-probe')],target:'/synthetic/.native-sandbox-write-probe',exitCode:13,signal:null,outcome:{denied:true,code:'EPERM'},writeExists:false,treeBefore:'e'.repeat(64),treeAfter:'e'.repeat(64)}});
     write(`${prefix}/instructions.json`,{agents:'agents',indexes:instructions.indexes});write(`${prefix}/protocol.json`,{messages:instructions.messages});
-    write(`${prefix}/loader.json`,{observed:true,contentHash:oracle.hash('agents')});write(`${prefix}/hooks.json`,{observations:instructions.observations});
+    write(`${prefix}/loader.json`,{schema:'codex-rollout/user-instructions-v1',observed:true,threadId:scenario.id,clientVersion:policy.clientVersion,model:policy.model,modelObserved:true,effort:policy.reasoningEffort,nativeReadonlyObserved:true,contentHash:oracle.hash('agents')});write(`${prefix}/hooks.json`,{observations:instructions.observations});
     write(`${prefix}/initial.json`,{files:initial});write(`${prefix}/final.json`,{files:final});write(`${prefix}/answer.json`,{answer});
     if (['inquiry','conversation'].includes(scenario.kind)) write(`${prefix}/review.json`,{review:review(answer,scenario.kind,initial)});
     else {
       const checkpoints=[red,final].map((files,i)=> {
         const counts={tests:3,passed:i===0?2:3,failed:i===0?1:0,cancelled:0,skipped:0,todo:0};
-        return {files,sequence:i+1,commandId:`executor/string/test-${i}`,command:'npm test',treeHash:oracle.treeHash(files),exitCode:i===0?1:0,signal:null,barrier:'exclusive-persist-before-ack',acknowledged:true,testExecution:true,
+        return {files,sequence:(i+1)*2,commandId:`executor/string/test-${i}`,command:'npm test',treeHash:oracle.treeHash(files),exitCode:i===0?1:0,signal:null,barrier:'exclusive-persist-before-ack',acknowledged:true,testExecution:true,
           execution:{argv:['node','/approved/test-results.mjs'],exitCode:i===0?1:0,signal:null},lifecycle:{complete:true,counts}};
       });
-      const executorProtocol=checkpoints.flatMap((point,i)=>[
-        {sessionId:'executor',sequence:i*2+1,direction:'request',message:{id:`test-${i}`,method:'tools/call',params:{name:'run_command',arguments:{command:point.command}}}},
-        {sessionId:'executor',sequence:i*2+2,direction:'response',message:{id:`test-${i}`,result:{structuredContent:{commandId:point.commandId,sequence:point.sequence,treeHash:point.treeHash,exitCode:point.exitCode,counts:point.lifecycle.counts,complete:true,checkpointPersisted:true}}}},
-      ]);
+      const executorProtocol=checkpoints.flatMap((point,i)=> {
+        const name=i===0?'test/regression.test.mjs':'shipping.mjs';
+        return [
+          {sessionId:'executor',sequence:i*4+1,direction:'request',message:{id:`write-${i}`,method:'tools/call',params:{name:'write_file',arguments:{path:name,content:point.files[name]}}}},
+          {sessionId:'executor',sequence:i*4+2,direction:'response',message:{id:`write-${i}`,result:{structuredContent:{path:name,sequence:i*2+1,treeHash:point.treeHash}}}},
+          {sessionId:'executor',sequence:i*4+3,direction:'request',message:{id:`test-${i}`,method:'tools/call',params:{name:'run_command',arguments:{command:point.command}}}},
+          {sessionId:'executor',sequence:i*4+4,direction:'response',message:{id:`test-${i}`,result:{structuredContent:{commandId:point.commandId,sequence:point.sequence,treeHash:point.treeHash,exitCode:point.exitCode,counts:point.lifecycle.counts,complete:true,checkpointPersisted:true}}}},
+        ];
+      });
       write(`${prefix}/checkpoints.json`,{checkpoints});write(`${prefix}/executor.json`,{messages:executorProtocol});
       const execution=JSON.parse(readFileSync(path.join(root,`${prefix}/execution.json`),'utf8'));execution.executorProtocol=executorProtocol;write(`${prefix}/execution.json`,execution);
     }
@@ -490,4 +508,74 @@ test('PR34: protected review authority requires actual approved human identity i
   assert.deepEqual(approvedReviewers([item],['independent-human']),['independent-human']);
   for(const change of [{state:'pending'},{user:{login:'execution-ai',type:'Bot'}},{environments:[{name:'collection'}]}])
     assert.deepEqual(approvedReviewers([{...item,...change}],['independent-human']),[]);
+});
+
+
+test('PR34: G4 derives memory, fault recovery and explanation restrictions from raw RPC records', () => {
+  const changes:[string,(data:any)=>void][]=[
+    ['attempts/LIVE-05-related/protocol.json',data=>{data.messages=data.messages.filter((x:any)=>x.message?.id!=='memory-review');}],
+    ['attempts/LIVE-05-irrelevant/protocol.json',data=>{data.messages=data.messages.filter((x:any)=>x.message?.id!=='memory-review');}],
+    ['attempts/LIVE-05-related/protocol.json',data=>{data.messages.find((x:any)=>x.message?.id==='memory-review' && x.direction==='request').message.params.arguments.runId='unrelated-run';}],
+    ['attempts/LIVE-05-related/protocol.json',data=>{data.messages.find((x:any)=>x.message?.id==='memory-review' && x.direction==='response').message.result.structuredContent.recorded=false;}],
+    ['attempts/LIVE-05-related/protocol.json',data=>{const review=data.messages.splice(-2);data.messages.splice(6,0,...review);data.messages.forEach((x:any,i:number)=>x.sequence=i+1);}],
+    ['attempts/LIVE-04/protocol.json',data=>{data.messages=data.messages.filter((x:any)=>x.type!=='injected_selector');}],
+    ['attempts/LIVE-04/protocol.json',data=>{data.messages.find((x:any)=>x.type==='injected_selector').requestId='not-the-rejected-call';}],
+    ['attempts/LIVE-01/protocol.json',data=>{data.messages.push(
+      {sessionId:'session',sequence:20,direction:'request',message:{id:'dev-check',method:'tools/call',params:{name:'task_verification_define',arguments:{}}}},
+      {sessionId:'session',sequence:21,direction:'response',message:{id:'dev-check',result:{structuredContent:{recorded:true}}}});}],
+  ];
+  for(const [file,change] of changes) {
+    const f=bundleFixture();try {
+      const data=JSON.parse(readFileSync(path.join(f.root,file),'utf8'));change(data);f.write(file,data);f.seal();
+      assert.equal(f.verify().evidencePassed,false,file);
+    }finally{f.close();}
+  }
+});
+
+test('PR34: G4 binds the original answer and complete client event stream to its loader receipt', () => {
+  const changes:[string,(data:any)=>void][]=[
+    ['execution.json',data=>{data.events.find((x:any)=>x.item?.type==='agent_message').item.text='The model actually gave a different answer.';}],
+    ['execution.json',data=>{data.events.push({sequence:6,type:'turn.failed',error:{message:'interrupted'}});}],
+    ['execution.json',data=>{data.events=data.events.filter((x:any)=>x.type!=='turn.started');data.turns=0;}],
+    ['execution.json',data=>{data.ended='2026-10-06T00:10:00Z';}],
+    ['loader.json',data=>{data.threadId='another-attempt';}],
+    ['loader.json',data=>{data.model='different-observed-model';}],
+  ];
+  for(const [leaf,change] of changes) {
+    const f=bundleFixture();try {
+      const file=`attempts/LIVE-01/${leaf}`,data=JSON.parse(readFileSync(path.join(f.root,file),'utf8'));change(data);f.write(file,data);f.seal();
+      assert.equal(f.verify().evidencePassed,false,leaf);
+    }finally{f.close();}
+  }
+});
+
+
+test('PR34: G2 rejects a no-op first-setup program with command/import substrings in comments', () => {
+  const f=bundleFixture();try {
+    const file='G2/stages.json',data=JSON.parse(readFileSync(path.join(f.root,file),'utf8'));
+    const outcome=data.stages.find((x:any)=>x.id==='optional-runtime').outcome;
+    outcome.script="// await cli.parseAsync\n// await Promise.all([import('@huggingface/hub'), import('@huggingface/transformers')])\nconsole.log('FIRST_SETUP_OK');";
+    outcome.scriptHash=oracle.hash(outcome.script);f.write(file,data);f.seal();
+    assert.equal(f.verify().evidencePassed,false);
+  }finally{f.close();}
+});
+
+test('PR34: G2 restart evidence cannot omit every run binding or claim string truth values', () => {
+  for(const mutate of [(v:any)=>{delete v.runId;delete v.beforeRunId;delete v.afterRunId;},
+    (v:any)=>{v.before.completionReady='false';v.after.completionReady='false';}]) {
+    const f=bundleFixture();try {
+      const file='G2/stages.json',data=JSON.parse(readFileSync(path.join(f.root,file),'utf8'));
+      mutate(data.stages.find((x:any)=>x.id==='restart').outcome.verification);f.write(file,data);f.seal();
+      assert.equal(f.verify().evidencePassed,false);
+    }finally{f.close();}
+  }
+});
+
+test('PR34: G1 rejects contradictory suite-level completion evidence', async () => {
+  const {validSuite}=await load('suite-evidence');
+  const result={schema:'repository-node-lifecycle-v1',complete:true,streamEnded:true,summaryCount:1,
+    counts:{tests:1,passed:1,failed:0,cancelled:0,skipped:0,todo:0},
+    ids:[{id:'leaf',type:'test:pass',skipped:false,todo:false,suite:false,failureType:null}],
+    suites:[{id:'suite',type:'test:pass',skipped:false,todo:false,suite:true,failureType:'cancelledByParent'}]};
+  assert.equal(validSuite(result,[{id:'leaf',optionalSkip:false}]),false);
 });

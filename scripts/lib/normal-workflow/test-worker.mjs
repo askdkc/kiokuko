@@ -14,6 +14,14 @@ const bridge = new SyntheticModule(['compare'], function() { this.setExport('com
 await bridge.link(() => { throw new Error('No bridge imports'); }); await bridge.evaluate();
 const registry = new SourceTextModule(`
   import {compare} from 'bridge';
+  // Keep private intrinsic bindings: freezing a constructor does not prevent
+  // fixture code from replacing its writable global binding.
+  const {Object,Array,Function,Promise,WeakSet,WeakMap,Map,Set,Date,Error,Number,String,RegExp,JSON,Reflect}=globalThis;
+  // Collection iteration must not be redirected to omit unequal entries.
+  for (const iterator of [new Set().values(),new Map().entries(),[][Symbol.iterator]()]) {
+    let prototype=Object.getPrototypeOf(iterator);
+    while(prototype && prototype !== Object.prototype) {Object.freeze(prototype);prototype=Object.getPrototypeOf(prototype);}
+  }
   for (const value of [Object,Array,Function,Promise,WeakSet,WeakMap,Map,Set,Date,Error,Number,String,RegExp,JSON,Reflect]) { Object.freeze(value.prototype); Object.freeze(value); }
   const stringify = JSON.stringify, push = Function.call.bind(Array.prototype.push);
   const records = [], unsupported = new WeakSet(), failures = new WeakSet(), has = Function.call.bind(WeakSet.prototype.has);
@@ -50,7 +58,7 @@ const registry = new SourceTextModule(`
   export function register(name, options, fn) {
     if (typeof options === 'function') { fn=options; options={}; }
     if (typeof name !== 'string' || (fn !== undefined && typeof fn !== 'function')) throw new Error('unsupported fixture test');
-    push(records, {name, fn, skip:options?.skip === true, todo:options?.todo === true});
+    push(records, {name, fn, skip:!!options?.skip, todo:!!options?.todo || fn === undefined});
   }
   register.skip = (name,fn) => register(name,{skip:true},fn);
   register.todo = (name,fn) => register(name,{todo:true},fn);

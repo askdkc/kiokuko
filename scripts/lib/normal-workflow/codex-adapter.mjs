@@ -7,11 +7,11 @@ import path from 'node:path';
 /** These two stdio servers operate only on controller-owned synthetic data.
  * Native tools stay read-only and cannot escalate. Unknown MCP tools are not
  * exposed; approval applies to this explicit list, never to a whole server. */
-export function isolatedMcpPolicy() {
+export function isolatedMcpPolicy({readOnly=false}={}) {
   const tools={kiokuko:['task_prepare','task_prepare_recover','task_answer','task_inspect',
     'task_memory_review','task_execution_evidence','task_memory_refresh','task_verification_define',
     'task_verification_record','task_memory_status','curator_check','memory_recall','memory_capture',
-    'memory_derive_lesson','memory_checkpoint'],fixture_executor:['list_files','read_file','write_file','run_command']};
+    'memory_derive_lesson','memory_checkpoint'],fixture_executor:readOnly?['list_files','read_file']:['list_files','read_file','write_file','run_command']};
   const config={approval_policy:'never','agents.enabled':false,'features.multi_agent':false,'features.multi_agent_v2':false,
     developer_instructions:FIXTURE_ENVIRONMENT_INSTRUCTIONS};
   for(const [server,names] of Object.entries(tools)) {
@@ -94,6 +94,6 @@ export function runCodex({ executable, args, cwd, repo, environment, output, lim
 
 /** Bind the trusted serialized executor only after the client's actual native
  * read-only policy has been observed. stdout events are never tree authority. */
-export function bindExecutorCheckpoints(session,{directory,nativeReadonlyObserved}) {
-  return {...session,...collectExecutorReceipts({directory,nativeReadonlyObserved})};
+export function bindExecutorCheckpoints(session,{directory,nativeReadonlyObserved,initial,final}) {
+  return {...session,...collectExecutorReceipts({directory,nativeReadonlyObserved,initial,final})};
 }

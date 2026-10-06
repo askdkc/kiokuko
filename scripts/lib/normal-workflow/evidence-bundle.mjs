@@ -9,6 +9,7 @@ import path from 'node:path';
 import { validatePolicy, requiredAttempts, executionPolicyErrors, policyHash } from './release-policy.mjs';
 import { evaluateAttempt, treeHash, hash } from './oracle.mjs';
 import { observeInstructions } from './instruction-observation.mjs';
+import { clientEvidenceErrors } from './instruction-receipt.mjs';
 import { producerReceipt } from './producer-auth.mjs';
 export const bytesHash = bytes => createHash('sha256').update(bytes).digest('hex');
 /** Read regular files below the evidence root without following any link. */
@@ -95,11 +96,6 @@ export function verifyEvidenceBundle({ artifact, evidenceRoot, policy, approvedP
       if (!scenario || executionPolicyErrors(policy,execution,scenario,execution.client).length) throw new Error('Actual execution violates frozen policy');
       if (execution.exitCode !== 0 || execution.signal !== null || execution.logComplete !== true || execution.turnCompleted !== true)
         throw new Error('Incomplete client execution');
-      const events = execution.events;
-      if (!Array.isArray(events) || !events.length || events.some((event,i) => !Number.isSafeInteger(event.sequence) || (i > 0 && event.sequence <= events[i-1].sequence))
-        || !events.some(event => event.type === 'turn.completed')) throw new Error('Raw client event completion missing');
-      const actualCalls = new Set(events.filter(event => ['item.started','item.completed'].includes(event.type) && event.item?.type !== 'agent_message' && event.item?.id).map(event => event.item.id)).size;
-      if (actualCalls !== execution.calls || events.filter(event => event.type === 'turn.started').length !== execution.turns) throw new Error('Raw resource counts differ');
       totalSeconds += execution.seconds;
       const instructions = read(`${item.path}/instructions.json`);
       for (const index of instructions.indexes ?? []) {
@@ -108,18 +104,23 @@ export function verifyEvidenceBundle({ artifact, evidenceRoot, policy, approvedP
       }
       const protocol = read(`${item.path}/protocol.json`);
       const loader = read(`${item.path}/loader.json`);
+      const answer = read(`${item.path}/answer.json`).answer;
+      const clientErrors = clientEvidenceErrors(execution, answer, loader);
+      if (clientErrors.length) throw new Error(clientErrors.join('; '));
+      if (loader.nativeReadonlyObserved !== identity.nativeReadonlyObserved) throw new Error('Loader sandbox receipt differs from identity');
       if (loader.observed !== true || loader.contentHash !== hash(instructions.agents)) throw new Error('AGENTS loader receipt absent');
       const observed = observeInstructions({ messages:protocol.messages, events:[{type:'instructions.loaded',content_hash:loader.contentHash}],
         indexes:instructions.indexes, agentsHash:hash(instructions.agents), observations:read(`${item.path}/hooks.json`).observations, kind:scenario.kind });
+      if (!scenario.fault && observed.workflowFacts.injectedFailures !== 0) throw new Error('Unexpected injected selector failure');
       const {runId:controlRunId,policyHash:controlPolicyHash,...installedControls} = instructions;
       const initial = read(`${item.path}/initial.json`).files, final = read(`${item.path}/final.json`).files;
       const review = ['inquiry','conversation'].includes(scenario.kind) ? read(`${item.path}/review.json`).review : undefined;
       if(review && !fixture && !receipt.reviewers.includes(review.reviewer)) throw new Error('Answer reviewer is not an authenticated environment approver');
       const checkpoints = ['inquiry','conversation'].includes(scenario.kind) ? [] : read(`${item.path}/checkpoints.json`).checkpoints;
-      if(!['inquiry','conversation'].includes(scenario.kind) && (!sandboxProbeValid(identity.nativeSandboxProbe,policy.clientVersion) || executorReceiptErrors(checkpoints,read(`${item.path}/executor.json`).messages,identity.nativeReadonlyObserved).length)) throw new Error('Native sandbox or exclusive executor receipt proof failed');
-      const evaluated = evaluateAttempt({ ...execution, initial, final, checkpoints, answer:read(`${item.path}/answer.json`).answer,
+      if(!['inquiry','conversation'].includes(scenario.kind) && (!sandboxProbeValid(identity.nativeSandboxProbe,policy.clientVersion) || executorReceiptErrors(checkpoints,read(`${item.path}/executor.json`).messages,identity.nativeReadonlyObserved,{initial,final}).length)) throw new Error('Native sandbox or exclusive executor receipt proof failed');
+      const evaluated = evaluateAttempt({ ...execution, ...observed.workflowFacts, initial, final, checkpoints, answer,
         answerReview:review, reviewers:policy.reviewers, kind:scenario.kind, fault:scenario.fault, memory:scenario.memory,
-        safe:!execution.failure, controlsUnchanged:execution.controlsBefore === hash(JSON.stringify(installedControls)) && execution.controlsAfter === execution.controlsBefore,
+        safe:!execution.failure && observed.workflowFacts.safe, controlsUnchanged:execution.controlsBefore === hash(JSON.stringify(installedControls)) && execution.controlsAfter === execution.controlsBefore,
         instructionsVerified:observed.instructionsVerified }, path.join(replayRoot,item.id.replaceAll('/','-')));
       if (evaluated.classification !== 'PASS') reasons.push(`${item.id}: ${evaluated.classification}: ${evaluated.assertions?.filter(x => !x.passed).map(x => x.id).join(', ') ?? evaluated.reason}`);
     }

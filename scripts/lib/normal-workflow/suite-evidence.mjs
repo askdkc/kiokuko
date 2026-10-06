@@ -22,5 +22,9 @@ export function validSuite(result, manifest, noSkips = false) {
   return seen.size === manifest.length && manifest.every(x=>seen.has(x.id))
     && Object.keys(counts).every(key=>Number.isSafeInteger(result.counts?.[key]) && result.counts[key] === counts[key])
     && counts.failed === 0 && counts.todo === 0 && counts.cancelled === 0
-    && Array.isArray(result.suites) && result.suites.every(x=>x.type === 'test:pass' && x.todo === false && x.skipped === false);
+    && Array.isArray(result.suites) && result.suites.every(event => {
+      if (!event || typeof event.id !== 'string' || !event.id || seen.has(event.id) || event.suite !== true
+        || event.type !== 'test:pass' || event.todo !== false || event.skipped !== false || event.failureType != null) return false;
+      seen.add(event.id); return true;
+    });
 }

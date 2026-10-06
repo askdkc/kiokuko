@@ -11,7 +11,7 @@ import { runCodex, bindExecutorCheckpoints, isolatedMcpPolicy } from './lib/norm
 import { sourceFingerprint } from './lib/normal-workflow/source-state.mjs';
 import { captureSanitizer } from './lib/normal-workflow/log-safety.mjs';
 import { observeInstructions } from './lib/normal-workflow/instruction-observation.mjs';
-import { collectInstructionReceipt } from './lib/normal-workflow/instruction-receipt.mjs';
+import { collectInstructionReceipt, clientEvidenceErrors } from './lib/normal-workflow/instruction-receipt.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const args = process.argv.slice(2);
@@ -149,14 +149,15 @@ try {
       }
       const protocol = path.join(scenarioOutput, 'discovery.jsonl');
       const executorOutput=path.join(base,'executor');mkdirSync(executorOutput);
+      const readOnlyFixture=['inquiry','conversation'].includes(scenario.kind);
       const config = { 'mcp_servers.kiokuko.command': process.execPath,
         'mcp_servers.kiokuko.args': [path.join(root, 'scripts/lib/normal-workflow/mcp-proxy.mjs'), executable, protocol, scenario.fault ?? 'none'],
         'mcp_servers.kiokuko.env': { KIOKUKO_DATA_DIR: env.KIOKUKO_DATA_DIR, KIOKUKO_SKILL_DISCOVERY: 'off', KIOKUKO_EMBEDDINGS: 'off',
           KIOKUKO_ACCEPTANCE_AUTH_FILE: path.join(env.CODEX_HOME, 'auth.json') },
         'mcp_servers.fixture_executor.command':process.execPath,
-        'mcp_servers.fixture_executor.args':[path.join(root,'scripts/lib/normal-workflow/fixture-executor-server.mjs'),repo,executorOutput],
+        'mcp_servers.fixture_executor.args':[path.join(root,'scripts/lib/normal-workflow/fixture-executor-server.mjs'),repo,executorOutput,...(readOnlyFixture?['--read-only']:[])],
         'mcp_servers.fixture_executor.required':true,
-        ...isolatedMcpPolicy(),
+        ...isolatedMcpPolicy({readOnly:readOnlyFixture}),
         'mcp_servers.kiokuko.required': true, 'features.hooks': true, 'features.multi_agent': false,
         'features.code_mode':false,'features.code_mode_host':true,'features.computer_use':false,'features.browser_use':false,'features.image_generation':false,'features.artifact':false,
         'features.memories': false, 'memories.use_memories': false, 'features.plugins': false, 'features.apps': false,
@@ -184,12 +185,9 @@ try {
       if (Date.now() - overallStarted >= approval.maxTotalSeconds * 1000) { blocked(client, scenario, 'NOT_RUN', 'Approved total time limit reached before client launch'); continue; }
       const session = await runCodex({ executable: clientExecutable, args: clientArgs, cwd, repo, environment: env, output: scenarioOutput,
         limits: { ...approval, maxSeconds: Math.min(approval.maxSeconds, Math.max(1, Math.floor((approval.maxTotalSeconds * 1000 - Date.now() + overallStarted) / 1000))) }, sanitize });
+      const ended=new Date().toISOString();
       const final = snapshot(repo); writeFileSync(path.join(scenarioOutput, 'final.json'), JSON.stringify(final));
       const messages = existsSync(protocol) ? readFileSync(protocol, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
-      const calls = messages.filter(item => item.direction === 'request' && item.message.method === 'tools/call').map(item => item.message);
-      const responseTo = call => messages.find(item => item.direction === 'response' && item.message.id === call.id)?.message.result;
-      const successful = name => calls.filter(call => call.params.name === name && responseTo(call)?.isError !== true && responseTo(call));
-      const reads = successful('task_inspect').filter(call => call.params.arguments.operation === 'skill');
       const db = openConnection(databasePath, { readOnly: true });
       let observations;
       try { observations = db.prepare('SELECT event_name, tool_name, decision, response_shape FROM codex_hook_observations').all(); }
@@ -198,7 +196,7 @@ try {
       const receipt = collectInstructionReceipt({ codeHome: env.CODEX_HOME, cwd, clientVersion: approval.clientVersion,
         threadId: session.events.find(event => event.type === 'thread.started')?.thread_id, agents: globalAgents, request: scenario.request });
       writeFileSync(path.join(scenarioOutput, 'instruction-receipt.json'), JSON.stringify(receipt));
-      if(!['inquiry','conversation'].includes(scenario.kind)) Object.assign(session,bindExecutorCheckpoints(session,{directory:executorOutput,nativeReadonlyObserved:receipt.nativeReadonlyObserved && sandboxProbeValid(nativeSandboxProbe,policy.clientVersion)}));
+      if(!['inquiry','conversation'].includes(scenario.kind)) Object.assign(session,bindExecutorCheckpoints(session,{directory:executorOutput,initial,final,nativeReadonlyObserved:receipt.nativeReadonlyObserved && sandboxProbeValid(nativeSandboxProbe,policy.clientVersion)}));
       // Derive the receipt from the client's initial instruction input, never
       // from the model's attestation or a fabricated JSON-stream event.
       const instructionEvents = receipt.observed ? [{ type: 'instructions.loaded', content_hash: receipt.contentHash }] : [];
@@ -209,27 +207,23 @@ try {
       const updatedControls = { agents: readFileSync(path.join(env.CODEX_HOME, 'AGENTS.md'), 'utf8'),
         indexes: indexes.map(index => ({ ...index, text: readFileSync(path.join(env.HOME, '.agents/skills', index.name, 'SKILL.md'), 'utf8') })),
         hooks: JSON.parse(readFileSync(path.join(env.CODEX_HOME, 'hooks.json'), 'utf8')) };
-      const memoryReviews = successful('task_memory_review');
-      const memoryApplied = memoryReviews.some(call => call.params.arguments.decision === 'adopted' && call.params.arguments.invariant?.includes('shippingFee')
-        && call.params.arguments.verification?.length > 0 && call.params.arguments.evidenceIds?.length > 0);
-      const memoryInapplicable = memoryReviews.some(call => call.params.arguments.decision === 'inapplicable' && call.params.arguments.basis?.length > 0);
+      const workflowFacts=instructionObservation.workflowFacts;
       let oracle;
       try { oracle = evaluateAttempt({ ...session, initial, final, kind: scenario.kind, memory: scenario.memory, fault: scenario.fault,
         controlsUnchanged: hash(JSON.stringify(updatedControls)) === controlsHash, instructionsVerified,
         answerReview:reviews.find(x=>x.id===`${client}/${scenario.id}`)?.review,reviewers:policy.reviewers,
-        safe: !session.failure && !messages.some(item => item.type === 'proxy_error'), developmentChecks: calls.some(call => call.params.name === 'task_verification_define'),
-        injectedFailures: messages.filter(item => item.type === 'injected_selector').length,
-        recovered: reads.length > 0, memoryApplied, memoryInapplicable }, path.join(base, 'oracle')); }
+        ...workflowFacts,safe: !session.failure && workflowFacts.safe }, path.join(base, 'oracle')); }
       catch { oracle = { classification: 'FAIL_HARNESS', oraclePassed: false, reason: 'Independent oracle unavailable' }; }
       const candidateAfter = {...candidate,sourceDigest:sourceFingerprint(root),
         dirty:execFileSync('git',['status','--porcelain','--untracked-files=all'],{cwd:root,encoding:'utf8'}).trim() !== ''};
       const raw = { candidateBefore,candidateAfter,artifactHash:hash(readFileSync(tarball)),argv:clientArgs,cwd,requestedModel:policy.model,clientVersion:receipt.clientVersion,provider:policy.provider,reasoningEffort:policy.reasoningEffort,
-        policyHash:policyHash(policy),client,request:scenario.request,started,ended:new Date().toISOString(),
+        policyHash:policyHash(policy),client,request:scenario.request,started,ended,
         ...session, initial, final, kind:scenario.kind, instructionsVerified,
         controlsBefore:controlsHash,controlsAfter:hash(JSON.stringify(updatedControls)),
-        controlsUnchanged:hash(JSON.stringify(updatedControls)) === controlsHash, safe:!session.failure,
-        developmentChecks:calls.some(call => call.params.name === 'task_verification_define'),
-        injectedFailures:messages.filter(item => item.type === 'injected_selector').length,recovered:reads.length > 0,memoryApplied,memoryInapplicable };
+        controlsUnchanged:hash(JSON.stringify(updatedControls)) === controlsHash,
+        ...workflowFacts,safe:!session.failure && workflowFacts.safe };
+      const evidenceErrors=clientEvidenceErrors({...raw,model:receipt.model,seconds:(Date.parse(ended)-Date.parse(started))/1000},session.answer,receipt);
+      if(evidenceErrors.length) oracle={classification:'FAIL_HARNESS',oraclePassed:false,reason:evidenceErrors.join('; ')};
       writeFileSync(path.join(scenarioOutput,'attempt.json'),JSON.stringify(sanitize(raw)));
       writeFileSync(path.join(scenarioOutput,'identity.json'),JSON.stringify({schema:'codex-isolated-identity-v1',model:receipt.model,
         nativeSandboxProbe,nativeReadonlyObserved:receipt.nativeReadonlyObserved,effort:receipt.effort,clientVersion:receipt.clientVersion,modelObserved:receipt.modelObserved,authMode:credentials.auth_mode}));
@@ -239,7 +233,7 @@ try {
       const environmentBlocked = session.failure === 'client_unavailable' || /failed to connect|ENOTFOUND|EAI_AGAIN|model.{0,100}(?:not supported|not available|not found)/iu.test(errorText);
       reports.push({ ...candidate, client, scenario: scenario.id, executionMode: 'live', requestedModel: approval.model, observedModel:receipt.model ?? null, version, policyHash:policyHash(policy),
         classification: candidateAfter.sourceDigest !== candidate.sourceDigest ? 'FAIL_HARNESS' : (!receipt.modelObserved || receipt.model !== policy.model || receipt.effort !== policy.reasoningEffort) ? 'FAIL_HARNESS' : authBlocked ? 'BLOCKED_AUTH' : environmentBlocked ? 'BLOCKED_ENV' : session.failure === 'secret_output' ? 'FAIL_PRODUCT' : !agentsLoadObserved ? 'FAIL_HARNESS' : oracle.classification,
-        reason: session.failure ?? (!agentsLoadObserved ? 'AGENTS loading unobserved; a client loader receipt is required' : undefined),
+        reason: session.failure ?? (!agentsLoadObserved ? 'AGENTS loading unobserved; a client loader receipt is required' : oracle.reason),
         instructionsVerified, oraclePassed: oracle.oraclePassed, controlsHash, started });
     }
   } else for (const client of clients) for (const scenario of SCENARIOS)
