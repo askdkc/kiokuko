@@ -34,6 +34,22 @@ test('loader receipt is derived only from the matching isolated client instructi
   } finally { f.close(); }
 });
 
+test('CLI 0.153.4 unscoped instruction header and collaboration reasoning settings are observed without inferring argv',()=>{
+  const f=fixture();try {
+    const metadata={...f.metadata,payload:{...f.metadata.payload,cli_version:'0.153.4'}};
+    const instruction={...f.instruction,payload:{...f.instruction.payload,content:[{type:'input_text',text:`# AGENTS.md instructions\n\n<INSTRUCTIONS>\n${f.agents}</INSTRUCTIONS>`}]}};
+    const context={type:'turn_context',payload:{model:'gpt-6-astra',approval_policy:'never',sandbox_policy:{type:'read-only'},
+      collaboration_mode:{mode:'default',settings:{model:'gpt-6-astra',reasoning_effort:'ultra'}}}};
+    f.write([metadata,instruction,context,f.prompt]);
+    const input={...f.input,clientVersion:'0.153.4'},receipt=collectInstructionReceipt(input);
+    assert.equal(receipt.observed,true);assert.equal(receipt.effort,'ultra');assert.equal(receipt.model,'gpt-6-astra');assert.equal(receipt.nativeReadonlyObserved,true);
+    f.write([metadata,instruction,{...context,payload:{...context.payload,effort:'high'}},f.prompt]);
+    assert.equal(collectInstructionReceipt(input).effort,null);
+    f.write([metadata,instruction,{...context,payload:{...context.payload,sandbox_policy:{type:'workspace-write'}}},f.prompt]);
+    assert.equal(collectInstructionReceipt(input).nativeReadonlyObserved,false);
+  }finally{f.close();}
+});
+
 test('missing, stale, truncated, late, assistant and tool instructions never prove client loading', () => {
   const f = fixture();
   try {

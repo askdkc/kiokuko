@@ -1,6 +1,26 @@
+import { collectExecutorReceipts } from './executor-receipt.mjs';
+import { FIXTURE_ENVIRONMENT_INSTRUCTIONS } from './contracts.mjs';
 import { spawn } from 'node:child_process';
 import { appendFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+
+/** These two stdio servers operate only on controller-owned synthetic data.
+ * Native tools stay read-only and cannot escalate. Unknown MCP tools are not
+ * exposed; approval applies to this explicit list, never to a whole server. */
+export function isolatedMcpPolicy() {
+  const tools={kiokuko:['task_prepare','task_prepare_recover','task_answer','task_inspect',
+    'task_memory_review','task_execution_evidence','task_memory_refresh','task_verification_define',
+    'task_verification_record','task_memory_status','curator_check','memory_recall','memory_capture',
+    'memory_derive_lesson','memory_checkpoint'],fixture_executor:['list_files','read_file','write_file','run_command']};
+  const config={approval_policy:'never','agents.enabled':false,'features.multi_agent':false,'features.multi_agent_v2':false,
+    developer_instructions:FIXTURE_ENVIRONMENT_INSTRUCTIONS};
+  for(const [server,names] of Object.entries(tools)) {
+    config[`mcp_servers.${server}.enabled_tools`]=names;
+    config[`mcp_servers.${server}.default_tools_approval_mode`]='prompt';
+    for(const name of names) config[`mcp_servers.${server}.tools.${name}.approval_mode`]='approve';
+  }
+  return config;
+}
 
 // Only a complete standalone fixture-test command can supply execution evidence.
 // Logs that merely mention a command, shell branches or arbitrary wrappers do not.
@@ -70,4 +90,10 @@ export function runCodex({ executable, args, cwd, repo, environment, output, lim
         calls, turns, bytes });
     });
   });
+}
+
+/** Bind the trusted serialized executor only after the client's actual native
+ * read-only policy has been observed. stdout events are never tree authority. */
+export function bindExecutorCheckpoints(session,{directory,nativeReadonlyObserved}) {
+  return {...session,...collectExecutorReceipts({directory,nativeReadonlyObserved})};
 }

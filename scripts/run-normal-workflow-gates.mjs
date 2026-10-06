@@ -1,3 +1,4 @@
+import { validSuite } from './lib/normal-workflow/suite-evidence.mjs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,8 +36,7 @@ for (const [gate,id,args] of [['G0','typecheck',['run','typecheck']],['G1','suit
   if (gate === 'G1') {
     let tests; try { tests=JSON.parse(readFileSync(path.join(output,'G1/tests.json'),'utf8')); } catch { }
     passed &&= tests?.complete === true && tests.counts.tests > 0 && tests.counts.failed === 0 && tests.counts.cancelled === 0 && tests.counts.todo === 0;
-    if (policy) passed &&= JSON.stringify(tests?.ids.map(x => x.id).sort()) === JSON.stringify(policy.testManifest.map(x => x.id).sort())
-      && tests.ids.every(x => !x.skipped || policy.testManifest.some(expected => expected.id === x.id && expected.optionalSkip));
+    passed &&= validSuite(tests,policy?.testManifest ?? tests?.ids.map(x=>({id:x.id,optionalSkip:x.skipped})));
   }
   if (gate === 'G2') {
     let packaged; try { packaged=JSON.parse(readFileSync(path.join(output,'G2/package.json'),'utf8')); } catch { }

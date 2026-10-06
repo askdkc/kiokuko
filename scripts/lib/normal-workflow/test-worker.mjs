@@ -4,21 +4,49 @@ import test from 'node:test';
 import { AssertionError } from 'node:assert';
 import { readFileSync, realpathSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { createContext, SourceTextModule } from 'node:vm';
+import { compareSerialized, SERIALIZER } from './assertion-codec.mjs';
+import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
 const file = realpathSync(process.argv[2]);
 const root = realpathSync(process.argv[3]);
 const context = createContext(Object.create(null), { codeGeneration: { strings: false, wasm: false } });
+const bridgeFunction = Object.freeze(Object.setPrototypeOf(compareSerialized, null));
+const bridge = new SyntheticModule(['compare'], function() { this.setExport('compare', bridgeFunction); }, {context});
+await bridge.link(() => { throw new Error('No bridge imports'); }); await bridge.evaluate();
 const registry = new SourceTextModule(`
-  for (const value of [Object,Array,Function,Promise,WeakSet,Error,Number,String,RegExp]) { Object.freeze(value.prototype); Object.freeze(value); }
+  import {compare} from 'bridge';
+  for (const value of [Object,Array,Function,Promise,WeakSet,WeakMap,Map,Set,Date,Error,Number,String,RegExp,JSON,Reflect]) { Object.freeze(value.prototype); Object.freeze(value); }
   const stringify = JSON.stringify, push = Function.call.bind(Array.prototype.push);
-  const records = [], failures = new WeakSet(), has = Function.call.bind(WeakSet.prototype.has);
+  const records = [], unsupported = new WeakSet(), failures = new WeakSet(), has = Function.call.bind(WeakSet.prototype.has);
   const add = Function.call.bind(WeakSet.prototype.add);
+  const NativeProxy=Proxy;
+  let unsupportedUsed=false, registrationUnsupported=false;
+  function unsupportedOperation(message) {
+    unsupportedUsed=true;
+    const error=new Error(message);add(unsupported,error);throw error;
+  }
+  function unavailableProxy() { return unsupportedOperation('Unsupported Proxy operation'); }
+  Object.defineProperty(unavailableProxy,'revocable',{value:unavailableProxy});
+  Object.defineProperty(globalThis,'Proxy',{value:Object.freeze(unavailableProxy),writable:false,configurable:false});
   function fail(message) { const error = new Error(message); add(failures, error); throw error; }
-  const equal = (a,b) => { if (!Object.is(a,b)) fail('assert.equal failed'); };
-  const deepEqual = (a,b) => { if (stringify(a) !== stringify(b)) fail('assert.deepEqual failed'); };
-  const ok = value => { if (!value) fail('assert.ok failed'); };
-  export const assert = Object.freeze(Object.assign(ok, {equal, strictEqual:equal, deepEqual, deepStrictEqual:deepEqual, ok,
-    notEqual:(a,b) => { if (Object.is(a,b)) fail('assert.notEqual failed'); }, fail }));
+  ${SERIALIZER}
+  function buildAssert(strictMode) {
+    const methods={};
+    for(const method of ['equal','strictEqual','notEqual','notStrictEqual','deepEqual','deepStrictEqual','notDeepEqual','notDeepStrictEqual','ok','fail']) {
+      methods[method]=(...args)=> {
+        let outcome;
+        try {outcome=compare(serialize(method,strictMode,args));} catch {outcome='unsupported';}
+        if(outcome === 'assertion') fail('Fixture assertion failed');
+        if(outcome !== 'pass') unsupportedOperation('Unsupported assertion operation');
+      };
+    }
+    return new NativeProxy(Object.freeze(Object.assign(methods.ok,methods)),{
+      get(target,key) {
+        if(!Object.hasOwn(methods,key)) return unsupportedOperation('Unsupported assertion member');
+        return methods[key];
+      }
+    });
+  }
+  export const assert=buildAssert(false), strictAssert=buildAssert(true);
   export function register(name, options, fn) {
     if (typeof options === 'function') { fn=options; options={}; }
     if (typeof name !== 'string' || (fn !== undefined && typeof fn !== 'function')) throw new Error('unsupported fixture test');
@@ -27,25 +55,32 @@ const registry = new SourceTextModule(`
   register.skip = (name,fn) => register(name,{skip:true},fn);
   register.todo = (name,fn) => register(name,{todo:true},fn);
   Object.freeze(register);
-  export const describe = () => stringify(records.map(({name,skip,todo}) => ({name,skip,todo})));
+  export const describe = () => {
+    registrationUnsupported=unsupportedUsed;
+    return stringify(records.map(({name,skip,todo}) => ({name,skip,todo})));
+  };
   export function invoke(index) {
+    unsupportedUsed=registrationUnsupported;
+    if(unsupportedUsed) return stringify({ok:false,unsupported:true});
     try { const result = records[index].fn?.();
       if (result !== undefined && result !== null && typeof result === 'object' && typeof result.then === 'function')
         return stringify({ok:false, unsupported:true});
-      return stringify({ok:true});
-    } catch (error) { return stringify({ok:false, assertion:has(failures,error)}); }
+      return stringify({ok:!unsupportedUsed,unsupported:unsupportedUsed});
+    } catch (error) { return stringify({ok:false, assertion:has(failures,error),unsupported:unsupportedUsed || has(unsupported,error)}); }
   }
 `, { context });
-await registry.link(() => { throw new Error('No helper imports'); }); await registry.evaluate({ timeout: 1000 });
+await registry.link(specifier => { if(specifier === 'bridge') return bridge; throw new Error('No helper imports'); }); await registry.evaluate({ timeout: 1000 });
 const testModule = new SourceTextModule(`import {register} from 'private'; export {register as default, register as test};`, { context });
-const assertModule = new SourceTextModule(`import {assert} from 'private'; export default assert; export const {equal,strictEqual,deepEqual,deepStrictEqual,ok,notEqual,fail}=assert;`, { context });
-for (const helper of [testModule, assertModule]) { await helper.link(() => registry); await helper.evaluate(); }
+const makeAssertModule = name => new SourceTextModule(`import {${name} as assert} from 'private'; export default assert; export const {equal,strictEqual,deepEqual,deepStrictEqual,ok,notEqual,notStrictEqual,notDeepEqual,notDeepStrictEqual,fail}=assert;`, { context });
+const assertModule = makeAssertModule('assert'), strictModule = makeAssertModule('strictAssert');
+for (const helper of [testModule, assertModule, strictModule]) { await helper.link(() => registry); await helper.evaluate(); }
 const shipping = new SourceTextModule(existsSync(path.join(root, 'shipping.mjs')) ? readFileSync(path.join(root, 'shipping.mjs'), 'utf8') : '', { context });
 await shipping.link(() => { throw new Error('Shipping must be standalone'); });
 const entry = new SourceTextModule(readFileSync(file, 'utf8'), { context });
 await entry.link(specifier => {
   if (specifier === 'node:test') return testModule;
-  if (['node:assert/strict', 'node:assert'].includes(specifier)) return assertModule;
+  if (specifier === 'node:assert') return assertModule;
+  if (specifier === 'node:assert/strict') return strictModule;
   if (specifier === '../shipping.mjs') return shipping;
   throw new Error('Unsupported fixture import; no OS or IPC access is available');
 });
@@ -55,7 +90,7 @@ if (!descriptions.length) throw new Error('No fixture tests registered');
 for (const [index, descriptor] of descriptions.entries()) {
   test(descriptor.name, { skip: descriptor.skip, todo: descriptor.todo }, () => {
     const result = JSON.parse(registry.namespace.invoke(index));
-    if (result.unsupported) throw new Error('Unsupported asynchronous fixture test');
+    if (result.unsupported) {const error=new Error('Unsupported fixture assertion or asynchronous test');error.code='ERR_FIXTURE_UNSUPPORTED';throw error;}
     if (!result.ok) {
       if (result.assertion) throw new AssertionError({ message: 'Fixture assertion failed' });
       throw new Error('Fixture threw an unexpected error');

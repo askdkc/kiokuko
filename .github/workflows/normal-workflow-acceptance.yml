@@ -17,11 +17,11 @@ permissions:
   actions: read
 
 jobs:
-  acceptance:
+  collect:
     # A PR-controlled workflow must never authenticate its own producer. The
     # independently reviewed policy pins this protected workflow's exact SHA.
     if: github.ref == 'refs/heads/main'
-    name: Normal workflow live gate (G3)
+    name: Collect real normal requests
     runs-on: ubuntu-24.04
     environment: normal-workflow-acceptance
     timeout-minutes: 90
@@ -84,26 +84,68 @@ jobs:
       - name: Run approved real-model scenarios with the same policy and artifact
         id: live
         run: >-
-          node scripts/run-normal-workflow-acceptance.mjs --require-live
+          node scripts/run-normal-workflow-acceptance.mjs --collect-only
           --approval "$RUNNER_TEMP/approval.json"
           --policy "$RUNNER_TEMP/policy.json" --policy-hash "$APPROVED_POLICY_HASH"
           --candidate "$RUNNER_TEMP/deterministic/candidate.json"
           --artifact "$RUNNER_TEMP/deterministic/candidate.tgz"
           --output "$RUNNER_TEMP/live"
-      - name: Seal raw evidence without declaring release acceptance
-        if: always() && steps.deterministic.outcome == 'success'
+      - name: Preserve collected answers and deterministic inputs for independent review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: normal-workflow-collected
+          path: |
+            ${{ runner.temp }}/deterministic
+            ${{ runner.temp }}/live
+            ${{ runner.temp }}/policy.json
+          if-no-files-found: error
+      - name: Remove credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/test-auth.json" "$RUNNER_TEMP/approval.json"
+
+  acceptance:
+    needs: collect
+    name: Normal workflow live gate (G3)
+    runs-on: ubuntu-24.04
+    # The reviewer reads the collected answer artifact, writes hash-bound reviews
+    # to this environment variable, then approves the environment. The execution
+    # job/token has no write access to this protected environment or its reviews.
+    environment: normal-workflow-answer-review
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.16.0
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: normal-workflow-collected
+          path: ${{ runner.temp }}/collected
+      - name: Independently review and finalize original answers
         env:
           GH_TOKEN: ${{ github.token }}
+          REVIEW_JSON: ${{ vars.NORMAL_WORKFLOW_REVIEW_JSON }}
+          APPROVED_POLICY_HASH: ${{ vars.NORMAL_WORKFLOW_POLICY_HASH }}
+        run: |
+          node --input-type=module <<'NODE'
+          import {writeFileSync} from 'node:fs';
+          if (!process.env.REVIEW_JSON) throw new Error('Independent review remains incomplete');
+          writeFileSync(process.env.RUNNER_TEMP + '/reviews.json', JSON.stringify(JSON.parse(process.env.REVIEW_JSON)), {flag:'wx',mode:0o444});
+          NODE
+          node scripts/finalize-normal-workflow-acceptance.mjs --github-review --live "$RUNNER_TEMP/collected/live" --policy "$RUNNER_TEMP/collected/policy.json" --policy-hash "$APPROVED_POLICY_HASH" --reviews "$RUNNER_TEMP/reviews.json"
+      - name: Seal finalized evidence for independent post-run G4
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVED_POLICY_HASH: ${{ vars.NORMAL_WORKFLOW_POLICY_HASH }}
         run: |
           JOB_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" --jq '.jobs[] | select(.name == "Normal workflow live gate (G3)") | .id')
-          node scripts/seal-normal-workflow-evidence.mjs --deterministic "$RUNNER_TEMP/deterministic" --live "$RUNNER_TEMP/live" --policy "$RUNNER_TEMP/policy.json" --policy-hash "$APPROVED_POLICY_HASH" --run-id "$GITHUB_RUN_ID" --job-id "$JOB_ID" --output "$RUNNER_TEMP/evidence"
-      - name: Preserve raw attempts for independent post-run G4
-        if: always()
+          node scripts/seal-normal-workflow-evidence.mjs --deterministic "$RUNNER_TEMP/collected/deterministic" --live "$RUNNER_TEMP/collected/live" --policy "$RUNNER_TEMP/collected/policy.json" --policy-hash "$APPROVED_POLICY_HASH" --run-id "$GITHUB_RUN_ID" --job-id "$JOB_ID" --output "$RUNNER_TEMP/evidence"
+      - name: Preserve final raw attempts for independent post-run G4
         uses: actions/upload-artifact@v4
         with:
           name: normal-workflow-evidence
           path: ${{ runner.temp }}/evidence
           if-no-files-found: error
-      - name: Remove credentials
-        if: always()
-        run: rm -f "$RUNNER_TEMP/test-auth.json" "$RUNNER_TEMP/approval.json"

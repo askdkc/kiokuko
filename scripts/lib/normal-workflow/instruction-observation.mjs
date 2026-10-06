@@ -49,10 +49,15 @@ export function observeInstructions({ messages, events, indexes, agentsHash, obs
       : typeof data?.run?.runId === 'string' && ['active','intake'].includes(data.run.status) && data.nextAction !== 'required_capability_unavailable';
   });
   const receipts = [];
+  const requiredNames = ['kiokuko-codex-soul','kiokuko-codex-memory-reasoning'];
   const requiredIndexes = indexes.filter(index => ['kiokuko-codex-soul','kiokuko-codex-memory-reasoning'].includes(index.name));
-  const loadedSkills = discovered && requiredIndexes.length === 2 && registrations.length === 1 && registrations.every(registration => {
+  const loadedSkills = discovered && new Set(indexes.map(index=>index.name)).size === indexes.length
+    && requiredIndexes.every(index=>index.canonicalName === (index.name === 'kiokuko-codex-soul' ? 'kiokuko-soul' : 'memory-reasoning'))
+    && requiredIndexes.length === 2 && requiredNames.every(name => requiredIndexes.filter(index => index.name === name).length === 1)
+    && registrations.length > 0 && (kind === 'conversation' || registrations.length === 1) && registrations.every(registration => {
     const args = registration.request.message.params.arguments;
-    return args?.soulRead === true && requiredIndexes.every(index => {
+    const registrationReceipts=[];
+    const verified=args?.soulRead === true && requiredNames.map(name => requiredIndexes.find(index => index.name === name)).every(index => {
       if (!args.capabilities?.some(x => x.kind === 'skill' && x.name === index.name)) return false;
       const reads = calls('task_inspect').filter(pair => {
         const read = pair.request.message.params.arguments;
@@ -65,11 +70,14 @@ export function observeInstructions({ messages, events, indexes, agentsHash, obs
         return typeof index.bundleText === 'string' && data?.text === index.bundleText
           && data.contentHash === hash(index.bundleText) && data.loadedPackageVersion === index.packageVersion;
       });
-      if (!read) return false;
-      receipts.push({ sessionId:read.request.sessionId, callId:read.request.message.id, canonicalName:index.canonicalName,
+      if (!read || (registrationReceipts.length && read.request.sequence <= registrationReceipts.at(-1).completed)) return false;
+      registrationReceipts.push({ sessionId:read.request.sessionId, callId:read.request.message.id, canonicalName:index.canonicalName,
+        registrationCallId:registration.request.message.id,
         contentHash:hash(index.bundleText), completed:read.response.sequence, registered:registration.request.sequence });
       return true;
     }) && discovery.every(pair => pair.response.sequence < registration.request.sequence);
+    if(verified) receipts.push(...registrationReceipts);
+    return verified;
   });
   const agentsLoadObserved = events.some(event => event.type === 'instructions.loaded' && event.content_hash === agentsHash);
   return { discovered, loadedSkills, agentsLoadObserved, receipts, protocolValid:valid,

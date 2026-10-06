@@ -44,20 +44,21 @@ async function collectTestFiles(targets) {
 async function runStructuredTests(testFiles, testTempRoot, output) {
   const env = { ...process.env, TEMP:testTempRoot, TMP:testTempRoot, TMPDIR:testTempRoot };
   delete env.KIOKUKO_TEST_RESULTS; delete env.NODE_TEST_CONTEXT;
-  const events = [], logs = []; let summary;
+  const events = [], logs = []; let summary, summaryCount=0;
   const stream = runTestStream({files:testFiles,isolation:'process',execArgv:['--import','tsx'],env});
   for await (const event of stream) {
     if (['test:stdout','test:stderr'].includes(event.type)) { logs.push(event); continue; }
-    if (event.type === 'test:summary' && event.data.file === undefined) summary=event.data;
+    if (event.type === 'test:summary' && event.data.file === undefined) {summary=event.data;summaryCount++;}
     if (['test:pass','test:fail'].includes(event.type)) {
       const data=event.data;
-      events.push({id:`${path.relative(process.cwd(),data.file ?? '')}:${data.line ?? 0}:${data.name}`,type:event.type,
-        skipped:!!data.skip,todo:!!data.todo,suite:data.details?.type === 'suite'});
+      if(!Number.isSafeInteger(data.testId) || data.testId<1) throw new Error('Unknown Node completion identity');
+      events.push({id:`${path.relative(process.cwd(),data.file ?? '')}:${data.line ?? 0}:${data.column ?? 0}:${data.testId}:${data.name}`,type:event.type,
+        skipped:!!data.skip,todo:!!data.todo,suite:data.details?.type === 'suite',failureType:data.details?.error?.failureType ?? null});
     }
   }
   const ids=events.filter(event => !event.suite);
   const complete=!!summary && summary.counts.tests > 0 && ids.length === summary.counts.tests;
-  writeFileSync(output,JSON.stringify({schema:'repository-node-lifecycle-v1',complete,counts:summary?.counts,ids,files:testFiles,logs}));
+  writeFileSync(output,JSON.stringify({schema:'repository-node-lifecycle-v1',complete,streamEnded:true,summaryCount,counts:summary?.counts,ids,suites:events.filter(event=>event.suite),files:testFiles,logs}));
   return complete && summary.success ? 0 : 1;
 }
 function runNodeTests(testFiles, testTempRoot) {

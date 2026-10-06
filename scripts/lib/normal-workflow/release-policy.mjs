@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { approvalErrors, SCENARIOS } from './contracts.mjs';
+import { approvalErrors, SCENARIOS, FIXTURE_ENVIRONMENT_INSTRUCTIONS } from './contracts.mjs';
 import { RUBRIC_VERSION } from './answer-review.mjs';
 export function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -16,7 +16,8 @@ export function freezePolicy(approval, { testManifest, producer, reviewers }) {
     throw new Error('Independent approved producer repository, immutable commit, workflow and ref required');
   if (!Array.isArray(reviewers) || !reviewers.length || reviewers.some(x => typeof x !== 'string' || !x.trim())) throw new Error('Approved independent reviewers required');
   const keys = ['provider','model','clientVersion','reasoningEffort','clients','attempts','maxSeconds','maxTotalSeconds','maxTurns','maxToolCalls','maxCost','currency'];
-  const policy = canonical({ schema:'normal-workflow-policy-v1', ...Object.fromEntries(keys.map(key => [key, approval[key]])),
+  const policy = canonical({ schema:'normal-workflow-policy-v1',executorMode:'native-readonly-exclusive-fixture-v1',
+    executorInstructionsHash:createHash('sha256').update(FIXTURE_ENVIRONMENT_INSTRUCTIONS).digest('hex'), ...Object.fromEntries(keys.map(key => [key, approval[key]])),
     scenarios:SCENARIOS, rubricVersion:RUBRIC_VERSION, testManifest, producer, reviewers });
   return { policy, hash:policyHash(policy) };
 }
@@ -31,11 +32,15 @@ export function executionPolicyErrors(policy, actual, scenario, client) {
   const errors = [];
   for (const key of ['provider','model','clientVersion','reasoningEffort','maxSeconds','maxTurns','maxToolCalls','maxCost','currency'])
     if (actual?.[key] !== policy[key]) errors.push(`Execution differs from approved ${key}`);
+  if(policy.executorMode!=='native-readonly-exclusive-fixture-v1') errors.push('Unapproved executor mode');
+  if(actual?.checkpointAuthority==='executor-barrier-v1' && (!actual?.argv?.some((value,i)=>value==='--sandbox' && actual.argv[i+1]==='read-only') || actual.argv.includes('workspace-write'))) errors.push('Exclusive executor requires native read-only argv');
   if (!policy.clients.includes(client) || actual?.request !== scenario.request || actual?.client !== client) errors.push('Client/request differs from policy');
   const argv = actual?.argv;
   if (!Array.isArray(argv) || argv.at(-1) !== scenario.request
     || argv.filter(value => value === `model=${JSON.stringify(policy.model)}`).length !== 1
     || argv.filter(value => value === `model_reasoning_effort=${JSON.stringify(policy.reasoningEffort)}`).length !== 1
+    || argv.filter(value => value.startsWith('developer_instructions=')).length !== 1
+    || !argv.includes(`developer_instructions=${JSON.stringify(FIXTURE_ENVIRONMENT_INSTRUCTIONS)}`)
     || argv.includes('--model') || argv.includes('-m')) errors.push('Actual client argv differs from frozen model/reasoning/request');
   if (actual?.modelObserved !== true || actual?.providerObserved !== true || actual?.clientVersionObserved !== true) errors.push('Actual model/provider/version identity is unobserved');
   if (!Number.isSafeInteger(actual?.calls) || actual.calls > policy.maxToolCalls || !Number.isSafeInteger(actual?.turns) || actual.turns > policy.maxTurns

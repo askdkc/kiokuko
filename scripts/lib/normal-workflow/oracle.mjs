@@ -42,12 +42,13 @@ function materialize(root, files) {
 }
 
 /** Execute independently in a disposable replay tree, never in the agent tree. */
-export function replaySuite(files, root) {
+export function replaySuite(files, root, selectedTests) {
   materialize(root, files);
   root = realpathSync(root);
-  const tests = Object.keys(files).filter(name => /^test\/[^/]+\.test\.mjs$/u.test(name)).sort();
+  const tests = selectedTests ?? Object.keys(files).filter(name => /^test\/[^/]+\.test\.mjs$/u.test(name)).sort();
   const report = path.join(path.dirname(root), `${path.basename(root)}-lifecycle.json`);
   const supervisor = fileURLToPath(new URL('./test-results.mjs', import.meta.url));
+  const started=new Date().toISOString();
   const child = spawnSync(process.execPath, [supervisor, root, report, ...tests.map(name => path.join(root, name))], {
     cwd: root, encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024,
     env: { PATH: process.env.PATH, HOME: root, NODE_NO_WARNINGS: '1' },
@@ -56,6 +57,8 @@ export function replaySuite(files, root) {
   try { result = JSON.parse(readFileSync(report, 'utf8')); } catch { /* Missing channel is a harness failure. */ }
   const complete = child.signal === null && result?.complete === true;
   return { exitCode: child.status, signal: child.signal, complete, ...result?.counts,
+    execution:{argv:[process.execPath,supervisor,root,report,...tests.map(name=>path.join(root,name))],cwd:root,started,ended:new Date().toISOString(),exitCode:child.status,signal:child.signal},
+    unsupported: result?.results.some(file=>file.events.some(event=>event.unsupported)) === true,
     assertionFailure: result?.results.some(file => file.events.some(event => event.type === 'test:fail' && event.assertion)) === true,
     lifecycle: result, output: `${child.stdout ?? ''}\n${child.stderr ?? ''}` };
 
@@ -119,6 +122,8 @@ export function evaluateAttempt(attempt, replayRoot) {
   if (kind === 'inquiry' || kind === 'conversation') {
     require('explanation did not edit the fixture', changed.length === 0);
     const answer = attempt.answer ?? '';
+    if (!attempt.answerReview && assertions.every(x=>x.passed) && answer.trim() && attempt.developmentChecks === false)
+      return {classification:'WAITING_REVIEW',oraclePassed:false,assertions,reason:'Original answer collected; independent review is pending'};
     const reviewed = verifyAnswerReview({ answer, kind, initialHash:treeHash(initial), specHash:hash(initial['README.md'] ?? ''),
       review:attempt.answerReview, reviewers:attempt.reviewers });
     if (reviewed.classification === 'FAIL_HARNESS') return { ...reviewed, oraclePassed:false, assertions };
@@ -147,12 +152,14 @@ export function evaluateAttempt(attempt, replayRoot) {
         ? 'export function shippingFee(total, member = false) { return member || total >= 5000 ? 0 : 500; }\n'
         : 'export function shippingFee(total) { return total >= 5000 ? 0 : 500; }\n' };
       const targeted = replaySuite(corrected, path.join(replayRoot, 'targeted'));
+      if([baseline,redResult,targeted].some(x=>x.unsupported)) return {classification:'FAIL_HARNESS',oraclePassed:false,assertions,reason:'Unsupported fixture assertion or operation'};
       require('Red is a new assertion on the requested behavior', baseline.complete && redResult.complete && targeted.complete && baseline.exitCode === 0 && baseline.tests > 0
         && redResult.exitCode !== 0 && redResult.assertionFailure && redResult.failed > 0
         && targeted.exitCode === 0 && targeted.tests > baseline.tests && targeted.skipped === 0 && targeted.todo === 0);
       assertions.push({ id: 'Red replay', passed: redResult.exitCode !== 0, evidence: redResult });
     }
     const green = replaySuite(final, path.join(replayRoot, 'green'));
+    if(green.unsupported) return {classification:'FAIL_HARNESS',oraclePassed:false,assertions,reason:'Unsupported fixture assertion or operation'};
     if (!green.complete) return { classification:assertions.some(assertion => !assertion.passed) ? 'FAIL_PRODUCT' : 'FAIL_HARNESS', oraclePassed:false, assertions, reason:'Incomplete trusted test lifecycle' };
     require('Green contains nonempty existing and new tests', green.complete && green.exitCode === 0 && green.tests >= 3 && green.skipped === 0 && green.todo === 0);
     require('observed Green describes final tree', checkpoints.some(checkpoint => checkpoint.exitCode === 0

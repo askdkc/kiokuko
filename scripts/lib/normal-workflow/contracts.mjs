@@ -1,5 +1,9 @@
-// These are ordinary user requests. Tool names, selectors and TDD answers are
-// discovered from unmodified installed instructions, never appended here.
+// Ordinary user requests never include Skill selectors, TDD answers or grading
+// hints. The separate environment contract describes only controller capabilities.
+export const FIXTURE_ENVIRONMENT_INSTRUCTIONS =
+  'The native shell and apply_patch sandbox is read-only. The independent fixture_executor MCP server provides bounded write access to the synthetic repository through its declared tools. '+
+  'Use that controller for requested repository edits and supported test execution; it persists an immutable tree-bound checkpoint before sending each command response. '+
+  'Native tests or in-memory proposals do not persist repository changes or command-bound receipts. This does not grant native writes, escalation, network access or access to other paths.';
 export const SCENARIOS = [
   { id: 'LIVE-01', kind: 'inquiry', request: 'このリポジトリの送料計算は、いくらから無料になりますか。説明だけお願いします。' },
   { id: 'LIVE-02', kind: 'bug', request: '5,000円ちょうどでも送料がかかってしまいます。仕様どおりになるように修正してください。' },
@@ -10,7 +14,7 @@ export const SCENARIOS = [
   { id: 'LIVE-06-subdirectory', kind: 'bug', location: 'subdirectory', request: '5,000円ちょうどでも送料がかかってしまいます。仕様どおりになるように修正してください。' },
   { id: 'LIVE-06-outside', kind: 'conversation', location: 'outside', request: '送料が購入額5,000円以上なら無料、未満なら500円の場合、4,999円と5,000円の送料を説明してください。説明だけお願いします。' },
 ];
-export const RESULT_CLASSES = ['PASS', 'FAIL_PRODUCT', 'FAIL_HARNESS', 'BLOCKED_ENV', 'BLOCKED_AUTH', 'NOT_RUN', 'NOT_APPLICABLE'];
+export const RESULT_CLASSES = ['PASS', 'FAIL_PRODUCT', 'FAIL_HARNESS', 'BLOCKED_ENV', 'BLOCKED_AUTH', 'NOT_RUN', 'NOT_APPLICABLE', 'WAITING_REVIEW'];
 
 export function approvalErrors(approval) {
   const errors = [];
@@ -18,7 +22,7 @@ export function approvalErrors(approval) {
   if (approval?.provider !== 'chatgpt-subscription' || approval.maxCost !== 0 || approval.currency !== 'USD') errors.push('Paid spend control is unsupported by this adapter');
   if (typeof approval?.model !== 'string' || !approval.model.trim()) errors.push('Explicit model required');
   if (typeof approval?.clientVersion !== 'string' || !/^\d+\.\d+\.\d+(?:[-.][a-zA-Z0-9.-]+)?$/u.test(approval.clientVersion)) errors.push('Pinned client version required');
-  if (!['low', 'medium', 'high', 'xhigh'].includes(approval?.reasoningEffort)) errors.push('Explicit reasoning effort required');
+  if (!['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(approval?.reasoningEffort)) errors.push('Explicit reasoning effort required');
   if (typeof approval?.authFile !== 'string' || !approval.authFile.trim()) errors.push('Isolated test credentials required');
   if (!Array.isArray(approval?.clients) || !approval.clients.length || new Set(approval.clients).size !== approval.clients.length
     || approval.clients.some(client => !['codex-cli', 'codex-desktop'].includes(client))) errors.push('Explicit supported client targets required');

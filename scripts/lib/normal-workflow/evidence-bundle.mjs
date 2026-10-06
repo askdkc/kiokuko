@@ -1,3 +1,7 @@
+import { sandboxProbeValid } from './native-sandbox.mjs';
+import { executorReceiptErrors } from './executor-receipt.mjs';
+import { validPackageStages } from './package-evidence.mjs';
+import { validSuite } from './suite-evidence.mjs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
@@ -26,17 +30,6 @@ function successfulCommand(record, expected, candidate, policyDigest) {
       && record[key]?.dirty === false && record[key]?.sourceDigest === candidate.sourceDigest)
     && Number.isFinite(Date.parse(record.started)) && Date.parse(record.ended) >= Date.parse(record.started)
     && record.environment && Object.keys(record.environment).every(key => ['PATH','NODE_VERSION','PLATFORM','ARCH','npm_config_cache'].includes(key));
-}
-function validSuite(result, manifest, noSkips = false) {
-  const counts = result?.counts; const ids = result?.ids;
-  return result?.complete === true && counts && Number.isSafeInteger(counts.tests) && counts.tests > 0
-    && ['passed','failed','cancelled','skipped','todo'].every(key => Number.isSafeInteger(counts[key]) && counts[key] >= 0)
-    && counts.tests === counts.passed + counts.failed + counts.cancelled + counts.skipped + counts.todo
-    && counts.failed === 0 && counts.cancelled === 0 && counts.todo === 0
-    && Array.isArray(ids) && ids.length === counts.tests && new Set(ids.map(x => x.id)).size === ids.length
-    && JSON.stringify(ids.map(x => x.id).sort()) === JSON.stringify(manifest.map(x => x.id).sort())
-    && ids.filter(x => x.skipped).length === counts.skipped
-    && ids.every(x => !x.skipped || (!noSkips && manifest.some(expected => expected.id === x.id && expected.optionalSkip)));
 }
 /** Summary booleans/classifications are never consumed here. Every required
  * record is reopened, hash-bound, and interpreted against independent policy. */
@@ -77,11 +70,13 @@ export function verifyEvidenceBundle({ artifact, evidenceRoot, policy, approvedP
     if (!successfulCommand(read('G0/command.json'),['npm','run','typecheck'],candidate,approvedPolicyHash)) throw new Error('G0 command/source proof failed');
     if (!successfulCommand(read('G1/command.json'),['npm','test'],candidate,approvedPolicyHash)
       || !validSuite(read('G1/tests.json'),policy.testManifest)) throw new Error('G1 lifecycle/test inventory proof failed');
-    const stages = ['pack','install','generated-skills','restart','optional-runtime'];
+    const archiveTypes=execFileSync('tar',['-tvzf',path.resolve(artifact)],{encoding:'utf8',timeout:10000,maxBuffer:1024*1024}).trim().split('\n');
+    if(archiveTypes.length>4096 || archiveTypes.some(line=>!['-','d'].includes(line[0]))) throw new Error('Package links or special files rejected');
+    const artifactNames=execFileSync('tar',['-tzf',path.resolve(artifact)],{encoding:'utf8',timeout:10000,maxBuffer:1024*1024}).trim().split('\n').filter(x=>!x.endsWith('/'));
+    if(new Set(artifactNames).size!==artifactNames.length || artifactNames.some(x=>!x.startsWith('package/') || x.split('/').some(p=>p==='..'))) throw new Error('Invalid package inventory');
+    const artifactFiles=Object.fromEntries(artifactNames.map(name=>{const bytes=execFileSync('tar',['-xOf',path.resolve(artifact),name],{timeout:10000,maxBuffer:4*1024*1024});return [name.slice(8),{hash:bytesHash(bytes),size:bytes.length,text:name.startsWith('package/skills/')?bytes.toString('utf8'):undefined}];}));
     const packageResult = read('G2/stages.json');
-    if (JSON.stringify(packageResult.stages?.map(x => x.id)) !== JSON.stringify(stages)
-      || packageResult.stages.some(x => x.complete !== true || x.exitCode !== 0 || x.artifactHash !== candidate.artifactHash
-        || x.sourceDigest !== candidate.sourceDigest || !Array.isArray(x.commands) || !x.commands.length || x.commands.some(command => command.exitCode !== 0 || command.signal !== null || !command.argv?.length))
+    if (!validPackageStages(packageResult,candidate,artifactFiles,packageMetadata) || packageResult.tarballSha1!==createHash('sha1').update(readFileSync(artifact)).digest('hex')
       || !successfulCommand(read('G2/command.json'),['npm','run','test:global-install'],candidate,approvedPolicyHash)) throw new Error('G2 package stage proof failed');
     const attempts = manifest.attempts ?? []; const required = requiredAttempts(policy);
     if (attempts.length !== required.length || new Set(attempts.map(x => x.id)).size !== attempts.length
@@ -119,7 +114,9 @@ export function verifyEvidenceBundle({ artifact, evidenceRoot, policy, approvedP
       const {runId:controlRunId,policyHash:controlPolicyHash,...installedControls} = instructions;
       const initial = read(`${item.path}/initial.json`).files, final = read(`${item.path}/final.json`).files;
       const review = ['inquiry','conversation'].includes(scenario.kind) ? read(`${item.path}/review.json`).review : undefined;
+      if(review && !fixture && !receipt.reviewers.includes(review.reviewer)) throw new Error('Answer reviewer is not an authenticated environment approver');
       const checkpoints = ['inquiry','conversation'].includes(scenario.kind) ? [] : read(`${item.path}/checkpoints.json`).checkpoints;
+      if(!['inquiry','conversation'].includes(scenario.kind) && (!sandboxProbeValid(identity.nativeSandboxProbe,policy.clientVersion) || executorReceiptErrors(checkpoints,read(`${item.path}/executor.json`).messages,identity.nativeReadonlyObserved).length)) throw new Error('Native sandbox or exclusive executor receipt proof failed');
       const evaluated = evaluateAttempt({ ...execution, initial, final, checkpoints, answer:read(`${item.path}/answer.json`).answer,
         answerReview:review, reviewers:policy.reviewers, kind:scenario.kind, fault:scenario.fault, memory:scenario.memory,
         safe:!execution.failure, controlsUnchanged:execution.controlsBefore === hash(JSON.stringify(installedControls)) && execution.controlsAfter === execution.controlsBefore,

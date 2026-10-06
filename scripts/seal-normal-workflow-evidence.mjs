@@ -16,6 +16,7 @@ const candidate=read(path.join(values.deterministic,'candidate.json'));
 for (const [relative,source] of [['G0/command.json','G0/command.json'],['G1/command.json','G1/command.json'],['G1/tests.json','G1/tests.json'],['G2/command.json','G2/command.json'],['G2/stages.json','G2/stages.json']])
   write(relative,read(path.join(values.deterministic,source)));
 const summary=read(path.join(values.live,'summary.json'));
+if(summary.phase!=='FINALIZED' || summary.liveGate?.passed!==true || summary.reports.some(x=>x.classification!=='PASS')) throw new Error('G3 is not finalized: review/execution remains incomplete');
 if (candidate.artifactHash !== summary.candidate.artifactHash || candidate.sourceDigest !== summary.candidate.sourceDigest
   || summary.policyHash !== policyDigest) throw new Error('Live/deterministic source/artifact/policy differs');
 const attempts=[];
@@ -32,6 +33,7 @@ for (const report of summary.reports) {
     maxSeconds:policy.maxSeconds,maxTurns:policy.maxTurns,maxToolCalls:policy.maxToolCalls,maxCost:policy.maxCost,currency:policy.currency});
   write(`${relative}/identity.json`,identity);write(`${relative}/initial.json`,{files:attempt.initial});write(`${relative}/final.json`,{files:attempt.final});
   write(`${relative}/answer.json`,{answer:attempt.answer});write(`${relative}/checkpoints.json`,{checkpoints:attempt.checkpoints});
+  write(`${relative}/executor.json`,{messages:attempt.executorProtocol ?? []});
   write(`${relative}/instructions.json`,read(path.join(base,'instructions.json')));
   write(`${relative}/loader.json`,read(path.join(base,'instruction-receipt.json')));write(`${relative}/hooks.json`,{observations:read(path.join(base,'hooks.json'))});
   write(`${relative}/protocol.json`,{messages:readFileSync(path.join(base,'discovery.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)});

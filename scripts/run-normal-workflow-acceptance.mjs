@@ -1,3 +1,4 @@
+import { probeNativeSandbox, sandboxProbeValid } from './lib/normal-workflow/native-sandbox.mjs';
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { policyHash, validatePolicy, requiredAttempts } from './lib/normal-workflow/release-policy.mjs';
 import { SCENARIOS, approvalErrors, releaseGate } from './lib/normal-workflow/contracts.mjs';
 import { createFixture, evaluateAttempt, hash, snapshot, treeHash } from './lib/normal-workflow/oracle.mjs';
-import { runCodex } from './lib/normal-workflow/codex-adapter.mjs';
+import { runCodex, bindExecutorCheckpoints, isolatedMcpPolicy } from './lib/normal-workflow/codex-adapter.mjs';
 import { sourceFingerprint } from './lib/normal-workflow/source-state.mjs';
 import { captureSanitizer } from './lib/normal-workflow/log-safety.mjs';
 import { observeInstructions } from './lib/normal-workflow/instruction-observation.mjs';
@@ -35,6 +36,8 @@ const candidate = { commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ro
 const clients = Array.isArray(approval?.clients) && approval.clients.length
   && approval.clients.every(client => ['codex-cli', 'codex-desktop'].includes(client))
   ? [...new Set(approval.clients)] : ['codex-cli', 'codex-desktop'];
+const reviews=flag('--reviews') ? JSON.parse(readFileSync(flag('--reviews'),'utf8')) : [];
+if(!Array.isArray(reviews) || new Set(reviews.map(x=>x.id)).size !== reviews.length) throw new Error('Invalid reviews');
 const reports = [];
 let configurationHash = null;
 const blocked = (client, scenario, classification, reason) => reports.push({ ...candidate, client, scenario: scenario.id, executionMode: offline ? 'offline' : 'live',
@@ -145,24 +148,32 @@ try {
         } finally { db.close(); }
       }
       const protocol = path.join(scenarioOutput, 'discovery.jsonl');
+      const executorOutput=path.join(base,'executor');mkdirSync(executorOutput);
       const config = { 'mcp_servers.kiokuko.command': process.execPath,
         'mcp_servers.kiokuko.args': [path.join(root, 'scripts/lib/normal-workflow/mcp-proxy.mjs'), executable, protocol, scenario.fault ?? 'none'],
         'mcp_servers.kiokuko.env': { KIOKUKO_DATA_DIR: env.KIOKUKO_DATA_DIR, KIOKUKO_SKILL_DISCOVERY: 'off', KIOKUKO_EMBEDDINGS: 'off',
           KIOKUKO_ACCEPTANCE_AUTH_FILE: path.join(env.CODEX_HOME, 'auth.json') },
+        'mcp_servers.fixture_executor.command':process.execPath,
+        'mcp_servers.fixture_executor.args':[path.join(root,'scripts/lib/normal-workflow/fixture-executor-server.mjs'),repo,executorOutput],
+        'mcp_servers.fixture_executor.required':true,
+        ...isolatedMcpPolicy(),
         'mcp_servers.kiokuko.required': true, 'features.hooks': true, 'features.multi_agent': false,
+        'features.code_mode':false,'features.code_mode_host':true,'features.computer_use':false,'features.browser_use':false,'features.image_generation':false,'features.artifact':false,
         'features.memories': false, 'memories.use_memories': false, 'features.plugins': false, 'features.apps': false,
         'sandbox_workspace_write.exclude_slash_tmp': true, 'sandbox_workspace_write.exclude_tmpdir_env_var': true,
         'sandbox_workspace_write.network_access': false, 'sandbox_workspace_write.writable_roots': [],
         web_search: 'disabled', model: approval.model, model_reasoning_effort: approval.reasoningEffort };
-      // Load exactly the installer-generated hooks; add no answer or workflow prompt.
-      for (const [event, groups] of Object.entries(hooks.hooks)) config[`hooks.${event}`] = groups;
+      // Codex loads the installer-generated CODEX_HOME/hooks.json itself.
+      // Inline copies would execute every hook twice. Add no workflow prompt.
       const toml = value => Array.isArray(value) ? `[${value.map(toml).join(',')}]`
         : value && typeof value === 'object' ? `{${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}=${toml(item)}`).join(',')}}` : JSON.stringify(value);
       let cwd = repo;
       if (scenario.location === 'subdirectory') { cwd = path.join(repo, 'nested'); mkdirSync(cwd); }
       const clientArgs = ['exec', '--ignore-user-config', '--dangerously-bypass-hook-trust', '--skip-git-repo-check',
-        '--sandbox', ['inquiry', 'conversation'].includes(scenario.kind) ? 'read-only' : 'workspace-write', '--json', '--cd', cwd,
+        '--sandbox', 'read-only', '--json', '--cd', cwd,
         ...Object.entries(config).flatMap(([key, value]) => ['-c', `${key}=${toml(value)}`]), scenario.request];
+      const nativeSandboxProbe=probeNativeSandbox({executable:clientExecutable,repo,environment:env,clientVersion:policy.clientVersion});
+      if(!sandboxProbeValid(nativeSandboxProbe,policy.clientVersion)) {blocked(client,scenario,'FAIL_HARNESS','Native read-only sandbox enforcement probe failed');continue;}
       const candidateBefore = {...candidate,sourceDigest:sourceFingerprint(root)};
       const started = new Date().toISOString();
       writeFileSync(path.join(scenarioOutput, 'inputs.json'), JSON.stringify({ request: scenario.request, initialTreeHash: treeHash(initial), controlsHash,
@@ -187,6 +198,7 @@ try {
       const receipt = collectInstructionReceipt({ codeHome: env.CODEX_HOME, cwd, clientVersion: approval.clientVersion,
         threadId: session.events.find(event => event.type === 'thread.started')?.thread_id, agents: globalAgents, request: scenario.request });
       writeFileSync(path.join(scenarioOutput, 'instruction-receipt.json'), JSON.stringify(receipt));
+      if(!['inquiry','conversation'].includes(scenario.kind)) Object.assign(session,bindExecutorCheckpoints(session,{directory:executorOutput,nativeReadonlyObserved:receipt.nativeReadonlyObserved && sandboxProbeValid(nativeSandboxProbe,policy.clientVersion)}));
       // Derive the receipt from the client's initial instruction input, never
       // from the model's attestation or a fabricated JSON-stream event.
       const instructionEvents = receipt.observed ? [{ type: 'instructions.loaded', content_hash: receipt.contentHash }] : [];
@@ -197,13 +209,14 @@ try {
       const updatedControls = { agents: readFileSync(path.join(env.CODEX_HOME, 'AGENTS.md'), 'utf8'),
         indexes: indexes.map(index => ({ ...index, text: readFileSync(path.join(env.HOME, '.agents/skills', index.name, 'SKILL.md'), 'utf8') })),
         hooks: JSON.parse(readFileSync(path.join(env.CODEX_HOME, 'hooks.json'), 'utf8')) };
-      const reviews = successful('task_memory_review');
-      const memoryApplied = reviews.some(call => call.params.arguments.decision === 'adopted' && call.params.arguments.invariant?.includes('shippingFee')
+      const memoryReviews = successful('task_memory_review');
+      const memoryApplied = memoryReviews.some(call => call.params.arguments.decision === 'adopted' && call.params.arguments.invariant?.includes('shippingFee')
         && call.params.arguments.verification?.length > 0 && call.params.arguments.evidenceIds?.length > 0);
-      const memoryInapplicable = reviews.some(call => call.params.arguments.decision === 'inapplicable' && call.params.arguments.basis?.length > 0);
+      const memoryInapplicable = memoryReviews.some(call => call.params.arguments.decision === 'inapplicable' && call.params.arguments.basis?.length > 0);
       let oracle;
       try { oracle = evaluateAttempt({ ...session, initial, final, kind: scenario.kind, memory: scenario.memory, fault: scenario.fault,
         controlsUnchanged: hash(JSON.stringify(updatedControls)) === controlsHash, instructionsVerified,
+        answerReview:reviews.find(x=>x.id===`${client}/${scenario.id}`)?.review,reviewers:policy.reviewers,
         safe: !session.failure && !messages.some(item => item.type === 'proxy_error'), developmentChecks: calls.some(call => call.params.name === 'task_verification_define'),
         injectedFailures: messages.filter(item => item.type === 'injected_selector').length,
         recovered: reads.length > 0, memoryApplied, memoryInapplicable }, path.join(base, 'oracle')); }
@@ -219,7 +232,7 @@ try {
         injectedFailures:messages.filter(item => item.type === 'injected_selector').length,recovered:reads.length > 0,memoryApplied,memoryInapplicable };
       writeFileSync(path.join(scenarioOutput,'attempt.json'),JSON.stringify(sanitize(raw)));
       writeFileSync(path.join(scenarioOutput,'identity.json'),JSON.stringify({schema:'codex-isolated-identity-v1',model:receipt.model,
-        effort:receipt.effort,clientVersion:receipt.clientVersion,modelObserved:receipt.modelObserved,authMode:credentials.auth_mode}));
+        nativeSandboxProbe,nativeReadonlyObserved:receipt.nativeReadonlyObserved,effort:receipt.effort,clientVersion:receipt.clientVersion,modelObserved:receipt.modelObserved,authMode:credentials.auth_mode}));
       writeFileSync(path.join(scenarioOutput, 'oracle.json'), JSON.stringify(oracle, null, 2));
       const errorText = readFileSync(path.join(scenarioOutput, 'stderr.txt'), 'utf8') + JSON.stringify(session.events.filter(event => ['error', 'turn.failed'].includes(event.type)));
       const authBlocked = /not logged in|authentication|unauthorized|invalid.*credential/iu.test(errorText);
@@ -240,9 +253,15 @@ try {
 } finally { if (controls) rmSync(controls, { recursive: true, force: true }); }
 const required = policy ? requiredAttempts(policy) : clients.flatMap(client => SCENARIOS.map(scenario => `${client}/${scenario.id}`));
 const gate = releaseGate(candidate, reports, required);
-const summary = { candidate, clients, required, reports, configurationHash, policyHash:policy ? policyHash(policy) : null, liveGate: gate, releaseReady: false,
+const pendingReviews=reports.filter(x=>x.classification==='WAITING_REVIEW').map(report=> {
+  const attempt=JSON.parse(readFileSync(path.join(output,report.scenario,'attempt.json'),'utf8'));
+  return {id:`${report.client}/${report.scenario}`,kind:attempt.kind,answer:attempt.answer,answerHash:hash(attempt.answer),initialHash:treeHash(attempt.initial),specHash:hash(attempt.initial['README.md']),rubricVersion:policy.rubricVersion};
+});
+writeFileSync(path.join(output,'review-requests.json'),JSON.stringify(pendingReviews,null,2));
+const collectionComplete=reports.every(x=>['PASS','WAITING_REVIEW'].includes(x.classification));
+const summary = { phase:pendingReviews.length?'WAITING_REVIEW':'COLLECTED', candidate, clients, required, reports, configurationHash, policyHash:policy ? policyHash(policy) : null, liveGate: gate, releaseReady: false,
   reason: 'G0-G2 evidence must also match this candidate; this runner reports G3/G4 only.' };
 writeFileSync(path.join(output, 'summary.json'), JSON.stringify(summary, null, 2));
 console.log(JSON.stringify({ output, livePassed: gate.passed, releaseReady: false, classifications: reports.map(report => `${report.client}/${report.scenario}: ${report.classification}`) }, null, 2));
 // Offline is allowed as an infrastructure check, but never as a release check.
-process.exitCode = args.includes('--require-live') || !offline || approvalError ? (gate.passed ? 0 : 1) : 0;
+process.exitCode = args.includes('--collect-only') && !offline && collectionComplete ? 0 : args.includes('--require-live') || !offline || approvalError ? (gate.passed ? 0 : 1) : 0;

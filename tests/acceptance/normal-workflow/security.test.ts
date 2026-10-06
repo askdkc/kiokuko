@@ -20,7 +20,8 @@ test('unreviewed contradictory answers cannot pass by containing rubric words', 
       const result = oracle.evaluateAttempt({ initial, final: initial, kind: 'inquiry', answer,
         instructionsVerified: true, controlsUnchanged: true, safe: true, exitCode: 0, logComplete: true,
         turnCompleted: true, developmentChecks: false }, path.join(base, 'replay'));
-      assert.equal(result.classification, 'FAIL_HARNESS');
+      assert.equal(result.classification, 'WAITING_REVIEW');
+      assert.equal(result.oraclePassed, false);
     }
   } finally { rmSync(base, { recursive: true, force: true }); }
 });

@@ -43,7 +43,7 @@ export function collectInstructionReceipt({ codeHome, cwd, clientVersion, thread
           const parts = Array.isArray(item.content) ? item.content.filter(part => part.type === 'input_text').map(part => part.text) : [];
           if (parts.includes(request)) { promptIndex = index; break; }
           for (const part of parts) {
-            const match = /^# AGENTS\.md instructions for [^\n]+\n+<INSTRUCTIONS>\n([\s\S]*)\n?<\/INSTRUCTIONS>(?:\n|$)/u.exec(part);
+            const match = /^# AGENTS\.md instructions(?: for [^\n]+)?\n+<INSTRUCTIONS>\n([\s\S]*)\n?<\/INSTRUCTIONS>(?:\n|$)/u.exec(part);
             if (match?.[1].trim() === agents.trim()) instructionIndex = index;
           }
         }
@@ -52,9 +52,10 @@ export function collectInstructionReceipt({ codeHome, cwd, clientVersion, thread
       }
       if (instructionIndex < 1 || promptIndex <= instructionIndex) return unobserved;
       const contexts = records.filter(record => record.type === 'turn_context').map(record => record.payload);
-      const models = new Set(contexts.map(context => context?.model).filter(model => typeof model === 'string'));
-      const efforts = new Set(contexts.map(context => context?.effort).filter(effort => typeof effort === 'string'));
-      receipts.push({ model:models.size === 1 ? [...models][0] : null, effort:efforts.size === 1 ? [...efforts][0] : null,
+      const models = new Set(contexts.flatMap(context => [context?.model,context?.collaboration_mode?.settings?.model]).filter(model => typeof model === 'string'));
+      const efforts = new Set(contexts.flatMap(context => [context?.effort,context?.collaboration_mode?.settings?.reasoning_effort]).filter(effort => typeof effort === 'string'));
+      const nativeReadonlyObserved=contexts.length>0 && contexts.every(context=>context.sandbox_policy?.type==='read-only' && context.approval_policy==='never');
+      receipts.push({ nativeReadonlyObserved, model:models.size === 1 ? [...models][0] : null, effort:efforts.size === 1 ? [...efforts][0] : null,
         modelObserved:models.size === 1, clientVersion:metadata.payload.cli_version, observed: true, schema: 'codex-rollout/user-instructions-v1', threadId,
         source: path.relative(codeHome, file), record: instructionIndex,
         contentHash: createHash('sha256').update(agents).digest('hex') });

@@ -1,3 +1,4 @@
+import { approvedReviewers } from './review-authority.mjs';
 // GitHub supplies the artifact digest; a manifest's own hash is no authority.
 // Proof objects are minted here only after authenticated metadata AND archive
 // verification. A JSON file cannot serialize or recreate the WeakMap brand.
@@ -42,8 +43,10 @@ with zipfile.ZipFile(sys.argv[1]) as z:
       || JSON.stringify(manifest.producer?.approved) !== JSON.stringify(approved) || !manifest.producer.jobId) throw new Error('Producer manifest/run binding mismatch');
     const jobs = api(`actions/runs/${runId}/jobs?per_page=100`);
     if (!jobs.jobs?.some(job => String(job.id) === String(manifest.producer.jobId) && job.name === 'Normal workflow live gate (G3)' && job.conclusion === 'success')) throw new Error('Producer job is not a successful job of the approved run');
+    const reviewers=approvedReviewers(api(`actions/runs/${runId}/approvals`),policy.reviewers);
+    if(!reviewers.length) throw new Error('Independent protected review approval is missing');
     const proof = Object.freeze({});
-    receipts.set(proof,Object.freeze({ manifestHash:createHash('sha256').update(manifestBytes).digest('hex'),producer:manifest.producer }));
+    receipts.set(proof,Object.freeze({ manifestHash:createHash('sha256').update(manifestBytes).digest('hex'),producer:manifest.producer,reviewers }));
     return { proof, root, cleanup:() => rmSync(directory,{recursive:true,force:true}) };
   } catch (error) { rmSync(directory,{recursive:true,force:true}); throw error; }
 }
