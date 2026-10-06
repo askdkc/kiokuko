@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -143,6 +143,15 @@ test('PLAN and review are exempt, legacy runs stay unobserved, and observed chan
       assert.equal(taskAssuranceReport(f.db, f.runId).verification.mode, 'legacy_unobserved');
     } finally { f.close(); }
   }
+});
+
+test('losing a bound checkout cannot exempt a project run from verification, including subdirectory events', async () => {
+  const f = await fixture();
+  try {
+    const nested = path.join(f.cwd, 'nested'); mkdirSync(nested);
+    rmSync(path.join(f.cwd, '.git'), { recursive: true });
+    for (const cwd of [f.cwd, nested]) assert.throws(() => handleCodexHook(f.db, { ...f.hook, cwd, hook_event_name: 'Stop' }), /Bound repository is unavailable/u);
+  } finally { f.close(); }
 });
 
 test('MCP and HTTP verification share receipts; checkpoint and Stop reject incomplete targets', async () => {

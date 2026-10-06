@@ -29,6 +29,14 @@ listing is insufficient. Reuse the existing plan and evidence, not extra checkli
 3. Make the smallest complete change. Handle relevant boundaries, errors,
    security and resource ownership. Define expected results before implementation;
    add regression coverage for material behavior, reuse adequate existing checks.
+   For a bug fix or new behavior, add a focused failing test before changing the
+   implementation and run it on the original code. The failure must expose the
+   requested behavior, not a syntax error or missing dependency. Then make the
+   implementation pass it and the existing tests. Preserve Red and Green results
+   and the source state each tested. Never weaken or skip a test to obtain Green.
+   Explanation-only requests need no edits or implementation tests; apply only
+   verification relevant to the actual request. If execution is unavailable,
+   report the missing evidence rather than declaring verified completion.
 4. Run required checks and focused verification through the changed entry point.
    Broaden for shared contracts; rerun checks invalidated by edits. A helper test
    alone does not prove delivery. Never weaken checks to hide failure.

@@ -81,6 +81,15 @@ before advertising it. Use `task_inspect` for all bounded preparation reads and
 bundled Skills, including `natural-japanese-output`; do not use shell commands
 to read Skills before preparation and memory decisions permit ordinary tools.
 
+Bundled Skill selectors are package identities, not installed client paths.
+Use the exact public Skill name (including its Codex alias) or
+`skill-name/SKILL.md`; references use `skill-name/references/file.md`.
+The optional `skills/` prefix and slash or backslash separators are supported.
+Empty segments, dot/parent traversal, URL decoding and guessed aliases are not.
+An absolute installed client path is not a bundled selector. After a selector
+error, change to a documented selector or omit path for this router. The error
+does not authorize external reads or remove the current intake/review gate.
+
 For every `task_prepare` call, set `soulRead: true` only after reading this
 complete local `SKILL.md` for the current logical request. `task_prepare` also
 requires the exact local `kiokuko-soul` capability for every task. Omission,
@@ -176,6 +185,17 @@ risks; this route does not require reading them all. Follow availability rules b
 
 Read and apply the `kiokuko-ui-design-soul` index before designing, implementing, modifying, debugging, or reviewing an interactive interface. Select one to three `ui.*` expert fragments for the actual interaction risks. If UI work changes code, apply both the code and UI indexes.
 
+### Coding delivery routine
+
+For coding requests, read and apply `coding-ideal-routine-skill` after intake and
+before changing code, tests, or behavior-affecting configuration or distribution.
+It connects investigation, meaningful Red/Green evidence, the user's ordinary
+usage path, independent verification, and factual completion reporting.
+Apply its relevant checks to behavior-preserving refactoring or writing;
+explanation-only requests do not require implementation or Red/Green tests.
+This route complements the code and completion contracts and never replaces
+intake, memory review, permissions, or required verification.
+
 ### Combined work
 
 Routes compose. Read every applicable specialist index; never choose only one when the task spans multiple contracts. Fragment selection remains narrow inside those routes.
@@ -188,7 +208,8 @@ Use this order:
 4. `kiokuko-simple-work` when the finalized intake satisfies the simple-code activation boundary;
 5. `kiokuko-single-purpose-functions` for code planning or code work;
 6. `one-shot-software-completion` for every coding request, including simple code and UI code changes;
-7. `kiokuko-ui-design-soul` for interactive UI work.
+7. `coding-ideal-routine-skill` for coding requests;
+8. `kiokuko-ui-design-soul` for interactive UI work.
 
 Keep each route within the user-approved task scope.
 

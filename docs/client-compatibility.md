@@ -30,7 +30,8 @@ commands and global rules. Claude Code supports user-scoped stdio MCP servers,
 global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
 instruction surfaces and installs the bundled `memory-reasoning`, `kiokuko-soul`, `kiokuko-simple-work`,
 `kiokuko-single-purpose-functions`, `kiokuko-ui-design-soul`, `veteran-programmer-skill`,
-and `natural-japanese-output` skills in the selected supported clients by
+`natural-japanese-output`, `one-shot-software-completion`, and
+`coding-ideal-routine-skill` skills in the selected supported clients by
 default. The skills are copied from a fixed package manifest and never downloaded
 during setup. Codex uses host-specific names (`kiokuko-codex-soul`,
 `kiokuko-codex-memory-reasoning`, and the other manifest-listed Codex names),
@@ -44,6 +45,12 @@ state, and runtime handoffs. `natural-japanese-output` guides Japanese wording
 while preserving technical identifiers and required output structure. Both are
 routed by `kiokuko-soul` when applicable; neither introduces DSH-specific
 execution or changes the MCP intake gate.
+
+`coding-ideal-routine-skill` is routed for coding requests after intake. It
+connects investigation, meaningful failing tests, implementation, ordinary-use
+acceptance checks, and evidence-based reporting. Explanation-only requests need
+no implementation or Red/Green tests. Codex receives the manifest-listed name
+`kiokuko-codex-coding-ideal-routine-skill`; other hosts keep the canonical name.
 
 Hermes Agent v0.20.4 uses a profile-scoped native stdio MCP client. Kiokuko writes
 only the effective profile's `config.yaml` entry:

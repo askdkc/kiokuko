@@ -145,7 +145,7 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, /Never install or execute external Skill content automatically/);
   assert.match(
     soulSkill,
-    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `kiokuko-simple-work`[\s\S]*5\. `kiokuko-single-purpose-functions`[\s\S]*6\. `one-shot-software-completion`[\s\S]*7\. `kiokuko-ui-design-soul`/u,
+    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `kiokuko-simple-work`[\s\S]*5\. `kiokuko-single-purpose-functions`[\s\S]*6\. `one-shot-software-completion`[\s\S]*7\. `coding-ideal-routine-skill`[\s\S]*8\. `kiokuko-ui-design-soul`/u,
   );
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Akinator is the mandatory intake state machine before every planning or implementation route/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/);
@@ -168,6 +168,17 @@ test('setup bundles the completion core and all four on-demand references', asyn
       'utf8',
     ));
   }
+});
+
+test('coding requests route to the bundled ideal routine without imposing implementation on inquiries', async () => {
+  const files = await loadBundledStandardSkillFiles();
+  const routine = files.find(file => file.skillName === 'coding-ideal-routine-skill' && file.relativePath === 'SKILL.md');
+  assert.ok(routine, 'The requested coding routine must be part of the deployment manifest');
+  assert.match(routine.content, /^---\nname: coding-ideal-routine-skill\n/u);
+  const soul = files.find(file => file.skillName === STANDARD_SOUL_SKILL_NAME)?.content ?? '';
+  assert.match(soul, /apply `coding-ideal-routine-skill`/u);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /`coding-ideal-routine-skill` for coding requests/u);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /explanation-only requests do not require implementation or Red\/Green tests/u);
 });
 
 test('every bundled skill and local reference is discoverable through the setup manifest', async () => {

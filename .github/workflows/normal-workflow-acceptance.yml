@@ -1,0 +1,151 @@
+name: Normal workflow acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: 'Approved test-only account/run JSON; no credentials'
+        required: true
+        type: string
+      policy:
+        description: 'Previously frozen and independently reviewed policy JSON'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  collect:
+    # A PR-controlled workflow must never authenticate its own producer. The
+    # independently reviewed policy pins this protected workflow's exact SHA.
+    if: github.ref == 'refs/heads/main'
+    name: Collect real normal requests
+    runs-on: ubuntu-24.04
+    environment: normal-workflow-acceptance
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.16.0
+          cache: npm
+      - run: npm ci
+      - name: Validate independently frozen policy before execution or credentials
+        env:
+          APPROVAL_JSON: ${{ inputs.approval }}
+          POLICY_JSON: ${{ inputs.policy }}
+          # Configure this only after independent review. Do not copy a live
+          # summary's hash or accept a dispatch input as its own approval.
+          APPROVED_POLICY_HASH: ${{ vars.NORMAL_WORKFLOW_POLICY_HASH }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync, appendFileSync } from 'node:fs';
+          import { validatePolicy } from './scripts/lib/normal-workflow/release-policy.mjs';
+          const policy = validatePolicy(JSON.parse(process.env.POLICY_JSON), process.env.APPROVED_POLICY_HASH);
+          if (policy.producer.commit !== process.env.GITHUB_SHA || policy.producer.ref !== 'main'
+            || policy.producer.repository !== process.env.GITHUB_REPOSITORY
+            || policy.producer.workflow !== '.github/workflows/normal-workflow-acceptance.yml') throw new Error('Unapproved producer workflow/ref');
+          const approval = JSON.parse(process.env.APPROVAL_JSON);
+          for (const key of ['provider','model','clientVersion','reasoningEffort','clients','attempts','maxSeconds','maxTotalSeconds','maxTurns','maxToolCalls','maxCost','currency'])
+            if (JSON.stringify(approval[key]) !== JSON.stringify(policy[key])) throw new Error('Approval differs from frozen policy');
+          const base = process.env.RUNNER_TEMP;
+          writeFileSync(base + '/policy.json', JSON.stringify(policy), {flag:'wx',mode:0o444});
+          appendFileSync(process.env.GITHUB_ENV, 'APPROVED_POLICY_HASH=' + process.env.APPROVED_POLICY_HASH + '\n');
+          NODE
+      - name: Install exactly the pinned client
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const policy = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/policy.json', 'utf8'));
+          const prefix = process.env.RUNNER_TEMP + '/codex-client';
+          execFileSync('npm', ['install', '--global', '--prefix', prefix, '@openai/codex@' + policy.clientVersion], {stdio:'inherit',timeout:120000});
+          appendFileSync(process.env.GITHUB_PATH, prefix + '/bin\n');
+          NODE
+      - name: Produce deterministic evidence and pack the candidate once
+        id: deterministic
+        run: >-
+          node scripts/run-normal-workflow-gates.mjs --output "$RUNNER_TEMP/deterministic"
+          --policy "$RUNNER_TEMP/policy.json" --policy-hash "$APPROVED_POLICY_HASH"
+      - name: Prepare explicitly approved credentials
+        env:
+          APPROVAL_JSON: ${{ inputs.approval }}
+          TEST_CODEX_AUTH_JSON: ${{ secrets.TEST_CODEX_AUTH_JSON }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          if (!process.env.TEST_CODEX_AUTH_JSON) throw new Error('Test credentials unavailable');
+          const authFile = process.env.RUNNER_TEMP + '/test-auth.json';
+          writeFileSync(authFile, process.env.TEST_CODEX_AUTH_JSON, {mode:0o600});
+          writeFileSync(process.env.RUNNER_TEMP + '/approval.json', JSON.stringify({...JSON.parse(process.env.APPROVAL_JSON),authFile}), {mode:0o600});
+          NODE
+      - name: Run approved real-model scenarios with the same policy and artifact
+        id: live
+        run: >-
+          node scripts/run-normal-workflow-acceptance.mjs --collect-only
+          --approval "$RUNNER_TEMP/approval.json"
+          --policy "$RUNNER_TEMP/policy.json" --policy-hash "$APPROVED_POLICY_HASH"
+          --candidate "$RUNNER_TEMP/deterministic/candidate.json"
+          --artifact "$RUNNER_TEMP/deterministic/candidate.tgz"
+          --output "$RUNNER_TEMP/live"
+      - name: Preserve collected answers and deterministic inputs for independent review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: normal-workflow-collected
+          path: |
+            ${{ runner.temp }}/deterministic
+            ${{ runner.temp }}/live
+            ${{ runner.temp }}/policy.json
+          if-no-files-found: error
+      - name: Remove credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/test-auth.json" "$RUNNER_TEMP/approval.json"
+
+  acceptance:
+    needs: collect
+    name: Normal workflow live gate (G3)
+    runs-on: ubuntu-24.04
+    # The reviewer reads the collected answer artifact, writes hash-bound reviews
+    # to this environment variable, then approves the environment. The execution
+    # job/token has no write access to this protected environment or its reviews.
+    environment: normal-workflow-answer-review
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.16.0
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: normal-workflow-collected
+          path: ${{ runner.temp }}/collected
+      - name: Independently review and finalize original answers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_JSON: ${{ vars.NORMAL_WORKFLOW_REVIEW_JSON }}
+          APPROVED_POLICY_HASH: ${{ vars.NORMAL_WORKFLOW_POLICY_HASH }}
+        run: |
+          node --input-type=module <<'NODE'
+          import {writeFileSync} from 'node:fs';
+          if (!process.env.REVIEW_JSON) throw new Error('Independent review remains incomplete');
+          writeFileSync(process.env.RUNNER_TEMP + '/reviews.json', JSON.stringify(JSON.parse(process.env.REVIEW_JSON)), {flag:'wx',mode:0o444});
+          NODE
+          node scripts/finalize-normal-workflow-acceptance.mjs --github-review --live "$RUNNER_TEMP/collected/live" --policy "$RUNNER_TEMP/collected/policy.json" --policy-hash "$APPROVED_POLICY_HASH" --reviews "$RUNNER_TEMP/reviews.json"
+      - name: Seal finalized evidence for independent post-run G4
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVED_POLICY_HASH: ${{ vars.NORMAL_WORKFLOW_POLICY_HASH }}
+        run: |
+          JOB_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" --jq '.jobs[] | select(.name == "Normal workflow live gate (G3)") | .id')
+          node scripts/seal-normal-workflow-evidence.mjs --deterministic "$RUNNER_TEMP/collected/deterministic" --live "$RUNNER_TEMP/collected/live" --policy "$RUNNER_TEMP/collected/policy.json" --policy-hash "$APPROVED_POLICY_HASH" --run-id "$GITHUB_RUN_ID" --job-id "$JOB_ID" --output "$RUNNER_TEMP/evidence"
+      - name: Preserve final raw attempts for independent post-run G4
+        uses: actions/upload-artifact@v4
+        with:
+          name: normal-workflow-evidence
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error

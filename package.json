@@ -45,6 +45,9 @@
     "test:evaluation:akinator": "npm run build && node scripts/run-akinator-memory-evaluation.mjs",
     "test:benchmark:akinator": "npm run build && node scripts/run-akinator-memory-benchmark.mjs",
     "test:memory-assurance:live": "npm run build && node scripts/run-memory-assurance-live.mjs",
+    "test:normal-workflow": "node scripts/run-tests.mjs tests/acceptance/normal-workflow",
+    "test:normal-workflow:gates": "node scripts/run-normal-workflow-gates.mjs",
+    "test:normal-workflow:live": "node scripts/run-normal-workflow-acceptance.mjs --require-live",
     "test:memory-index:evaluation": "node --import tsx --test --test-name-pattern=\"fixed bilingual index evaluation\" tests/integration/memory-index.test.ts",
     "test:chatgpt:tunnel": "node scripts/run-tunnel-smoke.mjs"
   },

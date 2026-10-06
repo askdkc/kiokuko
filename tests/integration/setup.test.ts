@@ -20,6 +20,7 @@ import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import {
   deployedSkillName, hostSkillFile, loadBundledStandardSkillFiles,
   STANDARD_COMPLETION_SKILL_FILES,
+  STANDARD_CODING_ROUTINE_SKILL_FILES,
   STANDARD_FUNCTION_SKILL_FILES,
   STANDARD_JAPANESE_SKILL_FILES,
   STANDARD_MEMORY_SKILL_FILES,
@@ -50,6 +51,9 @@ const STANDARD_SKILL_FIXTURES = [{
 }, {
   name: 'one-shot-software-completion',
   files: STANDARD_COMPLETION_SKILL_FILES,
+}, {
+  name: 'coding-ideal-routine-skill',
+  files: STANDARD_CODING_ROUTINE_SKILL_FILES,
 }, {
   name: 'kiokuko-soul',
   files: STANDARD_SOUL_SKILL_FILES,

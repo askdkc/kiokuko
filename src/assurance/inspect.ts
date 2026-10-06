@@ -33,10 +33,15 @@ export const inspectTaskSchema = z.object({
 
 function bundledSkillPath(input: string | undefined): string {
   let name = input ?? 'kiokuko-soul';
-  name = name.split('/').map((part,index)=>index===0 ? logicalSkillName(part) : part).join('/');
   if (name.split(/[\\/]/u).includes('..')) throw new TaskInspectionError('skill');
   if (path.isAbsolute(name)) name = path.relative(skillRoot, name);
   name = name.replaceAll('\\', '/').replace(/^skills\//u, '');
+  // Normalize representation before the fixed alias lookup. Do not collapse empty
+  // segments, decode URLs or resolve parent/dot selectors as filesystem paths.
+  const parts = name.split('/');
+  if (parts.some(part => !part || part === '.' || part === '..')) throw new TaskInspectionError('skill');
+  parts[0] = logicalSkillName(parts[0]!);
+  name = parts.join('/');
   const manifest = STANDARD_SKILL_MANIFESTS.find(skill => name === skill.name || name.startsWith(`${skill.name}/`));
   if (!manifest) throw new TaskInspectionError('skill');
   if (name === manifest.name) name += '/SKILL.md';
@@ -44,10 +49,12 @@ function bundledSkillPath(input: string | undefined): string {
   return name;
 }
 
-function readInspectionFile(base: string, name: string): { text: string } {
+function readInspectionFile(base: string, name: string, bundle = false): { text: string } {
   try {
     const canonicalBase = realpathSync(base);
     const resolved = realpathSync(path.resolve(base, name));
+    // A manifest entry cannot redirect to an unlisted file, even inside the bundle.
+    if (bundle && resolved !== path.resolve(canonicalBase, name)) throw new TaskInspectionError('boundary');
     if (!resolved.startsWith(canonicalBase + path.sep)
       || path.relative(canonicalBase, resolved).split(path.sep).some(part => part === '.git' || part === '.env')) throw new TaskInspectionError('boundary');
     const stat = statSync(resolved);
@@ -66,7 +73,7 @@ export function inspectTask(raw: unknown) {
   const input = parseAssurance(inspectTaskSchema, raw);
   // Bundled Skills belong to this package, not to the target checkout or its submodules.
   if (input.operation === 'skill') {
-    const result = readInspectionFile(skillRoot, bundledSkillPath(input.path));
+    const result = readInspectionFile(skillRoot, bundledSkillPath(input.path), true);
     return { ...result, contract: INTEGRATION_CONTRACT, loadedPackageVersion: PACKAGE_VERSION, contentHash: createHash('sha256').update(result.text).digest('hex') };
   }
   let root: string;

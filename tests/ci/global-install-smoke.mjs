@@ -1,8 +1,11 @@
+import { firstSetupEnvironment } from '../../scripts/lib/normal-workflow/package-smoke-environment.mjs';
+import { FIRST_SETUP_SCRIPT } from '../../scripts/lib/normal-workflow/package-evidence.mjs';
+import { sourceFingerprint } from '../../scripts/lib/normal-workflow/source-state.mjs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -23,6 +26,15 @@ const forbiddenPackages = new Set([
 ]);
 let npmCacheDirectory;
 let npmUserConfigPath;
+let currentPackageStage = 'pack';
+const packageExecutions = [];
+const stageOutcomes={};
+const selectorEvidence=[];
+const recordStage = id => {
+  const commands = packageExecutions.filter(record => record.stage === id);
+  assert.ok(commands.length > 0, `no observed commands for ${id}`);
+  packageStages.push({id,commands,outcome:stageOutcomes[id],complete:true,exitCode:0});
+};
 
 async function run(command, args, cwd, environment = process.env) {
   try {
@@ -35,11 +47,14 @@ async function run(command, args, cwd, environment = process.env) {
     for (const key of Object.keys(childEnvironment)) {
       if (key.toLowerCase().replaceAll('-', '_') === 'npm_config_allow_scripts') delete childEnvironment[key];
     }
-    return await execFileAsync(command, args, {
+    const started = new Date().toISOString();
+    const result = await execFileAsync(command, args, {
       cwd,
       maxBuffer: 4 * 1024 * 1024,
       env: childEnvironment,
     });
+    packageExecutions.push({stage:currentPackageStage,argv:[command,...args],cwd,started,ended:new Date().toISOString(),exitCode:0,signal:null,stdout:result.stdout,stderr:result.stderr});
+    return result;
   } catch (error) {
     const stdout = typeof error.stdout === 'string' ? error.stdout : '';
     const stderr = typeof error.stderr === 'string' ? error.stderr : '';
@@ -168,6 +183,8 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     assert.equal(typeof JSON.parse(result.stdout).hookSpecificOutput.additionalContext, 'string');
   }
   await verifyFiles(created, new Map([...expected.keys()].map((file) => [file, 'created'])));
+  await verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories);
+  await verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environment);
   const beforeRepair = new Map();
   const repairActions = new Map();
   for (const [index, [file, target]] of [...expected].entries()) {
@@ -199,6 +216,7 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   }
 
   await verifyFiles(await setup(), repairActions);
+  await verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories);
   const beforeRepeat = new Map();
   for (const file of expected.keys()) {
     const snapshot = await stat(file, { bigint: true });
@@ -210,7 +228,89 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     const after = await stat(file, { bigint: true });
     assert.deepEqual({ ino: after.ino, mtimeNs: after.mtimeNs }, before, file);
   }
+  stageOutcomes['generated-skills']={deployedFiles:await Promise.all([...expected].map(async([file,target])=> {
+    const content=await readFile(file,'utf8');const relative=path.relative(skillDirectories[target.client],file);
+    const stamp=JSON.parse(/\n<!-- KIOKUKO DEPLOYMENT (.+) -->\n$/.exec(content)[1]);
+    return {client:target.client,logicalPath:`skills/${stamp.logicalName}/${relative.split(path.sep).slice(1).join('/')}`,content,hash:createHash('sha256').update(content).digest('hex')};
+  })),selectors:selectorEvidence};
   process.stdout.write(`Installed setup verified ${skillFiles.length} skill files across ${Object.keys(skillDirectories).length} clients: create, repair, dry-run, skip, and unchanged rerun.\n`);
+}
+
+async function verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environment) {
+  if (process.platform === 'win32') return; // Windows link permissions are not assumed.
+  const selected = path.join(installedRoot, 'skills/kiokuko-soul/SKILL.md');
+  const backup = selected + '.original';
+  const outside = path.join(fixtureRoot, 'external-sentinel.md');
+  const unlisted = path.join(installedRoot, 'skills/unlisted.md');
+  await writeFile(outside, 'EXTERNAL_BUNDLE_SENTINEL'); await writeFile(unlisted, 'UNLISTED_BUNDLE_SENTINEL');
+  await rename(selected, backup);
+  const client = new Client({ name: 'bundle-boundary-test', version: '1' });
+  try {
+    await client.connect(new StdioClientTransport({ command: cliPath, args: ['mcp'], cwd: fixtureRoot, env: environment, stderr: 'pipe' }));
+    for (const target of [outside, unlisted]) {
+      await symlink(target, selected);
+      const rejected = await client.callTool({ name: 'task_inspect', arguments: { cwd: fixtureRoot, operation: 'skill' } });
+      assert.equal(rejected.isError, true);
+      assert.equal(rejected.structuredContent.reason, 'boundary');
+      assert.doesNotMatch(JSON.stringify(rejected), /BUNDLE_SENTINEL/u);
+      await rm(selected);
+    }
+  } finally {
+    await client.close(); await rm(selected, { force: true }); await rename(backup, selected);
+    await rm(outside, { force: true }); await rm(unlisted, { force: true });
+  }
+  process.stdout.write('Packaged manifest rejects redirects to external and unlisted internal files.\n');
+}
+
+// Use actual deployed names and Markdown links, never hostSkillText/logicalSkillName.
+// This checks the install -> public MCP handoff; it is not a real-AI acceptance run.
+async function verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories) {
+  const repo = path.join(fixtureRoot, 'different-repo');
+  const subdirectory = path.join(repo, 'nested');
+  const outside = path.join(fixtureRoot, 'outside-repo');
+  await mkdir(subdirectory, { recursive: true }); await mkdir(outside, { recursive: true });
+  await run('git', ['init', '-q'], repo, environment);
+  for (const [host, directory] of Object.entries(skillDirectories)) {
+    const deployed = [];
+    for (const name of await readdir(directory)) {
+      const index = await readFile(path.join(directory, name, 'SKILL.md'), 'utf8');
+      const identity = /^name: (\S+)$/mu.exec(index)?.[1];
+      assert.equal(identity, name, 'Deployed frontmatter and public directory identity disagree');
+      const references = [...index.matchAll(/\]\((references\/[^)]+\.md)\)/gu)].map(match => match[1]);
+      deployed.push({ name: identity, references });
+    }
+    const client = new Client({ name: host, version: 'installed-contract' });
+    await client.connect(new StdioClientTransport({ command: cliPath, args: ['mcp'], cwd: subdirectory, env: environment, stderr: 'pipe' }));
+    try {
+      const tools = (await client.listTools()).tools;
+      assert.ok(tools.some(tool => tool.name === 'task_inspect'));
+      for (const cwd of [repo, subdirectory, outside]) {
+        for (const { name, references } of deployed) {
+          let hash;
+          for (const selector of [name, `${name}/SKILL.md`, `skills/${name}/SKILL.md`]) {
+            const result = await client.callTool({ name: 'task_inspect', arguments: { cwd, operation: 'skill', path: selector } });
+            assert.notEqual(result.isError, true, `${host}: ${selector}: ${JSON.stringify(result)}`);
+            selectorEvidence.push({host,selector,cwd,result});
+            hash ??= result.structuredContent.contentHash;
+            assert.equal(result.structuredContent.contentHash, hash);
+          }
+          for (const reference of references) {
+            const result = await client.callTool({ name: 'task_inspect', arguments: { cwd, operation: 'skill', path: `${name}/${reference}` } });
+            assert.notEqual(result.isError, true, `${host}: ${name}/${reference}`);
+            assert.ok(result.structuredContent.text.length > 0);
+          }
+        }
+      }
+      const capabilities = [...deployed.map(skill => ({ kind: 'skill', name: skill.name })),
+        ...tools.map(tool => ({ kind: 'mcp_tool', name: `mcp__kiokuko__${tool.name}` }))];
+      const recall = await client.callTool({ name: 'memory_recall', arguments: { query: 'shipping fee explanation', soulRead: true, capabilities } });
+      assert.notEqual(recall.isError, true, JSON.stringify(recall));
+      const rejected = await client.callTool({ name: 'task_inspect', arguments: { cwd: outside, operation: 'read', path: 'README.md' } });
+      assert.equal(rejected.isError, true);
+      assert.equal(rejected.structuredContent.reason, 'repository');
+    } finally { await client.close(); }
+  }
+  process.stdout.write('Installed selectors verified all client aliases, references, foreign repo/subdirectory and checkout-free recall.\n');
 }
 
 async function verifyInstalledProfileRebuild(cliPath, fixtureRoot) {
@@ -320,10 +420,13 @@ async function verifyInstalledTaskVerification(cliPath, fixtureRoot) {
       deliveryId: snapshot.deliveryId, stateDigest: snapshot.stateDigest, target, execution: 'installed CLI --version', outcome: 'passed', exitCode: 0 });
     await call('task_verification_record', { runId, requestId: 'installed-record', expectedRevision: evidence.revision,
       contractVersion: defined.contractVersion, checkId: 'startup', target, source: { kind: 'local', evidenceId: evidence.evidenceId } });
-    assert.equal((await call('task_memory_status', { runId })).completionReady, true);
+    const beforeRestart=await call('task_memory_status', { runId });
+    assert.equal(beforeRestart.completionReady, true);
     await client.close();
     client = await connect();
-    assert.equal((await call('task_memory_status', { runId })).completionReady, true);
+    const afterRestart=await call('task_memory_status', { runId });
+    assert.equal(afterRestart.completionReady, true);
+    stageOutcomes.restart={verification:{runId,beforeRunId:runId,afterRunId:runId,before:beforeRestart,after:afterRestart}};
     process.stdout.write('Installed project MCP verified typed refresh recovery, completion checks and restart persistence.\n');
   } finally { await client.close(); }
 }
@@ -342,56 +445,23 @@ async function verifyFirstInstalledEmbeddingSetup(installedRoot, prefixDirectory
     await chmod(sudo, 0o755);
   }
   const fixture = path.join(installedRoot, 'first-setup-smoke.mjs');
-  await writeFile(fixture, `
-import assert from 'node:assert/strict';
-import { Command } from 'commander';
-import { registerEmbeddingsCommands } from './dist/commands/embeddings.js';
-import { openConnection } from './dist/db/connection.js';
-import { migrateDatabase } from './dist/db/migrate.js';
-import { LOCAL_SMALL_PRESET } from './dist/embedding/presets/local-small.js';
-
-const database = openConnection(':memory:');
-migrateDatabase(database);
-try {
-  const cli = new Command().exitOverride();
-  registerEmbeddingsCommands(cli, {
-    withDatabase: async (operation) => operation(database),
-    setupGlobalClients: async () => ({ clients: ['codex'], projectAgentFiles: [] }),
-    modelInstaller: async () => ({
-      installation: 'installed', directory: process.cwd(),
-      relativePath: 'models/embeddings/local-small/smoke',
-      totalBytes: LOCAL_SMALL_PRESET.files.reduce((sum, file) => sum + file.size, 0),
-      manifestHash: 'a'.repeat(64),
-    }),
-    provider: {
-      profile: { providerKind: 'local-transformers' },
-      embed: async () => { throw new Error('empty database must not need vectors'); },
-    },
-    output: (_json, _operation, data) => assert.equal(data.semanticEnabled, true),
-  });
-  await cli.parseAsync(['node', 'kiokuko', 'setup', '--clients', 'codex', '--json']);
-  await Promise.all([import('@huggingface/hub'), import('@huggingface/transformers')]);
-  process.stdout.write('FIRST_SETUP_OK\\n');
-} finally {
-  database.close();
-}
-`);
-  const environment = {
-    ...process.env,
-    PATH: `${wrapperDirectory}${path.delimiter}${process.env.PATH ?? ''}`,
-    npm_config_prefix: prefixDirectory,
-    npm_config_audit: 'false',
-    npm_config_fund: 'false',
-  };
+  await writeFile(fixture, FIRST_SETUP_SCRIPT);
+  const environment = firstSetupEnvironment(fixtureRoot, prefixDirectory);
+  await mkdir(environment.HOME, { recursive: true });
   const { stdout } = await run(process.execPath, [fixture], fixtureRoot, environment);
   assert.match(stdout, /FIRST_SETUP_OK/u);
   const packagesAfter = await installedPackageNames(path.join(prefixDirectory, 'lib', 'node_modules'));
   for (const name of ['@huggingface/hub', '@huggingface/transformers', 'sqlite-vec']) {
     assert.equal(packagesAfter.has(name), true, `${name} must be installed by first setup`);
   }
+  const script=await readFile(fixture,'utf8');
+  stageOutcomes['optional-runtime']={before:[...packagesBefore].sort(),after:[...packagesAfter].sort(),script,scriptHash:createHash('sha256').update(script).digest('hex')};
   process.stdout.write('First installed embedding setup verified optional installation and same-process completion.\n');
 }
 
+const packagedSourceDigest = sourceFingerprint(repositoryRoot);
+const packageStages = [];
+let artifactHash, tarballSha1, packagePassed=false;
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'kiokuko-global-install-'));
 const packDirectory = path.join(temporaryRoot, 'pack');
 const prefixDirectory = path.join(temporaryRoot, 'prefix');
@@ -423,6 +493,11 @@ try {
     assert.ok(packageFiles.has(file), `Conversation handoff package artifact missing: ${file}`);
   }
   const tarball = packedFilename(packed.stdout, packDirectory);
+  recordStage('pack');
+  currentPackageStage='install';
+  artifactHash = createHash('sha256').update(await readFile(tarball)).digest('hex');
+  tarballSha1=createHash('sha1').update(await readFile(tarball)).digest('hex');
+  if (process.env.KIOKUKO_PACKAGE_ARTIFACT) await copyFile(tarball, process.env.KIOKUKO_PACKAGE_ARTIFACT);
   const install = await run('npm', [
     'install',
     '--global',
@@ -430,6 +505,11 @@ try {
     prefixDirectory,
     tarball,
   ], repositoryRoot);
+  const installedRoot=path.join(prefixDirectory,'lib/node_modules',packageJson.name);
+  stageOutcomes.install={prefix:prefixDirectory,cliPath:path.join(prefixDirectory,'bin','kiokuko'),dependencies:[...await installedPackageNames(path.join(prefixDirectory,'lib/node_modules'))].sort(),
+    files:await Promise.all(JSON.parse(packed.stdout)[0].files.map(async file=> {const bytes=await readFile(path.join(installedRoot,file.path));return {path:file.path,size:bytes.length,hash:createHash('sha256').update(bytes).digest('hex')};}))};
+  recordStage('install');
+  currentPackageStage='restart';
   const npmOutput = `${install.stdout}\n${install.stderr}`;
   assert.doesNotMatch(npmOutput, /deprecated\s+boolean|install-scripts/iu, 'minimal install emitted an optional-runtime warning');
 
@@ -444,6 +524,8 @@ try {
   await verifyInstalledTaskVerification(cliPath, path.join(temporaryRoot, 'verification-fixture'));
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 
+  recordStage('restart');
+  currentPackageStage='generated-skills';
   await verifyInstalledSkillSetup(
     cliPath,
     path.join(prefixDirectory, 'lib', 'node_modules', packageJson.name),
@@ -451,6 +533,8 @@ try {
     JSON.parse(packed.stdout)[0].files,
   );
 
+  recordStage('generated-skills');
+  currentPackageStage='optional-runtime';
   const installedNames = await installedPackageNames(path.join(prefixDirectory, 'lib', 'node_modules'));
   for (const forbidden of forbiddenPackages) {
     assert.equal(installedNames.has(forbidden), false, `${forbidden} must not be in the minimal dependency tree`);
@@ -460,7 +544,22 @@ try {
     prefixDirectory,
     path.join(temporaryRoot, 'embedding-setup-fixture'),
   );
+  recordStage('optional-runtime');
+  assert.equal(sourceFingerprint(repositoryRoot),packagedSourceDigest,'source changed during package verification');
+  packagePassed=true;
 } finally {
+  // Preserve real completed/partial stages even if an optional dependency fails.
+  // Diagnostic records and the packed tarball do not turn that failure into PASS.
+  if(process.env.KIOKUKO_PACKAGE_REPORT) {
+    const head=await execFileAsync('git',['rev-parse','HEAD'],{cwd:repositoryRoot});
+    const status=await execFileAsync('git',['status','--porcelain','--untracked-files=all'],{cwd:repositoryRoot});
+    const stages=['pack','install','generated-skills','restart','optional-runtime'].map(id=>packageStages.find(stage=>stage.id===id)
+      ?? {id,commands:packageExecutions.filter(record=>record.stage===id),outcome:stageOutcomes[id],complete:false,exitCode:null});
+    await writeFile(process.env.KIOKUKO_PACKAGE_REPORT,JSON.stringify({schema:'package-stage-evidence-v2',gate:'G2',classification:packagePassed?'PASS':'FAIL_HARNESS',
+      commit:head.stdout.trim(),dirty:!!status.stdout.trim(),artifactHash,tarballSha1,sourceDigest:packagedSourceDigest,
+      stages:stages.map(stage=>({...stage,artifactHash,sourceDigest:packagedSourceDigest})),
+      linkChecks:process.platform==='win32'?'NOT_RUN: link privileges unavailable':'PASS'},null,2));
+  }
   await rm(temporaryRoot, { recursive: true, force: true });
 }
 

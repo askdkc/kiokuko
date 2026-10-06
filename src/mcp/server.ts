@@ -160,6 +160,10 @@ type McpToolErrorResult = {
 };
 
 function publicToolErrorResult(error: unknown): McpToolErrorResult {
+  if (error instanceof TaskInspectionError) return {
+    isError: true, content: [{ type: 'text', text: error.message }],
+    structuredContent: { code: error.code, reason: error.reason, retryable: false, recoverable: true },
+  };
   if (error instanceof TaskStateConflict) return { isError: true, content: [{ type: 'text', text: error.message }], structuredContent: { code: error.code, ...error.details } };
   if (error instanceof CapabilityPreparationError) {
     return { isError: true, content: [{ type: 'text', text: error.message }],
