@@ -11,6 +11,7 @@ Choose a guide by what you need to do:
 - [Akinator profile memory](akinator-memory.md) — optional hints, strict target resolution, and index rebuilding.
 - [Security and trust](security-and-trust.md) — secret rejection, memory boundaries, External Skills, and public errors.
 - [CLI contract](cli-contract.md) — stable command and response details.
+- [AgenticReplay](agenticreplay.md) — record the host client's model traffic and verify offline replay with Kiokuko.
 
 Implementation references: [architecture](architecture.md), [database](database.md),
 [execution ledger](execution-ledger.md), [client compatibility](client-compatibility.md),

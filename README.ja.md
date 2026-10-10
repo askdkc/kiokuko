@@ -102,6 +102,9 @@ managed MCP blockと登録済みプロジェクトのinstructionsを更新しま
 Codex、OpenCode、Claude Code、Hermes Agentに対応しています。client別の設定、再起動、Web UIは
 [導入ガイド](docs/getting-started.ja.md)にまとめています。
 
+セッションの記録には[AgenticReplay](docs/agenticreplay.ja.md)を使い、Kiokukoに接続する
+クライアントをレコーダーから起動します。任意で使うツールで、別途インストールします。
+
 ## ChatGPTで使う（プレビュー）
 
 Developer modeで自分用プラグインとして接続し、記憶を保存・検索します。ストア配布版はありません。

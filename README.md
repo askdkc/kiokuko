@@ -120,6 +120,9 @@ Client-specific setup, Web UI, and restart instructions are in
 [Getting started](docs/getting-started.md). The [documentation index](docs/README.md)
 links to conceptual and operational guides.
 
+Record sessions with [AgenticReplay](docs/agenticreplay.md) by wrapping the client
+using Kiokuko. AgenticReplay is optional and installed separately.
+
 ## Use with ChatGPT (preview)
 
 Connect a personal plugin in Developer mode to save and recall memory. No store-distributed plugin is available.

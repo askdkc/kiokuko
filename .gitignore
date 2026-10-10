@@ -3,6 +3,7 @@ PLAN.md
 node_modules
 /dist/
 .kiokuko-dev/
+.agenticreplay/
 tests/sampledb/*.sqlite3-wal
 tests/sampledb/*.sqlite3-shm
 

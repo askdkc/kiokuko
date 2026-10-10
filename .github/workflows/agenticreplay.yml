@@ -1,0 +1,29 @@
+name: AgenticReplay compatibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  record-replay:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.16.0
+          cache: npm
+      - run: npm ci
+      - name: Install the published recorder
+        run: npm install --global agenticreplay@0.1.2 --ignore-scripts --no-audit --no-fund
+      - name: Record real Kiokuko schemas and results, then replay offline
+        run: npm run test:agenticreplay

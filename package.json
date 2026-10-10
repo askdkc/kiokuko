@@ -34,6 +34,7 @@
     "test:integration": "node scripts/run-tests.mjs tests/integration",
     "test:sqlite-vec": "node --import tsx tests/ci/sqlite-vec-package-smoke.ts",
     "test:global-install": "node tests/ci/global-install-smoke.mjs",
+    "test:agenticreplay": "npm run build && node tests/ci/agenticreplay-smoke.mjs",
     "test:evaluation": "npm run build && node scripts/run-retrieval-evaluation.mjs",
     "test:interaction:live": "npm run build && node scripts/run-interaction-memory-smoke.mjs",
     "test:interaction:benchmark": "npm run build && node scripts/run-interaction-memory-benchmark.mjs",

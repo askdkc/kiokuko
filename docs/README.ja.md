@@ -10,6 +10,7 @@
 - [Akinator のプロフィール補助](akinator-memory.md) — 候補提示、限定的な対象補完、索引の再構築。
 - [Security and trust](security-and-trust.ja.md) — secret拒否、記憶の境界、External Skills、公開エラー。
 - [CLI contract](cli-contract.md) — 安定したコマンドとレスポンス。
+- [AgenticReplay](agenticreplay.ja.md) — ホストクライアントのモデル通信の記録と、Kiokukoを使ったオフライン再生の検証。
 
 実装者向けは[architecture](architecture.md)、[database](database.md)、[execution ledger](execution-ledger.md)、
 [client compatibility](client-compatibility.md)、[retrieval evaluation](retrieval-evaluation.md)を参照してください。
