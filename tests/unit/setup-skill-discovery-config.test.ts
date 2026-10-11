@@ -65,7 +65,6 @@ test('README entry points and English/Japanese docs carry the setup and trust co
   for (const contractTerm of [
     'required = false',
     'CONFLICT',
-    'doctor is read-only',
   ]) assert.ok(gettingStarted.includes(contractTerm), `getting-started.md: ${contractTerm}`);
 
   const security = readFileSync(new URL('../../docs/security-and-trust.md', import.meta.url), 'utf8');
@@ -76,6 +75,35 @@ test('README entry points and English/Japanese docs carry the setup and trust co
     'ToolLifecycleContributor',
     'isError: true',
   ]) assert.ok(security.includes(contractTerm), `security-and-trust.md: ${contractTerm}`);
+});
+
+test('Getting-started docs describe read-only doctor checks and consent for missing-file recovery', () => {
+  const documents = [
+    {
+      name: 'getting-started.md',
+      contracts: [
+        /`kiokuko doctor --json` to inspect runtime, database, and Codex MCP health without changing files/u,
+        /Interactive `kiokuko doctor` asks before recreating a missing registered agent instruction file/u,
+        /Enter defaults to No/u,
+        /Recreation restores only Kiokuko instructions, not deleted custom content/u,
+        /JSON and noninteractive checks report the affected path and reason under `data\.checks\.agentFiles\.findings` without prompting or recreating files/u,
+      ],
+    },
+    {
+      name: 'getting-started.ja.md',
+      contracts: [
+        /`kiokuko doctor --json`はruntime、DB、Codex MCPを読み取り専用で検査します/u,
+        /対話実行の`kiokuko doctor`では、登録済みのagent instruction fileが欠落していると 再作成するか確認します/u,
+        /Enterだけなら作成しません/u,
+        /再作成できるのはKiokukoの指示だけで、 削除された独自の指示は復元できません/u,
+        /JSON・非対話実行では確認や再作成を行わず、 `data\.checks\.agentFiles\.findings`に対象パスと理由を返します/u,
+      ],
+    },
+  ];
+  for (const document of documents) {
+    const content = readFileSync(new URL(`../../docs/${document.name}`, import.meta.url), 'utf8').replace(/\s+/gu, ' ');
+    for (const contract of document.contracts) assert.match(content, contract, document.name);
+  }
 });
 
 test('README and documentation index links resolve inside the repository', () => {
