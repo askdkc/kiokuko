@@ -616,7 +616,7 @@ async function rank(
       ? [...value.selectionReasons, 'duplicate_source_suppressed']
       : value.selectionReasons,
   }));
-  const feedback = entries.flatMap(({ entry }) => contextFeedbackSignals(database, entry.id).flatMap((signal) =>
+  const feedback = entries.flatMap(({ entry }) => contextFeedbackSignals(database, entry.id, { workspace: query.workspace, entryRevision: entry.revision }).flatMap((signal) =>
     Array.from({ length: signal.boundedInfluence }, () => ({ entryId: entry.id, verdict: signal.verdict }))));
   const rankingInput = {
     taskProfile: query.taskProfile,
@@ -741,7 +741,7 @@ function priorData(database: SqliteDatabase, query: PreparedQuery, options: Prio
   const stateDeliveries = deliveries.filter((delivery) => delivery.deliveryId !== options.excludeDeliveryId);
   const delivered = stateDeliveries
     .filter((delivery) => delivery.queryHash !== options.excludeDeliveredQueryHash)
-    .flatMap((delivery) => delivery.items.flatMap((item) => contextFeedbackSignals(database, item.entryId)
+    .flatMap((delivery) => delivery.items.flatMap((item) => contextFeedbackSignals(database, item.entryId, { workspace: query.workspace, entryRevision: item.entryRevision })
       .some((signal) => signal.verdict === 'helpful')
       ? []
       : [{ entryId: item.entryId, revision: item.entryRevision }]));

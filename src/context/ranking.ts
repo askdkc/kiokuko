@@ -60,6 +60,7 @@ export const CONTEXT_SELECTION_REASON_ORDER = [
   'project_origin',
   'ecosystem_origin',
   'global_origin',
+  'general_communication_preference',
   'scope_affinity',
   'applicability_match',
   'applicability_unknown',

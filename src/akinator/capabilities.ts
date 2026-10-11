@@ -97,19 +97,10 @@ export interface MemoryDeliveryObservation {
   storedEntryCount: number;
 }
 
-const ACTIONABLE_MEMORY_SELECTION_REASONS = new Set([
-  'repeated_lesson',
-  'exact_signal_match',
-  'applicability_match',
-  'target_path_match',
-  'changed_path_match',
-  'error_signature_match',
-]);
-
 export function hasActionableMemorySelection(
   items: ReadonlyArray<{ selectionReasons: ReadonlyArray<string> }>,
 ): boolean {
-  return items.some((item) => !item.selectionReasons.includes('general_communication_preference') && item.selectionReasons.some((reason) => ACTIONABLE_MEMORY_SELECTION_REASONS.has(reason)));
+  return items.some((item) => !item.selectionReasons.includes('general_communication_preference'));
 }
 
 export function deriveMemoryUseSignal(input: {
@@ -124,7 +115,8 @@ export function memoryReasoningRequired(
   profile: Pick<TaskProfile, 'taskType'> & Partial<TaskProfile>,
   memoryUse: MemoryUseSignal,
 ): boolean {
-  return memoryUse === 'actionable' && (profile.taskType === 'build' || profile.taskType === 'debug'
+  return memoryUse === 'actionable' && (profile.taskType === 'build' || profile.taskType === 'debug' || profile.taskType === 'review'
+    || profile.taskType === 'analysis' && /(?:\b(?:src|lib|tests?)\/|\.(?:[cm]?[jt]sx?|py|rb|rs|go|java|kt|swift|c|h|cpp|hpp|sql|lisp|el)\b)/iu.test(profile.target ?? '')
     || EXPLICIT_CODING_INTENT.test([profile.target, profile.expected, profile.constraints].join(' ')));
 }
 
@@ -462,7 +454,7 @@ export function resolveCapabilities(input: {
         : {}),
     };
   });
-  const verification: CapabilityRecommendation[] = input.profile.taskType === 'build' || input.profile.taskType === 'debug'
+  const verification: CapabilityRecommendation[] = input.profile.taskType === 'build' || input.profile.taskType === 'debug' || input.profile.taskType === 'review'
     ? ['task_verification_define', 'task_verification_record'].map(tool => {
       const matched = normalized.tools.find(item => item.name === tool || item.name.endsWith(`__${tool}`));
       return { kind: 'mcp_tool', name: matched?.name ?? tool,

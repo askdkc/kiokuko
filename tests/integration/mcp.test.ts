@@ -698,7 +698,7 @@ test('task_prepare rejects malformed catalogs before opening a run and compacts 
   }
 });
 
-test('task_prepare proceeds without memory-reasoning for managed curator global memory', async () => {
+test('task_prepare withholds curated task memory when applicability reasoning is unavailable', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-curator-trust-repo-'));
   execFileSync('git', ['init', '-q', root]);
   const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-curator-trust-data-'));
@@ -760,10 +760,10 @@ test('task_prepare proceeds without memory-reasoning for managed curator global 
       context: { items: Array<{ entryId: string }> };
     };
     assert.equal(content.nextAction, 'proceed');
-    assert.equal(content.memoryPolicy.memoryReasoningRequired, false);
-    assert.equal(content.memoryPolicy.contextWithheld, false);
-    assert.equal(content.memoryPolicy.withheldReason, null);
-    assert.equal(content.context.items.some((item) => item.entryId === curated.id), true);
+    assert.equal(content.memoryPolicy.memoryReasoningRequired, true);
+    assert.equal(content.memoryPolicy.contextWithheld, true);
+    assert.equal(content.memoryPolicy.withheldReason, 'memory_reasoning_missing');
+    assert.equal(content.context, null);
   } finally {
     await client.close();
     if (server.isConnected()) await server.close();

@@ -173,7 +173,8 @@ test('all six generic Agent mutation responses bind the exact canonical HTTP req
     );
     observed.add(feedbackData.requestBindingHash as string);
 
-    const closeBody = { apiVersion: '1', status: 'completed' };
+    // This fixture verifies transport binding, without claiming unregistered verification completed.
+    const closeBody = { apiVersion: '1', status: 'interrupted' };
     const closeKey = 'request-binding-close';
     const close = await post(
       runtime.url,

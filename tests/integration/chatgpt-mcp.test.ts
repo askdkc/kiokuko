@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
@@ -16,6 +16,7 @@ import { openConnection } from '../../src/db/connection.js';
 import { createChatgptMemoryServer } from '../../src/mcp/chatgpt-server.js';
 import { ChatgptRuntimeOwner } from '../../src/mcp/chatgpt-runtime.js';
 import { chatgptPolicyOutputSchema, chatgptRecallOutputSchema } from '../../src/mcp/chatgpt-contract.js';
+import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { recallInteractionMemory } from '../../src/memory/interaction-recall.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
@@ -67,7 +68,7 @@ test('remote tools are an explicit read-only allowlist with strict published sch
     assert.equal(tool.outputSchema?.type, 'object');
   }
   const recall = list.find(tool => tool.name === 'memory_recall')!;
-  assert.deepEqual(Object.keys(recall.inputSchema.properties!).sort(), ['limit', 'maxContextChars', 'policy', 'query', 'relatedMode', 'subjects', 'temporal']);
+  assert.deepEqual(Object.keys(recall.inputSchema.properties!).sort(), ['limit', 'maxContextChars', 'policy', 'project', 'query', 'relatedMode', 'subjects', 'temporal']);
   for (const name of ['memory_capture', 'task_prepare', 'task_answer', 'task_inspect', 'memory_checkpoint',
     'task_memory_review', 'task_memory_refresh', 'task_memory_status', 'task_execution_evidence',
     'curator_check', 'curator_globalize', 'handoff_save', 'handoff_load', 'handoff_discard', '/private/sentinel']) {
@@ -201,5 +202,46 @@ for (const termination of ['EOF', 'SIGTERM'] as const) test(`stdio closes cleanl
   await once(child.stdout, 'data');
   if (termination === 'EOF') child.stdin.end(); else child.kill('SIGTERM');
   assert.deepEqual(await exit, [0, null]);
+  assert.deepEqual(snapshot(db), before);
+});
+
+
+test('operator project allowlist is read-only, policy-bound and isolated from global and other projects', async t => {
+  const { db, root, databasePath } = await fixture(t);
+  const roots: string[] = [];
+  const ids: string[] = [];
+  const entryIds: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const repo = path.join(root, 'repo-' + i);
+    execFileSync('git', ['init', '-q', repo]);
+    const project = await resolveProjectWorkspace(db, repo);
+    assert.ok(project);
+    roots.push(repo); ids.push(project.repositoryId);
+    entryIds.push(recordEntry(db, { workspace: project.workspace, kind: 'lesson', title: 'Project memory', body: 'project-' + i }).id);
+  }
+  const owner = new ChatgptRuntimeOwner(databasePath, 'read-write', roots.slice(0, 3));
+  t.after(async () => { await owner.close(); });
+  const before = snapshot(db);
+  const client = await connect(t, owner);
+  const p = (await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent as any;
+  assert.deepEqual(p.projects.map((project: any) => project.repositoryId), ids.slice(0, 3).sort());
+  assert.equal(p.access, 'read-write');
+  assert.ok(!JSON.stringify(p).includes(root));
+  const attestation = { version: p.policyVersion, digest: p.policyDigest, read: true };
+  for (let i = 0; i < 3; i++) {
+    const result = await client.callTool({ name: 'memory_recall', arguments: { project: ids[i], query: 'memory', policy: attestation } });
+    assert.notEqual(result.isError, true);
+    const value = result.structuredContent as any;
+    assert.equal(value.scope, 'project');
+    assert.equal(value.project, ids[i]);
+    assert.deepEqual(value.items.map((item: any) => item.entryId), [entryIds[i]]);
+  }
+  for (const project of [ids[3], roots[0], 'global', 'ecosystem']) {
+    const result = await client.callTool({ name: 'memory_recall', arguments: { project, query: 'memory', policy: attestation } });
+    assert.equal(result.isError, true);
+    assert.ok(!JSON.stringify(result).includes(root));
+  }
+  const stale = await client.callTool({ name: 'memory_recall', arguments: { project: ids[0], query: 'memory', policy } });
+  assert.equal((stale.structuredContent as any).code, 'POLICY_VERSION_MISMATCH');
   assert.deepEqual(snapshot(db), before);
 });

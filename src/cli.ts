@@ -1,3 +1,4 @@
+import { registerDiagnosticRetentionCommand } from './commands/diagnostic-retention.js';
 import { registerChatgptCommands } from './commands/chatgpt.js';
 import { registerMemoryIndexCommands } from './commands/memory-index.js';
 import { registerCodexHookCommand } from './commands/codex-hook.js';
@@ -893,6 +894,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   cli.configureOutput({ outputError: () => undefined });
 
   registerChatgptCommands(cli);
+  registerDiagnosticRetentionCommand(cli);
 
   cli.command('version').description('Show the Kiokuko package version').action(() => {
     process.stdout.write(`${PACKAGE_VERSION}\n`);
@@ -911,13 +913,14 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   cli.command('mcp').description('Run the Kiokuko MCP server over stdio')
     .option('--profile <name>', 'MCP profile: chatgpt-memory (omit for the existing local server)')
     .option('--access <mode>', 'ChatGPT access: read (default) or read-write (explicit save/correction)')
-    .action(async (options: { profile?: string; access?: string }) => {
-      if (options.profile === undefined && options.access === undefined) return runMcpServer();
+    .option('--project <path>', 'Read-only ChatGPT project binding (repeatable)', (value: string, previous: string[]) => [...previous, value], [])
+    .action(async (options: { profile?: string; access?: string; project: string[] }) => {
+      if (options.profile === undefined && options.access === undefined && options.project.length === 0) return runMcpServer();
       if (options.profile !== 'chatgpt-memory' || (options.access !== undefined && options.access !== 'read' && options.access !== 'read-write')) {
         throw new KiokukoError('USAGE_ERROR', 'Use --profile chatgpt-memory with --access read or read-write, or omit both options for the local MCP server');
       }
       const { runChatgptMemoryServer } = await import('./mcp/chatgpt-server.js');
-      await runChatgptMemoryServer(options.access ?? 'read');
+      await runChatgptMemoryServer(options.access ?? 'read', options.project);
     });
 
   cli.command('use').description('Bind this repository to Kiokuko external memory')

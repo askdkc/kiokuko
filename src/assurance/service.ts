@@ -133,6 +133,7 @@ export function insertTaskEvidence(db: SqliteDatabase, input: { runId: string; d
 }
 export interface MemoryAssuranceReport {
   contract?: typeof INTEGRATION_CONTRACT; invalidated?: Array<{entryId:string;reason:string}>;
+  executionObservation?: { unknownExitCalls: number; runningCalls: number; structuredExitCalls: number; hooksObserved: boolean; trustedExitMetadata: 'available' | 'unavailable' | 'unobserved' };
   observationSequence?: number; decisions?: Array<{entryId:string;decisionId:string;sourceDeliveryId:string}>;
   mode: 'legacy_unobserved' | 'tracked'; revision: number | null; retrieval: string;
   pending: string[]; stale: string[]; missingVerification: string[]; observed: boolean; complete: boolean;
@@ -193,7 +194,12 @@ export interface AssuranceReport extends MemoryAssuranceReport {
 export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true): AssuranceReport {
   const memory = memoryAssuranceReport(db, runId, verifyState);
   const verification = taskVerificationReport(db, runId, verifyState);
-  return { ...memory, verification, completionReady: verification.mode === 'legacy_unobserved' ? null : memory.complete && verification.ready };
+  const counters = db.prepare('SELECT * FROM task_execution_observations WHERE run_id=?').get<{ unknown_exit_calls: number; running_calls: number; structured_exit_calls: number; last_exit_metadata: 'available' | 'unavailable' | 'unobserved' }>(runId);
+  const hooksObserved = !!db.prepare('SELECT 1 FROM codex_hook_requests WHERE run_id=? LIMIT 1').get(runId);
+  const executionObservation = { unknownExitCalls: counters?.unknown_exit_calls ?? 0, runningCalls: counters?.running_calls ?? 0,
+    structuredExitCalls: counters?.structured_exit_calls ?? 0, hooksObserved,
+    trustedExitMetadata: counters?.last_exit_metadata ?? 'unobserved' as const };
+  return { ...memory, verification, executionObservation, completionReady: verification.mode === 'legacy_unobserved' ? null : memory.complete && verification.ready };
 }
 export function assertAssuranceCompletion(db: SqliteDatabase, runId: string, outcome: string): void {
   if (outcome !== 'completed') return;

@@ -52,3 +52,18 @@ Stop the previous direct foreground daemon first. Existing profiles and environm
 Polling degrades on the first failure. Transient failures warn on the third consecutive failure, then at most once per minute. Authentication, certificate and HTTP errors warn immediately. Recovery requires an observed successful poll; liveness or old metrics do not establish recovery. Unavailable or stale diagnostics are `unknown`. There is no automatic restart. Ctrl+C also stops the child process.
 
 Aggregation applies to this command only; upstream admin UI and direct daemon logs remain unchanged. Internal DNS/TLS phases and connection reuse are unknown when not exposed. Poll recovery and a successful hosted MCP invocation require separate verification.
+
+## Read-only access to selected projects
+
+An operator can add repeated `--project` options to the existing MCP launch command:
+
+```sh
+kiokuko mcp --profile chatgpt-memory --access read-write \
+  --project /Users/dkc/Sites/Src/kiokuko \
+  --project /Users/dkc/Sites/Src/dsh-cli \
+  --project /Users/dkc/Sites/Src/kiokuko-dsh
+```
+
+Each path must already resolve to a registered project binding. Startup reads those bindings without creating repositories, changing timestamps, or migrating the database. Run `kiokuko init` locally after upgrading, then restart the connection. `memory_policy` advertises only allowed repository IDs, display names and read access; its digest binds the allowlist. The model supplies an advertised ID in `memory_recall.project`, never a path. Project queries return only the selected workspace, with no global or ecosystem fallback. Omitting `project` retains global recall. Capture remains global-only and respects the existing `--access` setting.
+
+Project access does not guarantee automatic recall or host-enforced review in ChatGPT. The model must retrieve the relevant lesson, decide its applicability against current evidence, and verify the actual user workflow. Saving a memory or completing a checkpoint proves neither learning nor future application.

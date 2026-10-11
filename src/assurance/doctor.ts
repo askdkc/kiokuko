@@ -23,6 +23,8 @@ export function assuranceDoctor(db: SqliteDatabase, hooksPath?: string) {
       retrieval[report.retrieval] = (retrieval[report.retrieval] ?? 0) + 1;
     } catch { errors += 1; }
   }
+  const lastExecution = db.prepare("SELECT response_shape FROM codex_hook_observations WHERE event_name='PostToolUse' AND tool_name IN ('Bash','exec_command','write_stdin') ORDER BY rowid DESC LIMIT 1").get<{response_shape:string}>();
+  const exitMetadata = lastExecution ? JSON.parse(lastExecution.response_shape).exitMetadata ?? 'unconfirmed' : 'unconfirmed';
   return { ok: errors === 0, count: pending + stale + verification + errors,
-    detail: `configuration=${configured}; historicalHookRequests=${observed}; currentClient=unconfirmed; pending=${pending}; stale=${stale}; missingVerification=${verification}; inspectionErrors=${errors}; sampled=${active.length > 20}; retrieval=${JSON.stringify(retrieval)}` };
+    detail: `configuration=${configured}; historicalHookRequests=${observed}; currentClient=unconfirmed; pending=${pending}; stale=${stale}; missingVerification=${verification}; inspectionErrors=${errors}; sampled=${active.length > 20}; retrieval=${JSON.stringify(retrieval)}; lastExecutionExitMetadata=${exitMetadata}; hookActivityDoesNotProveExitMetadata=true` };
 }

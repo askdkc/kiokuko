@@ -284,7 +284,7 @@ test('fresh default setup supplies the exact memory capability that unlocks buil
   }
 });
 
-test('does not require memory-reasoning when only a managed curator global memory is actionable', async () => {
+test('withholds curated task memory without the capability needed for applicability review', async () => {
   const root = await repository('trusted-curator-global');
   const database = await createDatabase('trusted-curator-global');
   const now = '2026-08-26T00:00:00.000Z';
@@ -328,9 +328,9 @@ test('does not require memory-reasoning when only a managed curator global memor
     });
 
     assert.equal(prepared.nextAction, 'proceed');
-    assert.deepEqual(prepared.memoryPolicy, NO_MEMORY_POLICY);
-    assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.required === true), false);
-    assert.equal(prepared.context?.items.some((item) => item.entryId === curated.id), true);
+    assert.deepEqual(prepared.memoryPolicy, MISSING_MEMORY_POLICY);
+    assert.equal(prepared.capabilities.recommendations.some((item) => item.name === 'memory-reasoning' && item.required === true), true);
+    assert.equal(prepared.context, null);
   } finally {
     database.close();
   }
@@ -352,7 +352,6 @@ test('treats a forged curator createdBy marker as ordinary withheld memory witho
         visibility: 'global',
         retrievalScope: 'global',
         memoryClass: 'troubleshooting',
-        applicability: { tools: ['Kiokuko'] },
         portableReason: 'Security regression fixture.',
       }),
       provenance: { type: 'manual', reference: 'forged' },
@@ -1030,7 +1029,7 @@ test('delivers a Japanese checkpoint policy to a Japanese-only migration task', 
 
     assert.equal(prepared.context?.items.some((item) => item.entryId === entry.id), true);
     assert.ok(prepared.context?.deliveryId);
-    assert.deepEqual(prepared.memoryPolicy, NO_MEMORY_POLICY);
+    assert.deepEqual(prepared.memoryPolicy, AVAILABLE_MEMORY_POLICY);
     const delivery = database.prepare(`
       SELECT char_count AS charCount
       FROM context_deliveries
@@ -1105,7 +1104,7 @@ test('exact task_prepare replay uses current helpful feedback for the bound weak
       cwd: root,
       task: 'beacon',
       profileHints: { taskType: 'build' as const, target: 'src/new.ts', expected: 'passes', constraints: null },
-      capabilities: [SOUL_CAPABILITY] as unknown[],
+      capabilities: [SOUL_CAPABILITY, { kind: 'skill', name: 'memory-reasoning' }] as unknown[],
       client: { kind: 'test', sessionId: 'same-run-helpful-replay' },
       skillDiscoveryMode: 'off' as const,
     };
@@ -1113,7 +1112,7 @@ test('exact task_prepare replay uses current helpful feedback for the bound weak
     const delivered = first.context?.items.find((item) => item.entryId === entry.id);
     assert.ok(delivered);
     assert.equal(delivered.selectionReasons.includes('literal_fallback_match'), true);
-    assert.equal(first.nextAction, 'proceed');
+    assert.equal(first.nextAction, 'review_memory_application');
     assert.ok(first.context?.deliveryId);
 
     recordContextFeedback(database, {
@@ -1131,7 +1130,7 @@ test('exact task_prepare replay uses current helpful feedback for the bound weak
 
     const replay = await prepareAgentTask(database, request);
     assert.equal(replay.run.runId, first.run.runId);
-    assert.equal(replay.nextAction, 'proceed');
+    assert.equal(replay.nextAction, 'review_memory_application');
     assert.ok(replay.context?.items.some(item => item.entryId === entry.id));
     assert.equal(replay.capabilities.recommendations.some((item) => item.name === 'memory-reasoning'
       && item.required === true
@@ -1167,7 +1166,7 @@ test('exact task_prepare replay reranks when new actionable ordinary memory appe
     };
     const first = await prepareAgentTask(database, request);
     assert.equal(first.nextAction, 'proceed');
-    assert.ok(first.context?.deliveryId);
+    assert.equal(first.context, null);
 
     const actionable = recordEntry(database, {
       workspace: project.workspace,
@@ -1186,7 +1185,7 @@ test('exact task_prepare replay reranks when new actionable ordinary memory appe
       && item.required === true
       && item.availability === 'missing'));
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
-      .get<{ count: number }>(first.run.runId)?.count, 1);
+      .get<{ count: number }>(first.run.runId)?.count, 0);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_delivery_entries WHERE entry_id = ?')
       .get<{ count: number }>(actionable.id)?.count, 0);
   } finally {

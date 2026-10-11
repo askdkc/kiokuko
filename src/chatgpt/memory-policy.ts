@@ -15,9 +15,9 @@ export const CHATGPT_MEMORY_POLICY = Object.freeze({
   instructions: bundled.instructions,
 });
 
-export function chatgptPolicyError(policy?: { version?: string | undefined; digest?: string | undefined; read?: boolean | undefined }) {
+export function chatgptPolicyError(policy?: { version?: string | undefined; digest?: string | undefined; read?: boolean | undefined }, expected: Pick<typeof CHATGPT_MEMORY_POLICY, 'policyVersion' | 'policyDigest'> = CHATGPT_MEMORY_POLICY) {
   if (policy?.read !== true || !policy.version || !policy.digest) return 'POLICY_REQUIRED' as const;
-  if (policy.version !== CHATGPT_MEMORY_POLICY.policyVersion || policy.digest !== CHATGPT_MEMORY_POLICY.policyDigest) {
+  if (policy.version !== expected.policyVersion || policy.digest !== expected.policyDigest) {
     return 'POLICY_VERSION_MISMATCH' as const;
   }
   return undefined;

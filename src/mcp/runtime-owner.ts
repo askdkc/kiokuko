@@ -1,3 +1,4 @@
+import { maintainDiagnosticRetention } from '../ledger/diagnostic-retention.js';
 import { initializeDatabase, type InitOptions } from '../commands/init.js';
 import { getGlobalDatabasePath, type PathEnvironment } from '../config/paths.js';
 import { openConnection } from '../db/connection.js';
@@ -67,7 +68,7 @@ export class McpRuntimeOwner implements McpDatabaseOwner {
     const database = opened.database;
     const queue = new WriteQueue<unknown>(64);
     try {
-      if (this.#options.initializeDatabase === undefined && this.#options.openDatabase === undefined) cleanupExpiredHandoffs(database);
+      if (this.#options.initializeDatabase === undefined && this.#options.openDatabase === undefined) { cleanupExpiredHandoffs(database); maintainDiagnosticRetention(database); }
       const runtime = createEmbeddingRuntime(database, config, {
         ...(this.#options.embeddingProvider === undefined ? {} : { provider: this.#options.embeddingProvider }),
         ...(opened.backend === undefined ? {} : { backend: opened.backend }),

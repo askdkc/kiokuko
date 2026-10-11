@@ -632,7 +632,7 @@ test('Task5 delivery persistence forwards the transaction-time capability assert
 test('exact checkpoint replay re-evaluates current helpful feedback for its weak delivery', async () => {
   const { runtime, databasePath } = await fixture();
   const body = {
-    ...openRequest(SOUL_CAPABILITIES),
+    ...openRequest(capabilities),
     task: {
       title: 'beacon',
       query: 'beacon',
@@ -669,7 +669,7 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
       apiVersion: '1',
       currentGoal: 'switch to implementation',
       taskProfileRevision: { taskType: 'build' },
-      capabilities: SOUL_CAPABILITIES,
+      capabilities,
     };
     const checkpoint = await request(runtime.url, `/api/v1/agent/runs/${runId}/checkpoints`, {
       method: 'POST',
@@ -680,7 +680,7 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
     const checkpointData = dataOf(checkpoint.value);
     assert.equal(checkpointData.taskProfile.taskType, 'build');
     assert.equal(checkpointData.nextAction, 'proceed', JSON.stringify(checkpointData));
-    assert.deepEqual(checkpointData.memoryPolicy, NO_MEMORY_POLICY);
+    assert.deepEqual(checkpointData.memoryPolicy, AVAILABLE_MEMORY_POLICY);
     const delivered = checkpointData.context?.items.find((item: any) => item.entryId === entryId);
     assert.ok(delivered);
     assert.equal(delivered.selectionReasons.includes('literal_fallback_match'), true);
@@ -707,7 +707,7 @@ test('exact checkpoint replay re-evaluates current helpful feedback for its weak
     assert.equal(replay.response.status, 200);
     const replayData = dataOf(replay.value);
     assert.equal(replayData.nextAction, 'proceed');
-    assert.deepEqual(replayData.memoryPolicy, {memoryReasoningRequired:false,contextWithheld:false,withheldReason:null});
+    assert.deepEqual(replayData.memoryPolicy, AVAILABLE_MEMORY_POLICY);
     assert.ok(replayData.context?.items.length);
     assert.equal(replayData.capabilities.recommendations.some((item: any) => item.name === 'memory-reasoning'
       && item.required === true

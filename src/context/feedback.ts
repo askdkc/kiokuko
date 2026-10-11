@@ -41,13 +41,15 @@ export interface ContextFeedbackSignal {
 }
 
 /** Shared cross-run feedback evidence for retrieval policy consumers. */
-export function contextFeedbackSignals(database: SqliteDatabase, entryId: string): ContextFeedbackSignal[] {
+export function contextFeedbackSignals(database: SqliteDatabase, entryId: string, scope: { workspace: string; entryRevision: number }): ContextFeedbackSignal[] {
   const rows = database.prepare(`
-    SELECT verdict, COUNT(DISTINCT run_id) AS distinctRuns
-      FROM context_feedback
-     WHERE entry_id = ?
-     GROUP BY verdict
-  `).all<{ verdict: unknown; distinctRuns: unknown }>(entryId);
+    SELECT f.verdict, COUNT(DISTINCT f.run_id) AS distinctRuns
+      FROM context_feedback f
+      JOIN ledger_runs r ON r.run_id = f.run_id
+      JOIN context_delivery_entries d ON d.delivery_id = f.delivery_id AND d.entry_id = f.entry_id
+     WHERE f.entry_id = ? AND (? IS NULL OR r.workspace = ?) AND (? IS NULL OR d.entry_revision = ?)
+     GROUP BY f.verdict
+  `).all<{ verdict: unknown; distinctRuns: unknown }>(entryId, scope.workspace, scope.workspace, scope.entryRevision, scope.entryRevision);
   const byVerdict = new Map<ContextFeedbackVerdict, number>();
   for (const row of rows) {
     if (typeof row.verdict !== 'string'

@@ -1,8 +1,24 @@
+import { maintainDiagnosticRetention } from '../ledger/diagnostic-retention.js';
 import type { Command } from 'commander';
-import { openConnection } from '../db/connection.js';
-import { codexHookCorrelationId, codexHookFailureCode, handleCodexHook } from '../assurance/codex-hooks.js';
+import { databaseFileIdentity, openConnection, requireDatabaseFileIdentity } from '../db/connection.js';
+import { inspectMigrationSnapshot, loadMigrationSnapshot } from '../db/migrate.js';
+import { initializeDatabase } from './init.js';
+import { codexHookCorrelationId, codexHookFailureCode, handleCodexHook, parseCodexHookInput } from '../assurance/codex-hooks.js';
 import { codexHookDiagnostics } from '../assurance/hook-diagnostics.js';
 import { KiokukoError } from '../errors.js';
+
+/** Upgrade only an existing database; current-schema hooks avoid a full integrity scan. */
+async function openHookDatabase(databasePath: string) {
+  const identity = databaseFileIdentity(databasePath);
+  const inspection = openConnection(databasePath, { readOnly: true, expectedFileIdentity: identity });
+  let pending: boolean;
+  try { pending = inspectMigrationSnapshot(inspection, loadMigrationSnapshot()).pending.length > 0; }
+  finally { inspection.close(); }
+  if (pending) await initializeDatabase({ databasePath }, {
+    afterPreflight: () => requireDatabaseFileIdentity(databasePath, identity),
+  });
+  return openConnection(databasePath, { expectedFileIdentity: identity });
+}
 /** A hook process never prints raw input, transcripts, shell output or exception payloads. */
 export function registerCodexHookCommand(cli: Command): void {
   cli.command('codex-hook').description('Handle a Codex lifecycle event from stdin')
@@ -24,9 +40,11 @@ export function registerCodexHookCommand(cli: Command): void {
           if (Buffer.byteLength(raw) > 2 * 1024 * 1024) throw new Error('Hook input too large');
         }
         event = JSON.parse(raw);
-        const database = openConnection(options.database);
+        const input = parseCodexHookInput(event);
+        const database = await openHookDatabase(options.database);
         try {
-          const result = handleCodexHook(database, event);
+          if (input.hook_event_name === 'UserPromptSubmit') maintainDiagnosticRetention(database);
+          const result = handleCodexHook(database, input);
           process.stdout.write(JSON.stringify(result) + '\n');
           // Keep the supported UI warning in JSON and a readable copy in hook diagnostics.
           if ('systemMessage' in result && typeof result.systemMessage === 'string') {

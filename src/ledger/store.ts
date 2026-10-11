@@ -248,6 +248,8 @@ export class LedgerStore {
   }
 
   readEvents(runId: string): EventRow[] {
+    const expired = this.database.prepare("SELECT 1 FROM diagnostic_run_summaries WHERE run_id=? AND json_extract(summary_json,'$.eventsExpired')=1").get(runId);
+    if (expired) throw new KiokukoError('NOT_FOUND', 'Detailed run events expired under the configured diagnostic retention policy; the run summary and replay receipts remain available');
     return this.database.prepare('SELECT * FROM ledger_events WHERE run_id = ? ORDER BY sequence').all<EventRow>(runId);
   }
 

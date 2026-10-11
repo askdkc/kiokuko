@@ -791,12 +791,24 @@ export async function federatedEntries(
     score: hit.retrievalScore,
     selectionReasons: ['global_origin', ...hit.reasons],
   }));
+  // Project-task globals honor explicit repository and applicability restrictions.
+  const eligibleGlobal = global.filter(item => {
+    if (isGeneralCommunicationPreference(item.entry)) return true;
+    const scope = metadataObject(item.entry);
+    if (scope.repositoryId !== undefined && scope.repositoryId !== input.project.repositoryId) return false;
+    if (scope.applicability !== undefined) {
+      const compatibility = applicabilityCompatibility(item.entry, ecosystemResult.fingerprint);
+      if (compatibility.incompatible) return false;
+      if (compatibility.score > 0) item.selectionReasons.push('applicability_match');
+    }
+    return true;
+  });
   const byRelevance = (left: FederatedEntry, right: FederatedEntry): number =>
     Number(right.selectionReasons.includes('repeated_lesson')) - Number(left.selectionReasons.includes('repeated_lesson'))
     || right.score - left.score || compareCanonicalStrings(left.entry.id, right.entry.id);
-  const preferences = global.filter((item) => isGeneralCommunicationPreference(item.entry));
-  const selected = [...preferences, ...current.sort(byRelevance), ...ecosystem.sort(byRelevance),
-    ...global.filter((item) => !isGeneralCommunicationPreference(item.entry)).sort(byRelevance)]
+  const preferences = eligibleGlobal.filter((item) => isGeneralCommunicationPreference(item.entry));
+  const selected = [...current.sort(byRelevance), ...ecosystem.sort(byRelevance),
+    ...eligibleGlobal.filter((item) => !isGeneralCommunicationPreference(item.entry)).sort(byRelevance), ...preferences]
     .filter((item) => matchesInteractionSubject(item.entry, input.query)).slice(0, input.limit);
   const searchedEntryCount = retrievableWorkspaceEntryCount(database, input.project.workspace) + retrievableWorkspaceEntryCount(database, GLOBAL_WORKSPACE);
   const excludedCount = ecosystemResult.excludedCount + current.length + global.length + ecosystem.length - selected.length;

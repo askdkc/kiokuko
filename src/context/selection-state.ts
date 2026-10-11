@@ -215,6 +215,7 @@ function selectionEntrySnapshot(
   database: SqliteDatabase,
   entry: ReturnType<typeof readEntry>,
   semanticState: SemanticProjectionState | null,
+  workspaces: readonly string[],
 ): Record<string, unknown> {
   const external = isExternalSkillReference(entry) ? externalSkillSnapshot(database, entry.id) : null;
   return {
@@ -239,7 +240,7 @@ function selectionEntrySnapshot(
     verifiedAt: entry.verifiedAt,
     searchSignals: searchSignalSnapshot(database, entry.id),
     ...(external === null ? {} : { external }),
-    feedback: contextFeedbackSignals(database, entry.id),
+    feedback: workspaces.map(workspace => ({ workspace, signals: contextFeedbackSignals(database, entry.id, { workspace, entryRevision: entry.revision }) })),
     lessonPriority: lessonReinforcement(database, entry).priority,
     ...(semanticState === null ? {} : { semantic: semanticProjectionSnapshotForState(database, entry, semanticState) }),
   };
@@ -380,7 +381,7 @@ function contextCandidateState(
       ? isRetrievableEntry(database, entry)
       : options.includeEcosystem && isFederatedEcosystemCandidate(database, entry);
     if (!retrievable) return [];
-    return [selectionEntrySnapshot(database, entry, semanticState)];
+    return [selectionEntrySnapshot(database, entry, semanticState, workspaces)];
   });
   return {
     workspaces,

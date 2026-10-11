@@ -1019,3 +1019,33 @@ test('rejected and throwing scoped context gates write and return no delivery', 
     database.close();
   }
 });
+
+test('task correction beats verified weak globals and communication preferences under a tight budget', async () => {
+  const { database, project, runId } = await fixture('src/launcher.ts', 'repair launcher');
+  try {
+    const correction = recordEntry(database, { workspace: project.workspace, kind: 'lesson',
+      title: 'Launcher correction', body: 'Repair launcher using saved runtime metadata.',
+      scope: buildStructuredScope({ visibility: 'project', retrievalScope: 'project-only', signals: { paths: ['src/launcher.ts'] } }),
+    }, { now });
+    recordEntry(database, { workspace: 'global', kind: 'lesson', status: 'verified', trustLevel: 'system_verified', confidence: 1,
+      title: 'Unrelated launcher tests', body: 'Use launcher context for another tool.',
+      scope: buildStructuredScope({ visibility: 'global', retrievalScope: 'global', portableReason: 'Generic test guidance.' }),
+    }, { now });
+    recordEntry(database, { workspace: 'global', kind: 'preference', title: 'Communication', body: 'Give detailed explanations.',
+      tags: ['preference:general-communication'], provenance: { type: 'interaction_capture', reference: 'test-preference' },
+      scope: buildStructuredScope({ visibility: 'global', retrievalScope: 'global', portableReason: 'Communication across projects.', memoryClass: 'preference' }),
+    }, { now });
+    const query = { project, runId, task: 'Use budget sentinel context',
+      taskProfile: { taskType: 'build' as const, target: 'src/launcher.ts', expected: 'repair launcher', constraints: null } };
+    const tight = await queryScopedContext(database, { ...query, limit: 1, characterBudget: 100 });
+    assert.equal(tight.items[0]?.entryId, correction.id);
+    const wide = await queryScopedContext(database, { ...query, limit: 10, characterBudget: 8000 });
+    const preference = wide.items.find(item => item.title === 'Communication');
+    assert.ok(preference);
+    assert.ok(preference.selectionReasons.includes('general_communication_preference'));
+    assert.equal(wide.items.at(-1)?.entryId, preference.entryId);
+    const replay = await queryScopedContext(database, { ...query, limit: 10, characterBudget: 8000 });
+    assert.deepEqual(replay.items, wide.items);
+    assert.ok(replay.items.at(-1)?.selectionReasons.includes('general_communication_preference'));
+  } finally { database.close(); }
+});

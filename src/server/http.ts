@@ -1,3 +1,4 @@
+import { maintainDiagnosticRetention } from '../ledger/diagnostic-retention.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer as nodeCreateServer, type RequestListener, type Server } from 'node:http';
@@ -407,6 +408,7 @@ export async function startHttpServer(options: HttpServerOptions = {}): Promise<
       ...(configuredEmbeddingBackend === undefined ? {} : { backend: configuredEmbeddingBackend }),
     });
     database = opened.database;
+    if (options.openDatabase === undefined && options.dependencies?.openDatabase === undefined) maintainDiagnosticRetention(database);
 
     let closing = false;
     let ready = false;

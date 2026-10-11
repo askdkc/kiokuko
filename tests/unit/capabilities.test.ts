@@ -22,6 +22,12 @@ const buildProfile = {
   constraints: null,
 };
 
+test('a source-targeted analysis plan requires memory reasoning before using lexical memory', () => {
+  const policy = deriveMemoryPolicy({ taskType: 'analysis', target: 'src/parser.ts', expected: 'produce a plan', constraints: null }, 'actionable', []);
+  assert.equal(policy.memoryReasoningRequired, true);
+  assert.equal(policy.contextWithheld, true);
+});
+
 type CapabilityTestInput = Omit<Parameters<typeof resolveCapabilitiesCore>[0], 'memoryUse'> & {
   memoryUse?: 'none' | 'actionable';
 };
@@ -34,10 +40,10 @@ function resolveCapabilities(input: CapabilityTestInput) {
   });
 }
 
-test('classifies only strongly matched delivered context as actionable memory', () => {
+test('requires review for every delivered task memory except explicit communication preferences', () => {
   assert.equal(deriveMemoryUseSignal(null), 'none');
   assert.equal(deriveMemoryUseSignal({ deliveryId: null, items: [{ selectionReasons: ['word_match'] }] }), 'none');
-  assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: ['literal_fallback_match'] }] }), 'none');
+  assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: ['literal_fallback_match'] }] }), 'actionable');
   for (const reason of [
     'exact_signal_match',
     'applicability_match',
@@ -51,8 +57,8 @@ test('classifies only strongly matched delivered context as actionable memory', 
       `${reason} must make delivered memory actionable`,
     );
   }
-  for (const reason of ['word_match', 'lexical_match', 'cjk_window_match', 'tag_match', 'helpful_feedback']) {
-    assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: [reason] }] }), 'none');
+  for (const reason of ['word_match', 'semantic_match', 'lexical_match', 'cjk_window_match', 'tag_match', 'helpful_feedback']) {
+    assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: [reason] }] }), 'actionable');
   }
   assert.equal(deriveMemoryUseSignal({ deliveryId: 'context-1', items: [{ selectionReasons: ['applicability_match', 'general_communication_preference'] }] }), 'none');
 });

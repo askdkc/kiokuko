@@ -34,7 +34,7 @@ import { readRerankerConfig } from '../reranker/config.js';
 import { reorderScoredCandidates, scoreLocalReranker } from '../reranker/service.js';
 import { deduplicateDeliverableLessonSources, formatLessonSourceReferences, readDeliverableLessonSourceReferences, type LessonDeduplicationResult } from '../memory/lesson-derivation.js';
 
-export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v9' as const;
+export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v11' as const;
 export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
 
@@ -329,10 +329,18 @@ function entryScore(entry: EntryRecord, origin: FederatedOrigin, retrieval: numb
   };
 }
 
-function feedbackScore(database: SqliteDatabase, entryId: string): { score: number; reasons: string[] } {
+/** Relevance is an ordering boundary, never a trust/status score bonus. */
+function relevanceTier(item: ScopedContextItem): number {
+  if (item.selectionReasons.includes('general_communication_preference')) return 0;
+  if (item.selectionReasons.some(reason => ['target_path_match', 'changed_path_match', 'error_signature_match',
+    'exact_signal_match', 'applicability_match'].includes(reason))) return 3;
+  return item.origin === 'global' ? 1 : 2;
+}
+
+function feedbackScore(database: SqliteDatabase, entryId: string, workspace: string, entryRevision: number): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
-  for (const signal of contextFeedbackSignals(database, entryId)) {
+  for (const signal of contextFeedbackSignals(database, entryId, { workspace, entryRevision })) {
     if (signal.verdict === 'helpful') { score += 3 * signal.boundedInfluence; reasons.push('helpful_feedback'); }
     if (signal.verdict === 'irrelevant') { score -= 2 * signal.boundedInfluence; reasons.push('irrelevant_feedback'); }
     if (signal.verdict === 'stale') { score -= 3 * signal.boundedInfluence; reasons.push('stale_feedback'); }
@@ -819,6 +827,11 @@ async function prepareScopedContext(
     const item = entryScore(entry, hit.origin, hit.score, hit.selectionReasons.includes('exact_signal_match'), queryText);
     const artifact = indexArtifact(database, entry);
     if (artifact) { item.knowledgeType=artifact.knowledgeType; item.sources=artifact.sources; sourceNotes.set(entry.id, formatIndexSourceReferences(artifact)); }
+    if (hit.selectionReasons.includes('applicability_match')) {
+      item.score += 8 - item.scoreComponents.applicability;
+      item.scoreComponents.applicability = 8;
+      item.selectionReasons = item.selectionReasons.filter(reason => reason !== 'applicability_mismatch');
+    }
     item.selectionReasons.push(...hit.selectionReasons);
     const signals = entry.scope.signals as { paths?: string[] } | undefined;
     if (hasTargetPathMatch(raw.taskProfile.target, [entry.title, ...entry.tags, ...(signals?.paths ?? [])])) item.selectionReasons.push('target_path_match');
@@ -826,23 +839,25 @@ async function prepareScopedContext(
     const sourceNote = sourceNotes.get(entry.id);
     if (sourceNote !== undefined) item.bodyPreview = `${item.bodyPreview}${sourceNote}`;
     item.selectionReasons = [...new Set(item.selectionReasons)];
-    const feedback = feedbackScore(database, entry.id);
+    const feedback = feedbackScore(database, entry.id, project!.workspace, entry.revision);
     item.score += feedback.score;
     item.scoreComponents.feedback = feedback.score;
     item.selectionReasons.push(...feedback.reasons);
+    const irrelevant = contextFeedbackSignals(database, entry.id, { workspace: project!.workspace, entryRevision: entry.revision })
+      .find(signal => signal.verdict === 'irrelevant')?.distinctRuns ?? 0;
+    if (item.origin === 'global' && relevanceTier(item) === 1 && irrelevant >= 2) continue;
     if (item.score <= -50) continue;
     const previous = candidates.get(item.entryId);
     if (previous === undefined || item.score > previous.score) candidates.set(item.entryId, item);
   }
   let ordered = [...candidates.values()].sort((left, right) =>
-    Number(right.origin === 'project' && right.selectionReasons.includes('repeated_lesson'))
-    - Number(left.origin === 'project' && left.selectionReasons.includes('repeated_lesson'))
+    relevanceTier(right) - relevanceTier(left)
+    || Number(right.selectionReasons.includes('repeated_lesson')) - Number(left.selectionReasons.includes('repeated_lesson'))
     || right.score - left.score || compareCanonicalStrings(left.entryId, right.entryId));
-  const preferenceItems = ordered.filter((item) => item.selectionReasons.includes('general_communication_preference')).slice(0, 2);
-  const repeatedItems = ordered.filter(item => item.origin === 'project' && item.selectionReasons.includes('repeated_lesson'));
-  const preferred = new Set([...repeatedItems, ...preferenceItems].map((item) => item.entryId));
-  const fixedItems = [...repeatedItems, ...preferenceItems];
-  const rerankable = ordered.filter((item) => !preferred.has(item.entryId));
+  const preferenceItems = ordered.filter(item => item.selectionReasons.includes('general_communication_preference')).slice(0, 2);
+  const preferred = new Set(preferenceItems.map(item => item.entryId));
+  const fixedItems: ScopedContextItem[] = [];
+  const rerankable = ordered.filter(item => !preferred.has(item.entryId));
   let rerankerDiagnostics: ScopedContextResult['rerankerDiagnostics'];
   if (rerankerConfig.mode !== 'off') {
     const candidateItems = rerankable.slice(0, rerankerConfig.maxCandidates);
@@ -895,7 +910,7 @@ async function prepareScopedContext(
   const maintenanceItems = raw.indexingSourceIds === undefined ? undefined : ordered.filter((item)=>{const entry=entriesById.get(item.entryId)!;return entry.body===item.bodyPreview;});
   if(maintenanceItems){let remaining=characterBudget;for(let i=0;i<maintenanceItems.length;){const item=maintenanceItems[i]!;const cost=characterCount(item.title)+characterCount(item.summary??'')+characterCount(item.bodyPreview);if(cost>remaining)maintenanceItems.splice(i,1);else{remaining-=cost;i++;}}}
   const fitted = fitScopedItems(
-    maintenanceItems ?? [...repeatedItems, ...preferenceItems, ...ordered.filter((item) => !preferred.has(item.entryId))],
+    maintenanceItems ?? [...ordered.filter(item => !preferred.has(item.entryId)).sort((a, b) => relevanceTier(b) - relevanceTier(a)), ...preferenceItems],
     limit,
     characterBudget,
     sourceNotes,

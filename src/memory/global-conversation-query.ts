@@ -1,3 +1,5 @@
+import { rankedEntryHits } from './retrieval.js';
+import { readEntry } from './entries.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withDeferredReadTransaction } from '../db/transaction.js';
 import { isCuratorManagedGlobalMemory } from './curator-trust.js';
@@ -24,9 +26,19 @@ export function queryGlobalConversationMemory(
   input: GlobalConversationQuery,
   runtime: HybridSearchRuntime = {},
   withholdOrdinary = false,
+  projectWorkspace?: string,
 ) {
   return withDeferredReadTransaction(database, () => {
-    const result = globalLaneCandidates(database, input.query, input.limit, runtime, input.subjects, {
+    const features = {
+      ...(input.temporal === undefined ? {} : { temporal: input.temporal }),
+      ...(input.relatedMode === undefined ? {} : { relatedMode: input.relatedMode }),
+    };
+    const ranked = projectWorkspace === undefined ? undefined : rankedEntryHits(database, {
+      workspace: projectWorkspace, query: input.query, limit: input.limit,
+      ...(input.subjects === undefined ? {} : { subjects: [...input.subjects] }), ...features,
+    }, runtime);
+    const result = ranked ? { candidates: ranked.hits.map(hit => ({ entry: readEntry(database, { workspace: projectWorkspace!, entryId: hit.entryId }), hit })), truncated: ranked.truncated }
+      : globalLaneCandidates(database, input.query, input.limit, runtime, input.subjects, {
       ...(input.temporal === undefined ? {} : { temporal: input.temporal }),
       ...(input.relatedMode === undefined ? {} : { relatedMode: input.relatedMode }),
     });

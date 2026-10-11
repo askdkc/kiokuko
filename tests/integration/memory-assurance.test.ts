@@ -924,3 +924,36 @@ test('natural response-only requests and bounded staged inspection finish withou
     }
   } finally { db.close(); rmSync(base, { recursive: true, force: true }); }
 });
+
+test('duplicate string completions use one counter, no execution evidence, and permit later structured completion', async () => {
+ const f = await boundHookFixture();
+ try {
+  const call = f.event('unknown-duplicate');
+  handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
+  for (let i = 0; i < 2; i++) handleCodexHook(f.db, { ...call, hook_event_name: 'PostToolUse', tool_response: 'Process exited with code 0' });
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n, 0);
+  const report = taskAssuranceReport(f.db, f.prepared.run.runId) as any;
+  assert.equal(report.executionObservation.unknownExitCalls, 1);
+  assert.equal(report.executionObservation.trustedExitMetadata, 'unavailable');
+  handleCodexHook(f.db, { ...call, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n, 1);
+  assert.equal((taskAssuranceReport(f.db, f.prepared.run.runId) as any).executionObservation.trustedExitMetadata, 'available');
+ } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('structured asynchronous completion verifies its original execution once', async () => {
+ const f=await boundHookFixture();
+ try {
+  const call=f.event('process-start');
+  handleCodexHook(f.db,{...call,hook_event_name:'PreToolUse'});
+  handleCodexHook(f.db,{...call,hook_event_name:'PostToolUse',tool_response:{session_id:81,exit_code:0}});
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,0);
+  const poll={...f.event('process-poll'),tool_name:'write_stdin',tool_input:{session_id:81}};
+  handleCodexHook(f.db,{...poll,hook_event_name:'PreToolUse'});
+  handleCodexHook(f.db,{...poll,hook_event_name:'PostToolUse',tool_response:{exit_code:0}});
+  handleCodexHook(f.db,{...poll,hook_event_name:'PostToolUse',tool_response:{exit_code:0}});
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,1);
+  const rows=f.db.prepare("SELECT evidence_id FROM codex_hook_tools WHERE call_id IN ('process-start','process-poll')").all<any>();
+  assert.equal(rows.length,2);assert.ok(rows[0].evidence_id);assert.equal(rows[0].evidence_id,rows[1].evidence_id);
+ } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});

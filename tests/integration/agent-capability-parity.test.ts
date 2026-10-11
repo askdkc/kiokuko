@@ -21,9 +21,9 @@ const profileHints = {
   expected: 'passes',
   constraints: null,
 };
-const requiredMemoryPolicy = { memoryReasoningRequired: false, contextWithheld: false, withheldReason: null } as const;
+const requiredMemoryPolicy = { memoryReasoningRequired: true, contextWithheld: true, withheldReason: 'memory_reasoning_missing', deliveryEmpty: true, storedEntryCount: 1 } as const;
 
-test('prior cross-run helpful feedback keeps the same weak memory advisory without stopping MCP or generic Agent tasks', async () => {
+test('prior helpful feedback never bypasses withholding for missing memory reasoning on MCP or Agent tasks', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-capability-feedback-parity-'));
   const repositoryRoot = path.join(directory, 'repository');
   const databasePath = path.join(directory, 'data.sqlite3');
@@ -90,9 +90,9 @@ test('prior cross-run helpful feedback keeps the same weak memory advisory witho
     });
     assert.equal(mcp.nextAction, 'proceed');
     assert.deepEqual(mcp.memoryPolicy, requiredMemoryPolicy);
-    assert.ok(mcp.context?.items.length);
+    assert.equal(mcp.context, null);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
-      .get<{ count: number }>(mcp.run.runId)?.count, 1);
+      .get<{ count: number }>(mcp.run.runId)?.count, 0);
   } finally {
     database.close();
   }
@@ -134,7 +134,7 @@ test('prior cross-run helpful feedback keeps the same weak memory advisory witho
     runId = envelope.data.runId as string;
     assert.equal(envelope.data.nextAction, 'proceed');
     assert.deepEqual(envelope.data.memoryPolicy, requiredMemoryPolicy);
-    assert.ok(envelope.data.context?.items.length);
+    assert.equal(envelope.data.context, null);
     assert.ok(envelope.data.recommendations.every((item: any) => item.metadata?.missingSkill !== 'memory-reasoning'));
   } finally {
     await runtime.close();
@@ -143,7 +143,7 @@ test('prior cross-run helpful feedback keeps the same weak memory advisory witho
   const verified = openConnection(databasePath);
   try {
     assert.equal(verified.prepare('SELECT COUNT(*) AS count FROM context_deliveries WHERE run_id = ?')
-      .get<{ count: number }>(runId)?.count, 1);
+      .get<{ count: number }>(runId)?.count, 0);
   } finally {
     verified.close();
   }

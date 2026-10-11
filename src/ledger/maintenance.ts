@@ -248,7 +248,7 @@ function inspectRuns(rows: Run[], findings: FindingCollector): Map<string, Run> 
   return runs;
 }
 
-function inspectEvents(rows: Event[], runs: Map<string, Run>, findings: FindingCollector): Map<string, Event[]> {
+function inspectEvents(database: SqliteDatabase, rows: Event[], runs: Map<string, Run>, findings: FindingCollector): Map<string, Event[]> {
   const grouped = new Map<string, Event[]>();
   const eventIds = new Set<string>();
   const sourceIds = new Set<string>();
@@ -318,7 +318,8 @@ function inspectEvents(rows: Event[], runs: Map<string, Run>, findings: FindingC
       if (storedSource !== sourceMax) findings.add('runCursors', 'last_source_sequence_mismatch', 'ledger_runs', runId);
     }
   }
-  for (const [runId, run] of runs) if (!grouped.has(runId) && (integer(run.last_sequence) !== 0 || run.last_source_sequence !== null)) findings.add('runCursors', 'empty_run_cursor_mismatch', 'ledger_runs', runId);
+  const expired = new Set(database.prepare("SELECT run_id FROM diagnostic_run_summaries WHERE json_extract(summary_json,'$.eventsExpired')=1").all<{run_id:string}>().map(row=>row.run_id));
+  for (const [runId, run] of runs) if (!expired.has(runId) && !grouped.has(runId) && (integer(run.last_sequence) !== 0 || run.last_source_sequence !== null)) findings.add('runCursors', 'empty_run_cursor_mismatch', 'ledger_runs', runId);
   return grouped;
 }
 
@@ -584,7 +585,7 @@ export function inspectLedger(database: SqliteDatabase, options: { workspace?: s
     const runRows = workspace === undefined ? database.prepare('SELECT * FROM ledger_runs ORDER BY run_id ASC').all<Run>() : database.prepare('SELECT * FROM ledger_runs WHERE workspace = ? ORDER BY run_id ASC').all<Run>(workspace);
     const eventRows = selectedEvents(database, workspace);
     const runs = inspectRuns(runRows, findings);
-    inspectEvents(eventRows, runs, findings);
+    inspectEvents(database, eventRows, runs, findings);
     inspectIntakes(database, workspace, runs, findings);
     inspectProfileMemory(database, workspace, findings);
     inspectReferences(database, workspace, findings);

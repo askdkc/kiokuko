@@ -24,7 +24,10 @@ const hookSchema = z.object({
   stop_hook_active: z.boolean().optional(),
 }).passthrough();
 interface HookRequest extends SqliteRow { identity_digest: string; repository_root: string; run_id: string | null; request_id: string; state: string; stop_notified: number; }
-interface HookCall extends SqliteRow { run_id: string; delivery_id: string | null; input_digest: string; state_digest: string; evidence_id: string | null; post_state_digest: string | null; }
+interface HookCall extends SqliteRow { call_id: string; run_id: string; delivery_id: string | null; input_digest: string; state_digest: string; evidence_id: string | null; post_state_digest: string | null; completion_state: string; }
+export function parseCodexHookInput(raw: unknown): z.infer<typeof hookSchema> {
+  return parseAssurance(hookSchema, raw);
+}
 export function codexHookCorrelationId(fields: Record<string, unknown>): string {
   const parts = [fields.session_id, fields.turn_id, fields.tool_use_id];
   return parts.every(value => typeof value === 'string')
@@ -100,7 +103,7 @@ function checkoutFreeHook(input: z.infer<typeof hookSchema>): object {
 }
 /** stdin must come from the installed client hook. Session IDs supplied to model-facing APIs grant no authority. */
 function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
-  const input = parseAssurance(hookSchema, raw);
+  const input = parseCodexHookInput(raw);
   const cwd = realpathSync(input.cwd);
   let root: string;
   try {
@@ -295,19 +298,30 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
   return withImmediateTransaction(db, () => {
     const current = db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest = ?').get<HookRequest>(identity);
     if (current?.stop_notified) return stopTurn('PostToolUse');
-    const call = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<HookCall>(identity, input.tool_use_id!);
+    let call = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<HookCall>(identity, input.tool_use_id!);
     if (!current || current.run_id !== request!.run_id || current.state !== 'bound')
       throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
     if (!call) throw new KiokukoError('CONFLICT', 'Tool completion has no matching start');
     if (call.run_id !== current.run_id) throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
     if (call.input_digest !== canonicalContentHash(input.tool_input ?? null))
       throw new KiokukoError('CONFLICT', 'Tool completion input changed');
+    if (input.tool_name === 'write_stdin' && (typeof args.session_id === 'number' || typeof args.session_id === 'string')) {
+      const original = db.prepare('SELECT t.* FROM codex_hook_processes p JOIN codex_hook_tools t ON t.identity_digest=p.identity_digest AND t.call_id=p.call_id WHERE p.identity_digest=? AND p.session_id=?')
+        .get<HookCall>(identity,String(args.session_id));
+      if (original) {
+        if (original.run_id !== current.run_id) throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
+        call = original;
+      }
+    }
     const run = new LedgerStore(db).readRun(current.run_id!);
     if (!run || run.status !== 'active') throw new KiokukoError('CONFLICT', 'Tool completion belongs to a terminal run');
     const state = assuranceState(db, current.run_id!);
     if (!state || state.repository_root !== root) throw new KiokukoError('CONFLICT', 'Tool completion repository changed');
     if (call.delivery_id !== state.delivery_id) return context('PostToolUse', 'Delivery changed during execution; completion cannot verify the new delivery.');
-    if (call.evidence_id) return context('PostToolUse', `Execution evidence: ${call.evidence_id}`);
+    if (call.evidence_id && db.prepare('SELECT outcome FROM task_execution_evidence WHERE evidence_id=?').get<{outcome:string}>(call.evidence_id)?.outcome !== 'unknown') {
+      if (call.call_id !== input.tool_use_id) db.prepare('UPDATE codex_hook_tools SET evidence_id=?,completion_state=? WHERE identity_digest=? AND call_id=?').run(call.evidence_id,'completed',identity,input.tool_use_id!);
+      return context('PostToolUse', `Execution evidence: ${call.evidence_id}`);
+    }
     let digest: string;
     try { digest = repositoryStateDigest(root); }
     catch { throw new KiokukoError('SERVICE_UNAVAILABLE', 'Repository state digest unavailable'); }
@@ -315,25 +329,47 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
       if (!call.post_state_digest) {
         db.prepare('UPDATE task_assurance SET observed_changes=1, observed_state_digest=?, revision=revision+1 WHERE run_id=? AND observed_state_digest IS NOT ?').run(digest,current.run_id,digest);
         db.prepare('UPDATE task_assurance SET observation_sequence=observation_sequence+1 WHERE run_id=?').run(current.run_id);
-        db.prepare('UPDATE codex_hook_tools SET post_state_digest=? WHERE identity_digest=? AND call_id=?').run(digest, identity, input.tool_use_id!);
+        db.prepare('UPDATE codex_hook_tools SET post_state_digest=? WHERE identity_digest=? AND call_id=?').run(digest, identity, call.call_id);
       }
       return context('PostToolUse', 'Repository state changed; earlier verification is stale. Implementation evidence is now required for adopted code memories.');
     }
-    if (!['Bash', 'exec_command'].includes(input.tool_name!)) return {};
-    if (response.session_id !== undefined && exitCode === null) return context('PostToolUse', 'Process still running; verification remains pending.');
-    const outcome = exitCode === null ? 'unknown' : exitCode === 0 ? 'passed' : 'failed';
+    if (!['Bash', 'exec_command'].includes(input.tool_name!) && !(input.tool_name === 'write_stdin' && call.call_id !== input.tool_use_id)) return {};
+    if (exitCode === null) {
+      const running = response.session_id !== undefined || response.status === 'running';
+      const next = running ? 'running' : 'unknown';
+      if (running && ['Bash','exec_command'].includes(input.tool_name!) && (typeof response.session_id === 'number' || typeof response.session_id === 'string')) {
+        const sessionId = String(response.session_id);
+        if (sessionId.length > 128) throw new KiokukoError('VALIDATION_ERROR', 'Process session ID is invalid');
+        const prior = db.prepare('SELECT call_id FROM codex_hook_processes WHERE identity_digest=? AND session_id=?').get<{call_id:string}>(identity,sessionId);
+        if (prior && prior.call_id !== call.call_id) throw new KiokukoError('CONFLICT', 'Process session ID was reused');
+        db.prepare('INSERT INTO codex_hook_processes VALUES(?,?,?) ON CONFLICT DO NOTHING').run(identity,sessionId,call.call_id);
+      }
+      if (call.completion_state === next || call.completion_state === 'unknown' && running) return {};
+      db.prepare('INSERT INTO task_execution_observations(run_id) VALUES(?) ON CONFLICT DO NOTHING').run(current.run_id);
+      if (call.completion_state === 'admitted' || next === 'unknown') {
+        const column = running ? 'running_calls' : 'unknown_exit_calls';
+        db.prepare(`UPDATE task_execution_observations SET ${column}=${column}+1 WHERE run_id=?`).run(current.run_id);
+        db.prepare('UPDATE task_assurance SET observation_sequence=observation_sequence+1 WHERE run_id=?').run(current.run_id);
+      }
+      db.prepare('UPDATE codex_hook_tools SET completion_state=? WHERE identity_digest=? AND call_id=?').run(next,identity,call.call_id);
+      if (!running) db.prepare("UPDATE task_execution_observations SET last_exit_metadata='unavailable' WHERE run_id=?").run(current.run_id);
+      return running ? context('PostToolUse', 'Process still running; verification remains pending.') : {};
+    }
+    const outcome = exitCode === 0 ? 'passed' : 'failed';
     const evidenceId = insertTaskEvidence(db, { runId: current.run_id!, deliveryId: state.delivery_id, root, cwd: root,
       executionDigest: call.input_digest, stateDigest: digest, outcome, exitCode, provenance: 'client_observed' });
-    db.prepare('UPDATE codex_hook_tools SET evidence_id = ? WHERE identity_digest = ? AND call_id = ?').run(evidenceId, identity, input.tool_use_id!);
+    db.prepare('UPDATE codex_hook_tools SET evidence_id = ? WHERE identity_digest = ? AND call_id = ?').run(evidenceId, identity, call.call_id);
+    if (call.call_id !== input.tool_use_id) db.prepare('UPDATE codex_hook_tools SET evidence_id=?,completion_state=? WHERE identity_digest=? AND call_id=?').run(evidenceId,'completed',identity,input.tool_use_id!);
     db.prepare('UPDATE task_assurance SET observation_sequence=observation_sequence+1 WHERE run_id=?').run(current.run_id);
-    if (outcome === 'unknown') return {};
+    db.prepare('UPDATE codex_hook_tools SET completion_state=? WHERE identity_digest=? AND call_id=?').run('completed',identity,call.call_id);
+    db.prepare("INSERT INTO task_execution_observations(run_id,structured_exit_calls,last_exit_metadata) VALUES(?,1,'available') ON CONFLICT(run_id) DO UPDATE SET structured_exit_calls=structured_exit_calls+1,last_exit_metadata='available'").run(current.run_id);
     return context('PostToolUse', `Execution evidence: ${evidenceId}; outcome: ${outcome}.${outcome === 'passed' && (taskAssuranceReport(db, current.run_id!).missingVerification.length || taskAssuranceReport(db, current.run_id!).verification.checks.some(check => check.status !== 'passed')) ? ' Link it to the unresolved verification requirement.' : ''}`);
   });
 }
 
 /** Record protocol shape and decision only, never arguments or tool output. */
 export function handleCodexHook(db: SqliteDatabase, raw: unknown): object {
-  const input = parseAssurance(hookSchema, raw);
+  const input = parseCodexHookInput(raw);
   const response = record(input.tool_response);
   const args = record(input.tool_input);
   const shape = { hasArguments: !!args.arguments, hasParameters: !!args.parameters, hasRequestId: !!args.requestId, hasSoulRead: !!args.soulRead, type: typeof input.tool_response, structured: !!response.structuredContent,

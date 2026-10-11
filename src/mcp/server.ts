@@ -1,3 +1,4 @@
+import { maintainDiagnosticRetention } from '../ledger/diagnostic-retention.js';
 import { INTEGRATION_CONTRACT } from '../setup/standard-skills.js';
 import { verificationDefineSchema, verificationRecordSchema } from '../assurance/verification-contracts.js';
 import { defineTaskVerification, recordTaskVerification } from '../assurance/verification.js';
@@ -98,6 +99,7 @@ export async function withDatabase<T>(
   let operationFailed = false;
   let operationError: unknown;
   try {
+    maintainDiagnosticRetention(database);
     operationResult = { value: await operation(database) };
   } catch (error) {
     operationFailed = true;

@@ -246,7 +246,7 @@ test('exact open replay keeps one mutation acknowledgement but re-evaluates curr
     capabilityToken: token,
   });
   const body = {
-    ...openBody(workspace, soulCapabilities()),
+    ...openBody(workspace, [...soulCapabilities(), { kind: 'skill', name: 'memory-reasoning' }]),
     task: {
       title: 'beacon',
       query: 'beacon',

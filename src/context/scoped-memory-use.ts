@@ -3,7 +3,6 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { entryOriginMatchesWorkspace } from './origin.js';
 import type { ScopedContextItem, ScopedContextResult } from './scoped-broker.js';
-import { isCuratorManagedGlobalMemory } from '../memory/curator-trust.js';
 import { readEntry } from '../memory/entries.js';
 import { isRetrievableEntry } from '../memory/hybrid-retrieval.js';
 import { effectiveRetrievalScope, hasExplicitApplicability } from '../memory/structured-memory.js';
@@ -61,7 +60,7 @@ function capabilityGatedScopedItems(
 ): ScopedContextItem[] {
   return scopedContext.items.filter((item) => {
     const entry = currentScopedEntry(database, runWorkspace, item);
-    return !isExternalSkillReference(entry) && !isCuratorManagedGlobalMemory(entry);
+    return !isExternalSkillReference(entry);
   });
 }
 
