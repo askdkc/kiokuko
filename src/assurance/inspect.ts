@@ -27,9 +27,10 @@ export class TaskInspectionError extends KiokukoError {
 
 const skillRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills');
 export const inspectTaskSchema = z.object({
-  cwd: z.string().min(1).max(4096), operation: z.enum(['read', 'files', 'status', 'skill']),
+  cwd: z.string().min(1).max(4096), operation: z.enum(['read', 'files', 'status', 'skill', 'diff']),
+  scope: z.enum(['auto', 'staged', 'working-tree']).optional().describe('Diff only. Auto (default) prefers staged changes, otherwise working-tree.'),
   path: z.string().min(1).max(4096).optional().describe('Skill: omit for kiokuko-soul, or use its name; references use skill-name/references/file.md. Read: repository-relative or in-repository absolute file path.'),
-}).strict();
+}).strict().refine(input => input.scope === undefined || input.operation === 'diff', { message: 'scope is only valid for diff' });
 
 function bundledSkillPath(input: string | undefined): string {
   let name = input ?? 'kiokuko-soul';
@@ -68,6 +69,38 @@ function readInspectionFile(base: string, name: string, bundle = false): { text:
   }
 }
 
+/** Fixed Git diff only; config cannot invoke an external diff, textconv or fsmonitor helper. */
+function inspectDiff(root: string, scope: 'auto' | 'staged' | 'working-tree', inputPath?: string) {
+  const options = { encoding: 'utf8' as const, timeout: 5000, maxBuffer: 512000, stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'] };
+  const gitPrefix = ['-C', root, '--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=false'];
+  // Git can also run clean/process filters when comparing worktree content.
+  let filterKeys = '';
+  try { filterKeys = execFileSync('git', [...gitPrefix, 'config', '--name-only', '--null', '--get-regexp', '^filter\\..*\\.(clean|smudge|process|required)$'], options); }
+  catch (error) { if ((error as { status?: number }).status !== 1) throw error; }
+  const filters = [...new Set(filterKeys.split('\0').filter(Boolean).map(key => key.replace(/\.(clean|smudge|process|required)$/u, '')))];
+  const disabledFilters = filters.flatMap(key => ['-c', `${key}.clean=`, '-c', `${key}.smudge=`, '-c', `${key}.process=`, '-c', `${key}.required=false`]);
+  const prefix = [...gitPrefix, ...disabledFilters, 'diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all'];
+  let selected: 'staged' | 'working-tree' = scope === 'staged' ? 'staged' : 'working-tree';
+  if (scope === 'auto') {
+    try { execFileSync('git', [...prefix, '--cached', '--quiet'], options); }
+    catch (error) {
+      if ((error as { status?: number }).status !== 1) throw error;
+      selected = 'staged';
+    }
+  }
+  let selector = '.';
+  if (inputPath !== undefined) {
+    if (inputPath.split(/[\\/]/u).some(p => p === '..' || p === '.git' || p === '.env')) throw new TaskInspectionError('path');
+    const resolved = path.resolve(root, inputPath);
+    const relative = path.relative(root, resolved);
+    if (relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) throw new TaskInspectionError('path');
+    selector = `:(literal)${relative || '.'}`;
+  }
+  const text = execFileSync('git', [...prefix, ...(selected === 'staged' ? ['--cached'] : []), '--', selector,
+    ':(exclude,glob)**/.env', ':(exclude,glob)**/.env/**', ':(exclude,glob)**/.git/**'], options);
+  return { text, scope: selected };
+}
+
 /** Preparation-only inspection: fixed operations, no shell parser or executable supplied by the model. */
 export function inspectTask(raw: unknown) {
   const input = parseAssurance(inspectTaskSchema, raw);
@@ -82,9 +115,10 @@ export function inspectTask(raw: unknown) {
       encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
     }).trim());
   } catch { throw new TaskInspectionError('repository'); }
+  if (input.operation === 'diff') return inspectDiff(root, input.scope ?? 'auto', input.path);
   if (input.operation === 'files' || input.operation === 'status') {
     const args = input.operation === 'files' ? ['ls-files', '--cached', '--others', '--exclude-standard'] : ['status', '--short'];
-    return { text: execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 5000, maxBuffer: 512000 }) };
+    return { text: execFileSync('git', ['-C', root, '--no-optional-locks', '-c', 'core.fsmonitor=false', ...args], { encoding: 'utf8', timeout: 5000, maxBuffer: 512000 }) };
   }
   const name = input.path ?? '';
   if (!name || name.split(/[\\/]/u).some(p => p === '..' || p === '.git' || p === '.env')) throw new TaskInspectionError('path');

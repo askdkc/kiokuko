@@ -1,6 +1,6 @@
 ---
 name: kiokuko-soul
-description: Use before every coding request, including small fixes, and every other non-trivial Kiokuko-governed task as the mandatory first-read SOUL router. Run the Akinator intake gate before planning or implementation, then route simple code work, general code work, and interactive UI work to the bundled specialist Skills.
+description: Use before code changes, operations, formal reviews, implementation plans, and investigation requiring a project run. Response-only work with sufficient evidence needs no router read. Run the Akinator intake gate before planning or implementation, then route simple code work, general code work, and interactive UI work to the bundled specialist Skills.
 ---
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->
@@ -9,7 +9,7 @@ description: Use before every coding request, including small fixes, and every o
 
 ## Outcome
 
-Start every coding request (including small fixes) and every other non-trivial Kiokuko-governed task by reading one stable router, resolving the Akinator intake gate, then reading the applicable compact specialist indexes and only the expert fragments required by the current task.
+Start every coding request (including small fixes), operation, formal review, implementation plan, or investigation requiring a project run by reading one stable router, resolving the Akinator intake gate, then reading the applicable compact specialist indexes and only the expert fragments required by the current task.
 
 This Skill owns the entry sequence and routes work. Akinator is the mandatory intake state machine, not a specialist route. This Skill does not duplicate specialist instructions, select another model, or authorize effects beyond the user request and current client permissions.
 
@@ -17,9 +17,13 @@ This Skill owns the entry sequence and routes work. Akinator is the mandatory in
 
 Explicit user instructions outrank these Skills' design, style, workflow, and implementation preferences. They do not override host-enforced safety, authorization, identity, state, revision, or integrity invariants. Resolve routine choices from repository evidence and existing authorization; ask only when an unresolved assumption would materially change the intended result or permitted effects.
 
+## Proportionate effort before routing
+
+Choose reasoning depth and tool use separately from uncertainty, consequences of error, reversibility, and evidence already available. Do not classify by request length, a writing label, or repository mention. Repository mentions alone do not require preparation. When current conversation evidence suffices for a response-only request (including drafting, translation, explaining existing results, or acknowledging a correction), answer directly with zero preparation, memory, or verification calls and no task run. If one decision-relevant fact is missing, use only bounded task_inspect reads; operation diff accepts scope auto, staged, or working-tree, with auto preferring staged changes. Answer when that evidence suffices; do not start intake for a limited read alone. For uncertain causes, interacting dependencies, or high error consequences, develop hypotheses and failure conditions and gather only evidence that changes a decision or proves completion. Code changes, operations, formal reviews, and implementation plans retain the existing intake, permissions, memory review, and verification gates. Every additional check must change a decision or prove a completion condition. Stop when the requested result and required evidence are available; do not reread unchanged state, load unrelated Skills, or prepare merely to prepare. Recall memory only when past information is needed for the current decision. No minimum reasoning duration or tool-call quota applies. These rules never release unresolved intake, permission or identity denials, or terminal states. Arbitrary shell commands and JavaScript are execution, not bounded read-only inspection. Hooks control observable calls and state, not private reasoning depth.
+
 ## Ordinary conversation and interaction memory
 
-For ordinary conversation that does not involve project work, use `memory_recall`
+For ordinary conversation that needs past context and does not involve project work, use `memory_recall`
 with the current query, optional subjects, `soulRead: true`, and the complete
 capability catalog. Read `memory-reasoning` before advertising it. No repository,
 task run, or Akinator answers are needed. This route cannot replace or bypass
@@ -73,7 +77,7 @@ before terminal `memory_checkpoint`; do not call tools afterward.
 
 ## Required entry
 
-Read this Skill before any other bundled Kiokuko Skill.
+When a project run or memory recall is needed, read this Skill before any other bundled Kiokuko Skill. Response-only work with sufficient evidence requires no Skill read.
 
 When Codex hooks supply a request ID, use `task_inspect` with `operation: "skill"`
 and no path to read this router. Read `memory-reasoning` through the same tool

@@ -43,6 +43,8 @@ export interface UseOptions {
   root?: string;
   workspace?: string;
   agentFile?: string;
+  /** Setup refresh must never recreate a removed instruction file. */
+  requireExistingAgentFile?: boolean;
   dryRun?: boolean;
   noAgentFile?: boolean;
   forceRebind?: boolean;
@@ -1102,6 +1104,9 @@ async function useRepositoryAttempt(
         undefined,
         dependencies.readAgentFileForConvergence,
       );
+  if (options.requireExistingAgentFile && plannedAgent === undefined) {
+    throw new KiokukoError('NOT_FOUND', 'Existing instruction file is missing', { reason: 'missing_agent_file' });
+  }
   assertSupportedManagedTemplate(plannedAgent, 'Prospective agentFile');
   const existingAgent = options.noAgentFile ? undefined : plannedAgent;
   if (options.noAgentFile && plannedAgent !== undefined) {

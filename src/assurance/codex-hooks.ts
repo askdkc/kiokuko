@@ -1,3 +1,4 @@
+import { ADAPTIVE_EFFORT_INSTRUCTIONS } from '../akinator/instructions.js';
 import { INTEGRATION_CONTRACT, hostSkillText } from '../setup/standard-skills.js';
 import { PACKAGE_VERSION } from '../package-version.js';
 import * as z from 'zod/v4';
@@ -88,7 +89,7 @@ function kiokukoTool(name: string): string | null {
 /** No project is invented for ordinary conversation outside a checkout. */
 function checkoutFreeHook(input: z.infer<typeof hookSchema>): object {
   if (input.hook_event_name === 'UserPromptSubmit') return context('UserPromptSubmit',
-    'No Git checkout is available. For ordinary conversation, read kiokuko-soul and memory-reasoning with task_inspect operation skill, then use memory_recall with soulRead=true and the complete capability catalog. No project run or implementation checks are required. Project operations require an existing checkout; do not invent one.');
+    `${ADAPTIVE_EFFORT_INSTRUCTIONS} No Git checkout is available. When past context is needed for ordinary conversation, read kiokuko-soul and memory-reasoning with task_inspect operation skill, then use memory_recall with soulRead=true and the complete capability catalog. No project run or implementation checks are required. Project operations require an existing checkout; do not invent one.`);
   if (input.hook_event_name !== 'PreToolUse') return {};
   const operation = kiokukoTool(input.tool_name ?? '');
   const args = record(input.tool_input);
@@ -144,7 +145,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
         .run(identity, root, requestId, input.hook_event_name, now);
     });
     if (db.prepare('SELECT stop_notified FROM codex_hook_requests WHERE identity_digest=?').get<HookRequest>(identity)?.stop_notified) return stopTurn(input.hook_event_name);
-    return context(input.hook_event_name, `Kiokuko request ${requestId}. Before project work, call task_inspect with {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path to read kiokuko-soul). Read memory-reasoning through task_inspect before advertising it, then call task_prepare with this requestId and soulRead=true. Use task_inspect for all preparation reads and bundled Skills, including natural-japanese-output; do not read Skills through shell commands. After intake, resolve every pending or stale memory decision before ordinary tools, code search or execution. Follow nextAction; use task_memory_status and sequential task_memory_review calls with the latest revision. User clarification tools request_user_input and request_user_input_async, and the clockcurr_time read, remain available before preparation and memory review. Recoverable preparation or review denials block only the call; repair the same request through task_inspect, task_prepare/task_answer, task_memory_status/task_memory_refresh/task_memory_review. Identity or authorization denials end the turn. Ordinary conversation needs no project run. ${CODEX_HOOK_LIMITATION}`);
+    return context(input.hook_event_name, `${ADAPTIVE_EFFORT_INSTRUCTIONS} Kiokuko request ${requestId}. Before work requiring a project run, call task_inspect with {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path to read kiokuko-soul). Read memory-reasoning through task_inspect before advertising it, then call task_prepare with this requestId and soulRead=true. Use task_inspect for all preparation reads and bundled Skills, including natural-japanese-output; do not read Skills through shell commands. After intake, resolve every pending or stale memory decision before ordinary tools, code search or execution. Follow nextAction; use task_memory_status and sequential task_memory_review calls with the latest revision. User clarification tools request_user_input and request_user_input_async, and the clockcurr_time read, remain available before preparation and memory review. Recoverable preparation or review denials block only the call; repair the same request through task_inspect, task_prepare/task_answer, task_memory_status/task_memory_refresh/task_memory_review. Identity or authorization denials end the turn. Ordinary conversation needs no project run. ${CODEX_HOOK_LIMITATION}`);
   }
   if (!request) {
     if (input.hook_event_name === 'Interrupt' || input.hook_event_name === 'SubagentStop') return {};

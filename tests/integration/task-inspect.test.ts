@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, symlinkSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -189,4 +189,47 @@ test('MCP preparation errors provide safe recovery guidance without exposing rej
     symlinkSync('.env', path.join(cwd, 'disguised.txt'));
     assert.throws(() => inspectTask({ cwd, operation: 'read', path: 'disguised.txt' }), /allowed directory/u);
   } finally { await client.close(); await server.close(); rmSync(base, { recursive: true, force: true }); }
+});
+
+
+test('bounded diff selects staged changes, falls back to working tree, and never executes Git helpers', () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'kiokuko-diff-'));
+  try {
+    git(cwd, 'init', '-q');
+    writeFileSync(path.join(cwd, 'source.txt'), 'baseline\n');
+    writeFileSync(path.join(cwd, '.env'), 'old-private-value\n');
+    commit(cwd);
+    writeFileSync(path.join(cwd, 'source.txt'), 'staged-value\n');
+    git(cwd, 'add', 'source.txt');
+    writeFileSync(path.join(cwd, 'source.txt'), 'working-value\n');
+    writeFileSync(path.join(cwd, '.env'), 'new-private-value\n');
+    git(cwd, 'add', '.env');
+    const marker = path.join(cwd, 'helper-ran');
+    const helper = path.join(cwd, 'helper.sh');
+    writeFileSync(helper, `#!/bin/sh\ntouch '${marker}'\necho forbidden-helper\n`, { mode: 0o755 });
+    git(cwd, 'config', 'diff.external', helper);
+    git(cwd, 'config', 'diff.fixture.textconv', helper);
+    git(cwd, 'config', 'filter.fixture.clean', helper);
+    git(cwd, 'config', 'filter.fixture.process', helper);
+    writeFileSync(path.join(cwd, '.gitattributes'), 'source.txt diff=fixture filter=fixture\n');
+    const staged = inspectTask({ cwd, operation: 'diff' });
+    assert.equal('scope' in staged && staged.scope, 'staged');
+    assert.match(staged.text, /staged-value/u);
+    assert.doesNotMatch(staged.text, /working-value|private-value|forbidden-helper/u);
+    assert.equal(existsSync(marker), false);
+    const working = inspectTask({ cwd, operation: 'diff', scope: 'working-tree' });
+    assert.equal('scope' in working && working.scope, 'working-tree');
+    assert.match(working.text, /working-value/u);
+    assert.match(inspectTask({ cwd, operation: 'status' }).text, /source.txt/u);
+    assert.doesNotMatch(working.text, /private-value/u);
+    assert.throws(() => inspectTask({ cwd, operation: 'diff', path: '../outside' }));
+    assert.throws(() => inspectTask({ cwd, operation: 'diff', path: '.env' }));
+    assert.throws(() => inspectTask({ cwd, operation: 'diff', command: 'touch helper-ran' }));
+    assert.throws(() => inspectTask({ cwd, operation: 'read', path: 'source.txt', scope: 'staged' }));
+    git(cwd, 'read-tree', 'HEAD');
+    const fallback = inspectTask({ cwd, operation: 'diff', scope: 'auto' });
+    assert.equal('scope' in fallback && fallback.scope, 'working-tree');
+    assert.match(fallback.text, /working-value/u);
+    assert.equal(existsSync(marker), false);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

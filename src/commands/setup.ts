@@ -62,7 +62,7 @@ import { initializeDatabase } from './init.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
-type SetupAction = 'created' | 'updated' | 'unchanged' | 'deleted';
+type SetupAction = 'created' | 'updated' | 'unchanged' | 'deleted' | 'skipped';
 
 interface PlannedDirectory {
   path: string;
@@ -464,7 +464,7 @@ async function preparePlannedDirectories(
 ): Promise<void> {
   const required = new Set<PlannedDirectory>();
   for (const file of files) {
-    if (file.action === 'unchanged') continue;
+    if (file.action === 'unchanged' || file.action === 'skipped') continue;
     for (const directory of directoryLineage(file.parentDirectory)) required.add(directory);
   }
 
@@ -525,8 +525,12 @@ async function planFile(
   purpose: PlannedFile['purpose'],
   render: (existing: string | undefined) => { content: string; action: SetupAction },
   mustRemainAbsent: readonly string[] = [],
+  preserveMissing = false,
 ): Promise<PlannedFile> {
   const { parentDirectory, snapshot: original } = await readPlannedRegularFile(planning, filePath);
+  if (preserveMissing && original === undefined) {
+    return { path: filePath, parentDirectory, content: undefined, mode: 0o600, original, action: 'skipped', purpose, client, report: true };
+  }
   const rendered = render(original?.content);
   const action: SetupAction = original === undefined
     ? 'created'
@@ -779,7 +783,7 @@ export async function setupGlobalClients(
       const content = renderCodexAssuranceHooks(existing ?? '', command, databasePath, command === 'kiokuko' ? defaultCodexHookRuntime() : undefined);
       return { content, action: content === existing ? 'unchanged' : existing === undefined ? 'created' : 'updated' };
     }));
-    files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'codex')));
+    files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'codex'), [], mcpFile.original?.content.includes('# BEGIN KIOKUKO MCP') === true));
   }
   if (clients.includes('opencode')) {
     const selectedConfig = await openCodeConfigPath(planning, pathEnvironment);
@@ -797,7 +801,7 @@ export async function setupGlobalClients(
       selectedConfig.mustRemainAbsent,
     );
     files.push(mcpFile);
-    files.push(await planFile(planning, getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'opencode')));
+    files.push(await planFile(planning, getOpenCodeInstructionsPath(pathEnvironment), 'opencode', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'opencode'), [], /"kiokuko"\s*:/u.test(mcpFile.original?.content ?? '')));
   }
   if (clients.includes('claude')) {
     const mcpFile = await planFile(
@@ -813,7 +817,7 @@ export async function setupGlobalClients(
       ),
     );
     files.push(mcpFile);
-    files.push(await planFile(planning, getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'claude')));
+    files.push(await planFile(planning, getClaudeInstructionsPath(pathEnvironment), 'claude', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'claude'), [], /"kiokuko"\s*:/u.test(mcpFile.original?.content ?? '')));
   }
   if (clients.includes('hermes')) {
     if (hermesProfile === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Hermes profile was not bound during setup planning');
@@ -926,7 +930,7 @@ export async function setupGlobalClients(
     await preparePlannedDirectories(files, createdDirectories);
     await assertPlannedFiles(files);
     for (const file of files) {
-      if (file.action === 'unchanged') continue;
+      if (file.action === 'unchanged' || file.action === 'skipped') continue;
       // Record a committed mutation before inspecting its cleanup outcome so
       // rollback never loses ownership of a target that already changed.
       let installed: RegularFileSnapshot | undefined;

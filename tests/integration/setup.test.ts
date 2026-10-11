@@ -1,7 +1,7 @@
 import { AGENT_TEMPLATE_VERSION } from '../../src/agent-file/render.js';
 import { parse } from 'jsonc-parser';
 import assert from 'node:assert/strict';
-import { access, chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -663,6 +663,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   const missingRoot = path.join(temporary.root, 'missing-project');
   await mkdir(staleRoot);
   await mkdir(locationOnlyRoot);
+  await writeFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'human location rule\n');
   await mkdir(missingRoot);
   const locationOnlyGitignorePath = path.join(locationOnlyRoot, '.gitignore');
   await writeFile(locationOnlyGitignorePath, 'node_modules/\r\n');
@@ -727,7 +728,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
     'updated',
   ]);
   await assert.rejects(access(path.join(locationOnlyRoot, '.kiokuko.json')));
-  await assert.rejects(access(path.join(locationOnlyRoot, 'AGENTS.md')));
+  assert.equal(await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8'), 'human location rule\n');
   assert.equal(await readFile(locationOnlyGitignorePath, 'utf8'), 'node_modules/\r\n');
   assert.match(await readFile(staleAgentPath, 'utf8'), /kiokuko-template-version: 14/u);
 
@@ -799,6 +800,7 @@ test('setup creates a root gitignore when it materializes a registered project b
   const temporary = await temporaryEnvironment('registered-project-gitignore');
   const projectRoot = path.join(temporary.root, 'registered-project');
   await mkdir(projectRoot);
+  await writeFile(path.join(projectRoot, 'AGENTS.md'), 'human project rule\n');
   const canonicalRoot = await realpath(projectRoot);
   await initializeDatabase({ databasePath: temporary.databasePath });
   const database = openConnection(temporary.databasePath);
@@ -1904,4 +1906,22 @@ test('setup refuses to remove previously installed retired hooks, plugins, or Sk
     if (index === 0) assert.deepEqual(JSON.parse(actual).hooks.Stop[0], JSON.parse(contents[0]!).hooks.Stop[0]);
     else assert.equal(actual, contents[index]);
   }
+});
+
+
+test('normal setup updates preserve removed global and registered project instructions', async () => {
+  const temporary = await temporaryEnvironment('removed-instructions');
+  const options = { clients: ['codex'] as const, standardSkills: false, databasePath: temporary.databasePath, platform: 'linux' as const, env: temporary.env };
+  await setupGlobalClients({ ...options, clients: [...options.clients] });
+  const projectRoot = path.join(temporary.root, 'project');
+  await mkdir(projectRoot);
+  const used = await useRepository({ root: projectRoot, allowDirectory: true, databasePath: temporary.databasePath });
+  const global = path.join(temporary.home, '.codex', 'AGENTS.md');
+  await unlink(global);
+  await unlink(used.agentFile!);
+  const result = await setupGlobalClients({ ...options, clients: [...options.clients] });
+  await assert.rejects(access(global));
+  await assert.rejects(access(used.agentFile!));
+  assert.ok(result.files.some(file => file.path === global && file.action === 'skipped'));
+  assert.ok(result.projectAgentFiles.some(project => project.status === 'skipped' && project.reason === 'missing_agent_file'));
 });

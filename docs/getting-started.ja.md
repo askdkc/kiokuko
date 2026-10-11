@@ -60,3 +60,8 @@ kiokuko embeddings status --json
 unmanaged MCP identityをfail closedします。
 
 ## Web UIとclient
+
+
+材料が会話内に揃った回答だけの依頼は、run 作成や記憶検索を行わず回答します。判断に必要な事実だけが欠けている場合は、限定読み取りの `task_inspect` を使えます。`operation: "diff"` の `scope` は `"auto" | "staged" | "working-tree"` で、auto は staged があれば優先し、選択した scope を返します。外部 diff、textconv、作業ツリーの filter は実行しません。コード変更、操作、正式なレビュー・実装計画では intake と検証を維持します。追加確認は判断を変えるか完了を証明する場合に限り、最低思考時間は設けません。
+
+通常の setup 更新は、ユーザー記述を保存し、既存の管理指示と Skill を更新します。設定済みクライアントのグローバル指示や登録済みプロジェクトの指示ファイルが欠落している場合は、再作成せず skipped として報告します。登録済みプロジェクトの欠落ファイルを復元したい場合は、既存の対話式 `kiokuko doctor` の確認に答えてください。

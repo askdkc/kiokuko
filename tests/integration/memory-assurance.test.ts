@@ -1,7 +1,7 @@
 import { defineTaskVerification, recordTaskVerification } from '../../src/assurance/verification.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -884,4 +884,43 @@ test('concurrent exact refresh retries commit one receipt and no redundant trans
     const current=assuranceState(f.db,input.runId)!;
     assert.equal(current.delivery_id,((result[0] as PromiseFulfilledResult<any>).value).context.deliveryId);
   } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+
+
+test('natural response-only requests and bounded staged inspection finish without preparing a run', async () => {
+  const git = (root: string, ...args: string[]) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe', timeout: 5000 });
+  const base = mkdtempSync(path.join(tmpdir(), 'kiokuko-response-only-'));
+  const root = path.join(base, 'repo'); mkdirSync(root); git(root, 'init', '-q');
+  writeFileSync(path.join(root, 'source.txt'), 'old\n'); git(root, 'add', '.');
+  git(root, '-c', 'user.name=Test', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'init');
+  writeFileSync(path.join(root, 'source.txt'), 'new\n'); git(root, 'add', '.');
+  const databasePath = path.join(base, 'memory.sqlite3'); await initializeDatabase({ databasePath });
+  const db = openConnection(databasePath);
+  try {
+    // These are hook boundary traces, not a claim that a model selected this route.
+    const requests = ['この説明を英訳して: ファイルは確認後に作成します。', '結果: 全5件成功。この結果を説明して。',
+      '訂正: 自動再作成ではなく作成するか聞いて。', '変更: 欠落ファイルの作成前に確認する。コミット文面を。'];
+    for (const [index, prompt] of requests.entries()) {
+      const common = { session_id: 'responses', turn_id: String(index), cwd: root };
+      const result = handleCodexHook(db, { ...common, hook_event_name: 'UserPromptSubmit', prompt }) as any;
+      assert.match(result.hookSpecificOutput.additionalContext, /zero preparation, memory, or verification calls/u);
+      assert.deepEqual(handleCodexHook(db, { ...common, hook_event_name: 'Stop' }), {});
+    }
+    const common = { session_id: 'responses', turn_id: 'staged', cwd: root };
+    handleCodexHook(db, { ...common, hook_event_name: 'UserPromptSubmit', prompt: 'staged 差分からコミットメッセージを書いて。' });
+    const call = { ...common, tool_name: 'mcp__kiokuko__task_inspect', tool_use_id: 'diff', tool_input: { cwd: root, operation: 'diff', scope: 'auto' } };
+    assert.deepEqual(handleCodexHook(db, { ...call, hook_event_name: 'PreToolUse' }), {});
+    const result = inspectTask(call.tool_input);
+    assert.equal('scope' in result && result.scope, 'staged');
+    handleCodexHook(db, { ...call, hook_event_name: 'PostToolUse', tool_response: { structuredContent: result } });
+    assert.deepEqual(handleCodexHook(db, { ...common, hook_event_name: 'Stop' }), {});
+    assert.equal(db.prepare('SELECT count(*) AS count FROM ledger_runs').get<{count:number}>()!.count, 0);
+    for (const [tool_name, tool_input] of [['exec_command', { cmd: 'git diff --cached' }], ['apply_patch', { patch: 'source.txt を修正する' }], ['js', { code: 'readFileSync("source.txt")' }],
+      ['mcp__kiokuko__task_inspect', { cwd: root, operation: 'diff', command: 'touch escaped' }]] as const) {
+      const event = { ...common, turn_id: tool_name, hook_event_name: 'PreToolUse', tool_name, tool_use_id: 'fake-read', tool_input };
+      handleCodexHook(db, { ...event, hook_event_name: 'UserPromptSubmit', prompt: tool_name === 'apply_patch' ? '修正して' : tool_name === 'exec_command' ? '公開して' : 'just read this' });
+      if (tool_name === 'mcp__kiokuko__task_inspect') assert.throws(() => inspectTask(tool_input));
+      else assert.equal((handleCodexHook(db, event) as any).hookSpecificOutput.permissionDecision, 'deny');
+    }
+  } finally { db.close(); rmSync(base, { recursive: true, force: true }); }
 });

@@ -65,3 +65,8 @@ download or mutation; `--json` is suitable for automation and fails closed on an
 unmanaged MCP identity.
 
 ## Web UI and clients
+
+
+Answer-only requests use the evidence already in the conversation without creating a task run or recalling memory. A decision-relevant missing fact can use bounded `task_inspect`; `operation: "diff"` accepts `scope: "auto" | "staged" | "working-tree"`. Auto prefers the index when staged changes exist and returns the selected scope. External diff, textconv and worktree filters are disabled. Code changes, operations, formal reviews and implementation plans retain intake and verification. Additional checks must change a decision or establish completion; there is no minimum thinking duration.
+
+Normal setup updates preserve custom instruction text and refresh existing managed blocks and Skills. If a previously configured client's global instruction file or a registered project's instruction file is absent, setup reports it as skipped instead of recreating it. Use the existing interactive `kiokuko doctor` confirmation when you want to restore a registered project's missing file.

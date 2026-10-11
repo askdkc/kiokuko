@@ -50,7 +50,7 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/u);
   assert.match(rendered, /Every `task_prepare` call must set `soulRead: true` only after that read/u);
   assert.match(rendered, /exact local `kiokuko-soul` capability is required for every task/u);
-  assert.match(rendered, /On Codex, read `kiokuko-codex-soul` and `kiokuko-codex-memory-reasoning`/u);
+  assert.match(rendered, /For work requiring intake on Codex, read `kiokuko-codex-soul` and `kiokuko-codex-memory-reasoning`/u);
   assert.match(rendered, /Akinator is the mandatory intake state machine before every planning or implementation route/u);
   assert.match(rendered, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
   assert.match(rendered, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
@@ -144,4 +144,17 @@ test('agent renderer rejects identity injection before interpolation', () => {
     }),
     (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
   );
+});
+
+
+test('response-only work needs no run or memory recall; bounded missing facts use inspection', () => {
+  const project = renderManagedBlock({ repositoryId: 'repo-fixture', workspace: 'project:fixture', cliCommand: 'kiokuko' });
+  const global = renderGlobalInstructions('Custom instruction.\n').content;
+  for (const text of [project, global]) {
+    assert.match(text, /uncertainty, consequences of error, reversibility, and evidence already available/u);
+    assert.match(text, /zero preparation, memory, or verification calls/u);
+    assert.match(text, /scope.*auto.*staged.*working-tree/u);
+    assert.match(text, /Repository mentions alone do not require preparation/u);
+    assert.match(text, /No minimum reasoning duration/u);
+  }
 });
