@@ -145,7 +145,7 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, /Never install or execute external Skill content automatically/);
   assert.match(
     soulSkill,
-    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `kiokuko-simple-work`[\s\S]*5\. `kiokuko-single-purpose-functions`[\s\S]*6\. `one-shot-software-completion`[\s\S]*7\. `coding-ideal-routine-skill`[\s\S]*8\. `kiokuko-ui-design-soul`/u,
+    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `repair-user-workflow`[\s\S]*5\. `kiokuko-simple-work`[\s\S]*6\. `kiokuko-single-purpose-functions`[\s\S]*7\. `one-shot-software-completion`[\s\S]*8\. `coding-ideal-routine-skill`[\s\S]*9\. `kiokuko-ui-design-soul`/u,
   );
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Akinator is the mandatory intake state machine before every planning or implementation route/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/);
@@ -179,6 +179,27 @@ test('coding requests route to the bundled ideal routine without imposing implem
   assert.match(soul, /apply `coding-ideal-routine-skill`/u);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /`coding-ideal-routine-skill` for coding requests/u);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /explanation-only requests do not require implementation or Red\/Green tests/u);
+});
+
+test('workflow repairs bundle the skill and route through SOUL after intake', async () => {
+  const files = await loadBundledStandardSkillFiles();
+  const repair = files.filter(file => file.skillName === 'repair-user-workflow');
+  assert.deepEqual(repair.map(file => file.relativePath), ['SKILL.md', 'references/scenarios.md']);
+  assert.match(repair[0]!.content, /^---\nname: repair-user-workflow\n/u);
+  assert.match(repair[0]!.content, /references\/scenarios\.md/u);
+  const soul = files.find(file => file.skillName === STANDARD_SOUL_SKILL_NAME)?.content ?? '';
+  const route = soul.match(/### Workflow repair\n([\s\S]*?)(?=\n### |\n## |$)/u)?.[1] ?? '';
+  assert.match(route, /Read and apply `repair-user-workflow` before planning or implementing/u);
+  assert.match(route, /installation, updates, build, registration, generated configuration, shortcuts,/u);
+  assert.match(route, /installed artifact, current profile, or actual consumer fails/u);
+  assert.match(route, /ordinary launch,[\s\S]*use, restart, or exit fails/u);
+  assert.match(route, /Judge these conditions from the reported workflow/u);
+  assert.match(route, /更新は成功したが起動しない/u);
+  assert.match(route, /do not depend on\s+keyword matches or `catalog_similarity` recommendations/u);
+  assert.match(route, /explanation-only requests, commit-message drafting,\s+or isolated logic fixes without a workflow boundary/u);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /`repair-user-workflow` for workflow defect repairs/u);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Read and apply `repair-user-workflow` before planning or implementing the repair/u);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /explanation-only requests, commit-message drafting, or isolated logic fixes without a workflow boundary/u);
 });
 
 test('every bundled skill and local reference is discoverable through the setup manifest', async () => {

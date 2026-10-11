@@ -46,6 +46,9 @@ const STANDARD_SKILL_FIXTURES = [{
   name: 'veteran-programmer-skill',
   files: STANDARD_WORKFLOW_SKILL_FILES,
 }, {
+  name: 'repair-user-workflow',
+  files: ['SKILL.md', 'references/scenarios.md'],
+}, {
   name: 'natural-japanese-output',
   files: STANDARD_JAPANESE_SKILL_FILES,
 }, {
@@ -925,6 +928,27 @@ test('setup preserves shared legacy Skills and updates only unchanged owned Code
   assert.equal(await readFile(deployedPath, 'utf8'), original + 'user edit\n');
   await writeFile(legacy, 'DSH setup ran after Codex\n');
   assert.equal(await readFile(deployedPath, 'utf8'), original + 'user edit\n');
+});
+
+test('setup adds the workflow repair route to existing Codex installations and keeps it idempotent', async () => {
+  const temporary = await temporaryEnvironment('workflow-repair-route');
+  const directory = path.join(temporary.home, '.agents', 'skills');
+  const args = ['setup', '--clients', 'codex', '--no-embeddings', '--json'];
+  // Existing client configuration must acquire new standard skills on ordinary setup.
+  await runCliJson('linux', temporary.env, [...args, '--no-standard-skills']);
+  await runCliJson('linux', temporary.env, args);
+  const soul = await readFile(path.join(directory, 'kiokuko-codex-soul', 'SKILL.md'), 'utf8');
+  const route = soul.match(/### Workflow repair\n([\s\S]*?)(?=\n### |\n## |$)/u)?.[1] ?? '';
+  const selector = route.match(/Read and apply `([^`]+)`/u)?.[1];
+  assert.equal(selector, 'kiokuko-codex-repair-user-workflow');
+  const skill = await readFile(path.join(directory, selector!, 'SKILL.md'), 'utf8');
+  assert.match(skill, /^---\nname: kiokuko-codex-repair-user-workflow\n/u);
+  assert.match(skill, /references\/scenarios\.md/u);
+  await access(path.join(directory, selector!, 'references', 'scenarios.md'));
+  const instructions = await readFile(path.join(temporary.home, '.codex', 'AGENTS.md'), 'utf8');
+  assert.match(instructions, /`kiokuko-codex-repair-user-workflow` for workflow defect repairs/u);
+  const repeated = await runCliJson('linux', temporary.env, args);
+  assert.ok((repeated.data.files as { action: string }[]).every(file => file.action === 'unchanged'));
 });
 
 test('setup fails closed on every unmanaged same-name standard skill before any write', async () => {

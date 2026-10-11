@@ -30,7 +30,7 @@ commands and global rules. Claude Code supports user-scoped stdio MCP servers,
 global `CLAUDE.md`, and auto-discovered skills. `kiokuko setup` uses the MCP and
 instruction surfaces and installs the bundled `memory-reasoning`, `kiokuko-soul`, `kiokuko-simple-work`,
 `kiokuko-single-purpose-functions`, `kiokuko-ui-design-soul`, `veteran-programmer-skill`,
-`natural-japanese-output`, `one-shot-software-completion`, and
+`repair-user-workflow`, `natural-japanese-output`, `one-shot-software-completion`, and
 `coding-ideal-routine-skill` skills in the selected supported clients by
 default. The skills are copied from a fixed package manifest and never downloaded
 during setup. Codex uses host-specific names (`kiokuko-codex-soul`,
@@ -51,6 +51,19 @@ connects investigation, meaningful failing tests, implementation, ordinary-use
 acceptance checks, and evidence-based reporting. Explanation-only requests need
 no implementation or Red/Green tests. Codex receives the manifest-listed name
 `kiokuko-codex-coding-ideal-routine-skill`; other hosts keep the canonical name.
+
+`repair-user-workflow` must be read through SOUL after intake and memory review,
+before planning or implementing repairs when installation, update, build, or
+registration succeeds but ordinary launch, use, restart, or exit fails; source
+checks pass but the installed artifact, current profile, or consumer fails; or
+a previous fix still requires manual rescue. SOUL judges the reported workflow,
+including Japanese reports, without depending on keyword matches or capability
+similarity recommendations. Explanation-only requests, commit-message drafting,
+and isolated logic fixes without a workflow boundary do not select this route.
+Setup includes its on-demand scenario reference;
+Codex receives `kiokuko-codex-repair-user-workflow`, and other hosts keep the
+canonical name. These instructions require the model to read the skill; they
+do not prove future model compliance or update an already installed package.
 
 Hermes Agent v0.20.4 uses a profile-scoped native stdio MCP client. Kiokuko writes
 only the effective profile's `config.yaml` entry:

@@ -63,6 +63,9 @@ export const STANDARD_SOUL_SKILL_FILES = ['SKILL.md'] as const;
 export const STANDARD_WORKFLOW_SKILL_NAME = 'veteran-programmer-skill';
 export const STANDARD_WORKFLOW_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: veteran-programmer-skill -->';
 export const STANDARD_WORKFLOW_SKILL_FILES = ['SKILL.md'] as const;
+export const STANDARD_REPAIR_SKILL_NAME = 'repair-user-workflow';
+export const STANDARD_REPAIR_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: repair-user-workflow -->';
+export const STANDARD_REPAIR_SKILL_FILES = ['SKILL.md', 'references/scenarios.md'] as const;
 export const STANDARD_JAPANESE_SKILL_NAME = 'natural-japanese-output';
 export const STANDARD_JAPANESE_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: natural-japanese-output -->';
 export const STANDARD_JAPANESE_SKILL_FILES = ['SKILL.md'] as const;
@@ -107,6 +110,10 @@ export const STANDARD_SKILL_MANIFESTS = [{
   name: STANDARD_WORKFLOW_SKILL_NAME,
   managedMarker: STANDARD_WORKFLOW_SKILL_MANAGED_MARKER,
   files: STANDARD_WORKFLOW_SKILL_FILES,
+}, {
+  name: STANDARD_REPAIR_SKILL_NAME,
+  managedMarker: STANDARD_REPAIR_SKILL_MANAGED_MARKER,
+  files: STANDARD_REPAIR_SKILL_FILES,
 }, {
   name: STANDARD_JAPANESE_SKILL_NAME,
   managedMarker: STANDARD_JAPANESE_SKILL_MANAGED_MARKER,

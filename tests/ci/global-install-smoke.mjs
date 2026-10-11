@@ -272,13 +272,20 @@ async function verifyInstalledSelectors(cliPath, fixtureRoot, environment, skill
   await run('git', ['init', '-q'], repo, environment);
   for (const [host, directory] of Object.entries(skillDirectories)) {
     const deployed = [];
+    let repairSelector;
     for (const name of await readdir(directory)) {
       const index = await readFile(path.join(directory, name, 'SKILL.md'), 'utf8');
       const identity = /^name: (\S+)$/mu.exec(index)?.[1];
       assert.equal(identity, name, 'Deployed frontmatter and public directory identity disagree');
       const references = [...index.matchAll(/\]\((references\/[^)]+\.md)\)/gu)].map(match => match[1]);
       deployed.push({ name: identity, references });
+      if (index.includes('# Kiokuko SOUL router')) {
+        const route = index.match(/### Workflow repair\n([\s\S]*?)(?=\n### |\n## |$)/u)?.[1] ?? '';
+        repairSelector = route.match(/Read and apply `([^`]+)`/u)?.[1];
+      }
     }
+    assert.equal(repairSelector, host === 'codex' ? 'kiokuko-codex-repair-user-workflow' : 'repair-user-workflow');
+    assert.ok(deployed.find(skill => skill.name === repairSelector)?.references.includes('references/scenarios.md'), 'Installed SOUL route must resolve to the deployed repair skill and its reference');
     const client = new Client({ name: host, version: 'installed-contract' });
     await client.connect(new StdioClientTransport({ command: cliPath, args: ['mcp'], cwd: subdirectory, env: environment, stderr: 'pipe' }));
     try {

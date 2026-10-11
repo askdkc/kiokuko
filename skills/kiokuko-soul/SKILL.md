@@ -160,6 +160,25 @@ Enter planning and implementation routes only after the Akinator gate reaches `r
 
 Read and apply `veteran-programmer-skill` before and after implementation when changes span setup, delivery, persisted state, or runtime handoffs. Check that the requested behavior reaches its actual consumer. An isolated edit needs no additional audit.
 
+### Workflow repair
+
+Read and apply `repair-user-workflow` before planning or implementing fixes for
+installation, updates, build, registration, generated configuration, shortcuts,
+plugins, services, or caller-to-runtime handoffs when the next ordinary launch,
+use, restart, or exit fails after upstream success, source/helper checks pass but
+the installed artifact, current profile, or actual consumer fails, or a previous
+fix still needs manual rescue. Judge these conditions from the reported workflow,
+including Japanese reports such as 「更新は成功したが起動しない」; do not depend on
+keyword matches or `catalog_similarity` recommendations. Resolve this route after intake and memory
+review permit progress. Read the complete skill index; load its scenario reference
+only for an ambiguity or skill review.
+
+Do not select this route for explanation-only requests, commit-message drafting,
+or isolated logic fixes without a workflow boundary.
+Use it alongside the coding routine and applicable code/UI skills, and stop if the
+required local skill is unavailable. The repair must reach the ordinary consumer;
+skill selection alone does not establish that the workflow works.
+
 ### Simple code work
 
 Read and apply `kiokuko-simple-work` when either condition is true:
@@ -205,11 +224,12 @@ Use this order:
 1. `kiokuko-soul`;
 2. one Akinator `task_prepare`, followed by grounded `task_answer` calls until `ready` or `exhausted`;
 3. `veteran-programmer-skill` when the change crosses workflow stages;
-4. `kiokuko-simple-work` when the finalized intake satisfies the simple-code activation boundary;
-5. `kiokuko-single-purpose-functions` for code planning or code work;
-6. `one-shot-software-completion` for every coding request, including simple code and UI code changes;
-7. `coding-ideal-routine-skill` for coding requests;
-8. `kiokuko-ui-design-soul` for interactive UI work.
+4. `repair-user-workflow` for the workflow defect repairs defined above;
+5. `kiokuko-simple-work` when the finalized intake satisfies the simple-code activation boundary;
+6. `kiokuko-single-purpose-functions` for code planning or code work;
+7. `one-shot-software-completion` for every coding request, including simple code and UI code changes;
+8. `coding-ideal-routine-skill` for coding requests;
+9. `kiokuko-ui-design-soul` for interactive UI work.
 
 Keep each route within the user-approved task scope.
 
