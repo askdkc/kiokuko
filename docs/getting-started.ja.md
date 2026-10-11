@@ -39,6 +39,10 @@ required = true
 
 起動中のclientは設定後に再起動してください。
 `kiokuko doctor --json`はruntime、DB、Codex MCPを読み取り専用で検査します。
+対話実行の`kiokuko doctor`では、登録済みのagent instruction fileが欠落していると
+再作成するか確認します。Enterだけなら作成しません。再作成できるのはKiokukoの指示だけで、
+削除された独自の指示は復元できません。JSON・非対話実行では確認や再作成を行わず、
+`data.checks.agentFiles.findings`に対象パスと理由を返します。
 
 ## Embeddings
 

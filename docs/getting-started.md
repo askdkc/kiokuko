@@ -41,7 +41,11 @@ whether to replace a conflicting identity; JSON, non-interactive, and dry-run ca
 return `CONFLICT` without mutation. The same rule applies to other supported clients.
 
 Restart a running client after setup. Use `kiokuko doctor --json` to inspect runtime,
-database, and Codex MCP health; doctor is read-only.
+database, and Codex MCP health without changing files. Interactive `kiokuko doctor`
+asks before recreating a missing registered agent instruction file; Enter defaults
+to No. Recreation restores only Kiokuko instructions, not deleted custom content.
+JSON and noninteractive checks report the affected path and reason under
+`data.checks.agentFiles.findings` without prompting or recreating files.
 
 ## Embeddings setup
 

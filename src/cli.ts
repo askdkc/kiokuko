@@ -11,7 +11,7 @@ import { answerAkinator, startAkinator } from './akinator/orchestrator.js';
 import { registerAgentCommand, type AgentCommandDependencies } from './commands/agent.js';
 import { createBackup } from './commands/backup.js';
 import { runCuratorCommand } from './commands/curator.js';
-import { promptRemoveMissingRepositoryLocations, runDoctor } from './commands/doctor.js';
+import { promptRecreateMissingAgentFiles, promptRemoveMissingRepositoryLocations, runDoctor } from './commands/doctor.js';
 import { registerEmbeddingsCommands } from './commands/embeddings.js';
 import { registerRerankerCommands } from './commands/reranker.js';
 import { writeExport } from './commands/export.js';
@@ -1050,7 +1050,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'backup', result, `Backup written to ${options.output}`);
   });
 
-  cli.command('doctor').description('Check runtime, database, and Codex MCP configuration health; interactively clean missing repository locations').option('--json').action(async (options: { json?: boolean }) => {
+  cli.command('doctor').description('Check health; ask before cleaning missing repository locations or recreating missing agent files').option('--json').action(async (options: { json?: boolean }) => {
     const doctorOptions: Parameters<typeof runDoctor>[0] = {
       ...(dependencies.doctorDatabasePath === undefined ? {} : { databasePath: dependencies.doctorDatabasePath }),
       ...(dependencies.doctorRuntimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: dependencies.doctorRuntimeDescriptorPath }),
@@ -1077,6 +1077,11 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           (database) => removeMissingRepositoryLocations(database, missing),
           databaseOptions,
         );
+        data = await runDoctor(doctorOptions);
+      }
+    }
+    if (interactive && data.checks.agentFiles.findings.some((finding) => finding.reason === 'missing_agent_file')) {
+      if (await promptRecreateMissingAgentFiles(data.checks.agentFiles.findings, { input, output }) > 0) {
         data = await runDoctor(doctorOptions);
       }
     }

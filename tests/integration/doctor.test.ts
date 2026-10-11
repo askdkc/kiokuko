@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Readable, Writable } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
 import { runDoctor } from '../../src/commands/doctor.js';
+import { useRepository } from '../../src/commands/use.js';
 import { openConnection, SqliteVecLoadError } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
@@ -42,17 +43,12 @@ function locationCount(database: ReturnType<typeof openConnection>): number {
   return Number(database.prepare('SELECT COUNT(*) AS count FROM repository_locations').get<{ count: number }>()?.count ?? 0);
 }
 
-function ttyInput(answer: string): Readable & { isTTY?: boolean } {
-  const input = Readable.from([answer]) as Readable & { isTTY?: boolean };
-  input.isTTY = true;
-  return input;
-}
-
-function ttyOutput(): Writable & { isTTY?: boolean; text: string } {
+function ttyOutput(onWrite?: (text: string) => void): Writable & { isTTY?: boolean; text: string } {
   let text = '';
   const output = new Writable({
     write(chunk, _encoding, callback) {
       text += chunk.toString();
+      onWrite?.(chunk.toString());
       callback();
     },
   }) as Writable & { isTTY?: boolean; text: string };
@@ -65,11 +61,26 @@ async function invokeDoctor(
   databasePath: string,
   answer: string,
   json = false,
-): Promise<{ stdout: string; prompt: string; response?: { data: Record<string, unknown>; ok: boolean } }> {
+  interactive = true,
+  onQuestion?: () => Promise<void>,
+  closeInputOnQuestion = false,
+): Promise<{ stdout: string; prompt: string; exitCode: number | undefined; response?: { data: Record<string, unknown>; ok: boolean } }> {
   let stdout = '';
   const originalWrite = process.stdout.write;
   const previousExitCode = process.exitCode;
-  const output = ttyOutput();
+  const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+  input.isTTY = interactive;
+  const answers = answer.split('\n');
+  const output = ttyOutput((chunk) => {
+    if (/\? \[(?:Y\/n|y\/N)\]/u.test(chunk)) {
+      void (async () => {
+        await onQuestion?.();
+        if (closeInputOnQuestion) { input.end(); return; }
+        input.write(`${answers.shift() ?? ''}\n`);
+      })();
+    }
+  });
+  let exitCode: number | undefined;
   process.exitCode = undefined;
   process.stdout.write = ((chunk: string | Uint8Array) => {
     stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
@@ -78,19 +89,156 @@ async function invokeDoctor(
   try {
     await buildCli({
       doctorDatabasePath: databasePath,
-      doctorInput: ttyInput(answer),
+      doctorInput: input,
       doctorOutput: output,
     }).parseAsync(['node', 'kiokuko', 'doctor', ...(json ? ['--json'] : [])]);
+    exitCode = process.exitCode === undefined ? undefined : Number(process.exitCode);
   } finally {
+    input.end();
     process.stdout.write = originalWrite;
     process.exitCode = previousExitCode;
   }
   return {
     stdout,
     prompt: output.text,
+    exitCode,
     ...(json ? { response: JSON.parse(stdout) as { data: Record<string, unknown>; ok: boolean } } : {}),
   };
 }
+
+async function deletedAgentProject(prefix: string, agentFile = 'AGENTS.md') {
+  const value = await temporaryDatabase(prefix);
+  value.database.close();
+  const root = path.join(value.directory, 'project');
+  await mkdir(path.dirname(path.join(root, agentFile)), { recursive: true });
+  const project = await useRepository({ root, agentFile, allowDirectory: true, databasePath: value.databasePath });
+  await unlink(project.agentFile!);
+  return { ...value, project };
+}
+
+test('interactive doctor asks before recreating a deleted configured agent file and reruns health checks', async () => {
+  const value = await deletedAgentProject('agent-create', 'instructions/AGENTS.md');
+  const bindingBefore = await readFile(value.project.bindingFile, 'utf8');
+  const result = await invokeDoctor(value.databasePath, 'y\n');
+  assert.ok(result.prompt.includes(value.project.agentFile!));
+  assert.match(result.prompt, /Create this missing agent file\? \[y\/N\]/u);
+  assert.match(result.stdout, /Kiokuko doctor: OK/u);
+  assert.equal(result.exitCode, undefined);
+  const restored = await readFile(value.project.agentFile!, 'utf8');
+  assert.ok(restored.includes(value.project.repositoryId));
+  assert.ok(restored.includes(value.project.workspace));
+  assert.equal(await readFile(value.project.bindingFile, 'utf8'), bindingBefore);
+  const repeated = await invokeDoctor(value.databasePath, 'y\n');
+  assert.equal(repeated.prompt, '');
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), restored);
+});
+
+test('agent recreation never overwrites a file created during confirmation', async () => {
+  const value = await deletedAgentProject('agent-race');
+  await assert.rejects(invokeDoctor(value.databasePath, 'y\n', false, true, async () => {
+    await writeFile(value.project.agentFile!, 'concurrent user instructions\n');
+  }), { code: 'CONFLICT' });
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), 'concurrent user instructions\n');
+});
+
+test('agent recreation rejects a binding changed during confirmation', async () => {
+  const value = await deletedAgentProject('binding-race');
+  await assert.rejects(invokeDoctor(value.databasePath, 'y\n', false, true, async () => {
+    const config = JSON.parse(await readFile(value.project.bindingFile, 'utf8')) as Record<string, unknown>;
+    await writeFile(value.project.bindingFile, `${JSON.stringify({ ...config, agentFile: 'OTHER.md' })}\n`);
+  }), { code: 'CONFLICT' });
+  await assert.rejects(access(value.project.agentFile!));
+  await assert.rejects(access(path.join(value.project.repositoryRoot, 'OTHER.md')));
+});
+
+test('closing input during agent confirmation returns without recreating the file', async () => {
+  const value = await deletedAgentProject('agent-eof');
+  const result = await invokeDoctor(value.databasePath, '', false, true, undefined, true);
+  assert.match(result.prompt, /Create this missing agent file\?/u);
+  assert.equal(result.exitCode, 8);
+  await assert.rejects(access(value.project.agentFile!));
+});
+
+test('doctor asks separately for multiple missing agent files', async () => {
+  const value = await deletedAgentProject('agent-multiple');
+  const otherRoot = path.join(value.directory, 'other-project');
+  await mkdir(otherRoot);
+  const other = await useRepository({ root: otherRoot, allowDirectory: true, databasePath: value.databasePath });
+  await unlink(other.agentFile!);
+  const result = await invokeDoctor(value.databasePath, 'n\ny\n');
+  assert.equal(result.prompt.split('Create this missing agent file?').length - 1, 2);
+  // The registry scans canonical roots in order: other-project first, then project.
+  await assert.rejects(access(other.agentFile!));
+  assert.ok((await readFile(value.project.agentFile!, 'utf8')).includes(value.project.workspace));
+  assert.equal(result.exitCode, 8);
+});
+
+for (const answer of ['n\n', '\n']) {
+  test(`declining agent recreation preserves the deleted file (${JSON.stringify(answer)})`, async () => {
+    const value = await deletedAgentProject('agent-decline');
+    const result = await invokeDoctor(value.databasePath, answer);
+    assert.match(result.prompt, /Create this missing agent file\? \[y\/N\]/u);
+    assert.match(result.stdout, /Kiokuko doctor: FAILED/u);
+    assert.equal(result.exitCode, 8);
+    await assert.rejects(access(value.project.agentFile!));
+  });
+}
+
+test('JSON doctor reports the missing configured agent path without prompting or creating it', async () => {
+  const value = await deletedAgentProject('agent-json');
+  const result = await invokeDoctor(value.databasePath, 'y\n', true);
+  assert.equal(result.prompt, '');
+  assert.equal(result.response?.ok, true);
+  assert.equal(result.response?.data.ok, false);
+  assert.deepEqual((result.response?.data.checks as Record<string, unknown>).agentFiles, {
+    ok: false,
+    count: 1,
+    findings: [{
+      repositoryRoot: value.project.repositoryRoot,
+      repositoryId: value.project.repositoryId,
+      agentFile: value.project.agentFile,
+      reason: 'missing_agent_file',
+    }],
+  });
+  assert.equal(result.exitCode, 8);
+  await assert.rejects(access(value.project.agentFile!));
+});
+
+test('noninteractive doctor leaves deleted instructions absent', async () => {
+  const value = await deletedAgentProject('agent-nontty');
+  const result = await invokeDoctor(value.databasePath, 'y\n', false, false);
+  assert.equal(result.prompt, '');
+  assert.match(result.stdout, /Kiokuko doctor: FAILED/u);
+  assert.equal(result.exitCode, 8);
+  await assert.rejects(access(value.project.agentFile!));
+});
+
+test('doctor never offers to recreate an existing malformed agent file or invalid binding', async () => {
+  const value = await deletedAgentProject('agent-invalid');
+  const content = 'user rules\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n';
+  await writeFile(value.project.agentFile!, content);
+  const result = await invokeDoctor(value.databasePath, 'y\n');
+  assert.equal(result.prompt, '');
+  assert.match(result.stdout, /Kiokuko doctor: FAILED/u);
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), content);
+  await unlink(value.project.agentFile!);
+  await writeFile(value.project.bindingFile, '{}\n');
+  const invalid = await invokeDoctor(value.databasePath, 'y\n');
+  assert.equal(invalid.prompt, '');
+  assert.match(invalid.stdout, /Kiokuko doctor: FAILED/u);
+  await assert.rejects(access(value.project.agentFile!));
+});
+
+test('doctor treats dangling agent symlinks as unsafe files rather than missing creation targets', async () => {
+  const value = await deletedAgentProject('agent-symlink');
+  await symlink(path.join(value.directory, 'missing-target'), value.project.agentFile!);
+  const result = await invokeDoctor(value.databasePath, 'y\n', true);
+  const finding = (result.response?.data.checks as { agentFiles: { findings: Array<{ reason: string }> } }).agentFiles.findings[0];
+  assert.equal(finding?.reason, 'unreadable_agent_file');
+  const interactive = await invokeDoctor(value.databasePath, 'y\n');
+  assert.equal(interactive.prompt, '');
+  assert.equal(interactive.exitCode, 8);
+});
 
 test('missing-location cleanup removes only absent location rows and preserves repositories', async () => {
   const value = await temporaryDatabase('rows');
