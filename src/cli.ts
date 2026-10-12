@@ -1094,7 +1094,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     const failureNotice = data.ok
       ? ''
       : ` Failed checks: ${Object.entries(data.checks).filter(([, check]) => !check.ok).map(([name]) => name).join(', ')}.\nrun kiokuko doctor --json for detailed output`;
-    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}`);
+    const agentFileNotice = data.checks.agentFiles.findings
+      .map((finding) => `\n  ${finding.agentFile ?? finding.repositoryRoot}: ${finding.reason}`)
+      .join('');
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}${agentFileNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 

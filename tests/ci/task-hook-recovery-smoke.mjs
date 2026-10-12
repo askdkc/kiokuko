@@ -7,6 +7,7 @@ import { acceptCodexToolHook, runCodexNestedTool } from '../fixtures/codex-hook-
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createHash } from 'node:crypto';
+import { verifyInstalledMissingPromptRecovery } from './missing-prompt-hook-smoke.mjs';
 
 // Real SDK/stdio cancellation, with only external discovery replaced by a bounded fixture.
 async function verifyInstalledMcpCancellation(installedRoot, fixtureRoot) {
@@ -74,6 +75,7 @@ await runMcpServer({databasePath:${JSON.stringify(path.join(fixtureRoot,'cancel.
 
 // Exercise the installed tarball's code and CLI, never source modules.
 export async function verifyInstalledTaskHookRecovery(installedRoot, fixtureRoot) {
+  await verifyInstalledMissingPromptRecovery(installedRoot, path.join(fixtureRoot, 'missing-prompt'));
   const load = file => import(pathToFileURL(path.join(installedRoot, 'dist', file)).href);
   const { initializeDatabase } = await load('commands/init.js');
   const { openConnection } = await load('db/connection.js');

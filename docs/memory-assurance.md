@@ -258,6 +258,14 @@ hook events, never from a model-supplied session ID. It does not fabricate
 Unidentified child execution cannot inherit a parent's run. Delegation is denied
 on paths where distinct child tool identities cannot be established.
 
+A resumed host turn may emit PreToolUse without UserPromptSubmit. The first
+valid tool event creates an unprepared binding for its exact thread, turn,
+agent and repository, blocks that call, and reports the current request ID.
+Read the bundled Skills and prepare with that ID in the same turn; no new user
+message is needed. No prior or parent run is inherited. Existing interruption
+and stop latches are never cleared, and mismatched preparation IDs still stop
+the turn. PostToolUse alone cannot bootstrap a request or record an execution.
+
 Preparation/intake and pending/stale review denials block only the attempted
 call. They return fixed reason codes, `recoverable: true` and the required next
 operation. They neither set `stop_notified` nor fail the run. Complete preparation,

@@ -157,7 +157,20 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
   }
   if (!request) {
     if (input.hook_event_name === 'Interrupt' || input.hook_event_name === 'SubagentStop') return {};
-    if (input.hook_event_name === 'PreToolUse') return denyTurn('Kiokuko has not observed this request start. Parent-agent preparation is not inherited.', 'request_not_observed');
+    if (input.hook_event_name === 'PreToolUse') {
+      if (!input.tool_name || !input.tool_use_id) throw new KiokukoError('VALIDATION_ERROR', 'Hook tool identity is missing');
+      // A resumed host turn can deliver tools without UserPromptSubmit. The
+      // observed tool identity may bootstrap preparation, never inherit a run.
+      const current = withImmediateTransaction(db, () => {
+        db.prepare(`INSERT INTO codex_hook_requests
+          (identity_digest, repository_root, run_id, request_id, state, stop_notified, last_event, updated_at)
+          VALUES (?, ?, NULL, ?, 'pending', 0, ?, ?)
+          ON CONFLICT(identity_digest) DO NOTHING`).run(identity, root, requestId, input.hook_event_name, now);
+        return db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest=?').get<HookRequest>(identity)!;
+      });
+      if (current.stop_notified || current.state === 'cancelled') return deny('This turn already had a policy denial or interruption.');
+      return recoverableDeny(`Kiokuko has not observed this request start. This tool call did not execute. Current Kiokuko request ${requestId}: read kiokuko-soul with task_inspect {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path), then read memory-reasoning and complete task_prepare with requestId ${requestId}, cwd ${root} and soulRead=true in this turn. Parent-agent and previous-turn preparation are not inherited.`, 'request_not_observed');
+    }
     throw new KiokukoError('CONFLICT', 'Hook request start was not observed');
   }
   db.prepare('UPDATE codex_hook_requests SET last_event = ?, updated_at = ? WHERE identity_digest = ?').run(input.hook_event_name, now, identity);
@@ -219,7 +232,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
       }
       return {};
     }
-    if (!request.run_id) return recoverableDeny(`Preparation was missing: read kiokuko-soul with task_inspect {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path), then complete task_prepare in this turn. task_inspect also permits bounded preparation reads.`, 'preparation_required');
+    if (!request.run_id) return recoverableDeny(`Preparation was missing: read kiokuko-soul with task_inspect {"cwd":${JSON.stringify(root)},"operation":"skill"} (omit path), then complete task_prepare with requestId ${requestId} in this turn. task_inspect also permits bounded preparation reads.`, 'preparation_required');
     if (request.state !== 'bound') return recoverableDeny('Complete the current intake or required capability gate.', 'intake_pending');
     const run = new LedgerStore(db).readRun(request.run_id);
     if (!run || run.status !== 'active') return denyTurn('Kiokuko intake is unfinished or the run is terminal', 'run_terminal');

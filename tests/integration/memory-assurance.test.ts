@@ -19,6 +19,7 @@ import { repositoryStateDigest } from '../../src/assurance/snapshot.js';
 import { codexHookCorrelationId, codexHookFailureCode, handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
 import { codexHookDiagnostics } from '../../src/assurance/hook-diagnostics.js';
 import { KiokukoError } from '../../src/errors.js';
+import { LedgerStore } from '../../src/ledger/store.js';
 import { refreshTaskMemory } from '../../src/assurance/refresh.js';
 import { acceptCodexToolHook, runCodexNestedTool } from '../fixtures/codex-hook-output.mjs';
 const caps = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }];
@@ -241,7 +242,7 @@ test('hook command exposes policy block reasons to the user without leaking tool
       assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM codex_hook_tools').get<{ n: number }>()!.n, 0);
     };
     checkBlock(/request start/u);
-    checkBlock(/already had a policy denial/u);
+    checkBlock(/Preparation was missing/u);
     common = { ...common, turn_id: 'unprepared' };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
     checkBlock(/task_prepare/u);
@@ -954,6 +955,65 @@ test('recoverable preparation denial leaves same-turn preparation and review rep
   reviewTaskMemory(f.db,{runId:f.prepared.run.runId,cwd:f.root,requestId:'repair-review',expectedRevision:taskAssuranceReport(f.db,f.prepared.run.runId).revision!,deliveryId:f.prepared.context!.deliveryId!,entryId:f.entry.id,entryRevision:1,decision:'inapplicable',basis:'Does not apply to current execution'});
   assert.deepEqual(pre('exec_command',{}),{});
  }finally{f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+for (const firstTool of ['task_prepare', 'task_inspect', 'exec_command']) {
+  test(`missing prompt after interruption permits same-turn bootstrap (${firstTool})`, async () => {
+    const f = await fixture();
+    try {
+      const previous = { session_id: 'resumed-client', turn_id: 'interrupted', cwd: f.root };
+      handleCodexHook(f.db, { ...previous, hook_event_name: 'UserPromptSubmit' });
+      const previousId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<any>()!.request_id;
+      handleCodexHook(f.db, { ...previous, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
+        tool_use_id: 'old-prepare', tool_input: { cwd: f.root, requestId: previousId }, tool_response: { structuredContent: f.prepared } });
+      handleCodexHook(f.db, { ...previous, hook_event_name: 'Interrupt' });
+      const current = { ...previous, turn_id: 'resumed-without-prompt' };
+      const pre = (tool_name: string, tool_input: object) => handleCodexHook(f.db, {
+        ...current, hook_event_name: 'PreToolUse', tool_name, tool_use_id: tool_name, tool_input,
+      }) as any;
+      const tool = firstTool === 'exec_command' ? firstTool : `mcp__kiokuko__${firstTool}`;
+      const blocked = pre(tool, { cwd: f.root, requestId: previousId, operation: 'skill' });
+      assert.equal(blocked.hookSpecificOutput.permissionDecision, 'deny');
+      assert.equal(lastHookDiagnostic(f.db).reason, 'request_not_observed');
+      assert.equal(lastHookDiagnostic(f.db).recoverable, true);
+      assert.doesNotMatch(blocked.systemMessage, /wait for a new user message/u);
+      const pending = f.db.prepare("SELECT * FROM codex_hook_requests WHERE state='pending'").get<any>()!;
+      assert.equal(pending.stop_notified, 0);
+      assert.equal(pending.run_id, null);
+      assert.notEqual(pending.request_id, previousId);
+      assert.match(blocked.hookSpecificOutput.permissionDecisionReason, new RegExp(pending.request_id));
+      assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools').get<any>()!.n, 0);
+      assert.equal(new LedgerStore(f.db).readRun(f.prepared.run.runId)!.status, 'interrupted');
+      assert.deepEqual(pre('mcp__kiokuko__task_inspect', { cwd: f.root, operation: 'skill' }), {});
+      const args = { cwd: f.root, requestId: pending.request_id, soulRead: true, capabilities: caps,
+        task: 'Implement migration expectations', skillDiscoveryMode: 'off' as const,
+        profileHints: { taskType: 'build' as const, target: 'source.ts migration expectations code', expected: 'next migration tests pass' } };
+      assert.deepEqual(pre('mcp__kiokuko__task_prepare', args), {});
+      const prepared = await prepareAgentTask(f.db, args);
+      assert.equal(prepared.run.status, 'active');
+      handleCodexHook(f.db, { ...current, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
+        tool_use_id: 'prepare', tool_input: args, tool_response: { structuredContent: prepared } });
+      assert.equal(pre('exec_command', { cmd: 'true' }).hookSpecificOutput.permissionDecision, 'deny');
+      assert.equal(lastHookDiagnostic(f.db).reason, 'memory_review_pending');
+      reviewTaskMemory(f.db, { cwd: f.root, runId: prepared.run.runId, requestId: 'resumed-review',
+        expectedRevision: taskAssuranceReport(f.db, prepared.run.runId).revision!, deliveryId: prepared.context!.deliveryId!,
+        entryId: f.entry.id, entryRevision: 1, decision: 'inapplicable', basis: 'This migration lesson is unrelated to the resumed fixture command' });
+      assert.deepEqual(pre('exec_command', { cmd: 'true' }), {});
+      handleCodexHook(f.db, { ...current, hook_event_name: 'Interrupt' });
+      assert.equal(pre('mcp__kiokuko__task_prepare', args).hookSpecificOutput.permissionDecision, 'deny');
+      assert.equal(lastHookDiagnostic(f.db).reason, 'request_interrupted');
+    } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+  });
+}
+test('missing prompt cannot bootstrap from malformed tools or post-only completion', async () => {
+  const f = await fixture();
+  try {
+    const common = { session_id: 'missing-event', turn_id: 'request', cwd: f.root };
+    assert.throws(() => handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse' }), /Hook tool identity is missing/u);
+    assert.throws(() => handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse',
+      tool_name: 'exec_command', tool_use_id: 'unadmitted', tool_input: {}, tool_response: { exit_code: 0 } }), /request start was not observed/u);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_requests').get<any>()!.n, 0);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n, 0);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 test('three unchanged reads add observations without review revision or guidance',async()=>{
  const f=await boundHookFixture();

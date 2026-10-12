@@ -137,6 +137,38 @@ test('doctor adds its missing plugin section without treating foreign ownership 
   assert.equal((await invokeDoctor(value.databasePath, 'y\n')).prompt, '');
 });
 
+test('doctor repairs alongside a legacy DSH section and the next run is healthy', async () => {
+  const value = await deletedAgentProject('legacy-dsh');
+  const foreign = 'Human rules\r\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\nDSH instructions\r\n<!-- END KIOKUKO MANAGED BLOCK -->\r\nFooter\r\n';
+  await writeFile(value.project.agentFile!, foreign);
+  const diagnostic = await invokeDoctor(value.databasePath, '', true);
+  const findings = (diagnostic.response?.data.checks as { agentFiles: { findings: Array<{ reason: string }> } }).agentFiles.findings;
+  assert.equal(findings[0]?.reason, 'missing_managed_block');
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), foreign);
+  const result = await invokeDoctor(value.databasePath, 'y\n');
+  assert.match(result.prompt, /Repair this Kiokuko section/u);
+  assert.match(result.stdout, /Kiokuko doctor: OK/u);
+  const repaired = await readFile(value.project.agentFile!, 'utf8');
+  assert.ok(repaired.startsWith(foreign));
+  const repeated = await invokeDoctor(value.databasePath, '');
+  assert.equal(repeated.prompt, '');
+  assert.equal(repeated.exitCode, undefined);
+  assert.match(repeated.stdout, /Kiokuko doctor: OK/u);
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), repaired);
+});
+
+test('human doctor reports the path and reason of unrepaired agent findings', async () => {
+  const value = await deletedAgentProject('unrepairable-detail');
+  const malformed = 'Human rules\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n';
+  await writeFile(value.project.agentFile!, malformed);
+  const result = await invokeDoctor(value.databasePath, 'y\n');
+  assert.ok(result.stdout.includes(value.project.agentFile!));
+  assert.match(result.stdout, /invalid_managed_block/u);
+  assert.equal(result.prompt, '');
+  assert.equal(result.exitCode, 8);
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), malformed);
+});
+
 test('doctor offers legacy section migration and rejects concurrent repair changes', async () => {
   const value = await deletedAgentProject('legacy-agent');
   const legacy = 'before\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n<!-- kiokuko-template-version: 36 -->\nOld Kiokuko instructions\n<!-- END KIOKUKO MANAGED BLOCK -->\nafter';

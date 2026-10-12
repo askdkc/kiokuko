@@ -38,18 +38,27 @@ function validateMarkers(content: string): { start: number; end: number } | unde
   const starts = markerPositions(content, BEGIN_MARKER);
   const ends = markerPositions(content, END_MARKER);
   if (starts.length === 0 && ends.length === 0) return undefined;
-  const start = starts[0];
-  const end = ends[0];
-  if (starts.length !== 1
-    || ends.length !== 1
-    || start === undefined
-    || end === undefined
-    || start >= end
-    || !isStandaloneMarker(content, BEGIN_MARKER, start)
-    || !isStandaloneMarker(content, END_MARKER, end)) {
-    throw new KiokukoError('VALIDATION_ERROR', 'AGENTS.md contains malformed Kiokuko managed markers');
+  const malformed = () => new KiokukoError('VALIDATION_ERROR', 'AGENTS.md contains malformed Kiokuko managed markers');
+  if (starts.length !== ends.length) throw malformed();
+  let owned: { start: number; end: number } | undefined;
+  for (let index = 0; index < starts.length; index += 1) {
+    const start = starts[index]!;
+    const end = ends[index]!;
+    if (start >= end
+      || (index > 0 && start < ends[index - 1]!)
+      || !isStandaloneMarker(content, BEGIN_MARKER, start)
+      || !isStandaloneMarker(content, END_MARKER, end)) throw malformed();
+    // DSH v1 used these same delimiters. Its exact ownership declaration
+    // distinguishes that foreign block; preserve it without changing any bytes.
+    const body = content.slice(start + BEGIN_MARKER.length, end).replaceAll('\r\n', '\n');
+    if (/^\n<!-- kiokuko-dsh-template-version: [1-9][0-9]* -->\n/u.test(body)) {
+      if (body.includes('kiokuko-template-version')) throw malformed();
+      continue;
+    }
+    if (owned !== undefined) throw malformed();
+    owned = { start, end: end + END_MARKER.length };
   }
-  return { start, end: end + END_MARKER.length };
+  return owned;
 }
 
 function newlineFor(content: string): string {

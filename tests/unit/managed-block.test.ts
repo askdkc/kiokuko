@@ -10,6 +10,41 @@ import {
 
 const block = `${BEGIN_MARKER}\nmanaged\n${END_MARKER}`;
 
+test('legacy DSH blocks remain foreign through add, update, version reads and removal', () => {
+  for (const newline of ['\n', '\r\n']) {
+    const foreign = [BEGIN_MARKER, '<!-- kiokuko-dsh-template-version: 1 -->', 'DSH rules', END_MARKER].join(newline);
+    const original = `human${newline}${foreign}${newline}footer`;
+    assert.equal(readManagedBlockTemplateVersion(original), undefined);
+    assert.deepEqual(removeManagedBlock(original), { content: original, action: 'absent' });
+    const own = `${BEGIN_MARKER}\n<!-- kiokuko-template-version: 38 -->\nown\n${END_MARKER}`;
+    const added = upsertManagedBlock(original, own);
+    assert.ok(added.content.startsWith(original));
+    assert.equal(readManagedBlockTemplateVersion(added.content), 38);
+    assert.equal(upsertManagedBlock(added.content, own).action, 'unchanged');
+    const updated = upsertManagedBlock(added.content, own.replace('own', 'changed'));
+    assert.ok(updated.content.startsWith(original));
+    assert.equal(removeManagedBlock(updated.content).content, `${original}${newline}${newline}${newline}`);
+    const reversed = `${own.replaceAll('\n', newline)}${newline}${original}`;
+    assert.equal(readManagedBlockTemplateVersion(reversed), 38);
+    assert.equal(upsertManagedBlock(reversed, own).action, 'unchanged');
+    assert.equal(removeManagedBlock(reversed).content, `${newline}${original}`);
+    assert.throws(() => upsertManagedBlock(`${added.content}${newline}${own}`, own), /malformed/i);
+  }
+});
+
+test('foreign declarations do not hide conflicting ownership or unsafe markers', () => {
+  for (const content of [
+    `${BEGIN_MARKER}\n<!-- kiokuko-dsh-template-version: 1 -->\n<!-- kiokuko-template-version: 38 -->\n${END_MARKER}`,
+    `${BEGIN_MARKER}\n<!-- kiokuko-dsh-template-version: 1 -->\n${block}\n${END_MARKER}`,
+    `inline ${BEGIN_MARKER}\n<!-- kiokuko-dsh-template-version: 1 -->\n${END_MARKER}`,
+    `${BEGIN_MARKER}\n<!-- kiokuko-dsh-template-version: 1 -->\nunfinished`,
+  ]) {
+    assert.throws(() => upsertManagedBlock(content, block), /malformed/i);
+    assert.throws(() => removeManagedBlock(content), /malformed/i);
+    assert.throws(() => readManagedBlockTemplateVersion(content), /malformed/i);
+  }
+});
+
 test('adds a managed block without changing existing content', () => {
   const result = upsertManagedBlock('header\n', block);
   assert.equal(result.action, 'created');

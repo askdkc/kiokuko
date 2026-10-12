@@ -251,7 +251,8 @@ async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
   const used = await run(cliPath, ['use', '--root', projectRoot, '--allow-directory', '--json'], fixtureRoot, environment);
   const project = JSON.parse(used.stdout).data.agentFile;
   assert.equal(typeof project, 'string');
-  const foreign = 'Human rule\r\n<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\r\nForeign instructions\r\n<!-- END KIOKUKO-AI MANAGED BLOCK -->\r\n';
+  const foreign = 'Human rule\r\n<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\r\nForeign instructions\r\n<!-- END KIOKUKO-AI MANAGED BLOCK -->\r\n'
+    + '<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\nLegacy DSH instructions\r\n<!-- END KIOKUKO MANAGED BLOCK -->\r\n';
   await writeFile(project, foreign);
   await writeFile(global, 'Global user rule\n<!-- BEGIN KIOKUKO GLOBAL MEMORY -->\nLegacy instructions\n<!-- END KIOKUKO GLOBAL MEMORY -->\nFooter\n');
   const diagnostic = spawnSync(cliPath, ['doctor', '--json'], { cwd: fixtureRoot, env: environment, encoding: 'utf8' });
@@ -268,6 +269,9 @@ async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
   assert.ok(globalMigrated.startsWith('Global user rule\n') && globalMigrated.endsWith('\nFooter\n'));
   const { stdout } = await run(cliPath, ['doctor', '--json'], fixtureRoot, environment);
   assert.equal(JSON.parse(stdout).data.checks.agentFiles.ok, true);
+  const repeatedDoctor = await run(cliPath, ['doctor'], fixtureRoot, environment);
+  assert.match(repeatedDoctor.stdout, /Kiokuko doctor: OK/u);
+  assert.equal(await readFile(project, 'utf8'), migrated);
   await run(cliPath, args, fixtureRoot, environment);
   assert.equal(await readFile(project, 'utf8'), migrated);
   assert.equal(await readFile(global, 'utf8'), globalMigrated);
