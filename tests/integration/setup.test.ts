@@ -656,6 +656,30 @@ test('setup without detected clients initializes only the database', async () =>
   await assert.rejects(access(path.join(temporary.home, '.hermes', 'config.yaml')));
 });
 
+test('setup skips DSH-only instruction files in dry runs and repeated updates', async () => {
+  const temporary = await temporaryEnvironment('foreign-dsh-agents');
+  const fixtures = [
+    '<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\nDSH instructions\r\n<!-- END KIOKUKO MANAGED BLOCK -->\r\n',
+    '<!-- BEGIN KIOKUKO-DSH MANAGED BLOCK -->\nDSH instructions\n<!-- END KIOKUKO-DSH MANAGED BLOCK -->\n',
+  ];
+  for (const [index, foreign] of fixtures.entries()) {
+    const root = path.join(temporary.root, `dsh-${index}`);
+    await mkdir(root);
+    const project = await useRepository({ root, allowDirectory: true, databasePath: temporary.databasePath });
+    await writeFile(project.agentFile!, foreign);
+    const binding = await readFile(path.join(root, '.kiokuko.json'), 'utf8');
+    for (const dryRun of [true, false, false]) {
+      const result = await setupGlobalClients({ clients: [], standardSkills: false, databasePath: temporary.databasePath,
+        platform: 'linux', env: temporary.env, dryRun });
+      const refreshed = result.projectAgentFiles.find(item => item.repositoryRoot === project.repositoryRoot);
+      assert.equal(refreshed?.status, 'skipped');
+      assert.equal(refreshed && 'reason' in refreshed ? refreshed.reason : undefined, 'foreign_agent_file');
+      assert.equal(await readFile(project.agentFile!, 'utf8'), foreign);
+      assert.equal(await readFile(path.join(root, '.kiokuko.json'), 'utf8'), binding);
+    }
+  }
+});
+
 test('setup applies the use-managed AGENTS update to every registered live project', async () => {
   const temporary = await temporaryEnvironment('registered-project-agents');
   const staleRoot = path.join(temporary.root, 'stale-project');

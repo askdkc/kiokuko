@@ -5,7 +5,7 @@ import path from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { assertAtomicCleanupComplete, assertFileExpectation, atomicWriteTextIfUnchanged, readDirectoryIdentity, readRegularFile } from '../agent-file/atomic-write.js';
-import { readManagedBlockTemplateVersion } from '../agent-file/managed-block.js';
+import { isDshOnlyAgentFile, readManagedBlockTemplateVersion } from '../agent-file/managed-block.js';
 import { AGENT_TEMPLATE_VERSION, renderAgentFile } from '../agent-file/render.js';
 import { getCodexConfigPath, getDatabaseLockPath, getRuntimeDescriptorPath } from '../config/paths.js';
 import { parseProjectConfigText } from '../config/project-config.js';
@@ -118,6 +118,7 @@ export async function promptRepairAgentFiles(
     const missing = finding.reason === 'missing_agent_file';
     // A newly created file belongs to its creator. A disappeared file needs a fresh diagnosis.
     if (missing !== (original === undefined)) continue;
+    if (original !== undefined && isDshOnlyAgentFile(original.content)) continue;
     if (config.templateVersion > AGENT_TEMPLATE_VERSION) continue;
     const version = original === undefined ? undefined : readManagedBlockTemplateVersion(original.content);
     if (version !== undefined && version > AGENT_TEMPLATE_VERSION) continue;
@@ -422,6 +423,7 @@ async function collectDoctorResult(
       if (agent === undefined) reason = 'missing_agent_file';
       else {
         try {
+          if (isDshOnlyAgentFile(agent.content)) continue;
           const version = readManagedBlockTemplateVersion(agent.content);
           if (config.templateVersion > AGENT_TEMPLATE_VERSION || (version !== undefined && version > AGENT_TEMPLATE_VERSION)) {
             reason = 'invalid_managed_block';

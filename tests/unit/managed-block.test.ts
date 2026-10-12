@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   BEGIN_MARKER,
   END_MARKER,
+  isDshOnlyAgentFile,
   readManagedBlockTemplateVersion,
   removeManagedBlock,
   upsertManagedBlock,
@@ -109,4 +110,19 @@ test('reads only one canonical managed template-version declaration', () => {
     () => readManagedBlockTemplateVersion(`${BEGIN_MARKER}\n<!-- kiokuko-template-version: 09 -->\n${END_MARKER}`),
     /malformed/i,
   );
+});
+
+
+test('DSH ownership detection treats foreign instructions as opaque and retains own validation', () => {
+  for (const foreign of [
+    `${BEGIN_MARKER}\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\n<!-- kiokuko-template-version: 999 -->\r\nDo not run Kiokuko\r\n${END_MARKER}`,
+    '<!-- BEGIN KIOKUKO-DSH MANAGED BLOCK -->\nDo not run Kiokuko\n<!-- END KIOKUKO-DSH MANAGED BLOCK -->',
+  ]) {
+    assert.equal(isDshOnlyAgentFile(foreign), true);
+    assert.equal(isDshOnlyAgentFile(`${foreign}\n${block}`), false);
+    assert.equal(isDshOnlyAgentFile(`${block}\n${foreign}`), false);
+    assert.equal(isDshOnlyAgentFile(`${foreign}\n${BEGIN_MARKER}\nunfinished`), false);
+  }
+  assert.equal(isDshOnlyAgentFile('User instructions'), false);
+  assert.equal(isDshOnlyAgentFile(`<!-- kiokuko-dsh-template-version: 1 -->\n${block}`), false);
 });

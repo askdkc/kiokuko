@@ -5,7 +5,7 @@ import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
-import { runDoctor } from '../../src/commands/doctor.js';
+import { promptRepairAgentFiles, runDoctor } from '../../src/commands/doctor.js';
 import { useRepository } from '../../src/commands/use.js';
 import { renderManagedBlock } from '../../src/agent-file/render.js';
 import { openConnection, SqliteVecLoadError } from '../../src/db/connection.js';
@@ -137,24 +137,48 @@ test('doctor adds its missing plugin section without treating foreign ownership 
   assert.equal((await invokeDoctor(value.databasePath, 'y\n')).prompt, '');
 });
 
-test('doctor repairs alongside a legacy DSH section and the next run is healthy', async () => {
-  const value = await deletedAgentProject('legacy-dsh');
-  const foreign = 'Human rules\r\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\nDSH instructions\r\n<!-- END KIOKUKO MANAGED BLOCK -->\r\nFooter\r\n';
+for (const [name, foreign] of [
+  ['legacy', 'Human rules\r\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\nDSH instructions\r\n<!-- END KIOKUKO MANAGED BLOCK -->\r\nFooter\r\n'],
+  ['current', 'Human rules\n<!-- BEGIN KIOKUKO-DSH MANAGED BLOCK -->\nDSH instructions\n<!-- END KIOKUKO-DSH MANAGED BLOCK -->\nFooter\n'],
+]) {
+  test(`doctor excludes ${name} DSH-owned instructions without offering a repair`, async () => {
+    const value = await deletedAgentProject(`dsh-${name}`);
+    await writeFile(value.project.agentFile!, foreign!);
+    for (const json of [true, false, false]) {
+      const result = await invokeDoctor(value.databasePath, 'y\n', json);
+      assert.equal(result.prompt, '');
+      assert.equal(result.exitCode, undefined);
+      if (json) assert.equal(result.response?.data.ok, true);
+      else assert.match(result.stdout, /Kiokuko doctor: OK/u);
+      assert.equal(await readFile(value.project.agentFile!, 'utf8'), foreign);
+    }
+  });
+}
+
+test('doctor ignores a DSH replacement even when an earlier finding offered repair', async () => {
+  const value = await deletedAgentProject('dsh-replacement');
+  await writeFile(value.project.agentFile!, 'Human instructions\n');
+  const before = await runDoctor({ databasePath: value.databasePath });
+  const foreign = '<!-- BEGIN KIOKUKO-DSH MANAGED BLOCK -->\nDSH instructions\n<!-- END KIOKUKO-DSH MANAGED BLOCK -->';
   await writeFile(value.project.agentFile!, foreign);
-  const diagnostic = await invokeDoctor(value.databasePath, '', true);
-  const findings = (diagnostic.response?.data.checks as { agentFiles: { findings: Array<{ reason: string }> } }).agentFiles.findings;
-  assert.equal(findings[0]?.reason, 'missing_managed_block');
+  const output = new PassThrough();
+  let prompt = '';
+  output.on('data', chunk => { prompt += chunk.toString(); });
+  assert.equal(await promptRepairAgentFiles(before.checks.agentFiles.findings, { input: new PassThrough(), output }), 0);
+  assert.equal(prompt, '');
   assert.equal(await readFile(value.project.agentFile!, 'utf8'), foreign);
+});
+
+test('doctor repairs its own section beside DSH without changing DSH bytes', async () => {
+  const value = await deletedAgentProject('dsh-coexist');
+  const foreign = '<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n<!-- kiokuko-dsh-template-version: 1 -->\nDSH instructions\n<!-- END KIOKUKO MANAGED BLOCK -->\n';
+  const own = renderManagedBlock({ repositoryId: value.project.repositoryId, workspace: value.project.workspace, cliCommand: 'kiokuko', templateVersion: 36 });
+  await writeFile(value.project.agentFile!, foreign + own);
   const result = await invokeDoctor(value.databasePath, 'y\n');
   assert.match(result.prompt, /Repair this Kiokuko section/u);
   assert.match(result.stdout, /Kiokuko doctor: OK/u);
-  const repaired = await readFile(value.project.agentFile!, 'utf8');
-  assert.ok(repaired.startsWith(foreign));
-  const repeated = await invokeDoctor(value.databasePath, '');
-  assert.equal(repeated.prompt, '');
-  assert.equal(repeated.exitCode, undefined);
-  assert.match(repeated.stdout, /Kiokuko doctor: OK/u);
-  assert.equal(await readFile(value.project.agentFile!, 'utf8'), repaired);
+  assert.ok((await readFile(value.project.agentFile!, 'utf8')).startsWith(foreign));
+  assert.equal((await invokeDoctor(value.databasePath, '')).prompt, '');
 });
 
 test('human doctor reports the path and reason of unrepaired agent findings', async () => {

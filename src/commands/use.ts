@@ -18,6 +18,7 @@ import {
   type RegularFileSnapshot,
 } from '../agent-file/atomic-write.js';
 import {
+  isDshOnlyAgentFile,
   readManagedBlockTemplateVersion,
   removeManagedBlock,
 } from '../agent-file/managed-block.js';
@@ -45,6 +46,8 @@ export interface UseOptions {
   agentFile?: string;
   /** Setup refresh must never recreate a removed instruction file. */
   requireExistingAgentFile?: boolean;
+  /** Automatic setup must not adopt another plugin's instruction file. */
+  preserveDshAgentFile?: boolean;
   dryRun?: boolean;
   noAgentFile?: boolean;
   forceRebind?: boolean;
@@ -1076,9 +1079,18 @@ async function useRepositoryAttempt(
     cliCommand: preferredCliCommand(),
     templateVersion: AGENT_TEMPLATE_VERSION,
   };
+  const assertAgentOwnership = (content: string | undefined) => {
+    if (options.preserveDshAgentFile && content !== undefined && isDshOnlyAgentFile(content)) {
+      throw new KiokukoError('NOT_FOUND', 'Instruction file belongs to Kiokuko DSH', { reason: 'foreign_agent_file' });
+    }
+  };
+  const renderProspectiveAgent = (content: string | undefined) => {
+    assertAgentOwnership(content);
+    return renderAgentFile(content, agentTemplateValues);
+  };
   const retryRendered = retryParents === undefined || options.noAgentFile
     ? undefined
-    : renderAgentFile(retryParents.agentSnapshot?.content, agentTemplateValues);
+    : renderProspectiveAgent(retryParents.agentSnapshot?.content);
   const plannedAgent = retryParents === undefined
     ? await readSettledAgentPlan(
         agentFile,
@@ -1088,7 +1100,7 @@ async function useRepositoryAttempt(
         options.noAgentFile
           ? undefined
           : (original) => ({
-              content: renderAgentFile(original.content, agentTemplateValues).content,
+              content: renderProspectiveAgent(original.content).content,
               mode: original.mode,
             }),
         dependencies.readAgentFileForConvergence,
@@ -1107,6 +1119,7 @@ async function useRepositoryAttempt(
   if (options.requireExistingAgentFile && plannedAgent === undefined) {
     throw new KiokukoError('NOT_FOUND', 'Existing instruction file is missing', { reason: 'missing_agent_file' });
   }
+  assertAgentOwnership(plannedAgent?.content);
   assertSupportedManagedTemplate(plannedAgent, 'Prospective agentFile');
   const existingAgent = options.noAgentFile ? undefined : plannedAgent;
   if (options.noAgentFile && plannedAgent !== undefined) {

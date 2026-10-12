@@ -251,17 +251,33 @@ async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
   const used = await run(cliPath, ['use', '--root', projectRoot, '--allow-directory', '--json'], fixtureRoot, environment);
   const project = JSON.parse(used.stdout).data.agentFile;
   assert.equal(typeof project, 'string');
-  const foreign = 'Human rule\r\n<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\r\nForeign instructions\r\n<!-- END KIOKUKO-AI MANAGED BLOCK -->\r\n'
-    + '<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\nLegacy DSH instructions\r\n<!-- END KIOKUKO MANAGED BLOCK -->\r\n';
+  const foreign = 'Human rule\r\n<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\r\nForeign instructions\r\n<!-- END KIOKUKO-AI MANAGED BLOCK -->\r\n';
   await writeFile(project, foreign);
+  const dshFiles = [];
+  for (const [index, content] of [
+    '<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\nLegacy DSH instructions\r\n<!-- END KIOKUKO MANAGED BLOCK -->\r\n',
+    '<!-- BEGIN KIOKUKO-DSH MANAGED BLOCK -->\nDSH instructions\n<!-- END KIOKUKO-DSH MANAGED BLOCK -->\n',
+  ].entries()) {
+    const root = path.join(fixtureRoot, `dsh-only-${index}`);
+    await mkdir(root);
+    const registered = await run(cliPath, ['use', '--root', root, '--allow-directory', '--json'], fixtureRoot, environment);
+    const file = JSON.parse(registered.stdout).data.agentFile;
+    await writeFile(file, content);
+    dshFiles.push({ file, content });
+  }
   await writeFile(global, 'Global user rule\n<!-- BEGIN KIOKUKO GLOBAL MEMORY -->\nLegacy instructions\n<!-- END KIOKUKO GLOBAL MEMORY -->\nFooter\n');
   const diagnostic = spawnSync(cliPath, ['doctor', '--json'], { cwd: fixtureRoot, env: environment, encoding: 'utf8' });
   assert.equal(diagnostic.status, 8, diagnostic.stderr);
   const findings = JSON.parse(diagnostic.stdout).data.checks.agentFiles.findings;
   assert.ok(findings.some(item => item.agentFile === project && item.reason === 'missing_managed_block'));
+  assert.ok(dshFiles.every(({ file }) => !findings.some(item => item.agentFile === file)));
   assert.equal(await readFile(project, 'utf8'), foreign);
   const args = ['setup', '--clients', 'codex', '--command', cliPath, '--no-standard-skills', '--no-embeddings', '--json'];
+  const drySetup = await run(cliPath, [...args, '--dry-run'], fixtureRoot, environment);
+  const skippedDsh = JSON.parse(drySetup.stdout).data.projectAgentFiles.filter(item => item.reason === 'foreign_agent_file');
+  assert.equal(skippedDsh.length, dshFiles.length);
   await run(cliPath, args, fixtureRoot, environment);
+  for (const { file, content } of dshFiles) assert.equal(await readFile(file, 'utf8'), content);
   const migrated = await readFile(project, 'utf8');
   assert.ok(migrated.startsWith(foreign));
   assert.equal(migrated.slice(foreign.length).replace(/<!--[\s\S]*?-->/gu, '').trim(), '');
@@ -275,6 +291,7 @@ async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
   await run(cliPath, args, fixtureRoot, environment);
   assert.equal(await readFile(project, 'utf8'), migrated);
   assert.equal(await readFile(global, 'utf8'), globalMigrated);
+  for (const { file, content } of dshFiles) assert.equal(await readFile(file, 'utf8'), content);
 }
 
 async function verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environment) {

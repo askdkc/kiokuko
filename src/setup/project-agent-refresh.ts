@@ -24,7 +24,7 @@ export type ProjectAgentRefreshResult = RegisteredProjectLocation & (
   | {
       status: 'skipped';
       agentFile: null;
-      reason: 'missing_root' | 'unsafe_root' | 'missing_agent_file';
+      reason: 'missing_root' | 'unsafe_root' | 'missing_agent_file' | 'foreign_agent_file';
     }
   | {
       status: 'failed';
@@ -158,6 +158,7 @@ async function refreshRegisteredProject(
     dryRun: options.dryRun === true,
     ensureNewBindingIgnored: true,
     requireExistingAgentFile: true,
+    preserveDshAgentFile: true,
     ...(options.migrationsDirectory === undefined
       ? {}
       : { migrationsDirectory: options.migrationsDirectory }),
@@ -174,8 +175,8 @@ async function refreshRegisteredProject(
       bindingAction: result.bindingAction,
     };
   } catch (error) {
-    if (error instanceof KiokukoError && error.code === 'NOT_FOUND' && error.details.reason === 'missing_agent_file') {
-      return { ...location, status: 'skipped', agentFile: null, reason: 'missing_agent_file' };
+    if (error instanceof KiokukoError && error.code === 'NOT_FOUND' && (error.details.reason === 'missing_agent_file' || error.details.reason === 'foreign_agent_file')) {
+      return { ...location, status: 'skipped', agentFile: null, reason: error.details.reason };
     }
     const code = errorCode(error);
     if (code === 'ENOENT' || code === 'ENOTDIR') {

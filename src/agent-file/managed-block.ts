@@ -61,6 +61,24 @@ function validateMarkers(content: string): { start: number; end: number } | unde
   return owned;
 }
 
+/** Ownership-only inspection: DSH bodies are opaque to Kiokuko diagnostics and refresh. */
+export function isDshOnlyAgentFile(existing: string): boolean {
+  let foreign = false;
+  const remaining = existing.replace(
+    /^<!-- BEGIN KIOKUKO-DSH MANAGED BLOCK -->\r?\n[\s\S]*?^<!-- END KIOKUKO-DSH MANAGED BLOCK -->(?=\r?$)/gmu,
+    () => { foreign = true; return ''; },
+  ).replace(
+    /^<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r?\n<!-- kiokuko-dsh-template-version: [1-9][0-9]* -->\r?\n[\s\S]*?^<!-- END KIOKUKO MANAGED BLOCK -->(?=\r?$)/gmu,
+    (block) => {
+      // An ambiguous nested envelope must still fail the Kiokuko marker validator.
+      if (markerPositions(block, BEGIN_MARKER).length !== 1) return block;
+      foreign = true;
+      return '';
+    },
+  );
+  return foreign && !remaining.includes(BEGIN_MARKER) && !remaining.includes(END_MARKER);
+}
+
 function newlineFor(content: string): string {
   return content.includes('\r\n') ? '\r\n' : '\n';
 }
