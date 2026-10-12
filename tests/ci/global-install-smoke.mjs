@@ -1,5 +1,6 @@
 import { firstSetupEnvironment } from '../../scripts/lib/normal-workflow/package-smoke-environment.mjs';
 import { FIRST_SETUP_SCRIPT } from '../../scripts/lib/normal-workflow/package-evidence.mjs';
+import { verifyInstalledTaskHookRecovery } from './task-hook-recovery-smoke.mjs';
 import { sourceFingerprint } from '../../scripts/lib/normal-workflow/source-state.mjs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -132,6 +133,9 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   await writeFile(hookPath, JSON.stringify({ hooks: { Stop: [userHook] } }));
   const skillFiles = packedFiles.filter((file) => file.path.startsWith('skills/'));
   assert.ok(skillFiles.length > 0, 'the package must contain standard skills');
+  for (const file of ['SKILL.md', 'references/repo-contracts.md', 'references/verification-scenarios.md']) {
+    assert.ok(skillFiles.some(item => item.path === `skills/coding-ideal-routine-skill/${file}`), `Missing coding routine file: ${file}`);
+  }
   const { hostSkillFile } = await import(pathToFileURL(path.join(installedRoot, 'dist/setup/standard-skills.js')).href);
   const expected = new Map();
   for (const file of skillFiles) {
@@ -183,7 +187,7 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     assert.equal(typeof JSON.parse(result.stdout).hookSpecificOutput.additionalContext, 'string');
   }
   await verifyFiles(created, new Map([...expected.keys()].map((file) => [file, 'created'])));
-  await verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories);
+  await verifyInstalledSelectors(cliPath, installedRoot, fixtureRoot, environment, skillDirectories);
   await verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environment);
   const beforeRepair = new Map();
   const repairActions = new Map();
@@ -216,7 +220,7 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   }
 
   await verifyFiles(await setup(), repairActions);
-  await verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories);
+  await verifyInstalledSelectors(cliPath, installedRoot, fixtureRoot, environment, skillDirectories);
   const beforeRepeat = new Map();
   for (const file of expected.keys()) {
     const snapshot = await stat(file, { bigint: true });
@@ -264,7 +268,7 @@ async function verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environmen
 
 // Use actual deployed names and Markdown links, never hostSkillText/logicalSkillName.
 // This checks the install -> public MCP handoff; it is not a real-AI acceptance run.
-async function verifyInstalledSelectors(cliPath, fixtureRoot, environment, skillDirectories) {
+async function verifyInstalledSelectors(cliPath, installedRoot, fixtureRoot, environment, skillDirectories) {
   const repo = path.join(fixtureRoot, 'different-repo');
   const subdirectory = path.join(repo, 'nested');
   const outside = path.join(fixtureRoot, 'outside-repo');
@@ -291,6 +295,18 @@ async function verifyInstalledSelectors(cliPath, fixtureRoot, environment, skill
     try {
       const tools = (await client.listTools()).tools;
       assert.ok(tools.some(tool => tool.name === 'task_inspect'));
+      const prepared = await client.callTool({ name: 'task_prepare', arguments: {
+        cwd: repo, requestId: `installed-coding-routine-${host}`, soulRead: true,
+        task: 'Add persistence for application settings',
+        profileHints: { taskType: 'build', target: 'src/settings.ts', expected: 'saved settings survive restart' },
+        capabilities: deployed.map(skill => ({ kind: 'skill', name: skill.name })), maxContextChars: 1000,
+      } });
+      assert.notEqual(prepared.isError, true, JSON.stringify(prepared));
+      const routine = prepared.structuredContent.codingRoutine;
+      assert.equal(routine.required, true);
+      const expectedCore = await readFile(path.join(installedRoot, 'skills/coding-ideal-routine-skill/SKILL.md'), 'utf8');
+      assert.equal(routine.text, expectedCore, `${host}: installed preparation must deliver the entire coding core`);
+      assert.equal(routine.contentHash, createHash('sha256').update(expectedCore).digest('hex'));
       for (const cwd of [repo, subdirectory, outside]) {
         for (const { name, references } of deployed) {
           let hash;
@@ -529,6 +545,7 @@ try {
   assert.equal(JSON.parse(managedStatus.stdout).schemaVersion, 1);
   await verifyInstalledChatgptProfile(cliPath, path.join(temporaryRoot, 'chatgpt-fixture'));
   await verifyInstalledTaskVerification(cliPath, path.join(temporaryRoot, 'verification-fixture'));
+  await verifyInstalledTaskHookRecovery(installedRoot, path.join(temporaryRoot, 'hook-recovery-fixture'));
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 
   recordStage('restart');

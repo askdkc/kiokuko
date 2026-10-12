@@ -8,6 +8,7 @@ import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { canonicalContentHash } from '../../src/serialization/validate.js';
 import { repositoryStateDigest } from '../../src/assurance/snapshot.js';
+import { acceptCodexToolHook } from '../fixtures/codex-hook-output.mjs';
 
 test('installed hook upgrades schema 11 before completing an admitted active call, without replaying execution', async () => {
   const base = mkdtempSync(path.join(tmpdir(), 'kiokuko-hook-upgrade-'));
@@ -45,7 +46,8 @@ test('installed hook upgrades schema 11 before completing an admitted active cal
     db.prepare('INSERT INTO codex_hook_tools VALUES(?,?,?,NULL,?,?,NULL,NULL)').run(identity, 'call', 'active', canonicalContentHash(event.tool_input), digest);
     db.close();
     const malformed = cli({ ...event, session_id: '' });
-    assert.equal(malformed.status, 2);
+    assert.equal(malformed.status, 0);
+    assert.match(acceptCodexToolHook(malformed.stdout, 'PostToolUse').systemMessage!, /validation_unavailable/u);
     db = openConnection(databasePath);
     assert.equal(db.prepare('SELECT MAX(version) v FROM schema_migrations').get()?.v, 11);
     db.close();
@@ -61,9 +63,13 @@ test('installed hook upgrades schema 11 before completing an admitted active cal
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
     db.prepare("UPDATE schema_migrations SET checksum='tampered' WHERE version=12").run();
     db.close();
-    assert.equal(cli(event).status, 2, 'invalid migration history must fail closed');
+    const invalid = cli(event);
+    assert.equal(invalid.status, 0);
+    assert.match(acceptCodexToolHook(invalid.stdout, 'PostToolUse').systemMessage!, /verification are unavailable/u);
     const absent = path.join(root, 'absent.sqlite3');
-    assert.equal(cli(event, absent).status, 2);
+    const missing = cli(event, absent);
+    assert.equal(missing.status, 0);
+    assert.match(acceptCodexToolHook(missing.stdout, 'PostToolUse').systemMessage!, /verification are unavailable/u);
     assert.equal(existsSync(absent), false, 'a hook must not create a replacement database');
   } finally {
     try { db.close(); } catch { /* Fixture may have closed it before invoking the real CLI. */ }

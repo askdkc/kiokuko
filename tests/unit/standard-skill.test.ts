@@ -174,6 +174,10 @@ test('coding requests route to the bundled ideal routine without imposing implem
   const files = await loadBundledStandardSkillFiles();
   const routine = files.find(file => file.skillName === 'coding-ideal-routine-skill' && file.relativePath === 'SKILL.md');
   assert.ok(routine, 'The requested coding routine must be part of the deployment manifest');
+  assert.deepEqual(files.filter(file => file.skillName === 'coding-ideal-routine-skill').map(file => file.relativePath), [
+    'SKILL.md', 'references/repo-contracts.md', 'references/verification-scenarios.md',
+  ]);
+  assert.match(routine.content, /対象と Goal を固定する/u);
   assert.match(routine.content, /^---\nname: coding-ideal-routine-skill\n/u);
   const soul = files.find(file => file.skillName === STANDARD_SOUL_SKILL_NAME)?.content ?? '';
   assert.match(soul, /apply `coding-ideal-routine-skill`/u);

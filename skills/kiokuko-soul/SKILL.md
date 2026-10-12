@@ -212,6 +212,13 @@ Read and apply the `kiokuko-ui-design-soul` index before designing, implementing
 
 For coding requests, read and apply `coding-ideal-routine-skill` after intake and
 before changing code, tests, or behavior-affecting configuration or distribution.
+`task_prepare` and `task_answer` automatically load the complete package-owned
+core into `codingRoutine` once intake permits routing. Its `required: true`
+means apply the full text after memory review permits progress; it is independent
+of catalog similarity, optional discovery, local installation, and memory budgets.
+Reuse that full text when already in context. If it is absent or lost, read the
+complete core through `task_inspect` before coding. Read only applicable linked
+references; never enter this route while intake or memory review is pending.
 It connects investigation, meaningful Red/Green evidence, the user's ordinary
 usage path, independent verification, and factual completion reporting.
 Apply its relevant checks to behavior-preserving refactoring or writing;

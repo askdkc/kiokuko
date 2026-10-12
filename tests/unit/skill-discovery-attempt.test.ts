@@ -185,3 +185,36 @@ test('generic attempt replay preserves typed provider failures and rejects unkno
     database.close();
   }
 });
+
+test('request cancellation replays a truthful empty result without restoring the external budget', async () => {
+  const database = await temporaryDatabase('discovery-cancelled');
+  try {
+    const attempt = identity('d'.repeat(64));
+    claimAgentTaskSkillDiscoveryAttempt(database, attempt);
+    const controller = new AbortController();
+    controller.abort(new Error('Request cancelled'));
+    assert.throws(() => failAgentTaskSkillDiscoveryAttempt(database, attempt, controller.signal.reason, controller.signal));
+    const replay = readAgentTaskSkillDiscoveryAttempt(database, attempt)!;
+    assert.equal(replay.kind, 'replay');
+    assert.deepEqual(replay.summary.selected, []);
+    assert.deepEqual(replay.summary.failures, [{ stage: 'search', code: 'task_request_cancelled' }]);
+    assert.deepEqual(claimAgentTaskSkillDiscoveryAttempt(database, attempt), replay);
+    assert.deepEqual(claimAgentTaskSkillDiscoveryAttempt(database, identity('e'.repeat(64))),
+      { kind: 'execute', queryBudget: 0, selectionBudget: 0 });
+  } finally { database.close(); }
+});
+
+test('a security failure racing request cancellation remains a failed, non-replayable result', async () => {
+  const database = await temporaryDatabase('discovery-cancel-race');
+  try {
+    const attempt = identity('f'.repeat(64));
+    claimAgentTaskSkillDiscoveryAttempt(database, attempt);
+    const controller = new AbortController();
+    controller.abort(new Error('Request cancelled'));
+    assert.throws(() => failAgentTaskSkillDiscoveryAttempt(database, attempt,
+      new KiokukoError('SECURITY_REJECTION', 'Blocked source'), controller.signal),
+      (error: unknown) => error instanceof KiokukoError && error.code === 'SECURITY_REJECTION');
+    assert.throws(() => readAgentTaskSkillDiscoveryAttempt(database, attempt),
+      (error: unknown) => error instanceof KiokukoError && error.code === 'SECURITY_REJECTION');
+  } finally { database.close(); }
+});

@@ -4,6 +4,7 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { initializeDatabase } from '../../src/commands/init.js';
@@ -15,11 +16,16 @@ import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 import { recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
 import { assuranceState, reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCompletion, memoryReviewNextAction } from '../../src/assurance/service.js';
 import { repositoryStateDigest } from '../../src/assurance/snapshot.js';
-import { codexHookFailureCode, handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
+import { codexHookCorrelationId, codexHookFailureCode, handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
 import { codexHookDiagnostics } from '../../src/assurance/hook-diagnostics.js';
 import { KiokukoError } from '../../src/errors.js';
 import { refreshTaskMemory } from '../../src/assurance/refresh.js';
+import { acceptCodexToolHook, runCodexNestedTool } from '../fixtures/codex-hook-output.mjs';
 const caps = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }];
+function lastHookDiagnostic(db: ReturnType<typeof openConnection>): any {
+  const row = db.prepare('SELECT response_shape FROM codex_hook_observations ORDER BY rowid DESC LIMIT 1').get<{ response_shape: string }>()!;
+  return (codexHookDiagnostics(db, JSON.parse(row.response_shape).call) as any).events.at(-1);
+}
 test('checkout-free inquiry permits global memory and bundled Skills, without permitting project execution', async () => {
   const base = mkdtempSync(path.join(tmpdir(), 'kiokuko-checkout-free-'));
   const databasePath = path.join(base, 'memory.sqlite3');
@@ -37,7 +43,7 @@ test('checkout-free inquiry permits global memory and bundled Skills, without pe
       ['mcp__kiokuko__task_inspect', { cwd: base, operation: 'read', path: 'memory.sqlite3' }]] as const) {
       const result = handleCodexHook(db, { ...common, hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: name, tool_input: args }) as any;
       assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
-      assert.equal(result.kiokukoDecision.reason, 'repository_required');
+      assert.equal(lastHookDiagnostic(db).reason, 'repository_required');
     }
     assert.deepEqual(handleCodexHook(db, { ...common, hook_event_name: 'Stop' }), {});
     assert.equal(db.prepare('SELECT COUNT(*) count FROM task_execution_evidence').get<{ count: number }>()!.count, 0);
@@ -382,6 +388,93 @@ test('hook command stays quiet for an admitted tool call', async () => {
     assert.equal(result.stderr, '');
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
+test('Codex accepts normal, recoverable deny, terminal deny and internal PreToolUse failure JSON', async () => {
+  const f = await boundHookFixture();
+  const cli = (event: object, database = f.databasePath) => spawnSync(process.execPath,
+    ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', database],
+    { cwd: process.cwd(), input: JSON.stringify(event), encoding: 'utf8' });
+  try {
+    const valid = cli({ ...f.event('valid'), hook_event_name: 'PreToolUse' });
+    assert.equal(valid.status, 0);
+    assert.deepEqual(acceptCodexToolHook(valid.stdout, 'PreToolUse'), {});
+    const pending = { ...f.event('pending'), turn_id: 'unprepared', hook_event_name: 'PreToolUse' };
+    handleCodexHook(f.db, { ...f.common, turn_id: 'unprepared', hook_event_name: 'UserPromptSubmit' });
+    const denied = cli(pending);
+    assert.equal(denied.status, 0, denied.stderr);
+    assert.equal(acceptCodexToolHook(denied.stdout, 'PreToolUse').hookSpecificOutput!.permissionDecision, 'deny');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools WHERE call_id=?').get('pending')?.n, 0);
+    const terminal = cli({ ...f.event('terminal'), hook_event_name: 'PreToolUse',
+      tool_name: 'mcp__kiokuko__task_memory_status', tool_input: { runId: 'foreign' } });
+    assert.equal(terminal.status, 0, terminal.stderr);
+    assert.equal(acceptCodexToolHook(terminal.stdout, 'PreToolUse').hookSpecificOutput!.permissionDecision, 'deny');
+    const failure = cli({ ...f.event('failure'), hook_event_name: 'PreToolUse' }, path.join(f.base, 'absent.sqlite3'));
+    assert.equal(failure.status, 0, failure.stderr);
+    assert.equal(acceptCodexToolHook(failure.stdout, 'PreToolUse').hookSpecificOutput!.permissionDecision, 'deny');
+    assert.match(failure.stderr, /pre_admission/u);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('single and batched code-mode inner tools bind each admission and preserve results after Post failure', async () => {
+  for (const count of [1, 3]) {
+    const f = await boundHookFixture();
+    const hook = (event: object) => spawnSync(process.execPath,
+      ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
+      { cwd: process.cwd(), input: JSON.stringify(event), encoding: 'utf8' });
+    let executions = 0;
+    try {
+      f.db.exec("CREATE TRIGGER inject_post_failure BEFORE INSERT ON task_execution_evidence BEGIN SELECT RAISE(ABORT, 'private-fault-details'); END");
+      const outputs = await Promise.all(Array.from({ length: count }, (_, i) => {
+        const call = f.event(`inner-${i}`);
+        return runCodexNestedTool(hook, call, async () => { executions++; return { exit_code: i, output: `private-result-${i}` }; });
+      }));
+      assert.deepEqual(outputs, Array.from({ length: count }, (_, i) => ({ exit_code: i, output: `private-result-${i}` })));
+      assert.equal(executions, count, 'Post recording failure must not rerun a tool');
+      assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools').get()?.n, count);
+      assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get()?.n, 0);
+      for (let i = 0; i < count; i++) {
+        const call = f.event(`inner-${i}`);
+        const after = hook({ ...call, hook_event_name: 'PostToolUse', tool_response: outputs[i] });
+        assert.equal(after.status, 0, after.stderr);
+        const response = acceptCodexToolHook(after.stdout, 'PostToolUse');
+        assert.match(response.systemMessage!, /Tool already executed; do not rerun automatically/u);
+        assert.doesNotMatch(after.stdout + after.stderr, /private-result|private-fault/u);
+        const id = codexHookCorrelationId(call);
+        const diagnostic = codexHookDiagnostics(f.db, id) as any;
+        const last = diagnostic.events.at(-1);
+        assert.equal(last.execution.occurred, true);
+        assert.equal(last.execution.completionRecorded, false);
+        assert.equal(last.execution.exitCode, i);
+      }
+      assert.equal(taskAssuranceReport(f.db, f.prepared.run.runId).completionReady, false);
+    } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+  }
+});
+
+test('an admitted edit completes after review invalidation; the next inner read waits for re-review', async () => {
+  const f = await boundHookFixture();
+  const review = () => reviewTaskMemory(f.db, { runId: f.prepared.run.runId, cwd: f.root,
+    requestId: `review-${taskAssuranceReport(f.db, f.prepared.run.runId).revision}`,
+    expectedRevision: taskAssuranceReport(f.db, f.prepared.run.runId).revision!, deliveryId: f.prepared.context!.deliveryId!,
+    entryId: f.entry.id, entryRevision: f.entry.revision, decision: 'adopted', basis: 'source.ts is the current edit target',
+    invariant: 'Admitted edits retain completion correlation', counterexample: 'Edit invalidates current review before Post',
+    verification: 'Pre edit, edit, Post, reject next read, review, admit read' });
+  try {
+    review();
+    const edit = { ...f.event('edit'), tool_name: 'apply_patch', tool_input: { command: 'fixture edit' } };
+    assert.deepEqual(handleCodexHook(f.db, { ...edit, hook_event_name: 'PreToolUse' }), {});
+    writeFileSync(path.join(f.root, 'source.ts'), 'export const value = 2;\n');
+    assert.ok(taskAssuranceReport(f.db, f.prepared.run.runId).pending.length);
+    const post = handleCodexHook(f.db, { ...edit, hook_event_name: 'PostToolUse', tool_response: 'edited' });
+    acceptCodexToolHook(JSON.stringify(post), 'PostToolUse');
+    const read = { ...f.event('read'), tool_name: 'read_file', tool_input: { path: 'source.ts' } };
+    const blocked = handleCodexHook(f.db, { ...read, hook_event_name: 'PreToolUse' }) as any;
+    assert.equal(acceptCodexToolHook(JSON.stringify(blocked), 'PreToolUse').hookSpecificOutput!.permissionDecision, 'deny');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools WHERE call_id=?').get('read')?.n, 0);
+    review();
+    assert.deepEqual(handleCodexHook(f.db, { ...read, hook_event_name: 'PreToolUse' }), {});
+    assert.deepEqual(handleCodexHook(f.db, { ...read, hook_event_name: 'PostToolUse', tool_response: 'source' }), {});
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
 test('independent PostToolUse completions commit across a revision change, and duplicate delivery is idempotent', async () => {
   const f = await boundHookFixture();
   const second = openConnection(f.databasePath);
@@ -435,7 +528,8 @@ test('hook diagnostics distinguish an unpaired completion without exposing its c
     const event = { ...f.event('missing-start'), tool_input: { cmd: 'private-command-body' }, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } };
     const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
       { cwd: process.cwd(), input: JSON.stringify(event), encoding: 'utf8' });
-    assert.equal(result.status, 2);
+    assert.equal(result.status, 0);
+    assert.match(acceptCodexToolHook(result.stdout, 'PostToolUse').systemMessage!, /completion_without_admission/u);
     assert.match(result.stderr, /event=PostToolUse stage=post_completion reason=completion_without_admission id=[0-9a-f]{16}.*Tool already executed/u);
     assert.doesNotMatch(result.stderr, /private-command-body/u);
     const observation = f.db.prepare("SELECT response_shape FROM codex_hook_observations WHERE event_name='PostToolUse' AND decision='CONFLICT' ORDER BY rowid DESC LIMIT 1")
@@ -623,7 +717,17 @@ test('MCP and server API share review decisions, revisions and model-only proven
     assert.equal((status.structuredContent as any).nextAction, 'proceed');
     const httpStatus = await route({ method: 'POST', url: new URL(`http://localhost/api/v1/agent/runs/${runId}/memory-status`),
       headers: { 'idempotency-key': 'status' }, body: { cwd: f.root } }) as any;
-    assert.deepEqual(httpStatus.data, status.structuredContent);
+    // Transport cancellation receipts are MCP-local; the assurance contract is shared.
+    const { mcpCancellation, ...mcpAssurance } = status.structuredContent as any;
+    assert.equal(mcpCancellation.contract, 'kiokuko/mcp-cancellation@1');
+    assert.equal(mcpCancellation.provenance, 'server_observed');
+    assert.equal(mcpCancellation.retention, 'connection_local');
+    assert.equal(typeof mcpCancellation.serverInstanceId, 'string');
+    assert.equal(mcpCancellation.processId, process.pid);
+    assert.deepEqual(mcpCancellation.receipts, []);
+    assert.equal(mcpCancellation.droppedReceipts, 0);
+    assert.equal('mcpCancellation' in httpStatus.data, false);
+    assert.deepEqual(httpStatus.data, mcpAssurance);
   } finally { await client.close(); await server.close(); f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 
@@ -683,6 +787,78 @@ test('stdout cannot spoof exit metadata and unfinished processes stay unknown', 
   for (const incomplete of [{session_id:12}, {timed_out:true}, {interrupted:true}, {signal:'SIGTERM'}, {status:'running'}, {error:'timeout'}]) {
     assert.equal(observedExitCode({...incomplete,exit_code:0}),null);
   }
+});
+
+test('request diagnostics expose protocol field types without leaking command output or other requests', async () => {
+  const f = await boundHookFixture();
+  try {
+    const call = f.event('shape-probe');
+    handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
+    handleCodexHook(f.db, { ...call, hook_event_name: 'PostToolUse', tool_response: 'PRIVATE_STDOUT',
+      tool_response_metadata: { exit_code: 0 }, transcript_path: '/private/TRANSCRIPT_PATH', private_field: 'PRIVATE_VALUE' });
+    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{request_id:string}>()!.request_id;
+    const diagnostic = codexHookDiagnostics(f.db, requestId) as any;
+    const last = diagnostic.events.at(-1);
+    assert.equal(last.shape.type, 'string');
+    assert.equal(last.shape.hostFields.tool_response_metadata, 'object');
+    assert.equal(last.shape.hostFields.transcript_path, 'string');
+    assert.equal(JSON.stringify(diagnostic).includes('PRIVATE'), false);
+    const other = codexHookDiagnostics(f.db, 'codex-' + 'f'.repeat(64)) as any;
+    assert.deepEqual(other.events, []);
+    assert.throws(() => codexHookDiagnostics(f.db, 'invalid'));
+  } finally { f.db.close(); rmSync(f.base, {recursive:true, force:true}); }
+});
+
+test('stdout-only hooks recover typed command completion from the exact host log record', async () => {
+  const f = await boundHookFixture();
+  const previousHome = process.env.CODEX_HOME;
+  const codeHome = path.join(f.base, 'codex');
+  const sessions = path.join(codeHome, 'sessions');
+  mkdirSync(sessions, {recursive:true});
+  process.env.CODEX_HOME = codeHome;
+  const transcript = path.join(sessions, `rollout-test-${f.common.session_id}.jsonl`);
+  const header = {type:'session_meta',payload:{id:f.common.session_id,cwd:f.root,cli_version:'0.162.0-alpha.17.2'}};
+  const completion = (id:string, exit:number) => ({type:'event_msg',payload:{type:'item_completed',thread_id:f.common.session_id,turn_id:f.common.turn_id,
+    item:{type:'CommandExecution',id,process_id:'91',source:'unified_exec_startup',cwd:pathToFileURL(f.root).href,status:exit === 0 ? 'completed':'failed',exit_code:exit}}});
+  try {
+    for (const exit of [0,7]) {
+      const call = f.event(`host-exit-${exit}`);
+      handleCodexHook(f.db, {...call,hook_event_name:'PreToolUse'});
+      writeFileSync(transcript, [header, completion(call.tool_use_id,exit)].map(x=>JSON.stringify(x)+'\n').join(''), {mode:0o600});
+      const event = {...call,hook_event_name:'PostToolUse',tool_response:'Process exited with code 0',transcript_path:transcript};
+      handleCodexHook(f.db,event);handleCodexHook(f.db,event);
+      const evidence = f.db.prepare('SELECT outcome,exit_code,provenance FROM task_execution_evidence ORDER BY rowid DESC LIMIT 1').get<any>();
+      assert.deepEqual(evidence && {...evidence},{outcome:exit === 0 ? 'passed':'failed',exit_code:exit,provenance:'client_observed'});
+    }
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,2);
+    assert.equal(taskAssuranceReport(f.db,f.prepared.run.runId).executionObservation!.structuredExitCalls,2);
+  } finally { if(previousHome===undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME=previousHome; f.db.close();rmSync(f.base,{recursive:true,force:true}); }
+});
+
+test('host receipt binds a post-only poll to its admitted command without trusting stdout session headers', async () => {
+  const f=await boundHookFixture();const previous=process.env.CODEX_HOME;
+  const home=path.join(f.base,'codex');const sessions=path.join(home,'sessions');mkdirSync(sessions,{recursive:true});process.env.CODEX_HOME=home;
+  const transcript=path.join(sessions,`rollout-test-${f.common.session_id}.jsonl`);
+  const header={type:'session_meta',payload:{id:f.common.session_id,cwd:f.root}};
+  const start=f.event('host-process');
+  const record={type:'event_msg',payload:{type:'item_completed',thread_id:f.common.session_id,turn_id:f.common.turn_id,
+    item:{type:'CommandExecution',id:start.tool_use_id,process_id:'92',source:'unified_exec_startup',cwd:f.root,status:'completed',exit_code:0}}};
+  try {
+    handleCodexHook(f.db,{...start,hook_event_name:'PreToolUse'});
+    writeFileSync(transcript,JSON.stringify(header)+'\n',{mode:0o600});
+    handleCodexHook(f.db,{...start,hook_event_name:'PostToolUse',tool_response:'Process running with session ID 92',transcript_path:transcript});
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_processes').get<any>()!.n,0);
+    writeFileSync(transcript,JSON.stringify(record)+'\n',{flag:'a'});
+    const poll={...f.common,hook_event_name:'PostToolUse',tool_name:'write_stdin',tool_use_id:'host-poll',tool_input:{session_id:92},tool_response:'exit_code: 0',transcript_path:transcript};
+    handleCodexHook(f.db,poll);
+    // Correlation survives eviction of the host event from the bounded log tail.
+    writeFileSync(transcript,JSON.stringify(header)+'\n');
+    handleCodexHook(f.db,poll);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,1);
+    const rows=f.db.prepare("SELECT evidence_id FROM codex_hook_tools WHERE call_id IN ('host-process','host-poll')").all<any>();
+    assert.equal(rows.length,2);assert.ok(rows[0].evidence_id);assert.equal(rows[0].evidence_id,rows[1].evidence_id);
+    assert.throws(()=>handleCodexHook(f.db,{...poll,tool_use_id:'foreign-session',tool_input:{session_id:93}}),/no matching start/);
+  } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;f.db.close();rmSync(f.base,{recursive:true,force:true});}
 });
 
 test('legacy review history without decision dependencies is retained but cannot certify a new delivery', async () => {
@@ -767,11 +943,13 @@ test('recoverable preparation denial leaves same-turn preparation and review rep
   handleCodexHook(f.db,{...common,hook_event_name:'UserPromptSubmit'});
   const requestId=f.db.prepare('SELECT request_id FROM codex_hook_requests').get<any>()!.request_id;
   const pre=(name:string,args:object)=>handleCodexHook(f.db,{...common,hook_event_name:'PreToolUse',tool_name:name,tool_use_id:name,tool_input:args}) as any;
-  assert.equal(pre('exec_command',{}).kiokukoDecision.reason,'preparation_required');
+  assert.equal(pre('exec_command',{}).hookSpecificOutput.permissionDecision,'deny');
+  assert.equal(lastHookDiagnostic(f.db).reason,'preparation_required');
   assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<any>()!.stop_notified,0);
   assert.deepEqual(pre('mcp__kiokuko__task_prepare',{requestId,cwd:f.root}),{});
   handleCodexHook(f.db,{...common,hook_event_name:'PostToolUse',tool_name:'mcp__kiokuko__task_prepare',tool_use_id:'prepare',tool_input:{requestId,cwd:f.root},tool_response:{structuredContent:f.prepared}});
-  assert.equal(pre('exec_command',{}).kiokukoDecision.reason,'memory_review_pending');
+  assert.equal(pre('exec_command',{}).hookSpecificOutput.permissionDecision,'deny');
+  assert.equal(lastHookDiagnostic(f.db).reason,'memory_review_pending');
   assert.deepEqual(pre('mcp__kiokuko__task_memory_status',{runId:f.prepared.run.runId,cwd:f.root}),{});
   reviewTaskMemory(f.db,{runId:f.prepared.run.runId,cwd:f.root,requestId:'repair-review',expectedRevision:taskAssuranceReport(f.db,f.prepared.run.runId).revision!,deliveryId:f.prepared.context!.deliveryId!,entryId:f.entry.id,entryRevision:1,decision:'inapplicable',basis:'Does not apply to current execution'});
   assert.deepEqual(pre('exec_command',{}),{});
@@ -850,8 +1028,9 @@ test('a child preparation denial does not inherit or fail the parent binding', a
     handleCodexHook(f.db, { ...child, hook_event_name: 'SubagentStart' });
     const denied = handleCodexHook(f.db, { ...child, hook_event_name: 'PreToolUse', tool_name: 'exec_command',
       tool_use_id: 'child-work', tool_input: {cmd:'true'} }) as any;
-    assert.equal(denied.kiokukoDecision.reason, 'preparation_required');
-    assert.equal(denied.kiokukoDecision.recoverable, true);
+    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(lastHookDiagnostic(f.db).reason, 'preparation_required');
+    assert.equal(lastHookDiagnostic(f.db).recoverable, true);
     assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
     assert.deepEqual(handleCodexHook(f.db, { ...f.event('parent-work'), hook_event_name:'PreToolUse' }), {});
   } finally { f.db.close(); rmSync(f.base,{recursive:true,force:true}); }
@@ -866,7 +1045,8 @@ test('MCP contract mismatch preserves diagnosis and blocks ordinary execution wi
       tool_use_id:'mismatch',tool_input:{requestId,cwd:f.root},tool_response:{structuredContent:incompatible}}) as any;
     assert.match(result.hookSpecificOutput.additionalContext,/contract mismatch/);
     assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<{stop_notified:number}>()!.stop_notified,0);
-    assert.equal((handleCodexHook(f.db,{...f.event('blocked'),hook_event_name:'PreToolUse'}) as any).kiokukoDecision.recoverable,true);
+    assert.equal((handleCodexHook(f.db,{...f.event('blocked'),hook_event_name:'PreToolUse'}) as any).hookSpecificOutput.permissionDecision,'deny');
+    assert.equal(lastHookDiagnostic(f.db).recoverable,true);
     assert.deepEqual(handleCodexHook(f.db,{...f.common,hook_event_name:'PreToolUse',tool_name:'mcp__kiokuko__task_inspect',
       tool_use_id:'inspect',tool_input:{cwd:f.root,operation:'skill'}}),{});
   } finally { f.db.close();rmSync(f.base,{recursive:true,force:true}); }
@@ -955,5 +1135,166 @@ test('structured asynchronous completion verifies its original execution once', 
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,1);
   const rows=f.db.prepare("SELECT evidence_id FROM codex_hook_tools WHERE call_id IN ('process-start','process-poll')").all<any>();
   assert.equal(rows.length,2);assert.ok(rows[0].evidence_id);assert.equal(rows[0].evidence_id,rows[1].evidence_id);
+ } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+
+test('poll completion without another admission resolves the previously admitted process through the CLI', async () => {
+  const f = await boundHookFixture();
+  try {
+    const start = f.event('no-pre-start');
+    handleCodexHook(f.db, { ...start, hook_event_name: 'PreToolUse' });
+    handleCodexHook(f.db, { ...start, hook_event_name: 'PostToolUse', tool_response: { session_id: 82 } });
+    const poll = { ...f.common, hook_event_name: 'PostToolUse', tool_name: 'write_stdin',
+      tool_use_id: 'no-pre-poll', tool_input: { session_id: 82, chars: '' }, tool_response: { exit_code: 0 } };
+    const cli = (event: object) => spawnSync(process.execPath,
+      ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
+      { input: JSON.stringify(event), encoding: 'utf8' });
+    const result = cli(poll);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /Execution evidence/u);
+    assert.equal(cli(poll).status, 0);
+    const changed = cli({ ...poll, tool_input: { session_id: 82, chars: 'changed input' } });
+    assert.equal(changed.status, 0);
+    assert.match(acceptCodexToolHook(changed.stdout, 'PostToolUse').systemMessage!, /completion_input_mismatch/u);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n, 1);
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<any>(f.prepared.run.runId)!.status, 'active');
+    assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<any>()!.stop_notified, 0);
+    const foreign = cli({ ...poll, tool_use_id: 'foreign-poll', tool_input: { session_id: 999 } });
+    assert.equal(foreign.status, 0);
+    assert.match(acceptCodexToolHook(foreign.stdout, 'PostToolUse').systemMessage!, /completion_without_admission/u);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('cancellation of preparation replay cannot terminate a task already admitted for work', async () => {
+  const f = await boundHookFixture();
+  try {
+    const call = f.event('ongoing-work');
+    handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
+    const controller = new AbortController();
+    await assert.rejects(prepareAgentTask(f.db, { cwd: f.root, requestId: 'test-request',
+      task: 'Implement migration expectations', capabilities: caps, skillDiscoveryMode: 'off', signal: controller.signal,
+      embeddingRuntime: {
+        mode: 'required', profileId: null, backendId: 'cancel-fixture', backend: { id: 'cancel-fixture', search: () => [] },
+        prepareQuery: async () => {
+          controller.abort(new Error('Only this request was cancelled'));
+          throw controller.signal.reason;
+        },
+        drain: async () => ({ claimed: 0, completed: 0, failed: 0, blocked: 0, remaining: 0 }),
+        close: async () => {},
+      },
+      profileHints: { taskType: 'build', target: 'source.ts migration expectations code', expected: 'next migration tests pass', constraints: 'preserve historical fixtures' },
+    }));
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<any>(f.prepared.run.runId)!.status, 'active');
+    handleCodexHook(f.db, { ...call, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
+    assert.deepEqual(handleCodexHook(f.db, { ...f.event('next-work'), hook_event_name: 'PreToolUse' }), {});
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('inapplicable decisions without file dependencies survive edits, refresh and restart', async () => {
+  const f = await boundHookFixture();
+  try {
+    const runId = f.prepared.run.runId;
+    const decisionId = taskAssuranceReport(f.db, runId).decisions![0]!.decisionId;
+    for (let i = 0; i < 3; i++) {
+      writeFileSync(path.join(f.root, 'source.ts'), `export const versions = [${i}];\n`);
+      assert.deepEqual(taskAssuranceReport(f.db, runId).pending, []);
+      await refreshTaskMemory(f.db, { runId, cwd: f.root, requestId: `edited-${i}`,
+        expectedRevision: taskAssuranceReport(f.db, runId).revision!, capabilities: caps, changedPaths: ['source.ts'] });
+      const report = taskAssuranceReport(f.db, runId);
+      assert.deepEqual(report.pending, []);
+      assert.equal(report.decisions![0]!.decisionId, decisionId);
+    }
+    const reopened = openConnection(f.databasePath);
+    try { assert.deepEqual(taskAssuranceReport(reopened, runId).pending, []); }
+    finally { reopened.close(); }
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('process correlation survives source changes before yielding without certifying changed execution', async () => {
+  const f = await boundHookFixture();
+  try {
+    const start = f.event('mutating-start');
+    handleCodexHook(f.db, { ...start, hook_event_name: 'PreToolUse' });
+    writeFileSync(path.join(f.root, 'source.ts'), 'changed by admitted process');
+    handleCodexHook(f.db, { ...start, hook_event_name: 'PostToolUse', tool_response: { session_id: 83 } });
+    const poll = { ...f.common, hook_event_name: 'PostToolUse', tool_name: 'write_stdin',
+      tool_use_id: 'mutating-poll', tool_input: { session_id: 83 }, tool_response: { exit_code: 0 } };
+    const result = handleCodexHook(f.db, poll) as any;
+    assert.match(result.hookSpecificOutput.additionalContext, /Repository state changed/u);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n, 0);
+    assert.deepEqual(handleCodexHook(f.db, { ...f.event('after-mutation'), hook_event_name: 'PreToolUse' }), {});
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('refresh before the first yielded completion preserves session correlation', async () => {
+ const f=await boundHookFixture();
+ try {
+  const start=f.event('refresh-before-yield');
+  handleCodexHook(f.db,{...start,hook_event_name:'PreToolUse'});
+  await refreshTaskMemory(f.db,{runId:f.prepared.run.runId,cwd:f.root,requestId:'review-refresh',expectedRevision:taskAssuranceReport(f.db,f.prepared.run.runId).revision!,capabilities:caps,changedPaths:['source.ts']});
+  const yielded=handleCodexHook(f.db,{...start,hook_event_name:'PostToolUse',tool_response:{session_id:84}}) as any;
+  assert.match(yielded.hookSpecificOutput.additionalContext,/Delivery changed/);
+  const poll={...f.common,hook_event_name:'PostToolUse',tool_name:'write_stdin',tool_use_id:'refresh-poll',tool_input:{session_id:84},tool_response:{exit_code:0}};
+  const result=handleCodexHook(f.db,poll) as {hookSpecificOutput:{additionalContext:string}};
+  assert.match(result.hookSpecificOutput.additionalContext,/Delivery changed/);
+  assert.deepEqual(handleCodexHook(f.db,poll),result);
+  assert.throws(()=>handleCodexHook(f.db,{...poll,tool_input:{session_id:84,chars:'changed'}}),/input changed/);
+  assert.throws(()=>handleCodexHook(f.db,{...f.event('session-reuse'),hook_event_name:'PreToolUse',tool_input:{cmd:'false'}}) && handleCodexHook(f.db,{...f.event('session-reuse'),hook_event_name:'PostToolUse',tool_input:{cmd:'false'},tool_response:{session_id:84}}),/session ID was reused/);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,0);
+ } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+test('default inapplicable judgment invalidates after a new error signature', async () => {
+ const f=await boundHookFixture();
+ try {
+  await refreshTaskMemory(f.db,{runId:f.prepared.run.runId,cwd:f.root,requestId:'review-error',expectedRevision:taskAssuranceReport(f.db,f.prepared.run.runId).revision!,capabilities:caps,changedPaths:['source.ts'],errorSignatures:['migration error']});
+  assert.deepEqual(taskAssuranceReport(f.db,f.prepared.run.runId).pending,[f.entry.id]);
+ } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+test('refresh after the yielded completion keeps polling safe without new evidence', async () => {
+ const f=await boundHookFixture();
+ try {
+  const start=f.event('refresh-after-yield');
+  handleCodexHook(f.db,{...start,hook_event_name:'PreToolUse'});
+  handleCodexHook(f.db,{...start,hook_event_name:'PostToolUse',tool_response:{session_id:85}});
+  await refreshTaskMemory(f.db,{runId:f.prepared.run.runId,cwd:f.root,requestId:'review-refresh-after',expectedRevision:taskAssuranceReport(f.db,f.prepared.run.runId).revision!,capabilities:caps,changedPaths:['source.ts']});
+  const result=handleCodexHook(f.db,{...f.common,hook_event_name:'PostToolUse',tool_name:'write_stdin',tool_use_id:'after-poll',tool_input:{session_id:85},tool_response:{exit_code:0}}) as any;
+  assert.match(result.hookSpecificOutput.additionalContext,/Delivery changed/);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,0);
+ } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+test('cancelled final intake answer resumes without repeating optional discovery', async () => {
+ const f=await fixture();
+ try {
+  writeFileSync(path.join(f.root,'package.json'),'{"dependencies":{"typescript":"^5.0.0"}}');
+  const controller=new AbortController(); let calls=0;
+  const fetchImpl: typeof fetch=async()=>{calls++;controller.abort(new Error('request timeout'));throw controller.signal.reason;};
+  let p=await prepareAgentTask(f.db,{cwd:f.root,requestId:'review-intake-cancel',task:'Build a TypeScript service',capabilities:caps,skillDiscoveryMode:'official',fetchImpl});
+  const values={taskType:'build',target:'TypeScript service',expected:'cancellable discovery',constraints:'preserve current behavior'};
+  let last: Parameters<typeof answerAgentTask>[1] | undefined;
+  while(p.intake.status==='needs_answer'){
+   const q=p.intake.question!;
+   last={cwd:f.root,runId:p.run.runId,sessionId:p.intake.sessionId,questionId:q.id,value:values[q.id],capabilities:caps,skillDiscoveryMode:'official',fetchImpl,signal:controller.signal};
+   try {p=await answerAgentTask(f.db,last);} catch(e){assert.ok(controller.signal.aborted);break;}
+  }
+  assert.ok(calls>0);
+  assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<any>(p.run.runId)!.status,'active');
+  assert.ok(last);
+  const before=calls;
+  const reopened=openConnection(f.databasePath);
+  try {
+   const resumed=await answerAgentTask(reopened,{...last,signal:new AbortController().signal});
+   assert.equal(resumed.run.status,'active');
+   assert.equal(resumed.intake.status,'ready');
+   assert.deepEqual(resumed.skillDiscovery.selected,[]);
+   assert.deepEqual(resumed.skillDiscovery.failures,[{stage:'search',code:'task_request_cancelled'}]);
+   assert.equal(calls,before);
+   const replayed=await answerAgentTask(reopened,{...last,signal:new AbortController().signal});
+   assert.deepEqual(replayed.run,resumed.run);
+   assert.deepEqual(replayed.skillDiscovery,resumed.skillDiscovery);
+   assert.equal(replayed.context!.deliveryId,resumed.context!.deliveryId);
+   assert.equal(calls,before);
+   const attempt=reopened.prepare('SELECT consumed_query_count,reserved_query_count FROM agent_task_skill_discovery_attempts WHERE run_id=?').get<{consumed_query_count:number;reserved_query_count:number}>(resumed.run.runId)!;
+   assert.equal(attempt.consumed_query_count,attempt.reserved_query_count);
+  } finally {reopened.close();}
  } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
 });

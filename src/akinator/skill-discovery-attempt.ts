@@ -16,6 +16,7 @@ const SUMMARY_FIELDS = new Set(['attempted', 'mode', 'requirements', 'queries', 
 const SELECTED_FIELDS = new Set(['skillId', 'name', 'source', 'officialStatus', 'imported', 'updated']);
 const SUMMARY_FAILURE_FIELDS = new Set(['stage', 'code']);
 const KIOKUKO_FAILURE_FIELDS = new Set(['kind', 'code']);
+const CANCELLED_FAILURE_FIELDS = new Set(['kind']);
 const PROVIDER_FAILURE_FIELDS = new Set(['kind', 'code', 'retryAfterSeconds']);
 const SOURCE_FAILURE_FIELDS = new Set(['kind', 'code', 'retryAfterSeconds']);
 const ERROR_CODES: readonly ErrorCode[] = [
@@ -81,6 +82,7 @@ interface StoredAttemptRow {
 }
 
 type StoredDiscoveryFailure =
+  | { kind: 'cancelled' }
   | { kind: 'kiokuko'; code: ErrorCode }
   | { kind: 'skill_provider'; code: SkillProviderFailureCode; retryAfterSeconds: number | null }
   | { kind: 'skill_source'; code: SkillSourceFailureCode; retryAfterSeconds: number | null };
@@ -225,6 +227,10 @@ function validateSummary(value: unknown, mode: SkillDiscoveryMode): SkillDiscove
 
 function validateFailure(value: unknown): StoredDiscoveryFailure {
   if (!plainObject(value) || typeof value.kind !== 'string') integrity();
+  if (value.kind === 'cancelled') {
+    if (!exactObject(value, CANCELLED_FAILURE_FIELDS)) integrity();
+    return { kind: 'cancelled' };
+  }
   if (value.kind === 'kiokuko') {
     if (!exactObject(value, KIOKUKO_FAILURE_FIELDS)
       || typeof value.code !== 'string'
@@ -319,7 +325,7 @@ function validateAttemptRow(row: StoredAttemptRow, identity?: AgentTaskSkillDisc
   if (row.summary_json !== null || typeof row.failure_json !== 'string') integrity();
 }
 
-function throwStoredFailure(failure: StoredDiscoveryFailure): never {
+function throwStoredFailure(failure: Exclude<StoredDiscoveryFailure, { kind: 'cancelled' }>): never {
   if (failure.kind === 'skill_provider') {
     throw new SkillProviderError(failure.code, failure.retryAfterSeconds);
   }
@@ -377,7 +383,15 @@ function resolveExistingAttempt(
       summary: validateSummary(parseCanonicalStoredJson(existing.summary_json, MAX_SUMMARY_JSON_CHARS), identity.mode),
     };
   }
-  throwStoredFailure(validateFailure(parseCanonicalStoredJson(existing.failure_json, MAX_FAILURE_JSON_CHARS)));
+  const failure = validateFailure(parseCanonicalStoredJson(existing.failure_json, MAX_FAILURE_JSON_CHARS));
+  if (failure.kind === 'cancelled') {
+    // Cancellation remains a recorded failure. Resume without repeating optional
+    // external work; its full reservation stays consumed in the run-wide budget.
+    return { kind: 'replay', summary: { mode: identity.mode, attempted: true,
+      requirements: [], queries: [], cacheHits: 0, candidates: 0, selected: [],
+      failures: [{ stage: 'search', code: 'task_request_cancelled' }] } };
+  }
+  throwStoredFailure(failure);
 }
 
 export function readAgentTaskSkillDiscoveryAttempt(
@@ -493,9 +507,12 @@ export function failAgentTaskSkillDiscoveryAttempt(
   database: SqliteDatabase,
   identity: AgentTaskSkillDiscoveryAttemptIdentity,
   cause: unknown,
+  signal?: AbortSignal,
 ): never {
   const normalized = normalizedFailure(cause);
-  const serialized = canonicalJson(normalized.failure);
+  // An unrelated security/integrity failure racing an abort must stay fail-closed.
+  const cancelled = signal?.aborted === true && cause === signal.reason;
+  const serialized = canonicalJson(cancelled ? { kind: 'cancelled' } : normalized.failure);
   try {
     withImmediateTransaction(database, () => {
       const existing = attemptRow(database, identity);

@@ -59,7 +59,14 @@ export interface RunWithMcpDeadlineOptions<T> {
   timeoutMs?: number;
   policy?: McpDeadlinePolicy;
   signal?: AbortSignal;
+  observation?: McpDeadlineObservation;
   operationFn: (signal: AbortSignal, context: McpDeadlineContext) => Promise<T> | T;
+}
+
+/** Internal synchronous observers; external request payloads cannot supply these. */
+export interface McpDeadlineObservation {
+  callerAborted(): void;
+  operationSettled(): void;
 }
 
 export class McpRequestTimeoutError extends Error {
@@ -179,6 +186,7 @@ export async function runWithMcpDeadline<T>({
   timeoutMs,
   policy = DEFAULT_MCP_DEADLINE_POLICY,
   signal,
+  observation,
   operationFn,
 }: RunWithMcpDeadlineOptions<T>): Promise<T> {
   const selectedTimeoutMs = assertTimeoutMs(timeoutMs ?? timeoutForOperation(operation, policy), 'MCP request timeout');
@@ -191,7 +199,11 @@ export async function runWithMcpDeadline<T>({
     childTimeoutMs: (requestedMs) => Math.min(assertTimeoutMs(requestedMs, 'child timeout'), Math.max(0, deadlineAt - Date.now())),
   };
 
-  if (signal?.aborted) throw new McpRequestCancelledError(operation);
+  if (signal?.aborted) {
+    observation?.callerAborted();
+    observation?.operationSettled();
+    throw new McpRequestCancelledError(operation);
+  }
 
   return await new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -210,7 +222,9 @@ export async function runWithMcpDeadline<T>({
     };
 
     const onCallerAbort = (): void => {
+      if (settled) return;
       const error = new McpRequestCancelledError(operation);
+      observation?.callerAborted();
       controller.abort(error);
       settle(() => reject(error));
     };
@@ -229,10 +243,11 @@ export async function runWithMcpDeadline<T>({
         return operationFn(controller.signal, context);
       })
       .then(
-        (value) => settle(() => resolve(value)),
-        (error: unknown) => settle(() => reject(
-          abortReasonIsTimeout(controller.signal.reason) ? new McpRequestTimeoutError(operation) : error,
-        )),
+        (value) => { observation?.operationSettled(); settle(() => resolve(value)); },
+        (error: unknown) => {
+          observation?.operationSettled();
+          settle(() => reject(abortReasonIsTimeout(controller.signal.reason) ? new McpRequestTimeoutError(operation) : error));
+        },
       );
   });
 }

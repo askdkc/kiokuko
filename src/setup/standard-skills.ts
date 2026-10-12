@@ -82,7 +82,11 @@ export const STANDARD_COMPLETION_SKILL_FILES = [
 
 export const STANDARD_CODING_ROUTINE_SKILL_NAME = 'coding-ideal-routine-skill';
 export const STANDARD_CODING_ROUTINE_SKILL_MANAGED_MARKER = '<!-- KIOKUKO MANAGED STANDARD SKILL: coding-ideal-routine-skill -->';
-export const STANDARD_CODING_ROUTINE_SKILL_FILES = ['SKILL.md'] as const;
+export const STANDARD_CODING_ROUTINE_SKILL_FILES = [
+  'SKILL.md',
+  'references/repo-contracts.md',
+  'references/verification-scenarios.md',
+] as const;
 
 interface StandardSkillManifest {
   readonly name: string;

@@ -14,6 +14,7 @@ import { KiokukoError } from '../errors.js';
 import { assuranceState, taskAssuranceReport, insertTaskEvidence, memoryReviewNextAction } from './service.js';
 import { repositoryStateDigest } from './snapshot.js';
 import { parseAssurance } from './contracts.js';
+import { readCodexCommandReceipt } from './codex-command-receipt.js';
 
 export const CODEX_HOOK_LIMITATION = 'Hooks cover supported client paths only. They do not isolate execution, control an already running process or retract an emitted response. Configuration is not proof of active runtime enforcement.';
 const bounded = z.string().min(1).max(500);
@@ -51,20 +52,23 @@ function responseData(value: unknown): Record<string, unknown> {
   return outer;
 }
 /** stdout strings are never completion metadata, even when they contain JSON or exit headers. */
-export const CODEX_EXECUTION_ADAPTER = { id: 'codex-hook/structured-exit-code-v1', rawOutputExitMetadata: false, structuredExitMetadata: true } as const;
+export const CODEX_EXECUTION_ADAPTER = { id: 'codex-hook/structured-exit-code-v2', rawOutputExitMetadata: false, structuredExitMetadata: true, hostCommandReceiptMetadata: true } as const;
 export function observedExitCode(value: unknown): number | null {
   const response = record(value);
-  if (response.session_id !== undefined || response.timed_out === true || response.interrupted === true || response.signal !== undefined || (response.status !== undefined && !['completed', 'finished'].includes(String(response.status))) || response.error !== undefined) return null;
+  if (response.isError === true || response.session_id !== undefined || response.timed_out === true || response.interrupted === true || response.signal !== undefined || (response.status !== undefined && !['completed', 'finished'].includes(String(response.status))) || response.error !== undefined) return null;
   return typeof response.exit_code === 'number' && Number.isSafeInteger(response.exit_code) ? response.exit_code : null;
 }
 const turnStopReason = 'Kiokuko stopped this turn after a policy denial. Do not retry tools or attempt preparation/recovery. Report the blocker and wait for a new user message.';
+// Adapter metadata is private; Codex's strict stdout schema rejects extra keys.
+const denialMetadata = new WeakMap<object, { reason: string; recoverable: boolean; nextAction: string }>();
 function deny(reason: string, code = 'identity_violation', recoverable = false) {
   const message = recoverable ? reason : `${reason} ${turnStopReason}`;
-  return {
-    kiokukoDecision: { reason: code, recoverable, nextAction: recoverable ? 'repair_current_request' : 'stop_and_report' },
+  const output = {
     systemMessage: `Kiokuko blocked this tool call: ${message}`,
     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: message },
   };
+  denialMetadata.set(output, { reason: code, recoverable, nextAction: recoverable ? 'repair_current_request' : 'stop_and_report' });
+  return output;
 }
 function stopTurn(event: string) {
   // SubagentStart cannot stop a child with continue:false. Its tool gate still denies.
@@ -102,7 +106,7 @@ function checkoutFreeHook(input: z.infer<typeof hookSchema>): object {
   return deny('Project operations require an existing Git checkout. Ordinary conversation can use global memory and bundled Skill reads.', 'repository_required', true);
 }
 /** stdin must come from the installed client hook. Session IDs supplied to model-facing APIs grant no authority. */
-function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
+function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requestId: string) => void, onExitSource: (source: string, exitCode: number) => void): object {
   const input = parseCodexHookInput(raw);
   const cwd = realpathSync(input.cwd);
   let root: string;
@@ -121,6 +125,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
   }
   const identity = canonicalContentHash({ session: input.session_id, turn: input.turn_id, agent: input.agent_id ?? 'main', root });
   const requestId = `codex-${identity}`;
+  onBinding(requestId);
   const now = new Date().toISOString();
   const recoverableDeny = (reason: string, code: string) => deny(reason, code, true);
   const denyTurn = (reason: string, code = 'identity_violation') => {
@@ -292,31 +297,63 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
   if (operation || !request.run_id) return {};
   const response = responseData(input.tool_response);
   // Unknown or unfinished client result shapes must never become passing evidence.
-  const exitCode = observedExitCode(input.tool_response);
+  const directExit = observedExitCode(input.tool_response);
+  const receipt = directExit === null && typeof input.tool_response === 'string' ? readCodexCommandReceipt(input, root) : null;
+  const exitCode = directExit ?? receipt?.exitCode ?? null;
+  if (exitCode !== null) onExitSource(receipt ? 'host_command_receipt' : 'structured_response', exitCode);
   // Each completion reads its own call and the current assurance revision under
   // the writer lock. A different call may have advanced that revision already.
   return withImmediateTransaction(db, () => {
     const current = db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest = ?').get<HookRequest>(identity);
     if (current?.stop_notified) return stopTurn('PostToolUse');
-    let call = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<HookCall>(identity, input.tool_use_id!);
+    const admitted = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<HookCall>(identity, input.tool_use_id!);
+    let call = admitted;
     if (!current || current.run_id !== request!.run_id || current.state !== 'bound')
       throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
-    if (!call) throw new KiokukoError('CONFLICT', 'Tool completion has no matching start');
-    if (call.run_id !== current.run_id) throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
-    if (call.input_digest !== canonicalContentHash(input.tool_input ?? null))
+    if (admitted && admitted.run_id !== current.run_id) throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
+    if (admitted && admitted.input_digest !== canonicalContentHash(input.tool_input ?? null))
       throw new KiokukoError('CONFLICT', 'Tool completion input changed');
     if (input.tool_name === 'write_stdin' && (typeof args.session_id === 'number' || typeof args.session_id === 'string')) {
-      const original = db.prepare('SELECT t.* FROM codex_hook_processes p JOIN codex_hook_tools t ON t.identity_digest=p.identity_digest AND t.call_id=p.call_id WHERE p.identity_digest=? AND p.session_id=?')
+      let original = db.prepare('SELECT t.* FROM codex_hook_processes p JOIN codex_hook_tools t ON t.identity_digest=p.identity_digest AND t.call_id=p.call_id WHERE p.identity_digest=? AND p.session_id=?')
         .get<HookCall>(identity,String(args.session_id));
-      if (original) {
-        if (original.run_id !== current.run_id) throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
-        call = original;
-      }
+      // A stdout-only yielded result cannot expose a trusted process ID. A final
+      // host receipt can bind that ID to its exact, already admitted command.
+      if (!original && receipt) original = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest=? AND call_id=?')
+        .get<HookCall>(identity,receipt.callId);
+      if (receipt && original?.call_id !== receipt.callId) throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
+      // Codex may emit only PostToolUse for write_stdin. Its authority is the
+      // original admitted execution and observed session, never a guessed call.
+      if (!original) throw new KiokukoError('CONFLICT', 'Tool completion has no matching start');
+      call = original;
     }
+    if (!call) throw new KiokukoError('CONFLICT', 'Tool completion has no matching start');
+    if (call.run_id !== current.run_id) throw new KiokukoError('CONFLICT', 'Tool completion binding changed');
     const run = new LedgerStore(db).readRun(current.run_id!);
     if (!run || run.status !== 'active') throw new KiokukoError('CONFLICT', 'Tool completion belongs to a terminal run');
     const state = assuranceState(db, current.run_id!);
     if (!state || state.repository_root !== root) throw new KiokukoError('CONFLICT', 'Tool completion repository changed');
+    if (input.tool_name === 'write_stdin' && receipt) {
+      db.prepare('INSERT INTO codex_hook_processes VALUES(?,?,?) ON CONFLICT DO NOTHING')
+        .run(identity,receipt.processId,call.call_id);
+    }
+    if (!admitted) {
+      // A post-only poll inherits the original admission, but its own identity
+      // and input still need a durable binding for exact replay validation.
+      db.prepare(`INSERT INTO codex_hook_tools
+        (identity_digest,call_id,run_id,delivery_id,input_digest,state_digest,evidence_id,completion_state)
+        VALUES (?,?,?,?,?,?,NULL,'unknown')`)
+        .run(identity,input.tool_use_id!,call.run_id,call.delivery_id,canonicalContentHash(input.tool_input ?? null),call.state_digest);
+    }
+    // Keep process correlation even if the command changed source before yielding.
+    if (exitCode === null && ['Bash','exec_command'].includes(input.tool_name!) && (typeof response.session_id === 'number' || typeof response.session_id === 'string')) {
+      const sessionId = String(response.session_id);
+      if (!sessionId.length || sessionId.length > 128) throw new KiokukoError('VALIDATION_ERROR', 'Process session ID is invalid');
+      const prior = db.prepare('SELECT call_id FROM codex_hook_processes WHERE identity_digest=? AND session_id=?').get<{call_id:string}>(identity,sessionId);
+      if (prior && prior.call_id !== call.call_id) throw new KiokukoError('CONFLICT', 'Process session ID was reused');
+      db.prepare('INSERT INTO codex_hook_processes VALUES(?,?,?) ON CONFLICT DO NOTHING').run(identity,sessionId,call.call_id);
+    }
+    // Correlation belongs to the admitted process even when its delivery is old.
+    // Preserve it for subsequent polls, but never certify the replacement delivery.
     if (call.delivery_id !== state.delivery_id) return context('PostToolUse', 'Delivery changed during execution; completion cannot verify the new delivery.');
     if (call.evidence_id && db.prepare('SELECT outcome FROM task_execution_evidence WHERE evidence_id=?').get<{outcome:string}>(call.evidence_id)?.outcome !== 'unknown') {
       if (call.call_id !== input.tool_use_id) db.prepare('UPDATE codex_hook_tools SET evidence_id=?,completion_state=? WHERE identity_digest=? AND call_id=?').run(call.evidence_id,'completed',identity,input.tool_use_id!);
@@ -337,13 +374,6 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown): object {
     if (exitCode === null) {
       const running = response.session_id !== undefined || response.status === 'running';
       const next = running ? 'running' : 'unknown';
-      if (running && ['Bash','exec_command'].includes(input.tool_name!) && (typeof response.session_id === 'number' || typeof response.session_id === 'string')) {
-        const sessionId = String(response.session_id);
-        if (sessionId.length > 128) throw new KiokukoError('VALIDATION_ERROR', 'Process session ID is invalid');
-        const prior = db.prepare('SELECT call_id FROM codex_hook_processes WHERE identity_digest=? AND session_id=?').get<{call_id:string}>(identity,sessionId);
-        if (prior && prior.call_id !== call.call_id) throw new KiokukoError('CONFLICT', 'Process session ID was reused');
-        db.prepare('INSERT INTO codex_hook_processes VALUES(?,?,?) ON CONFLICT DO NOTHING').run(identity,sessionId,call.call_id);
-      }
       if (call.completion_state === next || call.completion_state === 'unknown' && running) return {};
       db.prepare('INSERT INTO task_execution_observations(run_id) VALUES(?) ON CONFLICT DO NOTHING').run(current.run_id);
       if (call.completion_state === 'admitted' || next === 'unknown') {
@@ -372,8 +402,10 @@ export function handleCodexHook(db: SqliteDatabase, raw: unknown): object {
   const input = parseCodexHookInput(raw);
   const response = record(input.tool_response);
   const args = record(input.tool_input);
-  const shape = { hasArguments: !!args.arguments, hasParameters: !!args.parameters, hasRequestId: !!args.requestId, hasSoulRead: !!args.soulRead, type: typeof input.tool_response, structured: !!response.structuredContent,
-    content: Array.isArray(response.content), exitCode: typeof response.exit_code, exitMetadata: observedExitCode(input.tool_response) === null ? 'unavailable' : 'structured', exitAdapter: CODEX_EXECUTION_ADAPTER.id, contractVersion: INTEGRATION_CONTRACT.version, contractId: INTEGRATION_CONTRACT.id, hookPackageVersion: PACKAGE_VERSION, status: typeof response.status };
+  const hostFields = Object.fromEntries(['exit_code','exitCode','tool_execution','tool_result','tool_response_metadata','execution_metadata','transcript_path']
+    .map(key => [key, typeof input[key]]));
+  const shape = { request: null as string | null, hostFields, execution: { occurred: input.hook_event_name === 'PostToolUse', completionRecorded: false, exitCode: observedExitCode(input.tool_response) }, hasArguments: !!args.arguments, hasParameters: !!args.parameters, hasRequestId: !!args.requestId, hasSoulRead: !!args.soulRead, type: typeof input.tool_response, structured: !!response.structuredContent,
+    content: Array.isArray(response.content), exitCode: typeof response.exit_code, exitMetadata: observedExitCode(input.tool_response) === null ? 'unavailable' : 'structured', exitSource:'unavailable', exitAdapter: CODEX_EXECUTION_ADAPTER.id, contractVersion: INTEGRATION_CONTRACT.version, contractId: INTEGRATION_CONTRACT.id, hookPackageVersion: PACKAGE_VERSION, status: typeof response.status };
   const save = (decision: string, reason?: string, recovery?: Record<string, unknown>) => withImmediateTransaction(db, () => {
     const diagnostic = { ...shape, reason, recoverable: recovery?.recoverable, nextAction: recovery?.nextAction, call: codexHookCorrelationId(input) };
     db.prepare('INSERT INTO codex_hook_observations VALUES (?, ?, ?, ?, ?, ?)')
@@ -381,9 +413,11 @@ export function handleCodexHook(db: SqliteDatabase, raw: unknown): object {
     db.prepare('DELETE FROM codex_hook_observations WHERE rowid NOT IN (SELECT rowid FROM codex_hook_observations ORDER BY rowid DESC LIMIT 1000)').run();
   });
   try {
-    const result = handleCodexHookEvent(db, input);
+    const result = handleCodexHookEvent(db, input, requestId => { shape.request = requestId; }, (source, exitCode) => {shape.exitSource=source;shape.exitMetadata='structured';shape.execution.exitCode=exitCode;});
+    shape.execution.completionRecorded = input.hook_event_name === 'PostToolUse';
     const specific = record(record(result).hookSpecificOutput);
-    try { save(specific.permissionDecision === 'deny' ? 'denied' : 'handled', specific.permissionDecision === 'deny' ? String(record(record(result).kiokukoDecision).reason ?? 'policy_denied') : undefined, record(record(result).kiokukoDecision)); }
+    const decision = denialMetadata.get(result);
+    try { save(specific.permissionDecision === 'deny' ? 'denied' : 'handled', decision?.reason, decision); }
     catch { process.stderr.write('Kiokuko hook observation unavailable: observation_write_failed.\n'); }
     return result;
   } catch (error) {

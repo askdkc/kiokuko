@@ -325,6 +325,13 @@ const EXCLUDED_UI_SCOPE = /(?:\bbackend[- ]only\b|\bserver[- ]side only\b|\bimag
 const EXPLICIT_CODING_INTENT = /(?:\b(?:code|coding|codebase|programming|function|method|class|module|refactor|debug|bugfix|bug[ -]?fix|unit[ -]?test|integration[ -]?test|pull[ -]?request|source[ -]?file)\b|\b(?:implement|modify|patch|fix|test|review|rewrite|compile|typecheck|type-check)\b.{0,32}\b(?:code|function|method|class|module|api|test|repository|file)\b|\b(?:typescript|javascript|php|python|ruby|rust|golang|java|kotlin|swift|c\+\+|csharp|c#|sql|terraform)\b|コード|コーディング|プログラミング|実装|関数|メソッド|クラス|モジュール|ソース(?:コード|ファイル)|リファクタ|デバッグ|バグ(?:修正|フィックス)|単体テスト|結合テスト|型チェック|プルリクエスト)/iu;
 const EXCLUDED_CODING_SCOPE = /(?:\b(?:no code changes?|without changing code|documentation only|writing only|image generation only)\b|コード変更(?:なし|不要)|コードを変更しない|文書(?:だけ|のみ)|文章(?:だけ|のみ)|画像生成(?:だけ|のみ))/iu;
 
+/** The built-in coding core is selected by task policy, never catalog similarity. */
+export function requiresCodingRoutine(task: string, profile: TaskProfile): boolean {
+  const scope = [task, profile.target ?? '', profile.expected ?? '', profile.constraints ?? ''].join(' ');
+  if (EXCLUDED_CODING_SCOPE.test(scope)) return false;
+  return profile.taskType === 'build' || profile.taskType === 'debug' || EXPLICIT_CODING_INTENT.test(scope);
+}
+
 function normalizedName(value: string): string {
   return value.trim().toLowerCase().replaceAll('_', '-');
 }

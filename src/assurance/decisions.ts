@@ -38,7 +38,7 @@ function fileCondition(root: string, file: string): [string, string | null] {
   }
 }
 function contextHash(db: SqliteDatabase, runId: string, entryId: string, revision: number,
-  root: string, delivery: string, deps?: DecisionDependencies, stateDigest?: string): string {
+  root: string, delivery: string, deps?: DecisionDependencies, stateDigest?: string, decision?: string): string {
   const entry = db.prepare('SELECT scope_json FROM entry_revisions WHERE entry_id=? AND revision=?')
     .get<{ scope_json: string }>(entryId, revision);
   const signals = db.prepare('SELECT errors_json FROM task_delivery_signals WHERE delivery_id=?')
@@ -50,9 +50,11 @@ function contextHash(db: SqliteDatabase, runId: string, entryId: string, revisio
     policy: 'review-decision-v1', runId, root,
     profile: readContextBrokerRunState(db, runId).taskProfile,
     entryId, revision, scope: entry?.scope_json,
-    files: deps?.paths.length ? deps.paths.map(file => fileCondition(root, file)) : communication ? null : stateDigest ?? repositoryStateDigest(root),
+    // Applicability is bound to the task and explicitly named conditions. An
+    // unrelated source edit cannot turn every rejected memory back into pending.
+    files: deps?.paths.length ? deps.paths.map(file => fileCondition(root, file)) : communication || decision === 'inapplicable' ? null : stateDigest ?? repositoryStateDigest(root),
     dependencies: deps ?? null,
-    errors: deps?.errors.map(error => [error, errors.includes(error)]) ?? [],
+    errors: deps?.errors.map(error => [error, errors.includes(error)]) ?? (decision === 'inapplicable' ? [...errors].sort() : []),
   });
 }
 function link(db: SqliteDatabase, run: string, delivery: string, entry: string, revision: number, id: string): void {
@@ -67,7 +69,7 @@ export function saveDecision(db: SqliteDatabase,
   db.prepare(`INSERT INTO task_memory_decisions
     (decision_id,run_id,entry_id,entry_revision,context_hash,source_delivery_id,review_json) VALUES (?,?,?,?,?,?,?)`)
     .run(id, input.runId, input.entryId, input.entryRevision,
-      contextHash(db, input.runId, input.entryId, input.entryRevision, root, input.deliveryId, input.dependencies),
+      contextHash(db, input.runId, input.entryId, input.entryRevision, root, input.deliveryId, input.dependencies, undefined, review.decision),
       input.deliveryId, JSON.stringify({ ...review, verificationDefinitionHash: verificationDefinitionHash(db, input.runId) }));
   link(db, input.runId, input.deliveryId, input.entryId, input.entryRevision, id);
   return id;
@@ -80,7 +82,7 @@ export function currentDecision(db: SqliteDatabase, run: string, delivery: strin
     .get<DecisionRecord>(run, entry, revision);
   if (!record) return null;
   const review = JSON.parse(record.review_json) as Review;
-  if (record.context_hash !== contextHash(db, run, entry, revision, root, delivery, review.dependencies, stateDigest)) return null;
+  if (record.context_hash !== contextHash(db, run, entry, revision, root, delivery, review.dependencies, stateDigest, review.decision)) return null;
   return { record, review };
 }
 export function inheritDecisions(db: SqliteDatabase, run: string, delivery: string, root: string): void {

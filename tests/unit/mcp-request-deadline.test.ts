@@ -108,3 +108,51 @@ test('deadline utility consumes late operation rejection and exposes remaining t
   assert.ok(childTimeout >= 0 && childTimeout <= 20);
   await new Promise<void>((resolve) => setTimeout(resolve, 20));
 });
+
+test('caller abort observation precedes child abort and waits for actual handler settlement', async () => {
+  const controller = new AbortController();
+  const events: string[] = [];
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  let finish!: () => void;
+  const drained = new Promise<void>(resolve => { finish = resolve; });
+  const pending = runWithMcpDeadline({
+    operation: 'task_answer', timeoutMs: 1000, signal: controller.signal,
+    observation: {
+      callerAborted: () => { events.push('received'); },
+      operationSettled: () => { events.push('settled'); },
+    },
+    operationFn: async signal => {
+      signal.addEventListener('abort', () => { events.push('child-aborted'); }, {once: true});
+      started();
+      await drained;
+      signal.throwIfAborted();
+    },
+  });
+  await ready;
+  controller.abort(new Error('private cancellation reason'));
+  await assert.rejects(pending, McpRequestCancelledError);
+  assert.deepEqual(events, ['received', 'child-aborted']);
+  finish();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ['received', 'child-aborted', 'settled']);
+});
+
+test('deadline and normal completion cannot manufacture caller-abort acknowledgment', async () => {
+  for (const kind of ['timeout', 'normal', 'failure'] as const) {
+    const events: string[] = [];
+    const controller = new AbortController();
+    const pending = runWithMcpDeadline({operation: 'task_memory_refresh', timeoutMs: 20, signal: controller.signal,
+      observation: {callerAborted: () => {events.push('caller');}, operationSettled: () => {events.push('settled');}},
+      operationFn: async signal => {
+        if (kind === 'normal') return;
+        if (kind === 'failure') throw new McpRequestCancelledError('task_memory_refresh');
+        await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), {once: true}));
+      }});
+    if (kind === 'normal') await pending;
+    else await assert.rejects(pending, kind === 'timeout' ? McpRequestTimeoutError : McpRequestCancelledError);
+    controller.abort();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(events, ['settled'], kind);
+  }
+});

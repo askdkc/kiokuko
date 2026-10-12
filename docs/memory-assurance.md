@@ -54,13 +54,29 @@ delivery IDs, invalidation codes, `observationSequence`, and the loaded integrat
 contract. The latest decision is checked first; an older matching assessment is
 never resurrected after a newer one changes the conclusion.
 
-A decision defaults to the whole repository state digest. An optional
+A decision to adopt or contradict memory defaults to the whole repository state
+digest. An `inapplicable` decision instead remains bound to the run, task profile,
+entry revision/scope and current error signatures; ordinary source edits do not
+invalidate it. An optional
 `dependencies: { paths: ["src/file.ts"], errors: ["explicit error"] }` records only
 those path conditions plus the listed error conditions. No dependencies are
 inferred from prose. Run, root, task profile, scope, policy and entry revision must
 also match. General communication preferences exclude code state by default.
 Evidence retains its original provenance and delivery. Reuse additionally checks
 run, root, source digest, exit status and the attached verification definitions.
+Older assessments bound to the whole source digest may require one new review
+after upgrading; their history is retained rather than silently certified.
+
+Cancellation of a preparation/answer request fails an unprepared run. Once task
+assurance has bound its repository, cancellation of a replay or concurrent request
+does not terminate that task. Explicit interruption, policy denial and terminal
+checkpoint handling retain their own lifecycle rules.
+When a request cancels optional external Skill discovery, the attempt retains a
+distinct cancellation receipt and consumes its reservation. Resuming the same
+prepared task reports `task_request_cancelled` with no selected external Skills,
+without repeating provider requests. The cancelled request itself still fails.
+Security, integrity and provider failures remain fail-closed. Older failed
+receipts without a cancellation marker are not reclassified automatically.
 
 New execution observations increment their own sequence. Unchanged reads add no
 review revision and request no evidence association. A target-state transition
@@ -144,6 +160,24 @@ After updating the package, refresh managed instructions through setup and
 reconnect the MCP client. Check the connected tools and exercise
 status → skill read → refresh against that runtime. Source tests and generated
 configuration alone do not prove the desktop connection has reloaded.
+
+For run-bound MCP `task_answer` and `task_memory_refresh` cancellation,
+`task_memory_status.mcpCancellation` exposes the connected server's bounded
+`kiokuko/mcp-cancellation@1` receipt journal. Only the MCP SDK caller signal can
+record `abortReceivedAt`; a deadline, error message or model-supplied result
+cannot. `handlerSettled` becomes true only after the underlying handler settles,
+including its database cleanup. It describes settlement, not success or rollback.
+The SDK signal can also abort on transport closure; a subsequent healthy call
+on the same `serverInstanceId` is required to prove connection recovery.
+
+Receipts bind an independently validated run/repository scope, a server-generated
+receipt ID and a hash of the SDK JSON-RPC request ID. `requestHash` is the
+canonical content hash of the refresh `requestId`, or of the validated answer
+input. Arguments, output and cancellation reasons are never retained. The journal
+is connection-local, retains at most 128 pending/aborted requests, and reports
+dropped receipts. Reconnection changes the instance ID and clears the journal;
+absence of a receipt is not evidence that cancellation occurred. This diagnostic
+is server-observed and does not automatically become passing task verification.
 
 The MCP tools and authenticated server routes share the domain implementation:
 
@@ -258,21 +292,56 @@ history is not rewritten; the new messages require the updated Kiokuko executabl
 Hooks are not execution isolation. Unsupported tool paths, disabled/untrusted
 hooks, adapter startup failures and already running processes remain outside
 complete enforcement. In particular, `write_stdin` does not repeat PreToolUse.
+Its completion is matched to the original admitted command through the process
+session observed when that command yielded. Unknown sessions, another run's
+sessions and conflicting admitted inputs cannot produce verification evidence.
+Session and poll-input bindings survive a delivery refresh, including a refresh
+before the command first yields; old-delivery completions cannot verify the new
+delivery.
 `PreToolUse` does not support `continue: false` or `stopReason`; returning those
 fields can fail the hook and let the tool execute. The adapter therefore uses
-the supported deny response, and a durable latch for terminal violations, with stop output only on events
+the supported deny response. Private decision metadata (reason, recoverability,
+next action) stays in diagnostics, never in an extra `kiokukoDecision` stdout key:
+Codex's output schema has `additionalProperties: false`. Internal PreToolUse
+exceptions also return supported deny JSON. Each response is emitted once, after
+database cleanup, with diagnostics confined to stderr. A durable latch handles
+terminal violations, with stop output only on events
 that support it. This prevents further supported tool admissions; it cannot
 guarantee that Codex immediately stops generating text or trying denied calls.
 Stop cannot retract text already emitted; an incomplete report stops with an
 explicit message instead of generating unlimited continuation turns. Interrupt
 never requests continuation. Unknown execution result formats stay unknown.
 In a local test with **codex-cli 0.153.4**, Bash PostToolUse supplied stdout as
-a string (empty for `true`) and no exit-status field. That path cannot produce
-observed passing evidence: stdout, JSON printed by a command, and text resembling
-an exit header are never trusted as completion metadata. The dedicated live test
-therefore fails its required execution-observation check on that client. The
-deterministic adapter fixture with structured exit metadata passes; it is not
-evidence that the installed CLI or desktop exposes that metadata.
+a string (empty for `true`) and no exit-status field. Stdout, JSON printed by a
+command, and text resembling an exit header remain untrusted. For stdout-only
+hooks, the adapter can instead read a matching typed `CommandExecution` event
+from the client-supplied current session log. This host receipt path was observed
+on **0.162.0-alpha.17.2**; other client formats remain unknown.
+
+The adapter reads only the session header and a tail limited to 2 MiB/4096 records.
+It requires a regular, current-user-owned file without group/world write access,
+under the client's sessions directory, with a matching session filename/header,
+repository, thread, turn and admitted command identity. It rejects symlink files,
+unfamiliar sources/statuses, unfinished or conflicting records, and quoted tool
+output. A post-only poll may use its exact host process ID to find the original
+admitted command. Source and delivery checks still reject stale verification;
+terminal tasks remain terminal. No transcript or command output is retained.
+This is client observation within the hook trust boundary, not process isolation.
+Missing host receipts leave exits unknown. The bounded `codex-hook --diagnose-call`
+read also accepts a `codex-...` request ID and exposes protocol types and receipt
+source without argument, output or transcript data. It includes the inner tool
+name and whether Post handling succeeded, plus a typed exit code when available;
+historical observations without these fields remain unknown.
+
+PostToolUse bookkeeping failures emit nonblocking `systemMessage` and
+`additionalContext` warnings with exit code 0. They never return `decision: block`
+or exit 2, which would reject an already-executed code-mode tool promise and hide
+its original result. The warning means recording/verification is unavailable,
+not that the tool succeeded; it directs the model to stop, report the fault and
+avoid automatic execution replay. No raw result or exception body is persisted.
+Pre/Post match each inner call's identity and input, not the enclosing
+`functions.exec` script. An admitted edit can invalidate the next call's memory
+review without deleting that edit's admission or rejecting its completion.
 See the [official Codex hook protocol](https://developers.openai.com/ja-JP/docs/hooks).
 
 To exercise only the denial/stop path with an installed Codex CLI, run

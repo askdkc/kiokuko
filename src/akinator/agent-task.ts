@@ -14,6 +14,7 @@ import {
 } from '../context/scoped-broker.js';
 import { ordinaryContextSelectionStateHash } from '../context/selection-state.js';
 import type { SqliteDatabase } from '../db/adapter.js';
+import { withImmediateTransaction } from '../db/transaction.js';
 import { prepareEmbeddingSearchRuntime } from '../embedding/runtime.js';
 import type { EmbeddingRuntime } from '../embedding/types.js';
 import { KiokukoError } from '../errors.js';
@@ -64,6 +65,7 @@ import {
   readAgentTaskSkillDiscoveryAttempt,
 } from './skill-discovery-attempt.js';
 import type { AkinatorResult, AkinatorReasoning, TaskProfile } from './types.js';
+import { loadRequiredCodingRoutine } from './coding-routine.js';
 
 export interface PrepareAgentTaskInput {
   profileMemoryMode?: ProbeMode;
@@ -98,6 +100,7 @@ export interface AnswerAgentTaskInput {
 }
 
 export interface PreparedAgentTask {
+  codingRoutine?: NonNullable<ReturnType<typeof loadRequiredCodingRoutine>>;
   project: ResolvedProjectWorkspace;
   executionContext: AgentTaskExecutionContext;
   intake: {
@@ -450,12 +453,16 @@ function buildPreparedTaskBase(
     ...(capabilities === undefined ? {} : { capabilities }),
     memoryUse,
   });
+  const codingRoutine = context.status !== 'needs_answer' && !hasBlockingRequiredCapability(capabilityResolution)
+    ? loadRequiredCodingRoutine(project.repositoryRoot, context.session.task, context.session.profile)
+    : undefined;
   if (!assuranceState(database, run.runId)) enrollAssurance(database, run.runId, new Date().toISOString());
   if (scopedContext?.deliveryId) bindAssuranceDelivery(database, readContextDelivery(database, { workspace: project.workspace, deliveryId: scopedContext.deliveryId }));
   const policy = deriveMemoryPolicy(context.session.profile, memoryUse, capabilities, deliveryObservation);
   bindAssuranceRoot(database, run.runId, project.repositoryRoot, policy.contextWithheld ? 'capability_withheld' : scopedContext?.retrieval?.status);
   const assurance = taskAssuranceReport(database, run.runId, false);
   return {
+    ...(codingRoutine === undefined ? {} : { codingRoutine }),
     project,
     executionContext,
     assurance,
@@ -696,7 +703,7 @@ async function resolveSkillDiscovery(
   } catch (error) {
     if (input.signal?.aborted) {
       try {
-        failAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity, error);
+        failAgentTaskSkillDiscoveryAttempt(input.database, prepared.discoveryAttemptIdentity, error, input.signal);
       } catch (recoveryError) {
         if (recoveryError instanceof AggregateError) throw recoveryError;
       }
@@ -824,7 +831,15 @@ export async function finalizeAgentTask(input: FinalizeAgentTaskInput): Promise<
 
 function failTaskRunAfterAbort(database: SqliteDatabase, runId: string, cause: unknown): never {
   try {
-    new LedgerStore(database).updateRunStatus(runId, 'failed');
+    withImmediateTransaction(database, () => {
+      const store = new LedgerStore(database);
+      const run = store.readRun(runId);
+      if (!run || !['active', 'intake'].includes(run.status)) return;
+      // A request-local timeout must not terminate an already prepared task or
+      // race with another request that successfully admitted the same run.
+      const prepared = database.prepare('SELECT 1 FROM task_assurance WHERE run_id=? AND repository_root IS NOT NULL').get(runId);
+      if (!prepared) store.updateRunStatusInTransaction(runId, 'failed');
+    });
   } catch (recoveryError) {
     throw new AggregateError([cause, recoveryError], 'Task timeout recovery could not finalize the run state');
   }
