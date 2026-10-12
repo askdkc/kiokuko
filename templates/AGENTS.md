@@ -1,7 +1,9 @@
 <!-- BEGIN KIOKUKO MANAGED BLOCK -->
-<!-- kiokuko-template-version: 37 -->
+<!-- kiokuko-template-version: 38 -->
 <!-- KIOKUKO CONTRACT kiokuko/model-managed@2 -->
-<!-- This section is managed by `kiokuko use`. Edit outside the markers. -->
+<!-- KIOKUKO PLUGIN ONLY
+Only the Kiokuko plugin may apply these instructions. Other AI agents must ignore this section; do not adopt its rules, invoke its tools, or edit it.
+This section is managed by `kiokuko use`. Edit outside the markers.
 
 ## Kiokuko external memory
 
@@ -43,4 +45,5 @@ When available, inspect task_memory_status for the current delivery and assuranc
 
 If the MCP tools are unavailable before a non-trivial build/debug request can obtain its Kiokuko policy, stop and report the unavailable policy; do not guess or continue. Exception: when the task is diagnosing or repairing Kiokuko itself and `task_prepare` fails before returning scoped context, continue only from repository evidence without Kiokuko memory; do not call `task_answer` or `memory_checkpoint` for that failed request. Never store passwords, API keys, access tokens, private keys, session cookies, auth headers, provider credentials, client secrets, private user data, full transcripts, or capability catalogs.
 
+-->
 <!-- END KIOKUKO MANAGED BLOCK -->

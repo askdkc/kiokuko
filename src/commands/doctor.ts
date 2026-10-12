@@ -5,8 +5,8 @@ import path from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { assertAtomicCleanupComplete, assertFileExpectation, atomicWriteTextIfUnchanged, readDirectoryIdentity, readRegularFile } from '../agent-file/atomic-write.js';
-import { BEGIN_MARKER, END_MARKER } from '../agent-file/managed-block.js';
-import { renderAgentFile } from '../agent-file/render.js';
+import { readManagedBlockTemplateVersion } from '../agent-file/managed-block.js';
+import { AGENT_TEMPLATE_VERSION, renderAgentFile } from '../agent-file/render.js';
 import { getCodexConfigPath, getDatabaseLockPath, getRuntimeDescriptorPath } from '../config/paths.js';
 import { parseProjectConfigText } from '../config/project-config.js';
 import type { SqliteDatabase } from '../db/adapter.js';
@@ -38,7 +38,7 @@ export interface DoctorAgentFileFinding {
   repositoryRoot: string;
   repositoryId: string;
   agentFile: string | null;
-  reason: 'missing_agent_file' | 'invalid_binding' | 'unreadable_agent_file' | 'invalid_managed_block';
+  reason: 'missing_agent_file' | 'missing_managed_block' | 'outdated_managed_block' | 'invalid_binding' | 'unreadable_agent_file' | 'invalid_managed_block';
 }
 
 export interface DoctorResult {
@@ -92,8 +92,8 @@ export interface DoctorPromptOptions {
 
 const MAX_DOCTOR_PROMPT_LOCATIONS = 20;
 
-/** Offer creation of missing instructions only; never repair existing user files implicitly. */
-export async function promptRecreateMissingAgentFiles(
+/** Offer only bounded, renderable repairs; require consent and unchanged file identities. */
+export async function promptRepairAgentFiles(
   findings: readonly DoctorAgentFileFinding[],
   options: DoctorPromptOptions = {},
 ): Promise<number> {
@@ -101,7 +101,8 @@ export async function promptRecreateMissingAgentFiles(
   const output = options.output ?? stdout;
   let created = 0;
   for (const finding of findings) {
-    if (finding.reason !== 'missing_agent_file' || finding.agentFile === null) continue;
+    if (!['missing_agent_file', 'missing_managed_block', 'outdated_managed_block'].includes(finding.reason)
+      || finding.agentFile === null) continue;
     const root = finding.repositoryRoot;
     const bindingPath = path.join(root, '.kiokuko.json');
     const binding = await readRegularFile(bindingPath, { containmentRoot: root });
@@ -113,10 +114,23 @@ export async function promptRecreateMissingAgentFiles(
     }
     const rootIdentity = await readDirectoryIdentity(root);
     const parentIdentity = await readDirectoryIdentity(path.dirname(agentPath));
-    // A file created since diagnosis belongs to its creator, even if it has no managed block.
-    if (await readRegularFile(agentPath, { containmentRoot: root }) !== undefined) continue;
-    output.write(`Doctor found a missing agent instruction file:\n  ${agentPath}\n`);
-    output.write('This creates Kiokuko instructions only; deleted custom instructions cannot be restored.\n');
+    const original = await readRegularFile(agentPath, { containmentRoot: root });
+    const missing = finding.reason === 'missing_agent_file';
+    // A newly created file belongs to its creator. A disappeared file needs a fresh diagnosis.
+    if (missing !== (original === undefined)) continue;
+    if (config.templateVersion > AGENT_TEMPLATE_VERSION) continue;
+    const version = original === undefined ? undefined : readManagedBlockTemplateVersion(original.content);
+    if (version !== undefined && version > AGENT_TEMPLATE_VERSION) continue;
+    const rendered = renderAgentFile(original?.content, {
+      repositoryId: config.repositoryId,
+      workspace: config.workspace,
+      cliCommand: preferredDoctorCommand(),
+    });
+    if (rendered.action === 'unchanged') continue;
+    output.write(`Doctor found ${missing ? 'a missing agent instruction file' : 'a missing or outdated Kiokuko section'}:\n  ${agentPath}\n`);
+    output.write(missing
+      ? 'This creates Kiokuko instructions only; deleted custom instructions cannot be restored.\n'
+      : 'This updates only the Kiokuko section; user instructions and other products are preserved.\n');
     const prompt = createInterface({ input, output });
     let closed = false;
     const cancelled = new Promise<string>((resolve) => {
@@ -125,7 +139,7 @@ export async function promptRecreateMissingAgentFiles(
     let answer: string;
     try {
       answer = (await Promise.race([
-        prompt.question('Create this missing agent file? [y/N] '),
+        prompt.question(missing ? 'Create this missing agent file? [y/N] ' : 'Repair this Kiokuko section? [y/N] '),
         cancelled,
       ])).trim();
       if (closed) return created;
@@ -138,24 +152,25 @@ export async function promptRecreateMissingAgentFiles(
       containmentRoot: root,
       ...(rootIdentity === undefined ? {} : { expectedParentDirectory: rootIdentity }),
     });
-    const rendered = renderAgentFile(undefined, {
-      repositoryId: config.repositoryId,
-      workspace: config.workspace,
-      cliCommand: process.env.npm_command === 'exec' || process.env.npm_lifecycle_event === 'npx'
-        ? 'npm exec -- kiokuko'
-        : 'kiokuko',
-      templateVersion: config.templateVersion,
-    });
     const result = await atomicWriteTextIfUnchanged(agentPath, rendered.content, {
-      expected: undefined,
+      expected: original,
+      ...(original === undefined ? {} : { mode: original.mode }),
       containmentRoot: root,
       ...(parentIdentity === undefined ? {} : { expectedParentDirectory: parentIdentity }),
     });
     assertAtomicCleanupComplete(result);
-    output.write(`Created ${agentPath}\n`);
+    output.write(`${missing ? 'Created' : 'Repaired'} ${agentPath}\n`);
     created += 1;
   }
   return created;
+}
+
+/** Compatibility entry point for callers that request missing-file restoration only. */
+export async function promptRecreateMissingAgentFiles(
+  findings: readonly DoctorAgentFileFinding[],
+  options: DoctorPromptOptions = {},
+): Promise<number> {
+  return promptRepairAgentFiles(findings.filter((finding) => finding.reason === 'missing_agent_file'), options);
 }
 
 /** Ask before removing registry rows for repository roots that no longer exist. */
@@ -193,8 +208,10 @@ function count(database: SqliteDatabase, sql: string, ...parameters: Array<strin
   return Number(database.prepare(sql).get<{ count: number }>(...parameters)?.count ?? 0);
 }
 
-function balancedMarkers(content: string): boolean {
-  return content.split(BEGIN_MARKER).length - 1 === 1 && content.split(END_MARKER).length - 1 === 1;
+function preferredDoctorCommand(): 'kiokuko' | 'npm exec -- kiokuko' {
+  return process.env.npm_command === 'exec' || process.env.npm_lifecycle_event === 'npx'
+    ? 'npm exec -- kiokuko'
+    : 'kiokuko';
 }
 
 /** Inspect the Codex MCP identity using the same canonical parser as setup. */
@@ -401,12 +418,30 @@ async function collectDoctorResult(
       if (config.repositoryId !== row.repositoryId) throw new KiokukoError('CONFLICT', 'Project binding identity differs from registration');
       agentPath = path.join(row.canonicalRoot, config.agentFile);
       const agent = await readRegularFile(agentPath, { containmentRoot: row.canonicalRoot });
-      if (agent === undefined || !balancedMarkers(agent.content)) {
+      let reason: DoctorAgentFileFinding['reason'] | undefined;
+      if (agent === undefined) reason = 'missing_agent_file';
+      else {
+        try {
+          const version = readManagedBlockTemplateVersion(agent.content);
+          if (config.templateVersion > AGENT_TEMPLATE_VERSION || (version !== undefined && version > AGENT_TEMPLATE_VERSION)) {
+            reason = 'invalid_managed_block';
+          } else if (version === undefined) reason = 'missing_managed_block';
+          else if (renderAgentFile(agent.content, {
+            repositoryId: config.repositoryId,
+            workspace: config.workspace,
+            cliCommand: preferredDoctorCommand(),
+          }).action !== 'unchanged') reason = 'outdated_managed_block';
+        } catch (error) {
+          if (!(error instanceof KiokukoError && error.code === 'VALIDATION_ERROR')) throw error;
+          reason = 'invalid_managed_block';
+        }
+      }
+      if (reason !== undefined) {
         agentFileFindings.push({
           repositoryRoot: row.canonicalRoot,
           repositoryId: row.repositoryId,
           agentFile: agentPath,
-          reason: agent === undefined ? 'missing_agent_file' : 'invalid_managed_block',
+          reason,
         });
       }
     } catch {

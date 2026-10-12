@@ -7,6 +7,7 @@ import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
 import { runDoctor } from '../../src/commands/doctor.js';
 import { useRepository } from '../../src/commands/use.js';
+import { renderManagedBlock } from '../../src/agent-file/render.js';
 import { openConnection, SqliteVecLoadError } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
@@ -115,6 +116,58 @@ async function deletedAgentProject(prefix: string, agentFile = 'AGENTS.md') {
   await unlink(project.agentFile!);
   return { ...value, project };
 }
+
+test('doctor adds its missing plugin section without treating foreign ownership as malformed', async () => {
+  const value = await deletedAgentProject('foreign-agent');
+  const foreign = 'User rules\r\n<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\r\nForeign rules\r\n<!-- END KIOKUKO-AI MANAGED BLOCK -->\r\n';
+  await writeFile(value.project.agentFile!, foreign);
+  const diagnostic = await invokeDoctor(value.databasePath, 'y\n', true);
+  const findings = (diagnostic.response?.data.checks as { agentFiles: { findings: Array<{ reason: string }> } }).agentFiles.findings;
+  assert.equal(findings[0]?.reason, 'missing_managed_block');
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), foreign);
+  const declined = await invokeDoctor(value.databasePath, 'n\n');
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), foreign);
+  assert.equal(declined.exitCode, 8);
+  const repaired = await invokeDoctor(value.databasePath, 'y\n');
+  assert.match(repaired.prompt, /Repair this Kiokuko section\? \[y\/N\]/u);
+  assert.equal(repaired.exitCode, undefined);
+  const content = await readFile(value.project.agentFile!, 'utf8');
+  assert.ok(content.startsWith(foreign));
+  assert.match(content, /Only the Kiokuko plugin may apply/u);
+  assert.equal((await invokeDoctor(value.databasePath, 'y\n')).prompt, '');
+});
+
+test('doctor offers legacy section migration and rejects concurrent repair changes', async () => {
+  const value = await deletedAgentProject('legacy-agent');
+  const legacy = 'before\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n<!-- kiokuko-template-version: 36 -->\nOld Kiokuko instructions\n<!-- END KIOKUKO MANAGED BLOCK -->\nafter';
+  await writeFile(value.project.agentFile!, legacy);
+  const result = await invokeDoctor(value.databasePath, 'y\n');
+  assert.equal(result.exitCode, undefined);
+  const content = await readFile(value.project.agentFile!, 'utf8');
+  assert.ok(content.startsWith('before\n') && content.endsWith('\nafter'));
+  assert.match(content, /Only the Kiokuko plugin may apply/u);
+  await writeFile(value.project.agentFile!, legacy);
+  await assert.rejects(invokeDoctor(value.databasePath, 'y\n', false, true, async () => {
+    await writeFile(value.project.agentFile!, 'concurrent user rules\n');
+  }), { code: 'CONFLICT' });
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), 'concurrent user rules\n');
+});
+
+test('doctor rejects reversed and inline markers and preserves newer templates', async () => {
+  const value = await deletedAgentProject('invalid-markers');
+  for (const content of [
+    '<!-- END KIOKUKO MANAGED BLOCK -->\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->',
+    'human <!-- BEGIN KIOKUKO MANAGED BLOCK -->\n<!-- END KIOKUKO MANAGED BLOCK -->',
+    renderManagedBlock({ repositoryId: value.project.repositoryId, workspace: value.project.workspace, cliCommand: 'kiokuko', templateVersion: 999 }),
+  ]) {
+    await writeFile(value.project.agentFile!, content);
+    const diagnostic = await invokeDoctor(value.databasePath, 'y\n', true);
+    assert.equal(diagnostic.response?.data.ok, false);
+    const interactive = await invokeDoctor(value.databasePath, 'y\n');
+    assert.equal(interactive.prompt, '');
+    assert.equal(await readFile(value.project.agentFile!, 'utf8'), content);
+  }
+});
 
 test('interactive doctor asks before recreating a deleted configured agent file and reruns health checks', async () => {
   const value = await deletedAgentProject('agent-create', 'instructions/AGENTS.md');

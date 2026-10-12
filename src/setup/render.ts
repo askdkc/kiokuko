@@ -1,4 +1,5 @@
 import { hostSkillText, INTEGRATION_CONTRACT } from './standard-skills.js';
+import { commentPluginInstructions } from '../agent-file/plugin-comment.js';
 import { TASK_RECOVERY_INSTRUCTIONS } from '../assurance/conflicts.js';
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
@@ -54,7 +55,7 @@ export function renderGlobalInstructions(existing = '', host?: string): Delimite
     '',
     GLOBAL_INSTRUCTIONS_END,
   ].join('\n');
-  const rendered = host ? hostSkillText(block, host) : block;
+  const rendered = commentPluginInstructions(host ? hostSkillText(block, host) : block);
   return upsertDelimitedBlock(existing, rendered, GLOBAL_INSTRUCTIONS_BEGIN, GLOBAL_INSTRUCTIONS_END, 'Global instruction file');
 }
 

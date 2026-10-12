@@ -7,8 +7,9 @@ import { ADAPTIVE_EFFORT_INSTRUCTIONS, SOUL_ROUTING_ENTRY_CONTRACT, TASK_PREPARA
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
 import { validateRepositoryBindingIdentity } from '../repository/identity-value.js';
 import { BEGIN_MARKER, END_MARKER, upsertManagedBlock } from './managed-block.js';
+import { commentPluginInstructions } from './plugin-comment.js';
 
-export const AGENT_TEMPLATE_VERSION = 37;
+export const AGENT_TEMPLATE_VERSION = 38;
 
 export interface AgentTemplateValues {
   repositoryId: string;
@@ -25,7 +26,7 @@ export interface RenderedAgentFile {
 export function renderManagedBlock(values: AgentTemplateValues): string {
   validateRepositoryBindingIdentity(values.repositoryId, values.workspace);
   const version = values.templateVersion ?? AGENT_TEMPLATE_VERSION;
-  return [
+  return commentPluginInstructions([
     BEGIN_MARKER,
     `<!-- kiokuko-template-version: ${version} -->`,
     `<!-- KIOKUKO CONTRACT ${INTEGRATION_CONTRACT.id}@${INTEGRATION_CONTRACT.version} -->`,
@@ -72,7 +73,7 @@ export function renderManagedBlock(values: AgentTemplateValues): string {
     'If the MCP tools are unavailable before a non-trivial build/debug request can obtain its Kiokuko policy, stop and report the unavailable policy; do not guess or continue. Exception: when the task is diagnosing or repairing Kiokuko itself and `task_prepare` fails before returning scoped context, continue only from repository evidence without Kiokuko memory; do not call `task_answer` or `memory_checkpoint` for that failed request. Never store passwords, API keys, access tokens, private keys, session cookies, auth headers, provider credentials, client secrets, private user data, full transcripts, or capability catalogs.',
     '',
     END_MARKER,
-  ].join('\n');
+  ].join('\n'));
 }
 
 export function renderAgentFile(existing: string | undefined, values: AgentTemplateValues): RenderedAgentFile {

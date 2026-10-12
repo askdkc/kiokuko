@@ -5,6 +5,16 @@ Claude Code's global `CLAUDE.md` with a Kiokuko global-memory block. `kiokuko
 use` optionally creates or updates the repository's `AGENTS.md` with a
 project-specific block.
 
+Every Kiokuko directive is enclosed in a `KIOKUKO PLUGIN ONLY` HTML comment.
+Only the Kiokuko plugin may apply it; other AI agents must ignore it and must
+not adopt its rules or invoke its tools. Ownership and template-version markers
+remain separate comments so setup, doctor, and uninstall can identify the section.
+This is instruction scoping, not a host-enforced access control mechanism.
+Kiokuko's MCP tool contracts and bundled Skills still supply its active policy.
+Normal setup updates migrate legacy sections to this format. Sections belonging
+to another product, such as `KIOKUKO-AI`, are preserved byte for byte; Kiokuko
+adds its own section alongside them.
+
 If setup creates a missing project binding for a registered project, it also
 adds `.kiokuko.json` to that project's root `.gitignore` when neither the plain
 nor root-anchored entry is already present. This setup-only addition participates
@@ -15,6 +25,15 @@ Existing bytes outside the block are preserved, including the human-authored
 header/footer, line-ending style, and file mode. Missing markers are appended;
 imbalanced, duplicated, nested, or reversed markers cause a validation error
 and are not repaired automatically. Symlinks are rejected.
+
+Doctor distinguishes a missing file (`missing_agent_file`), an existing file
+without Kiokuko's section (`missing_managed_block`), and a legacy or stale
+section (`outdated_managed_block`). Interactive `kiokuko doctor` asks before
+creating or repairing each section; Enter declines. It preserves file mode,
+surrounding user text and foreign sections, and rejects concurrent changes.
+`doctor --json` and noninteractive doctor only report findings. Ambiguous or
+malformed markers and unsupported newer templates are reported as
+`invalid_managed_block` and left untouched.
 
 Repeated `setup` or `use` with unchanged content does not rewrite its target
 files. `setup --dry-run` validates all target content without creating the

@@ -42,10 +42,13 @@ return `CONFLICT` without mutation. The same rule applies to other supported cli
 
 Restart a running client after setup. Use `kiokuko doctor --json` to inspect runtime,
 database, and Codex MCP health without changing files. Interactive `kiokuko doctor`
-asks before recreating a missing registered agent instruction file; Enter defaults
-to No. Recreation restores only Kiokuko instructions, not deleted custom content.
+asks before recreating a missing registered agent instruction file or adding and
+updating its Kiokuko section; Enter defaults to No. Recreation restores only
+Kiokuko instructions, not deleted custom content. Repair preserves user text and
+other products' sections. Kiokuko instructions are plugin-only HTML comments;
+normal setup updates migrate older sections to this format.
 JSON and noninteractive checks report the affected path and reason under
-`data.checks.agentFiles.findings` without prompting or recreating files.
+`data.checks.agentFiles.findings` without prompting or changing files.
 
 ## Embeddings setup
 

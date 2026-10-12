@@ -1925,3 +1925,30 @@ test('normal setup updates preserve removed global and registered project instru
   assert.ok(result.files.some(file => file.path === global && file.action === 'skipped'));
   assert.ok(result.projectAgentFiles.some(project => project.status === 'skipped' && project.reason === 'missing_agent_file'));
 });
+
+test('setup migrates legacy global rules and adds a plugin-only section beside a foreign project section', async () => {
+  const temporary = await temporaryEnvironment('plugin-only-migration');
+  const options = { clients: ['codex' as const], standardSkills: false, databasePath: temporary.databasePath, platform: 'linux' as const, env: temporary.env };
+  await setupGlobalClients(options);
+  const globalPath = path.join(temporary.home, '.codex', 'AGENTS.md');
+  await writeFile(globalPath, 'human global rule\r\n<!-- BEGIN KIOKUKO GLOBAL MEMORY -->\r\nOld rules\r\n<!-- END KIOKUKO GLOBAL MEMORY -->\r\nfooter\r\n');
+  const root = path.join(temporary.root, 'project');
+  await mkdir(root);
+  const used = await useRepository({ root, allowDirectory: true, databasePath: temporary.databasePath });
+  const foreign = '<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\nForeign instructions\n<!-- END KIOKUKO-AI MANAGED BLOCK -->\n';
+  await writeFile(used.agentFile!, foreign);
+  const dry = await setupGlobalClients({ ...options, dryRun: true });
+  assert.ok(dry.projectAgentFiles.some((project) => project.status === 'created'));
+  assert.equal(await readFile(used.agentFile!, 'utf8'), foreign);
+  const updated = await setupGlobalClients(options);
+  assert.ok(updated.projectAgentFiles.some((project) => project.status === 'created'));
+  const global = await readFile(globalPath, 'utf8');
+  const project = await readFile(used.agentFile!, 'utf8');
+  assert.ok(project.startsWith(foreign));
+  assert.ok(global.startsWith('human global rule\r\n') && global.endsWith('\r\nfooter\r\n'));
+  for (const content of [global, project]) assert.match(content, /Only the Kiokuko plugin may apply these instructions/u);
+  const repeat = await setupGlobalClients(options);
+  assert.ok(repeat.projectAgentFiles.every((item) => item.status === 'unchanged'));
+  assert.equal(await readFile(globalPath, 'utf8'), global);
+  assert.equal(await readFile(used.agentFile!, 'utf8'), project);
+});

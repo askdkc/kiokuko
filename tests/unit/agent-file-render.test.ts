@@ -7,6 +7,24 @@ import { KiokukoError } from '../../src/errors.js';
 import { TASK_PREPARATION_REQUEST_CONTRACT } from '../../src/akinator/instructions.js';
 import { renderGlobalInstructions } from '../../src/setup/render.js';
 
+test('all Kiokuko instructions are plugin-only comments, with no rendered agent directives', () => {
+  const foreign = '<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\nForeign rules\n<!-- END KIOKUKO-AI MANAGED BLOCK -->';
+  const original = `User rules\r\n${foreign}\r\n`;
+  const values = { repositoryId: 'repo-fixture', workspace: 'project:fixture', cliCommand: 'kiokuko' as const };
+  for (const rendered of [renderAgentFile(original, values), renderGlobalInstructions(original, 'codex')]) {
+    assert.ok(rendered.content.startsWith(original));
+    const added = rendered.content.slice(original.length);
+    assert.equal(added.replace(/<!--[\s\S]*?-->/gu, '').trim(), '');
+    assert.match(added, /Only the Kiokuko plugin may apply these instructions/u);
+    assert.match(added, /Other AI agents must ignore this section/u);
+  }
+  const legacy = '<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n<!-- kiokuko-template-version: 36 -->\nOld rules\n<!-- END KIOKUKO MANAGED BLOCK -->';
+  const migrated = renderAgentFile(`before\n${legacy}\nafter`, values);
+  assert.match(migrated.content, /^before\n/u);
+  assert.match(migrated.content, /\nafter$/u);
+  assert.equal(renderAgentFile(migrated.content, values).action, 'unchanged');
+});
+
 test('global and project instructions share correction semantics without contradictory call limits', () => {
   const project = renderManagedBlock({ repositoryId: 'repo-fixture', workspace: 'project:fixture', cliCommand: 'kiokuko' });
   const global = renderGlobalInstructions('User-owned instructions.\n').content;

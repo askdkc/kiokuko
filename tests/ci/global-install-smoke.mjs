@@ -169,6 +169,7 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   };
 
   const created = await setup();
+  await verifyInstalledAgentComments(cliPath, fixtureRoot, environment);
   const installedHooks = JSON.parse(await readFile(hookPath, 'utf8')).hooks;
   assert.deepEqual(installedHooks.Stop[0], userHook);
   for (const event of ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop']) {
@@ -238,6 +239,38 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     return {client:target.client,logicalPath:`skills/${stamp.logicalName}/${relative.split(path.sep).slice(1).join('/')}`,content,hash:createHash('sha256').update(content).digest('hex')};
   })),selectors:selectorEvidence};
   process.stdout.write(`Installed setup verified ${skillFiles.length} skill files across ${Object.keys(skillDirectories).length} clients: create, repair, dry-run, skip, and unchanged rerun.\n`);
+}
+
+async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
+  const global = path.join(environment.CODEX_HOME, 'AGENTS.md');
+  const fresh = await readFile(global, 'utf8');
+  assert.equal(fresh.replace(/<!--[\s\S]*?-->/gu, '').trim(), '');
+  assert.match(fresh, /Other AI agents must ignore this section/u);
+  const projectRoot = path.join(fixtureRoot, 'plugin-comment-project');
+  await mkdir(projectRoot);
+  const used = await run(cliPath, ['use', '--root', projectRoot, '--allow-directory', '--json'], fixtureRoot, environment);
+  const project = JSON.parse(used.stdout).data.agentFile;
+  assert.equal(typeof project, 'string');
+  const foreign = 'Human rule\r\n<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\r\nForeign instructions\r\n<!-- END KIOKUKO-AI MANAGED BLOCK -->\r\n';
+  await writeFile(project, foreign);
+  await writeFile(global, 'Global user rule\n<!-- BEGIN KIOKUKO GLOBAL MEMORY -->\nLegacy instructions\n<!-- END KIOKUKO GLOBAL MEMORY -->\nFooter\n');
+  const diagnostic = spawnSync(cliPath, ['doctor', '--json'], { cwd: fixtureRoot, env: environment, encoding: 'utf8' });
+  assert.equal(diagnostic.status, 8, diagnostic.stderr);
+  const findings = JSON.parse(diagnostic.stdout).data.checks.agentFiles.findings;
+  assert.ok(findings.some(item => item.agentFile === project && item.reason === 'missing_managed_block'));
+  assert.equal(await readFile(project, 'utf8'), foreign);
+  const args = ['setup', '--clients', 'codex', '--command', cliPath, '--no-standard-skills', '--no-embeddings', '--json'];
+  await run(cliPath, args, fixtureRoot, environment);
+  const migrated = await readFile(project, 'utf8');
+  assert.ok(migrated.startsWith(foreign));
+  assert.equal(migrated.slice(foreign.length).replace(/<!--[\s\S]*?-->/gu, '').trim(), '');
+  const globalMigrated = await readFile(global, 'utf8');
+  assert.ok(globalMigrated.startsWith('Global user rule\n') && globalMigrated.endsWith('\nFooter\n'));
+  const { stdout } = await run(cliPath, ['doctor', '--json'], fixtureRoot, environment);
+  assert.equal(JSON.parse(stdout).data.checks.agentFiles.ok, true);
+  await run(cliPath, args, fixtureRoot, environment);
+  assert.equal(await readFile(project, 'utf8'), migrated);
+  assert.equal(await readFile(global, 'utf8'), globalMigrated);
 }
 
 async function verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environment) {
