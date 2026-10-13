@@ -271,14 +271,15 @@
     },
     "tunnel-client": {
       "environment": "KIOKUKO_TUNNEL_CLIENT",
-      "binary": "tunnel-client"
+      "binary": "tunnel-client",
+      "versionPattern": "^0\\.0\\.14(?:\\+|\\s|$)"
     },
     "ripwire": {
       "environment": "KIOKUKO_TEST_RIPWIRE",
       "binary": "ripwire"
     },
     "agenticreplay-pinned": {
-      "environment": "KIOKUKO_TEST_AGENTICREPLAY",
+      "environment": "AGENTICREPLAY_BIN",
       "binary": "agenticreplay",
       "version": "0.1.2"
     }

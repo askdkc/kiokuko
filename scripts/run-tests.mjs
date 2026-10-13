@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 import { run as runTestStream } from 'node:test';
 import { writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -71,7 +72,7 @@ function runNodeTests(testFiles, testTempRoot) {
     };
     delete childEnvironment.NODE_TEST_CONTEXT;
 
-    const child = spawn(process.execPath, ['--import', 'tsx', '--test', ...(process.env.KIOKUKO_VERIFY_REPORT_DIR ? ['--import=' + path.resolve(import.meta.dirname, 'verification-test-environment.mjs'), '--test-reporter=tap', '--test-reporter-destination=stdout', '--test-reporter=' + path.resolve(import.meta.dirname, 'verification-reporter.mjs'), '--test-reporter-destination=' + path.join(process.env.KIOKUKO_VERIFY_REPORT_DIR, 'reporter.txt')] : []), ...testFiles], {
+    const child = spawn(process.execPath, ['--import', 'tsx', '--test', ...(process.env.KIOKUKO_VERIFY_REPORT_DIR ? ['--import=' + pathToFileURL(path.resolve(import.meta.dirname, 'verification-test-environment.mjs')).href, '--test-reporter=tap', '--test-reporter-destination=stdout', '--test-reporter=' + pathToFileURL(path.resolve(import.meta.dirname, 'verification-reporter.mjs')).href, '--test-reporter-destination=' + path.join(process.env.KIOKUKO_VERIFY_REPORT_DIR, 'reporter.txt')] : []), ...testFiles], {
       cwd: process.cwd(),
       env: childEnvironment,
       stdio: 'inherit',

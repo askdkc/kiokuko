@@ -24,27 +24,28 @@ results must be rechecked using `npm run verify -- --status <result.json>`.
 A profile passing alone never sets `completionReady`. A stale or failed full run
 must not be reported as full verification, and local results do not prove remote CI.
 
-## Existing CI checks and common suites
+## Common suites and retained assertions
 
-The runner inventory below preserves the previous CI checks. The former DSH
-`npm test` is covered by native unit/integration/e2e plus dedicated Skill delivery;
-its standalone `.mjs`, Python, browser, package and evaluation checks remain explicit.
+The inventory below is generated from the repository contract. A script check
+requires a fresh check-bound completion receipt after its existing assertions;
+arbitrary stdout or a successful no-op process is insufficient.
 
-| Common check | CI profile(s) | Existing runner | Required result |
+| Common check | Profiles | Runner | Required result |
 | --- | --- | --- | --- |
 | verification-contract | main, semantic, record | `node --test scripts/verification-contract.test.mjs` | complete official lifecycle; at least one passing leaf; no failures, cancellation, todo or undeclared skips |
 | typecheck | main | `npm run typecheck` | exit 0 |
 | build | main, semantic, record | `npm run build` | exit 0 |
 | suite | main | `node scripts/run-tests.mjs tests` | complete official lifecycle; at least one passing leaf; no failures, cancellation, todo or undeclared skips |
-| retrieval | main | `npm run test:evaluation` | existing independent assertions finish, emit their result and exit 0 |
-| sampledb | main | `npm run test:sampledb` | existing independent assertions finish, emit their result and exit 0 |
+| retrieval | main | `npm run test:evaluation` | explicit completion receipt |
+| sampledb | main | `npm run test:sampledb` | explicit completion receipt |
 | pack-contents | main | `npm run pack:check` | exit 0 |
-| installed | main | `node tests/ci/global-install-smoke.mjs` | existing independent assertions finish, emit their result and exit 0 |
-| memory-index | main | `node --import tsx --test --test-name-pattern=fixed bilingual index evaluation tests/integration/memory-index.test.ts` | complete official lifecycle; at least one passing leaf; no failures, cancellation, todo or undeclared skips |
-| interaction-fault | main | `node tests/ci/interaction-fault-smoke.mjs` | existing independent assertions finish, emit their result and exit 0 |
-| clean-repository | main | `docker run --rm --network none -v {root}:/workspace:ro -w /workspace node:24-bookworm node tests/ci/repository-root-smoke.mjs` | existing independent assertions finish, emit their result and exit 0 |
-| agenticreplay | record | `npm run test:agenticreplay` | existing independent assertions finish, emit their result and exit 0 |
-| sqlite-vec | main, semantic | `npm run test:sqlite-vec` | existing independent assertions finish, emit their result and exit 0 |
-| embedding | main, semantic | `node scripts/run-local-embedding-smoke.mjs --offline` | existing independent assertions finish, emit their result and exit 0 |
+| installed | main | `node tests/ci/global-install-smoke.mjs` | explicit completion receipt |
+| interaction-fault | main | `node tests/ci/interaction-fault-smoke.mjs` | explicit completion receipt |
+| clean-repository | main | `docker run --rm --network none -v {root}:/workspace:ro -w /workspace node:24-bookworm node tests/ci/repository-root-smoke.mjs` | explicit completion receipt |
+| agenticreplay | record | `npm run test:agenticreplay` | explicit completion receipt |
+| sqlite-vec | main, semantic | `npm run test:sqlite-vec` | explicit completion receipt |
+| embedding | main, semantic | `node scripts/run-local-embedding-smoke.mjs --offline` | explicit completion receipt |
 
-Linux, Windows, other architectures and real model quality require their own executions; Mac results do not cover them. Runtime setup is an environment prerequisite and is never installed silently by verify.
+## Consolidated duplicate invocations
+
+- `memory-index` is covered by `suite`: `tests/integration/memory-index.test.ts`.

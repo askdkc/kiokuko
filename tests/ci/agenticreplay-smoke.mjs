@@ -1,7 +1,7 @@
 import { completeVerification } from '../../scripts/verification-completion.mjs';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -86,7 +86,7 @@ try {
   assert.match(result.structuredContent.text, /# Kiokuko SOUL router/u);
 
   const runDir = recording.runDir;
-  assert.equal(path.dirname(runDir),path.join(fixture,'.agenticreplay/runs'));
+  assert.equal(await realpath(path.dirname(runDir)),await realpath(path.join(fixture,'.agenticreplay/runs')));
   assert.equal(JSON.parse(await readFile(path.join(runDir,'manifest.json'),'utf8')).run_id,recording.runId);
   const events = (await readFile(path.join(runDir, 'events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
   const captured = events.filter(({ type, attrs }) => type === 'net.request' && attrs.phase === 'body');
