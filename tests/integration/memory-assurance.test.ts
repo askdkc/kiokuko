@@ -14,7 +14,7 @@ import { prepareAgentTask, answerAgentTask } from '../../src/akinator/agent-task
 import { inspectTask } from '../../src/assurance/inspect.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 import { recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
-import { assuranceState, reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCompletion, memoryReviewNextAction } from '../../src/assurance/service.js';
+import { assuranceState, reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, taskMemoryStatus, assertAssuranceCompletion, memoryReviewNextAction } from '../../src/assurance/service.js';
 import { repositoryStateDigest } from '../../src/assurance/snapshot.js';
 import { codexHookCorrelationId, codexHookFailureCode, handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
 import { codexHookDiagnostics } from '../../src/assurance/hook-diagnostics.js';
@@ -360,8 +360,8 @@ test('a denial racing a delayed preparation or execution completion cannot reope
               const snapshot = statement.get(...params);
               if (!raced) {
                 raced = true;
-                handleCodexHook(second, { ...common, hook_event_name: 'PreToolUse', tool_name: 'mcp__kiokuko__task_memory_status',
-                  tool_use_id: 'deny', tool_input: { runId: 'wrong-run' } });
+                handleCodexHook(second, { ...common, hook_event_name: 'PreToolUse', tool_name: 'mcp__kiokuko__task_prepare',
+                  tool_use_id: 'deny', tool_input: { cwd: f.root, requestId: 'foreign-request' } });
               }
               return snapshot;
             } };
@@ -1364,4 +1364,140 @@ test('cancelled final intake answer resumes without repeating optional discovery
    assert.equal(attempt.consumed_query_count,attempt.reserved_query_count);
   } finally {reopened.close();}
  } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+
+test('MCP sequential review state survives full replacement, errors and restart before admitted verification', async () => {
+  const f = await fixture();
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
+  const { createKiokukoMcpServer } = await import('../../src/mcp/server.js');
+  const server = createKiokukoMcpServer({ databasePath: f.databasePath, cwd: () => f.root });
+  const client = new Client({ name: 'review-state-replacement', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await server.connect(st); await client.connect(ct);
+  try {
+    const second = recordEntry(f.db, { workspace: f.entry.workspace, kind: 'decision', title: 'source.ts migration review', body: 'Migration changes require checking source.ts historical fixtures.', tags: ['source.ts', 'migration'] });
+    const runId = f.prepared.run.runId;
+    const refreshed = await refreshTaskMemory(f.db, { runId, cwd: f.root, requestId: 'review-state-refresh', expectedRevision: taskAssuranceReport(f.db, runId).revision!, capabilities: caps, changedPaths: ['source.ts'] }) as any;
+    const common = { session_id: 'review-state-client', turn_id: 'review-state-turn', cwd: f.root };
+    handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
+    const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{request_id:string}>()!.request_id;
+    handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: {cwd:f.root,requestId}, tool_response:{structuredContent:f.prepared} });
+    const ordinary = { ...common, tool_name: 'exec_command', tool_use_id: 'verification', tool_input: {cmd:'true'} };
+    assert.equal((handleCodexHook(f.db,{...ordinary,hook_event_name:'PreToolUse'}) as any).hookSpecificOutput.permissionDecision,'deny');
+    let state: any = (await client.callTool({ name:'task_memory_status',arguments:{runId,cwd:f.root} })).structuredContent;
+    state = {...state,runId,cwd:f.root,expectedRevision:state.revision};
+    assert.equal(state.deliveryId,refreshed.context.deliveryId);
+    assert.ok(state.pending.includes(f.entry.id));
+    assert.ok(state.pending.includes(second.id));
+    assert.equal(refreshed.runId,runId);
+    assert.equal(refreshed.deliveryId,refreshed.context.deliveryId);
+    assert.equal(refreshed.expectedRevision,refreshed.assurance.revision);
+    const stable = state;
+    const invalid = await client.callTool({name:'task_memory_review',arguments:{runId,cwd:f.root,requestId:'missing-fields'}});
+    assert.equal(invalid.isError,true);
+    // Failed tool results are diagnostics, never replacement continuation state.
+    if (!invalid.isError) state = invalid.structuredContent;
+    assert.equal(state,stable);
+    let i=0;
+    const receipts:Array<{args:any;response:any}>=[];
+    for (const entryId of [...state.pending]) {
+      const entry = refreshed.context.items.find((item:any)=>item.entryId===entryId);
+      const args = {runId:state.runId,cwd:state.cwd,deliveryId:state.deliveryId,expectedRevision:state.expectedRevision,requestId:`sequential-${i++}`,entryId,entryRevision:entry.revision,decision:'inapplicable',basis:'This isolated hook protocol fixture does not alter migration behavior.'};
+      const result = await client.callTool({name:'task_memory_review',arguments:args});
+      assert.notEqual(result.isError,true);
+      receipts.push({args,response:result.structuredContent});
+      state = result.structuredContent; // Exact replacement pattern from generated review loops.
+      assert.equal(state.deliveryId,refreshed.context.deliveryId);
+      assert.equal(state.runId,runId);
+      assert.equal(state.expectedRevision,state.revision);
+      assert.equal(state.revision,taskAssuranceReport(f.db,runId).revision);
+      assert.deepEqual((await client.callTool({name:'task_memory_review',arguments:args})).structuredContent,state);
+    }
+    assert.ok(receipts[0]!.response.revision<state.revision);
+    assert.deepEqual((await client.callTool({name:'task_memory_review',arguments:receipts[0]!.args})).structuredContent,receipts[0]!.response);
+    assert.equal(taskAssuranceReport(f.db,runId).revision,state.revision);
+    assert.equal(state.nextAction,'proceed');
+    assert.deepEqual(state.pending,[]);
+    const reconciled:any=(await client.callTool({name:'task_memory_status',arguments:{runId,cwd:f.root}})).structuredContent;
+    for(const key of ['runId','cwd','deliveryId','revision','expectedRevision','nextAction']) assert.equal(reconciled[key],state[key]);
+    const restarted=openConnection(f.databasePath);
+    try {assert.equal(taskAssuranceReport(restarted,runId).revision,state.revision);} finally {restarted.close();}
+    defineTaskVerification(f.db,{runId,cwd:f.root,requestId:'review-state-check',expectedRevision:state.revision,reason:'Verify safe recovery before completing',checks:[{id:'protocol',target:`${process.platform}-${process.arch}`,expected:'Command completes successfully',method:'Execute true once after admission'}]});
+    assert.deepEqual(handleCodexHook(f.db,{...ordinary,hook_event_name:'PreToolUse'}),{});
+    const execution=spawnSync('true'); assert.equal(execution.status,0);
+    handleCodexHook(f.db,{...ordinary,hook_event_name:'PostToolUse',tool_response:{exit_code:execution.status}});
+    const evidenceId=f.db.prepare('SELECT evidence_id FROM codex_hook_tools WHERE call_id=?').get<{evidence_id:string}>('verification')!.evidence_id;
+    recordTaskVerification(f.db,{runId,cwd:f.root,requestId:'review-state-result',expectedRevision:taskAssuranceReport(f.db,runId).revision!,contractVersion:1,checkId:'protocol',target:`${process.platform}-${process.arch}`,source:{kind:'local',evidenceId}});
+    assert.doesNotThrow(()=>assertAssuranceCompletion(f.db,runId,'completed'));
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<{n:number}>()!.n,1);
+  } finally {await client.close();await server.close();f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+
+test('missing preparation Post leaves status reconciliation recoverable without trusting its supplied run', async () => {
+  const f = await fixture();
+  try {
+    const common = {session_id:'lost-prepare-post',turn_id:'repair',cwd:f.root};
+    handleCodexHook(f.db,{...common,hook_event_name:'UserPromptSubmit'});
+    const requestId=f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{request_id:string}>()!.request_id;
+    const args={cwd:f.root,requestId,soulRead:true,task:'Implement migration expectations',capabilities:caps,skillDiscoveryMode:'off' as const,profileHints:{taskType:'build' as const,target:'source.ts migration expectations code',expected:'next migration tests pass',constraints:'preserve historical fixtures'}};
+    const prepareEvent={...common,tool_name:'mcp__kiokuko__task_prepare',tool_use_id:'prepare-original',tool_input:args};
+    assert.deepEqual(handleCodexHook(f.db,{...prepareEvent,hook_event_name:'PreToolUse'}),{});
+    const prepared=await prepareAgentTask(f.db,args); // The host loses only the Post event.
+    const statusEvent={...common,tool_name:'mcp__kiokuko__task_memory_status',tool_use_id:'repair-status',tool_input:{cwd:f.root,runId:prepared.run.runId}};
+    const denied=handleCodexHook(f.db,{...statusEvent,hook_event_name:'PreToolUse'}) as any;
+    assert.equal(denied.hookSpecificOutput.permissionDecision,'deny');
+    assert.equal(lastHookDiagnostic(f.db).recoverable,true);
+    assert.equal(lastHookDiagnostic(f.db).reason,'preparation_binding_missing');
+    assert.match(denied.hookSpecificOutput.permissionDecisionReason,/exact.*task_prepare/);
+    const binding=()=>f.db.prepare('SELECT run_id,stop_notified FROM codex_hook_requests').get<{run_id:string|null;stop_notified:number}>()!;
+    assert.deepEqual({...binding()},{run_id:null,stop_notified:0});
+    assert.equal(new LedgerStore(f.db).readRun(prepared.run.runId)!.status,'active');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools').get<{n:number}>()!.n,0);
+    const retry={...prepareEvent,tool_use_id:'prepare-exact-retry'};
+    assert.deepEqual(handleCodexHook(f.db,{...retry,hook_event_name:'PreToolUse'}),{});
+    await assert.rejects(prepareAgentTask(f.db,{...args,task:'different request'}));
+    const replay=await prepareAgentTask(f.db,args);
+    assert.equal(replay.run.runId,prepared.run.runId);
+    handleCodexHook(f.db,{...retry,hook_event_name:'PostToolUse',tool_response:{structuredContent:replay}});
+    assert.equal(binding().run_id,prepared.run.runId);
+    assert.deepEqual(handleCodexHook(f.db,{...statusEvent,hook_event_name:'PreToolUse'}),{});
+    const ordinary=handleCodexHook(f.db,{...common,hook_event_name:'PreToolUse',tool_name:'exec_command',tool_use_id:'still-pending',tool_input:{cmd:'true'}}) as any;
+    assert.equal(ordinary.hookSpecificOutput.permissionDecision,'deny');
+    assert.equal(lastHookDiagnostic(f.db).reason,'memory_review_pending');
+    assert.equal(binding().stop_notified,0);
+    // A conflicting existing binding is still an identity violation, not repair.
+    handleCodexHook(f.db,{...statusEvent,hook_event_name:'PreToolUse',tool_input:{cwd:f.root,runId:f.prepared.run.runId}});
+    assert.equal(binding().stop_notified,1);
+    assert.equal(lastHookDiagnostic(f.db).recoverable,false);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<{n:number}>()!.n,0);
+  } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+
+test('status continuation reads revision and report from one concurrent database snapshot', async () => {
+  const f=await fixture(); const writer=openConnection(f.databasePath);
+  try {
+    const runId=f.prepared.run.runId, before=taskAssuranceReport(f.db,runId).revision!;
+    let raced=false;
+    const reader=new Proxy(f.db,{get(target,key){
+      if(key!=='prepare') return Reflect.get(target,key,target);
+      return (sql:string)=>{
+        const statement=target.prepare(sql);
+        if(sql!=='SELECT * FROM task_assurance WHERE run_id = ?') return statement;
+        return {...statement,get(...params:Parameters<typeof statement.get>){
+          const row=statement.get(...params);
+          if(!raced){raced=true;writer.prepare("UPDATE task_assurance SET revision=revision+1,retrieval_status='pending' WHERE run_id=?").run(runId);}
+          return row;
+        }};
+      };
+    }});
+    const status=taskMemoryStatus(reader,runId,f.root);
+    assert.equal(raced,true);
+    assert.equal(status.revision,before);
+    assert.equal(status.expectedRevision,before);
+    assert.notEqual(status.retrieval,'pending');
+    assert.deepEqual(status.pending,[f.entry.id]);
+    assert.deepEqual(taskAssuranceReport(f.db,runId).pending,['memory_retrieval']);
+    assert.equal(taskAssuranceReport(f.db,runId).revision,before+1);
+  } finally {writer.close();f.db.close();rmSync(f.base,{recursive:true,force:true});}
 });

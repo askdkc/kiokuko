@@ -6,7 +6,7 @@ import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
-import { withImmediateTransaction } from '../db/transaction.js';
+import { withImmediateTransaction, withDeferredReadTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { LedgerStore } from '../ledger/store.js';
 import { readContextBrokerRunState } from '../context/broker.js';
@@ -103,7 +103,12 @@ export function reviewTaskMemory(db: SqliteDatabase, raw: unknown) {
       .run(input.runId, input.deliveryId, input.entryId, input.entryRevision, input.decision, safeText(input.basis),
         safeText(input.invariant ?? ''), safeText(input.counterexample ?? ''), safeText(input.verification ?? ''), JSON.stringify(input.evidenceIds), new Date().toISOString());
     const decisionId = saveDecision(db,input,state.repository_root!,{ decision: input.decision, evidenceIds: input.evidenceIds, dependencies: input.dependencies });
-    return { recorded: true, decisionId, provenance: 'model_reported', untrusted: true };
+    const assurance = taskAssuranceReport(db, input.runId);
+    // Persist the continuation with the mutation receipt: exact retries must
+    // replay this revision, never splice in state from a later operation.
+    return { recorded: true, decisionId, provenance: 'model_reported', untrusted: true,
+      ...memoryReviewCursor({ ...state, revision: state.revision + 1 }),
+      pending: assurance.pending, stale: assurance.stale, nextAction: memoryReviewNextAction(assurance) };
   });
 }
 /** Only the local hook adapter calls with client_observed. Public APIs always use model_reported. */
@@ -189,6 +194,20 @@ function memoryAssuranceReport(db: SqliteDatabase, runId: string, verifyState = 
 export interface AssuranceReport extends MemoryAssuranceReport {
   verification: TaskVerificationReport;
   completionReady: boolean | null;
+}
+/** Stable continuation fields shared by status, refresh and successful reviews. */
+export function memoryReviewCursor(state: AssuranceState) {
+  return { runId: state.run_id, cwd: state.repository_root, deliveryId: state.delivery_id,
+    revision: state.revision, expectedRevision: state.revision };
+}
+/** Read binding, revision and report in one snapshot; this grants no tool admission. */
+export function taskMemoryStatus(db: SqliteDatabase, runId: string, cwd: string, snapshot = false) {
+  return withDeferredReadTransaction(db, () => {
+    const state = assertAssuranceCwd(db, runId, cwd);
+    const assurance = taskAssuranceReport(db, runId);
+    return { ...assurance, ...memoryReviewCursor(state), nextAction: memoryReviewNextAction(assurance),
+      ...(snapshot ? { stateDigest: repositoryStateDigest(state.repository_root!) } : {}) };
+  });
 }
 /** complete remains memory-only; callers must use completionReady for the task. */
 export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true): AssuranceReport {

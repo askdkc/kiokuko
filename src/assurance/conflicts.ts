@@ -11,6 +11,7 @@ const conditions = {
   required_capability_unavailable: ['A required capability is unavailable.', false],
   retrieval_state_changed: ['The retrieval state changed before persistence.', true],
   verification_contract_changed: ['The verification contract changed.', false],
+  verification_selection_mismatch: ['The selected verification check or target does not match the current contract and evidence. Read task_memory_status. Correct the selected check/target, or review and explicitly revise a mislabeled contract target while preserving all required checks, expectations and methods. Reuse only current matching evidence; never relabel historical evidence or rerun execution automatically.', true],
   verification_target_mismatch: ['The verification target or evidence does not match.', false],
   task_verification_incomplete: ['Required task verification is incomplete.', false],
 } as const;

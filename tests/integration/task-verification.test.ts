@@ -293,3 +293,127 @@ test('refresh losing a concurrent update returns typed revisions without committ
       .get<{ n: number }>(f.runId, input.requestId)!.n, 0);
   } finally { second.close(); f.close(); }
 });
+
+test('MCP wrong verification target is recoverable without rerunning execution or weakening completion', async () => {
+  const f=await fixture();
+  const server=createKiokukoMcpServer({databasePath:f.databasePath,cwd:()=>f.cwd});
+  const client=new Client({name:'verification-target-repair',version:'1'});
+  const [ct,st]=InMemoryTransport.createLinkedPair();await server.connect(st);await client.connect(ct);
+  try {
+    const target=`${process.platform}-${process.arch}`;
+    const contract=f.define([{id:'native',target,expected:'Native check passes',method:'Execute true once with admission'}]);
+    const execution={...f.hook,tool_name:'exec_command',tool_use_id:'only-execution',tool_input:{cmd:'true'}};
+    assert.deepEqual(handleCodexHook(f.db,{...execution,hook_event_name:'PreToolUse'}),{});
+    execFileSync('true');
+    handleCodexHook(f.db,{...execution,hook_event_name:'PostToolUse',tool_response:{exit_code:0}});
+    const evidence=f.db.prepare('SELECT * FROM task_execution_evidence WHERE run_id=?').get(f.runId)!;
+    const args={...f.input(),contractVersion:contract.contractVersion,checkId:'native',target:'incorrect-target',source:{kind:'local',evidenceId:evidence.evidence_id}};
+    const rejected=await client.callTool({name:'task_verification_record',arguments:args});
+    assert.equal(rejected.isError,true);
+    const fault=rejected.structuredContent as any;
+    assert.equal(fault.recoverable,true);
+    assert.equal(fault.nextAction,'read_task_memory_status');
+    assert.equal(fault.retryable,false);
+    assert.equal(fault.maxRecoveryAttempts,1);
+    assert.equal(taskAssuranceReport(f.db,f.runId).revision,args.expectedRevision);
+    assert.equal(taskAssuranceReport(f.db,f.runId).completionReady,false);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_verification_results').get<any>()!.n,0);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_assurance_requests WHERE request_id=?').get<any>(args.requestId)!.n,0);
+    assert.deepEqual(f.db.prepare('SELECT * FROM task_execution_evidence WHERE run_id=?').get(f.runId),evidence);
+    const statusArgs={runId:f.runId,cwd:f.cwd};
+    assert.deepEqual(handleCodexHook(f.db,{...f.hook,hook_event_name:'PreToolUse',tool_name:'mcp__kiokuko__task_memory_status',tool_use_id:'repair-status',tool_input:statusArgs}),{});
+    const statusResult=await client.callTool({name:'task_memory_status',arguments:statusArgs});
+    assert.notEqual(statusResult.isError,true);
+    const status=statusResult.structuredContent as any;
+    const corrected={...args,requestId:'corrected-target',expectedRevision:status.revision,target:status.verification.checks.find((c:any)=>c.id==='native').target};
+    const accepted=await client.callTool({name:'task_verification_record',arguments:corrected});
+    assert.notEqual(accepted.isError,true);
+    assert.equal((accepted.structuredContent as any).provenance,'client_observed');
+    assert.deepEqual((await client.callTool({name:'task_verification_record',arguments:corrected})).structuredContent,accepted.structuredContent);
+    assert.equal(taskAssuranceReport(f.db,f.runId).completionReady,true);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,1);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_verification_results').get<any>()!.n,1);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools').get<any>()!.n,1);
+    assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<any>()!.stop_notified,0);
+  } finally {await client.close();await server.close();f.close();}
+});
+
+test('verification selection repair never reclassifies foreign or stale evidence as authorized', async () => {
+  const f=await fixture();
+  try {
+    f.define([checks[0]!,checks[4]!]);
+    const arm=f.evidence('darwin-arm64');
+    const request=()=>({...f.input(),contractVersion:1,checkId:'linux-x64',target:'linux-x64',source:{kind:'local',evidenceId:arm.evidenceId}});
+    const recoverable=(error:unknown)=>error instanceof TaskStateConflict && error.details.recoverable===true;
+    const terminal=(error:unknown)=>error instanceof TaskStateConflict && error.details.recoverable===false;
+    assert.throws(()=>recordTaskVerification(f.db,request()),recoverable);
+    assert.throws(()=>recordTaskVerification(f.db,{...request(),checkId:'typo'}),recoverable);
+    assert.equal(taskAssuranceReport(f.db,f.runId).verification.checks.some(c=>c.status==='passed'),false);
+    const other=await prepareAgentTask(f.db,{cwd:f.cwd,requestId:'other-verification-run',task:'Verify other artifacts',capabilities,skillDiscoveryMode:'off',profileHints:{taskType:'build',target:'other artifacts',expected:'other checks pass',constraints:'isolated'}});
+    const otherEvidence=recordTaskEvidence(f.db,{cwd:f.cwd,runId:other.run.runId,requestId:'other-evidence',expectedRevision:taskAssuranceReport(f.db,other.run.runId).revision!,deliveryId:other.context?.deliveryId??null,execution:'Other run check',target:'linux-x64',stateDigest:repositoryStateDigest(f.cwd),outcome:'passed',exitCode:0});
+    for(const selection of [{},{checkId:'typo',target:'incorrect-target'}]) assert.throws(()=>recordTaskVerification(f.db,{...request(),...selection,source:{kind:'local',evidenceId:otherEvidence.evidenceId}}),terminal);
+    assert.throws(()=>recordTaskVerification(f.db,{...request(),source:{kind:'local',evidenceId:'missing-evidence'}}),terminal);
+    const unknownTarget=f.evidence('linux-x64');
+    f.db.prepare('DELETE FROM task_execution_targets WHERE evidence_id=?').run(unknownTarget.evidenceId);
+    assert.throws(()=>recordTaskVerification(f.db,{...request(),checkId:'typo',source:{kind:'local',evidenceId:unknownTarget.evidenceId}}),terminal);
+    writeFileSync(path.join(f.cwd,'source.ts'),'changed after evidence\n');
+    for(const selection of [{checkId:'darwin-arm64',target:'darwin-arm64'},{checkId:'typo',target:'incorrect-target'}]) assert.throws(()=>recordTaskVerification(f.db,{...request(),...selection}),terminal);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_verification_results').get<any>()!.n,0);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,3);
+  } finally {f.close();}
+});
+
+test('mislabeled Codex hook definition retargets explicitly and reuses immutable observed platform evidence', async () => {
+  const f=await fixture();
+  const server=createKiokukoMcpServer({databasePath:f.databasePath,cwd:()=>f.cwd});
+  const client=new Client({name:'hook-target-definition-repair',version:'1'});
+  const [ct,st]=InMemoryTransport.createLinkedPair();await server.connect(st);await client.connect(ct);
+  try {
+    const platformTarget=`${process.platform}-${process.arch}`;
+    const originalChecks=[{id:'hook-once',target:'Codex hook',expected:'The admitted hook executes once',method:'Observe one successful command'},
+      {id:'unaffected',target:platformTarget,expected:'The native process returns zero',method:'Inspect the same completed command'}];
+    const contract=f.define(originalChecks);
+    const execution={...f.hook,tool_name:'exec_command',tool_use_id:'hook-once-execution',tool_input:{cmd:'true'}};
+    assert.deepEqual(handleCodexHook(f.db,{...execution,hook_event_name:'PreToolUse'}),{});
+    execFileSync('true');
+    handleCodexHook(f.db,{...execution,hook_event_name:'PostToolUse',tool_response:{exit_code:0}});
+    const evidence=f.db.prepare('SELECT e.*,t.target FROM task_execution_evidence e JOIN task_execution_targets t USING(evidence_id) WHERE e.run_id=?').get<any>(f.runId)!;
+    assert.equal(evidence.target,platformTarget);
+    const source={kind:'local',evidenceId:evidence.evidence_id};
+    recordTaskVerification(f.db,{...f.input(),contractVersion:contract.contractVersion,checkId:'unaffected',target:platformTarget,source});
+    const failedArgs={...f.input(),contractVersion:contract.contractVersion,checkId:'hook-once',target:'Codex hook',source};
+    const failed=await client.callTool({name:'task_verification_record',arguments:failedArgs});
+    assert.equal(failed.isError,true);
+    const fault=failed.structuredContent as any;
+    assert.equal(fault.recoverable,true);
+    assert.deepEqual(fault.targets,{requested:'Codex hook',defined:'Codex hook',evidence:platformTarget});
+    assert.ok(fault.requiredActions.includes('review_verification_definition'));
+    assert.equal(taskAssuranceReport(f.db,f.runId).revision,failedArgs.expectedRevision);
+    assert.equal(taskAssuranceReport(f.db,f.runId).completionReady,false);
+    assert.throws(()=>assertAssuranceCompletion(f.db,f.runId,'completed'));
+    // Neither merely changing the request nor reusing evidence can silently
+    // reinterpret the existing contract's mislabeled target.
+    const onlyRequest=await client.callTool({name:'task_verification_record',arguments:{...failedArgs,requestId:'request-only-correction',target:platformTarget}});
+    assert.equal(onlyRequest.isError,true);
+    const status=(await client.callTool({name:'task_memory_status',arguments:{runId:f.runId,cwd:f.cwd}})).structuredContent as any;
+    const repairedChecks=status.verification.checks.map(({id,target,expected,method}:any)=>({id,target:id==='hook-once'?fault.targets.evidence:target,expected,method}));
+    const retargeted=await client.callTool({name:'task_verification_define',arguments:{runId:f.runId,cwd:f.cwd,requestId:'explicit-definition-retarget',expectedRevision:status.revision,reason:'Correct a behavior label used as target to the observed execution platform; preserve every required check, expectation and method',checks:repairedChecks}});
+    assert.notEqual(retargeted.isError,true);
+    const revised=retargeted.structuredContent as any;
+    assert.equal(revised.contractVersion,contract.contractVersion+1);
+    const report=taskAssuranceReport(f.db,f.runId);
+    assert.equal(report.verification.checks.find(c=>c.id==='unaffected')!.status,'passed');
+    assert.equal(report.verification.checks.find(c=>c.id==='hook-once')!.status,'pending');
+    assert.equal(report.completionReady,false);
+    const recorded=await client.callTool({name:'task_verification_record',arguments:{...failedArgs,requestId:'correct-definition-record',expectedRevision:revised.revision,contractVersion:revised.contractVersion,target:platformTarget}});
+    assert.notEqual(recorded.isError,true);
+    assert.equal((recorded.structuredContent as any).provenance,'client_observed');
+    assert.equal(taskAssuranceReport(f.db,f.runId).completionReady,true);
+    assert.doesNotThrow(()=>assertAssuranceCompletion(f.db,f.runId,'completed'));
+    assert.deepEqual(f.db.prepare('SELECT e.*,t.target FROM task_execution_evidence e JOIN task_execution_targets t USING(evidence_id) WHERE e.run_id=?').get(f.runId),evidence);
+    assert.deepEqual(f.db.prepare('SELECT check_id,target,expected,method FROM task_verification_checks WHERE run_id=? AND contract_version=1 ORDER BY check_id').all(f.runId).map(row=>({...row})),originalChecks.map(({id,...rest})=>({check_id:id,...rest})).sort((a,b)=>a.check_id.localeCompare(b.check_id)));
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,1);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools').get<any>()!.n,1);
+    assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<any>()!.stop_notified,0);
+  } finally {await client.close();await server.close();f.close();}
+});

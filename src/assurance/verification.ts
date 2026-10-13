@@ -31,22 +31,36 @@ export function defineTaskVerification(db: SqliteDatabase, raw: unknown) {
   });
 }
 
+/** Actionable selection metadata only after evidence identity/freshness passed. */
+function verificationSelectionMismatch(requested: string, defined: string | null, evidence: string | null) {
+  const error = new TaskStateConflict('verification_selection_mismatch');
+  Object.assign(error.details, {
+    targets: sanitizeJson({ requested, defined, evidence }).value,
+    requiredActions: ['read_task_memory_status',
+      defined !== null && evidence !== null && defined !== evidence ? 'review_verification_definition' : 'correct_check_or_target',
+      'record_matching_evidence'],
+    constraints: ['preserve_all_required_checks', 'preserve_historical_evidence', 'do_not_rerun_execution_automatically'],
+  });
+  return error;
+}
+
 export function recordTaskVerification(db: SqliteDatabase, raw: unknown) {
   const input = parseAssurance(verificationRecordSchema, raw);
   return assuranceMutation(db, input, state => {
     if (verificationVersion(db, input.runId) !== input.contractVersion) throw new TaskStateConflict('verification_contract_changed');
     const check = db.prepare('SELECT * FROM task_verification_checks WHERE run_id=? AND contract_version=? AND check_id=?')
       .get<VerificationCheckRow>(input.runId, input.contractVersion, input.checkId);
-    if (!check || check.target !== input.target) throw new TaskStateConflict('verification_target_mismatch');
     const digest = repositoryStateDigest(state.repository_root!);
+    let evidenceTarget: string | null = null;
     let outcome: 'passed' | 'failed' | 'skipped' | 'unknown';
     let provenance: 'model_reported' | 'client_observed' = 'model_reported';
     if (input.source.kind === 'local') {
       const evidence = db.prepare('SELECT e.*, t.target FROM task_execution_evidence e LEFT JOIN task_execution_targets t USING(evidence_id) WHERE e.evidence_id=?')
         .get<SqliteRow>(input.source.evidenceId);
       if (!evidence || evidence.run_id !== input.runId || evidence.repository_root !== state.repository_root
-        || evidence.state_digest !== digest || evidence.target !== input.target)
+        || evidence.state_digest !== digest || typeof evidence.target !== 'string' || !evidence.target)
         throw new TaskStateConflict('verification_target_mismatch');
+      evidenceTarget = evidence.target;
       outcome = evidence.outcome as typeof outcome;
       if (outcome === 'passed' && evidence.exit_code !== 0) outcome = 'unknown';
       provenance = evidence.provenance as typeof provenance;
@@ -56,6 +70,10 @@ export function recordTaskVerification(db: SqliteDatabase, raw: unknown) {
         : input.source.conclusion === 'skipped' ? 'skipped'
           : input.source.conclusion === 'unknown' ? 'unknown' : 'failed';
     }
+    // Validate evidence identity and freshness first. A selection typo is a
+    // repairable rejected record, never authority for foreign/stale evidence.
+    if (!check || check.target !== input.target || (evidenceTarget !== null && evidenceTarget !== input.target))
+      throw verificationSelectionMismatch(input.target, check?.target ?? null, evidenceTarget);
     db.prepare(`INSERT INTO task_verification_results
       (run_id, contract_version, check_id, definition_hash, target, outcome, state_digest, source_json, provenance, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.runId, input.contractVersion, input.checkId, check.definition_hash,

@@ -2,9 +2,8 @@ import { defineTaskVerification, recordTaskVerification } from '../../assurance/
 import { recoverTaskPreparation } from '../../akinator/preparation-recovery.js';
 import { submitIndex, reviewIndex } from '../../memory/index-service.js';
 import { KiokukoError } from '../../errors.js';
-import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCwd, memoryReviewNextAction } from '../../assurance/service.js';
+import { reviewTaskMemory, recordTaskEvidence, taskMemoryStatus } from '../../assurance/service.js';
 import { refreshTaskMemory } from '../../assurance/refresh.js';
-import { repositoryStateDigest } from '../../assurance/snapshot.js';
 import { successEnvelope } from '../../serialization/envelope.js';
 import { decodeRunId, requireIdempotencyKey, requireNoQuery, runIdSegment, type AgentRouteContext } from './agent-runs.js';
 import type { V1RouteHandler } from '../router.js';
@@ -39,10 +38,7 @@ export function createTaskAssuranceRoute(context: Pick<AgentRouteContext, 'datab
         case 'memory-refresh': return refreshTaskMemory(context.database, input);
         default: {
           if (Object.keys(body).some(k => !['cwd', 'snapshot'].includes(k)) || typeof body.cwd !== 'string' || (body.snapshot !== undefined && typeof body.snapshot !== 'boolean')) throw new KiokukoError('VALIDATION_ERROR', 'Invalid status body');
-          const state = assertAssuranceCwd(context.database, runId, body.cwd);
-          const assurance = taskAssuranceReport(context.database, runId);
-          return { ...assurance, nextAction: memoryReviewNextAction(assurance), deliveryId: state.delivery_id,
-            ...(body.snapshot === true ? { stateDigest: repositoryStateDigest(state.repository_root!) } : {}) };
+          return taskMemoryStatus(context.database, runId, body.cwd, body.snapshot === true);
         }
       }
     });

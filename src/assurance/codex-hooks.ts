@@ -223,6 +223,12 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
       const boundRun = request.run_id ? new LedgerStore(db).readRun(request.run_id) : null;
       if (boundRun && !['active', 'intake'].includes(boundRun.status)) return denyTurn('Bound run is terminal', 'run_terminal');
       if (typeof args.cwd === 'string' && realpathSync(args.cwd) !== root) return denyTurn('Tool repository is not bound to this client request', 'repository_binding_mismatch');
+      // A successful preparation whose Post event was lost has no client
+      // binding yet. Status cannot supply that authority, but asking for it
+      // must not permanently disable the exact preparation replay that can.
+      if (operation === 'task_memory_status' && !request.run_id) return recoverableDeny(
+        'No preparation completion is bound to this request. This status call did not execute. Replay the exact original task_prepare with the same requestId and arguments so its observed completion can restore the binding; do not create a new run or repeat ordinary execution.',
+        'preparation_binding_missing');
       if (args.runId !== undefined && args.runId !== request.run_id) return denyTurn('Tool run is not bound to this client request', 'run_binding_mismatch');
       if (args.runId !== undefined && !request.run_id) return denyTurn('No run is bound to this request');
       const report = request.run_id && request.state === 'bound' ? taskAssuranceReport(db, request.run_id, false) : null;

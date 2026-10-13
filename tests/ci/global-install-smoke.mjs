@@ -109,6 +109,7 @@ async function recordInstalledPackage(packageDirectory, names) {
 }
 
 async function verifyInstalledSavedRuntime(installedRoot, prefixDirectory, fixtureRoot) {
+  await mkdir(fixtureRoot, { recursive: true });
   const sourceModules = path.join(prefixDirectory, 'lib', 'node_modules');
   const parkedModules = path.join(prefixDirectory, 'lib', 'node_modules-parked');
   const runtimeRoot = path.join(fixtureRoot, 'runtimes');

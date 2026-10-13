@@ -14,7 +14,7 @@ import { readTaskContextRequestBinding } from '../akinator/agent-task.js';
 import { resolveProjectWorkspaceReadOnly } from '../memory/workspaces.js';
 import { canonicalContentHash } from '../serialization/validate.js';
 import { memoryRefreshSchema, parseAssurance } from './contracts.js';
-import { assertAssuranceCwd, assuranceState, bindAssuranceRoot, taskAssuranceReport, memoryReviewNextAction } from './service.js';
+import { assertAssuranceCwd, assuranceState, bindAssuranceRoot, taskAssuranceReport, memoryReviewNextAction, memoryReviewCursor } from './service.js';
 
 export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -87,7 +87,7 @@ export async function refreshTaskMemory(db: SqliteDatabase, raw: unknown, signal
         .map(entry => ({ entryId: entry.id, reason: 'context_budget_or_capability' })),
     } : undefined;
     const assurance = taskAssuranceReport(db, input.runId, false);
-    response = { ...(indexResult ? { indexing: indexResult } : {}), context, memoryPolicy: policy, assurance, nextAction: memoryReviewNextAction(assurance) };
+    response = { ...memoryReviewCursor(assuranceState(db, input.runId)!), ...(indexResult ? { indexing: indexResult } : {}), context, memoryPolicy: policy, assurance, nextAction: memoryReviewNextAction(assurance) };
     const receipt = JSON.stringify(response);
     db.prepare('INSERT INTO task_assurance_requests VALUES (?, ?, ?, ?)').run(input.runId, input.requestId, digest, receipt);
     // First delivery and transport replay expose the same persisted representation.

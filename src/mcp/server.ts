@@ -10,8 +10,7 @@ import { indexSubmitSchema, indexReviewSchema, submitIndex, reviewIndex } from '
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { inspectTask, inspectTaskSchema, TaskInspectionError } from '../assurance/inspect.js';
 import { memoryReviewSchema, executionEvidenceSchema, memoryRefreshSchema } from '../assurance/contracts.js';
-import { reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, assertAssuranceCwd, memoryReviewNextAction } from '../assurance/service.js';
-import { repositoryStateDigest } from '../assurance/snapshot.js';
+import { reviewTaskMemory, recordTaskEvidence, taskMemoryStatus } from '../assurance/service.js';
 import { refreshTaskMemory } from '../assurance/refresh.js';
 import { captureInteractionMemory } from '../memory/interaction-capture.js';
 import { recallInteractionMemory } from '../memory/interaction-recall.js';
@@ -569,7 +568,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   }, async (input, extra) => withMcpToolDeadline('task_inspect', deadlinePolicy, extra.signal, () => withPublicToolError(async () => toolResult(inspectTask(input)))));
   server.registerTool('task_memory_review', {
     title: 'Review application of delivered memory',
-    description: 'Record adoption, inapplicability or contradiction against current evidence. Adoption requires an invariant, counterexample and verifier. This is a model declaration, not proof of correctness. Reuse requestId only for exact retries.',
+    description: 'Record adoption, inapplicability or contradiction against current evidence. Adoption requires an invariant, counterexample and verifier. This is a model declaration, not proof of correctness. Successful responses preserve runId, cwd, deliveryId, expectedRevision, revision and nextAction for sequential review. Treat isError responses as diagnostics; never replace continuation state with them. Read task_memory_status to reconcile state. Reuse requestId only for exact retries.',
     inputSchema: memoryReviewSchema,
   }, async (input, extra) => withMcpToolDeadline('task_memory_review', deadlinePolicy, extra.signal, () => withPublicToolError(() => withDatabase(dependencies, async db => toolResult(reviewTaskMemory(db, input))))));
   server.registerTool('task_execution_evidence', {
@@ -592,7 +591,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   server.registerTool('memory_index_review', {title:'Review index knowledge',description:'Record supported, unsupported or uncertain against source quotes. Model-reported; never promotes trust.',inputSchema:indexReviewSchema}, async (input,extra) => withMcpToolDeadline('memory_index_review',deadlinePolicy,extra.signal,()=>withPublicToolError(() => withDatabase(dependencies, async db => toolResult(reviewIndex(db,input))))));
   server.registerTool('task_verification_define', {
     title: 'Define required task verification',
-    description: 'Persist required checks with IDs, target environments, expected results and methods. Define before implementation; give a reason for every contract revision. Changed checks invalidate previous results. Uses the current assurance revision and a new requestId.',
+    description: 'Persist required checks with IDs, target environments, expected results and methods. Define before implementation; give a reason for every contract revision. Changed checks invalidate previous results. A mislabeled execution target can be explicitly corrected by retaining all required checks, expectations and methods, then recording still-current evidence matching the corrected target. Never relabel historical evidence. Uses the current assurance revision and a new requestId.',
     inputSchema: verificationDefineSchema,
   }, async (input, extra) => withMcpToolDeadline('task_verification_define', deadlinePolicy, extra.signal, () => withPublicToolError(() => withDatabase(dependencies, async db => toolResult(defineTaskVerification(db, input))))));
   server.registerTool('task_verification_record', {
@@ -605,11 +604,8 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     description: 'Return current assurance revision, memory-only complete, task verification checks and completionReady. Includes connection-local server-observed abort receipts for run-bound answer/refresh requests; handler settlement does not mean success. Only completionReady=true permits a verified task completion; null means legacy unobserved.',
     inputSchema: z.object({ runId, cwd: absoluteCwdSchema, snapshot: z.boolean().default(false) }).strict(),
   }, async (input, extra) => withMcpToolDeadline('task_memory_status', deadlinePolicy, extra.signal, () => withPublicToolError(() => withDatabase(dependencies, async db => {
-    const state = assertAssuranceCwd(db, input.runId, input.cwd);
-    const assurance = taskAssuranceReport(db, input.runId);
-    return toolResult({ ...assurance, nextAction: memoryReviewNextAction(assurance), deliveryId: state.delivery_id,
-      mcpCancellation: cancellations.read(input.runId, state.repository_root!),
-      ...(input.snapshot ? { stateDigest: repositoryStateDigest(state.repository_root!) } : {}) });
+    const status = taskMemoryStatus(db, input.runId, input.cwd, input.snapshot);
+    return toolResult({ ...status, mcpCancellation: cancellations.read(input.runId, status.cwd!) });
   }))));
 
   server.registerTool('curator_check', {
