@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 export const FIRST_SETUP_SCRIPT = `
 import assert from 'node:assert/strict';
 import { Command } from 'commander';
+import { createRequire } from 'node:module';
 import { registerEmbeddingsCommands } from './dist/commands/embeddings.js';
 import { openConnection } from './dist/db/connection.js';
 import { migrateDatabase } from './dist/db/migrate.js';
@@ -30,6 +31,9 @@ try {
   });
   await cli.parseAsync(['node', 'kiokuko', 'setup', '--clients', 'codex', '--json']);
   await Promise.all([import('@huggingface/hub'), import('@huggingface/transformers')]);
+  const runtimeRequire = createRequire(import.meta.resolve('@huggingface/transformers'));
+  const ort = runtimeRequire('onnxruntime-node');
+  assert.ok(ort.listSupportedBackends().some(backend => backend.name === 'cpu' && backend.bundled === true), 'installed bundled CPU backend must load');
   process.stdout.write('FIRST_SETUP_OK\\n');
 } finally {
   database.close();

@@ -8,7 +8,8 @@
     "record"
   ],
   "environment": {
-    "KIOKUKO_REQUIRE_SQLITE_VEC_SMOKE": "1"
+    "KIOKUKO_REQUIRE_SQLITE_VEC_SMOKE": "1",
+    "ONNXRUNTIME_NODE_INSTALL": "skip"
   },
   "checks": [
     {
