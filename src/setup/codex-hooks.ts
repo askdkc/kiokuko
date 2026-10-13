@@ -66,3 +66,18 @@ export function codexAssuranceConfigured(source: string): boolean {
     return Array.isArray(group.hooks) && group.hooks.some(owned);
   }));
 }
+
+/** Require exactly one managed hook per lifecycle event, all using one saved interpreter and CLI. */
+export function codexAssuranceRuntimeMatches(source: string, runtime: CodexHookRuntime): boolean {
+  const hooks = object(configuration(source).hooks);
+  const prefix = `${shellQuote(runtime.node)} ${shellQuote(runtime.script)} codex-hook --database `;
+  return CODEX_ASSURANCE_EVENTS.every(event => {
+    const groups = hooks[event];
+    if (!Array.isArray(groups)) return false;
+    const managed = groups.flatMap(raw => {
+      const group = object(raw);
+      return Array.isArray(group.hooks) ? group.hooks.filter(owned) as Array<{ command: string }> : [];
+    });
+    return managed.length === 1 && managed[0]!.command.startsWith(prefix);
+  });
+}

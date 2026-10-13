@@ -77,6 +77,20 @@ could not load and semantic setup is incomplete. Script approval is not a
 confirmed fix for this import error. Report the full error and the output of
 `kiokuko --version`, `node --version`, and `npm --version` when requesting help.
 
+### Saved runtime for Codex
+
+To keep Codex MCP and lifecycle hooks on one version while npm replaces its installation, prepare a separate runtime in a private application-data directory. Finish current work and stop Codex before changing its configuration:
+
+```bash
+kiokuko runtime-prepare --runtime-root "$HOME/Library/Application Support/Kiokuko/runtimes" --json
+kiokuko setup --clients codex --no-embeddings --no-standard-skills --runtime-manifest /absolute/path/to/runtime/manifest.json --client-stopped
+kiokuko runtime-diagnose --manifest /absolute/path/to/runtime/manifest.json --json
+```
+
+On Linux, use `${XDG_DATA_HOME:-$HOME/.local/share}/kiokuko/runtimes` as the runtime root. Replace the manifest example with the `manifestPath` printed by the first command. If the current Node executable depends on libraries outside its own binary, preparation fails; supply a standalone Node binary with `--node /absolute/path/to/node`. Preparation never changes client settings. The setup command verifies the saved files, updates the managed MCP and all lifecycle hooks together, and restores previous configuration files if the update fails. Restart Codex only when the diagnostic reports `readyForRestart: true`. Existing custom MCP commands are preserved and require separate migration.
+
+An npm update alone does not switch the saved version. To upgrade, stop Codex after current work, prepare the new version, run the setup command with its new manifest, then restart. Keep the old saved directory for recovery; old versions are not deleted automatically. If the new version migrated the memory database, check database compatibility before returning to an older version. Allow several hundred megabytes per saved version, depending on Node and installed optional dependencies; check the actual directory size before keeping multiple versions.
+
 ## Uninstall
 
 Stop clients using Kiokuko and any `kiokuko serve` process first.

@@ -340,7 +340,7 @@ export function renderCodexMcpConfig(
   existing = '',
   command?: string,
   skillDiscoveryMode?: SkillDiscoveryMode,
-  options: { replaceConflictingIdentity?: boolean; defaultRuntime?: () => CodexHookRuntime } = {},
+  options: { replaceConflictingIdentity?: boolean; defaultRuntime?: () => CodexHookRuntime; pinnedRuntime?: CodexHookRuntime } = {},
 ): DelimitedBlockResult & { launch: CodexMcpLaunch } {
   if (command !== undefined && (typeof command !== 'string' || command.trim().length === 0 || command.includes('\0'))) {
     throw new KiokukoError('VALIDATION_ERROR', 'Codex MCP command must be a non-empty executable path or name');
@@ -366,7 +366,18 @@ export function renderCodexMcpConfig(
     : skillDiscoveryMode;
   // An omitted CLI option is not authorization to replace a working launcher.
   let launch: CodexMcpLaunch;
-  if (command !== undefined) launch = { command, args: ['mcp'] };
+  if (options.pinnedRuntime !== undefined) {
+    const runtime = options.pinnedRuntime;
+    if (command !== undefined || !absoluteLaunchPath(runtime.node) || !absoluteLaunchPath(runtime.script)
+      || [runtime.node, runtime.script].some(value => value.includes('\0'))
+      || !/[/\\]dist[/\\]bin[/\\]kiokuko\.js$/u.test(runtime.script)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Pinned runtime must use absolute Node and compiled Kiokuko CLI paths without a separate command override');
+    }
+    if (current?.args.length === 1 && current.command !== 'kiokuko') {
+      throw new KiokukoError('CONFLICT', 'An explicit custom Codex MCP command is configured; preserve it until replaced separately');
+    }
+    launch = { command: runtime.node, args: [runtime.script, 'mcp'] };
+  } else if (command !== undefined) launch = { command, args: ['mcp'] };
   else if (current !== undefined) launch = { command: current.command, args: current.args };
   else if (options.defaultRuntime !== undefined) {
     const runtime = options.defaultRuntime();

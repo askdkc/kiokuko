@@ -68,6 +68,20 @@ npm install-scripts approve esbuild fsevents
 埋め込みランタイムを読み込めず、semantic検索の設定が完了していません。スクリプトの許可でこの読み込みエラーが直るとは確認できていません。
 問い合わせる際は、エラー全文と`kiokuko --version`、`node --version`、`npm --version`の結果を添えてください。
 
+### Codex用の保存済み実行版
+
+npmの導入先が置き換わってもCodexのMCPとライフサイクルhookを同じ版で動かすには、ユーザー専用のアプリケーションデータ領域に実行版を用意します。進行中の作業を終え、Codexを停止してから設定を切り替えてください。
+
+```bash
+kiokuko runtime-prepare --runtime-root "$HOME/Library/Application Support/Kiokuko/runtimes" --json
+kiokuko setup --clients codex --no-embeddings --no-standard-skills --runtime-manifest /absolute/path/to/runtime/manifest.json --client-stopped
+kiokuko runtime-diagnose --manifest /absolute/path/to/runtime/manifest.json --json
+```
+
+Linuxでは実行版の保存先に`${XDG_DATA_HOME:-$HOME/.local/share}/kiokuko/runtimes`を使います。2行目と3行目のmanifestは、1行目が返す`manifestPath`に置き換えます。現在のNodeがバイナリ外の共有ライブラリに依存する場合、準備は失敗します。その場合は`--node /absolute/path/to/node`で単独起動できるNodeを指定してください。準備だけではクライアント設定は変わりません。`setup`は保存したファイルを検証し、管理対象のMCPと全hookを同じ版へ更新します。途中で失敗した設定ファイルは元に戻します。診断結果が`readyForRestart: true`になってからCodexを再起動してください。独自のMCP起動コマンドは保持され、別途移行が必要です。
+
+npmを更新しただけでは使用版は切り替わりません。更新時は作業を終えてCodexを停止し、新版を準備して、そのmanifestで`setup`を実行してから再起動します。旧実行版は自動削除しません。新版がメモリDBをmigrationした後に旧版へ戻す場合は、先にDB互換性を確認してください。保存容量はNodeと導入済みの任意依存によって変わりますが、1版につき数百MBを見込み、複数版を残す前に実際の容量を確認してください。
+
 ## アンインストール
 
 Kiokukoを使うクライアントと`kiokuko serve`を終了してから実行します。

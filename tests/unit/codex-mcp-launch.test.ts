@@ -40,6 +40,16 @@ test('new default pins Node and compiled CLI, and reruns preserve both paths', (
   assert.ok(explicit.content.includes('command = "/custom/kiokuko"\nargs = ["mcp"]'));
 });
 
+test('explicit verified runtime switches a managed launcher but protects a custom command', () => {
+  const old = renderCodexMcpConfig('', undefined, undefined, { defaultRuntime: currentRuntime }).content;
+  const pinnedRuntime = { node: '/saved/123/node', script: '/saved/123/app/dist/bin/kiokuko.js' };
+  const switched = renderCodexMcpConfig(old, undefined, undefined, { pinnedRuntime });
+  assert.equal(switched.launch.command, pinnedRuntime.node);
+  assert.deepEqual(switched.launch.args, [pinnedRuntime.script, 'mcp']);
+  const custom = renderCodexMcpConfig('', '/explicit/kiokuko').content;
+  assert.throws(() => renderCodexMcpConfig(custom, undefined, undefined, { pinnedRuntime }), /explicit|custom|conflict/iu);
+});
+
 test('new pinned launcher runs with a PATH containing no Node or kiokuko', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'kiokuko-mcp-launch-'));
   const script = path.join(root, 'dist', 'bin', 'kiokuko.js');

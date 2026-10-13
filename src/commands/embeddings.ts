@@ -383,6 +383,8 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
     .option('--preset <name>', 'Embedding preset', 'local-small')
     .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes')
     .option('--command <path>', 'Override the Kiokuko executable name or absolute path')
+    .option('--runtime-manifest <path>', 'Switch Codex MCP and hooks to a prepared runtime')
+    .option('--client-stopped', 'Confirm the target Codex client has been stopped before a runtime switch')
     .option('--dry-run', 'Plan setup without downloading or mutating anything')
     .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
     .option('--skill-discovery <mode>', 'External Skill discovery: off,official,community')
@@ -394,6 +396,8 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
       preset: string;
       clients?: string;
       command?: string;
+      runtimeManifest?: string;
+      clientStopped?: boolean;
       dryRun?: boolean;
       standardSkills: boolean;
       skillDiscovery?: string;
@@ -407,6 +411,9 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
       const skillDiscoveryMode = options.skillDiscovery === undefined
         ? undefined
         : parseSetupSkillDiscoveryMode(options.skillDiscovery);
+      if (options.runtimeManifest !== undefined && options.embeddings) {
+        throw new KiokukoError('VALIDATION_ERROR', 'Use --no-embeddings when switching to a prepared runtime');
+      }
       if (options.embeddings && options.preset !== LOCAL_SMALL_PRESET.id) {
         throw new KiokukoError('VALIDATION_ERROR', 'Only the local-small embedding preset is supported');
       }
@@ -419,6 +426,8 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
         ...(dependencies.pathEnvironment === undefined ? {} : { environment: dependencies.pathEnvironment }),
         ...(clients === undefined ? {} : { clients }),
         ...(options.command === undefined ? {} : { command: options.command }),
+        ...(options.runtimeManifest === undefined ? {} : { runtimeManifest: options.runtimeManifest }),
+        ...(options.clientStopped === undefined ? {} : { clientStopped: options.clientStopped }),
         dryRun,
         standardSkills: options.standardSkills,
         ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),

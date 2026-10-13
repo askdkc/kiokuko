@@ -5,7 +5,7 @@ import { registerCodexHookCommand } from './commands/codex-hook.js';
 import { registerAkinatorMemoryCommands } from './commands/akinator-memory.js';
 import { Command, CommanderError } from 'commander';
 import { constants as fsConstants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 import { TextDecoder } from 'node:util';
 import { isProxy } from 'node:util/types';
 import { answerAkinator, startAkinator } from './akinator/orchestrator.js';
@@ -24,7 +24,7 @@ import { registerServerCommands, type ServerCommandDependencies } from './comman
 import { registerSkillsCommands, type SkillsCommandDependencies } from './commands/skills.js';
 import { useRepository, type UseOptions } from './commands/use.js';
 import { registerUninstallCommand } from './commands/uninstall.js';
-import { getGlobalDatabasePath, type PathEnvironment } from './config/paths.js';
+import { getCodexConfigPath, getGlobalDatabasePath, type PathEnvironment } from './config/paths.js';
 import type { SqliteDatabase } from './db/adapter.js';
 import { openConnection } from './db/connection.js';
 import { closeSharedRerankerRuntime } from './reranker/service.js';
@@ -45,6 +45,10 @@ import { recallScopedMemory } from './memory/scoped-memory.js';
 import { normalizeTemporalConstraint, type TemporalConstraint } from './memory/temporal.js';
 import { effectiveRelatedSearchMode } from './memory/search-extension-config.js';
 import { PACKAGE_VERSION } from './package-version.js';
+import { prepareRuntime, verifyPreparedRuntime } from './runtime/prepare.js';
+import { codexAssuranceRuntimeMatches } from './setup/codex-hooks.js';
+import { renderCodexMcpConfig } from './setup/render.js';
+import path from 'node:path';
 import { findMissingRepositoryLocations, removeMissingRepositoryLocations } from './repository/binding.js';
 import { errorEnvelope, successEnvelope } from './serialization/envelope.js';
 import { validateRecordInput } from './serialization/validate.js';
@@ -899,6 +903,35 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   cli.command('version').description('Show the Kiokuko package version').action(() => {
     process.stdout.write(`${PACKAGE_VERSION}\n`);
   });
+
+  cli.command('runtime-prepare').description('Copy and verify an independent Kiokuko runtime')
+    .requiredOption('--runtime-root <path>', 'Private application-data directory for immutable runtimes')
+    .option('--node <path>', 'Standalone Node executable to copy (defaults to the current Node)')
+    .option('--json', 'Emit the prepared runtime paths as JSON')
+    .action(async (options: { runtimeRoot: string; node?: string; json?: boolean }) => {
+      const runtime = await prepareRuntime(options.runtimeRoot, options.node);
+      if (options.json) process.stdout.write(JSON.stringify(runtime) + '\n');
+      else process.stdout.write(`Prepared Kiokuko runtime ${runtime.runtimeId}: ${runtime.manifestPath}\n`);
+    });
+
+  cli.command('runtime-diagnose').description('Check that Codex MCP and all managed hooks use one saved runtime')
+    .requiredOption('--manifest <path>', 'Manifest of the selected saved runtime')
+    .option('--json', 'Emit the diagnostic result as JSON')
+    .action(async (options: { manifest: string; json?: boolean }) => {
+      const runtime = await verifyPreparedRuntime(options.manifest);
+      const configPath = getCodexConfigPath(dependencies.setupEnvironment);
+      const hooksPath = path.join(path.dirname(configPath), 'hooks.json');
+      const config = await readFile(configPath, 'utf8');
+      const hooks = await readFile(hooksPath, 'utf8');
+      const launch = renderCodexMcpConfig(config).launch;
+      const mcpMatches = launch.command === runtime.nodePath && launch.args.length === 2
+        && launch.args[0] === runtime.cliPath && launch.args[1] === 'mcp';
+      const hooksMatch = codexAssuranceRuntimeMatches(hooks, { node: runtime.nodePath, script: runtime.cliPath });
+      const result = { runtimeId: runtime.runtimeId, mcpMatches, hooksMatch, readyForRestart: mcpMatches && hooksMatch };
+      if (options.json) process.stdout.write(JSON.stringify(result) + '\n');
+      else process.stdout.write(`Runtime ${runtime.runtimeId}: MCP ${mcpMatches ? 'matches' : 'mismatch'}, hooks ${hooksMatch ? 'match' : 'mismatch'}\n`);
+      if (!result.readyForRestart) process.exitCode = 8;
+    });
 
   cli.command('init').description('Initialize the global Kiokuko database').option('--json').action(async (options: { json?: boolean }) => {
     const result = await initializeDatabase();

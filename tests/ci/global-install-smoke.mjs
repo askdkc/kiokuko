@@ -108,6 +108,33 @@ async function recordInstalledPackage(packageDirectory, names) {
   await installedPackageNames(path.join(packageDirectory, 'node_modules'), names);
 }
 
+async function verifyInstalledSavedRuntime(installedRoot, prefixDirectory, fixtureRoot) {
+  const sourceModules = path.join(prefixDirectory, 'lib', 'node_modules');
+  const parkedModules = path.join(prefixDirectory, 'lib', 'node_modules-parked');
+  const runtimeRoot = path.join(fixtureRoot, 'runtimes');
+  const node = process.env.KIOKUKO_TEST_STANDALONE_NODE ?? process.execPath;
+  const prepared = await run(process.execPath, [path.join(installedRoot, 'dist/bin/kiokuko.js'), 'runtime-prepare',
+    '--runtime-root', runtimeRoot, '--node', node, '--json'], fixtureRoot);
+  const runtime = JSON.parse(prepared.stdout);
+  assert.match(runtime.runtimeId, /^[0-9a-f]{64}$/u);
+  await rename(sourceModules, parkedModules);
+  try {
+    const version = await run(runtime.nodePath, [runtime.cliPath, 'version'], fixtureRoot, {PATH:''});
+    assert.equal(version.stdout.trim(), '1.0.35');
+    const client = new Client({name:'saved-runtime-package-smoke',version:'1.0.0'});
+    try {
+      await client.connect(new StdioClientTransport({command:runtime.nodePath,args:[runtime.cliPath,'mcp'],cwd:fixtureRoot,
+        env:{HOME:fixtureRoot,KIOKUKO_DATA_DIR:path.join(fixtureRoot,'data'),PATH:''},stderr:'pipe'}));
+      assert.ok((await client.listTools()).tools.some(tool=>tool.name==='task_prepare'));
+    } finally {await client.close();}
+    await verifyInstalledTaskHookRecovery(path.join(runtime.root, 'app'), path.join(fixtureRoot, 'hook-recovery'), {
+      managementCli: path.join(repositoryRoot, 'dist/bin/kiokuko.js'), runtimeNode: runtime.nodePath,
+    });
+  } finally {
+    await rename(parkedModules, sourceModules);
+  }
+}
+
 async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, packedFiles) {
   const homeDirectory = path.join(fixtureRoot, 'home');
   const environment = {
@@ -615,6 +642,7 @@ try {
   await verifyInstalledChatgptProfile(cliPath, path.join(temporaryRoot, 'chatgpt-fixture'));
   await verifyInstalledTaskVerification(cliPath, path.join(temporaryRoot, 'verification-fixture'));
   await verifyInstalledTaskHookRecovery(installedRoot, path.join(temporaryRoot, 'hook-recovery-fixture'));
+  await verifyInstalledSavedRuntime(installedRoot, prefixDirectory, path.join(temporaryRoot, 'saved-runtime-fixture'));
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 
   recordStage('restart');

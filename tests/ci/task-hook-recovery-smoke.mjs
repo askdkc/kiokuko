@@ -74,8 +74,8 @@ await runMcpServer({databasePath:${JSON.stringify(path.join(fixtureRoot,'cancel.
 }
 
 // Exercise the installed tarball's code and CLI, never source modules.
-export async function verifyInstalledTaskHookRecovery(installedRoot, fixtureRoot) {
-  await verifyInstalledMissingPromptRecovery(installedRoot, path.join(fixtureRoot, 'missing-prompt'));
+export async function verifyInstalledTaskHookRecovery(installedRoot, fixtureRoot, options = {}) {
+  await verifyInstalledMissingPromptRecovery(installedRoot, path.join(fixtureRoot, 'missing-prompt'), options);
   const load = file => import(pathToFileURL(path.join(installedRoot, 'dist', file)).href);
   const { initializeDatabase } = await load('commands/init.js');
   const { openConnection } = await load('db/connection.js');
@@ -94,7 +94,7 @@ export async function verifyInstalledTaskHookRecovery(installedRoot, fixtureRoot
   const codeHome = path.join(fixtureRoot, 'codex');
   await mkdir(path.join(codeHome, 'sessions'), {recursive:true});
   const cli = path.join(installedRoot, 'dist/bin/kiokuko.js');
-  const hookProcess = event => spawnSync(process.execPath, [cli, 'codex-hook', '--database', databasePath],
+  const hookProcess = event => spawnSync(options.runtimeNode ?? process.execPath, [cli, 'codex-hook', '--database', databasePath],
       { input: JSON.stringify({ ...common, ...event }), encoding: 'utf8', env:{...process.env,CODEX_HOME:codeHome} });
   const hook = event => {
     const result = hookProcess(event);
@@ -152,7 +152,7 @@ export async function verifyInstalledTaskHookRecovery(installedRoot, fixtureRoot
     assert.equal(executions,3);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get().n,2);
     db.exec('DROP TRIGGER package_post_fault');
-    const unavailable = spawnSync(process.execPath,[cli,'codex-hook','--database',path.join(fixtureRoot,'absent.sqlite3')],
+    const unavailable = spawnSync(options.runtimeNode ?? process.execPath,[cli,'codex-hook','--database',path.join(fixtureRoot,'absent.sqlite3')],
       {input:JSON.stringify({...common,...unprepared,hook_event_name:'PreToolUse'}),encoding:'utf8'});
     assert.equal(unavailable.status,0);
     assert.equal(acceptCodexToolHook(unavailable.stdout,'PreToolUse').hookSpecificOutput.permissionDecision,'deny');

@@ -8,7 +8,7 @@ import { acceptCodexToolHook, runCodexNestedTool } from '../fixtures/codex-hook-
 
 // Use the installed CLI and MCP server across separate hook processes. The
 // lifecycle events are a host fixture, not evidence of an active desktop reload.
-export async function verifyInstalledMissingPromptRecovery(installedRoot, fixtureRoot) {
+export async function verifyInstalledMissingPromptRecovery(installedRoot, fixtureRoot, options = {}) {
   const root = path.join(fixtureRoot, 'repo');
   const data = path.join(fixtureRoot, 'data');
   await mkdir(root, { recursive: true });
@@ -18,9 +18,9 @@ export async function verifyInstalledMissingPromptRecovery(installedRoot, fixtur
   const cli = path.join(installedRoot, 'dist/bin/kiokuko.js');
   const database = path.join(data, 'kiokuko.sqlite3');
   const env = { ...process.env, KIOKUKO_DATA_DIR: data, KIOKUKO_SKILL_DISCOVERY: 'off' };
-  execFileSync(process.execPath, [cli, 'init', '--json'], { env });
+  execFileSync(process.execPath, [options.managementCli ?? cli, 'init', '--json'], { env });
   let common = { session_id: 'installed-missing-prompt', turn_id: 'previous', cwd: root };
-  const hookProcess = event => spawnSync(process.execPath, [cli, 'codex-hook', '--database', database], {
+  const hookProcess = event => spawnSync(options.runtimeNode ?? process.execPath, [cli, 'codex-hook', '--database', database], {
     env, cwd: root, input: JSON.stringify({ ...common, ...event }), encoding: 'utf8', timeout: 10000,
   });
   const hook = event => {
@@ -30,7 +30,7 @@ export async function verifyInstalledMissingPromptRecovery(installedRoot, fixtur
       ? acceptCodexToolHook(result.stdout, event.hook_event_name) : JSON.parse(result.stdout);
   };
   const client = new Client({ name: 'codex', version: 'missing-prompt-fixture' });
-  const transport = new StdioClientTransport({ command: process.execPath, args: [cli, 'mcp'], cwd: root, env, stderr: 'pipe' });
+  const transport = new StdioClientTransport({ command: options.runtimeNode ?? process.execPath, args: [cli, 'mcp'], cwd: root, env, stderr: 'pipe' });
   await client.connect(transport);
   let calls = 0;
   const call = (name, args) => runCodexNestedTool(hookProcess,

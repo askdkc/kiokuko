@@ -1,6 +1,7 @@
 import { hostSkillFile } from '../setup/standard-skills.js';
-import { defaultCodexHookRuntime, renderCodexAssuranceHooks } from '../setup/codex-hooks.js';
+import { codexAssuranceRuntimeMatches, defaultCodexHookRuntime, renderCodexAssuranceHooks } from '../setup/codex-hooks.js';
 import { defaultCodexMcpRuntime } from '../setup/codex-mcp-launch.js';
+import { verifyPreparedRuntime } from '../runtime/prepare.js';
 import { mkdir, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { stdin, stdout } from 'node:process';
@@ -103,6 +104,8 @@ export interface SetupOptions extends PathEnvironment {
   standardSkills?: boolean;
   skillDiscoveryMode?: SkillDiscoveryMode;
   replaceConflictingMcpServers?: readonly SetupClient[];
+  runtimeManifest?: string;
+  clientStopped?: boolean;
 }
 
 export interface SetupCommandDependencies {
@@ -117,7 +120,8 @@ export interface SetupCommandDependencies {
 export interface SetupResult {
   clients: SetupClient[];
   databasePath: string;
-  databaseAction: 'initialized' | 'planned';
+  databaseAction: 'initialized' | 'planned' | 'unchanged';
+  runtimeId?: string;
   appliedMigrations: number[];
   files: Array<Pick<PlannedFile, 'path' | 'action' | 'purpose' | 'client'>>;
   projectAgentFiles: ProjectAgentRefreshResult[];
@@ -264,6 +268,8 @@ export interface SetupFlowOptions {
   readonly environment?: PathEnvironment;
   readonly clients?: SetupClient[];
   readonly command?: string;
+  readonly runtimeManifest?: string;
+  readonly clientStopped?: boolean;
   readonly dryRun?: boolean;
   readonly standardSkills?: boolean;
   readonly skillDiscoveryMode?: SkillDiscoveryMode;
@@ -313,6 +319,8 @@ export async function runSetupFlow<T extends { clients: SetupClient[]; projectAg
     ...pathEnvironment,
     clients,
     ...(options.command === undefined ? {} : { command: options.command }),
+    ...(options.runtimeManifest === undefined ? {} : { runtimeManifest: options.runtimeManifest }),
+    ...(options.clientStopped === undefined ? {} : { clientStopped: options.clientStopped }),
     dryRun: options.dryRun === true,
     standardSkills: options.standardSkills ?? true,
     ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
@@ -748,6 +756,15 @@ export async function setupGlobalClients(
   if (!Array.isArray(clients) || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
     throw new KiokukoError('VALIDATION_ERROR', `clients must be a subset of: ${SETUP_CLIENTS.join(', ')}`);
   }
+  const pinned = options.runtimeManifest === undefined ? undefined : await verifyPreparedRuntime(options.runtimeManifest);
+  if (pinned !== undefined) {
+    if (clients.length !== 1 || clients[0] !== 'codex' || options.command !== undefined) {
+      throw new KiokukoError('VALIDATION_ERROR', 'A prepared runtime can only replace the Codex launcher without a separate command override');
+    }
+    if (!options.dryRun && options.clientStopped !== true) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Stop the target Codex client and pass --client-stopped before switching its runtime');
+    }
+  }
   const command = options.command ?? 'kiokuko';
   if (typeof command !== 'string' || command.trim().length === 0 || command.includes('\0')) {
     throw new KiokukoError('VALIDATION_ERROR', 'command must be a non-empty executable path or name');
@@ -777,6 +794,7 @@ export async function setupGlobalClients(
         const rendered = renderCodexMcpConfig(existing ?? '', options.command, skillDiscoveryMode, {
           replaceConflictingIdentity: replaceConflictingMcpServers.has('codex'),
           defaultRuntime: defaultCodexMcpRuntime,
+          ...(pinned === undefined ? {} : { pinnedRuntime: { node: pinned.nodePath, script: pinned.cliPath } }),
         });
         codexLaunch = rendered.launch;
         return rendered;
@@ -870,7 +888,8 @@ export async function setupGlobalClients(
   const result: SetupResult = {
     clients,
     databasePath,
-    databaseAction: options.dryRun ? 'planned' : 'initialized',
+    databaseAction: options.dryRun ? 'planned' : pinned === undefined ? 'initialized' : 'unchanged',
+    ...(pinned === undefined ? {} : { runtimeId: pinned.runtimeId }),
     appliedMigrations: [],
     files: files
       .filter((file) => file.report)
@@ -899,13 +918,14 @@ export async function setupGlobalClients(
     return result;
   }
 
+  let registeredProjectLocations: RegisteredProjectLocation[] = [];
+  if (pinned === undefined) {
   const initialized = await initializeDatabase({
     databasePath,
     ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
   });
   result.appliedMigrations = initialized.applied;
   const database = dependencies.openConnection(databasePath);
-  let registeredProjectLocations: RegisteredProjectLocation[] = [];
   let workspaceInitializationFailed = false;
   let workspaceInitializationError: unknown;
   try {
@@ -931,11 +951,15 @@ export async function setupGlobalClients(
     throw closeError;
   }
   if (workspaceInitializationFailed) throw workspaceInitializationError;
+  } else {
+    databaseFileIdentity(databasePath);
+  }
 
   const applied: AppliedFileMutation[] = [];
   const createdDirectories: PlannedDirectory[] = [];
   try {
     await dependencies.beforeCommit();
+    if (pinned !== undefined) await verifyPreparedRuntime(pinned.manifestPath);
     await preparePlannedDirectories(files, createdDirectories);
     await assertPlannedFiles(files);
     for (const file of files) {
@@ -980,6 +1004,17 @@ export async function setupGlobalClients(
       }
     }
     await assertPlannedFiles(files, applied);
+    if (pinned !== undefined) await verifyPreparedRuntime(pinned.manifestPath);
+    if (pinned !== undefined) {
+      const mcp = files.find(file => file.client === 'codex' && file.purpose === 'mcp-config')?.content;
+      const hooks = files.find(file => file.client === 'codex' && file.purpose === 'hooks')?.content;
+      const runtime = { node: pinned.nodePath, script: pinned.cliPath };
+      const launch = renderCodexMcpConfig(mcp ?? '').launch;
+      if (launch.command !== runtime.node || launch.args[0] !== runtime.script || launch.args[1] !== 'mcp'
+        || hooks === undefined || !codexAssuranceRuntimeMatches(hooks, runtime)) {
+        throw new KiokukoError('INTEGRITY_ERROR', 'Codex MCP and lifecycle hooks do not match the selected runtime');
+      }
+    }
   } catch (error) {
     const restorationFailures = await restoreFiles(applied, dependencies);
     const directoryRestorationFailures = await removeCreatedDirectories(createdDirectories);
@@ -992,7 +1027,7 @@ export async function setupGlobalClients(
     }
     throw error;
   }
-  result.projectAgentFiles = await dependencies.refreshRegisteredProjectAgentFiles(
+  if (pinned === undefined) result.projectAgentFiles = await dependencies.refreshRegisteredProjectAgentFiles(
     registeredProjectLocations,
     {
       databasePath,
