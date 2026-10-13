@@ -96,11 +96,26 @@ session; `/reload-mcp` only reloads MCP registration. Smoke-test with
 
 ## Guarantees and non-guarantees
 
-Default Codex assurance hooks pin the setup process's Node executable and the
-package's compiled CLI with absolute paths. This avoids both `kiokuko` lookup
+New Codex MCP configurations pin the current Node executable and the package's
+compiled CLI as separate command and argument paths. Setup checks that both files
+exist and are usable before writing that new default; a source checkout must be
+built first. This avoids shell and GUI PATH lookup for both `kiokuko` and `node`.
+When `--command` is omitted, existing managed MCP launch commands and arguments
+are preserved, including legacy `command = "kiokuko"` entries. An explicit
+`--command <path>` replaces the launcher with that caller-owned executable or
+wrapper and `args = ["mcp"]`. A legacy bare command that is unavailable to a GUI
+client therefore needs an explicit, verified launcher override; plain setup does
+not migrate it. A wrapper must also resolve its own interpreter without relying
+on unavailable PATH entries. Required MCP startup remains enabled.
+
+Codex assurance hooks reuse the saved Node and CLI paths when an existing pinned
+MCP launcher is preserved. Fresh installations and legacy bare MCP launchers use
+the setup process's Node executable and compiled CLI for their hooks. These
+absolute hook paths avoid both `kiokuko` lookup
 and `/usr/bin/env node` lookup in a GUI client's restricted PATH. An explicit
-custom `--command` remains a caller-owned executable or wrapper. Rerun setup
-after relocating Node or the package. Updating a package that active hooks use
+custom `--command` remains a caller-owned executable or wrapper. After relocating
+Node or the package, explicitly repair the preserved MCP launcher before use.
+Updating a package that active hooks or MCP launchers use
 can temporarily remove its files: switch to a separately installed, validated
 runtime before replacing that installation, or update while the client is stopped.
 

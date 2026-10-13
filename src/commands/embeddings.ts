@@ -382,7 +382,7 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
     .option('--no-embeddings', 'Skip embedding setup; keep existing embedding settings unchanged')
     .option('--preset <name>', 'Embedding preset', 'local-small')
     .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes')
-    .option('--command <path>', 'Kiokuko executable name or absolute path', 'kiokuko')
+    .option('--command <path>', 'Override the Kiokuko executable name or absolute path')
     .option('--dry-run', 'Plan setup without downloading or mutating anything')
     .option('--no-standard-skills', 'Skip installing bundled Kiokuko standard skills')
     .option('--skill-discovery <mode>', 'External Skill discovery: off,official,community')
@@ -393,7 +393,7 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
       embeddings: boolean;
       preset: string;
       clients?: string;
-      command: string;
+      command?: string;
       dryRun?: boolean;
       standardSkills: boolean;
       skillDiscovery?: string;
@@ -418,7 +418,7 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
       const setup = await runSetupFlow<ClientSetupResult>({
         ...(dependencies.pathEnvironment === undefined ? {} : { environment: dependencies.pathEnvironment }),
         ...(clients === undefined ? {} : { clients }),
-        command: options.command,
+        ...(options.command === undefined ? {} : { command: options.command }),
         dryRun,
         standardSkills: options.standardSkills,
         ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),

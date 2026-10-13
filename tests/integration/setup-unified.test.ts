@@ -262,3 +262,21 @@ test('embedding plan counts persisted entries without changing database or WAL f
     database.close();
   }
 });
+
+for (const entrypoint of entrypoints) {
+  test(`${entrypoint.join(' ')} distinguishes an omitted launcher override from an explicit one`, async () => {
+    const observed: Array<string | undefined> = [];
+    const dependencies: EmbeddingsCommandDependencies = {
+      withDatabase: async () => assert.fail('Embedding setup must stay disabled'),
+      setupGlobalClients: async (options) => {
+        observed.push(options.command);
+        return { clients: options.clients ?? [], projectAgentFiles: [] };
+      },
+      output: () => undefined,
+    };
+    for (const extra of [[], ['--command', '/custom/kiokuko'], ['--command', 'kiokuko']]) {
+      await command(dependencies).parseAsync(['node', 'kiokuko', ...entrypoint, '--clients', 'codex', '--no-embeddings', '--json', ...extra]);
+    }
+    assert.deepEqual(observed, [undefined, '/custom/kiokuko', 'kiokuko']);
+  });
+}

@@ -187,6 +187,17 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(typeof JSON.parse(result.stdout).hookSpecificOutput.additionalContext, 'string');
+    const mcpConfig = await readFile(path.join(pinnedEnvironment.CODEX_HOME, 'config.toml'), 'utf8');
+    const mcpCommand = JSON.parse(/^command = (.+)$/mu.exec(mcpConfig)[1]);
+    const mcpArgs = JSON.parse(/^args = (.+)$/mu.exec(mcpConfig)[1]);
+    assert.equal(mcpCommand, process.execPath);
+    assert.deepEqual(mcpArgs, [path.join(installedRoot, 'dist/bin/kiokuko.js'), 'mcp']);
+    const mcpClient = new Client({ name: 'packaged-default-launch', version: '1.0.0' });
+    try {
+      await mcpClient.connect(new StdioClientTransport({ command: mcpCommand, args: mcpArgs,
+        cwd: fixtureRoot, env: { ...pinnedEnvironment, PATH: '/usr/bin:/bin' }, stderr: 'pipe' }));
+      assert.ok((await mcpClient.listTools()).tools.some(tool => tool.name === 'task_prepare'));
+    } finally { await mcpClient.close(); }
   }
   await verifyFiles(created, new Map([...expected.keys()].map((file) => [file, 'created'])));
   await verifyInstalledSelectors(cliPath, installedRoot, fixtureRoot, environment, skillDirectories);

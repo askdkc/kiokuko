@@ -358,7 +358,8 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
   const codexConfig = await readFile(path.join(codexDirectory, 'config.toml'), 'utf8');
   assert.match(codexConfig, /^model = "gpt-test"/);
   assert.match(codexConfig, /\[mcp_servers\.kiokuko\]/);
-  assert.match(codexConfig, /command = "kiokuko"/);
+  assert.ok(codexConfig.includes(`command = ${JSON.stringify(process.execPath)}`));
+  assert.match(codexConfig, /args = \["[^\n]+dist[\\/]+bin[\\/]+kiokuko\.js","mcp"\]/u);
   assert.match(codexConfig, /KIOKUKO_SKILL_DISCOVERY = "official"/);
   const codexHooks = JSON.parse(await readFile(path.join(codexDirectory, 'hooks.json'), 'utf8'));
   const hookCommand = codexHooks.hooks.PreToolUse[0].hooks[0].command;

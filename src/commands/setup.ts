@@ -1,5 +1,6 @@
 import { hostSkillFile } from '../setup/standard-skills.js';
 import { defaultCodexHookRuntime, renderCodexAssuranceHooks } from '../setup/codex-hooks.js';
+import { defaultCodexMcpRuntime } from '../setup/codex-mcp-launch.js';
 import { mkdir, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { stdin, stdout } from 'node:process';
@@ -51,7 +52,7 @@ import {
   type ProjectAgentRefreshResult,
   type RegisteredProjectLocation,
 } from '../setup/project-agent-refresh.js';
-import { renderCodexMcpConfig, renderGlobalInstructions } from '../setup/render.js';
+import { renderCodexMcpConfig, renderGlobalInstructions, type CodexMcpLaunch } from '../setup/render.js';
 import {
   loadBundledStandardSkillFiles,
   renderStandardSkillFile,
@@ -311,7 +312,7 @@ export async function runSetupFlow<T extends { clients: SetupClient[]; projectAg
   const setupOptions: SetupOptions = {
     ...pathEnvironment,
     clients,
-    command: options.command ?? 'kiokuko',
+    ...(options.command === undefined ? {} : { command: options.command }),
     dryRun: options.dryRun === true,
     standardSkills: options.standardSkills ?? true,
     ...(skillDiscoveryMode === undefined ? {} : { skillDiscoveryMode }),
@@ -766,21 +767,29 @@ export async function setupGlobalClients(
     : undefined;
 
   if (clients.includes('codex')) {
+    let codexLaunch: CodexMcpLaunch | undefined;
     const mcpFile = await planFile(
       planning,
       getCodexConfigPath(pathEnvironment),
       'codex',
       'mcp-config',
-      (existing) => renderCodexMcpConfig(
-        existing ?? '',
-        command,
-        skillDiscoveryMode,
-        { replaceConflictingIdentity: replaceConflictingMcpServers.has('codex') },
-      ),
+      (existing) => {
+        const rendered = renderCodexMcpConfig(existing ?? '', options.command, skillDiscoveryMode, {
+          replaceConflictingIdentity: replaceConflictingMcpServers.has('codex'),
+          defaultRuntime: defaultCodexMcpRuntime,
+        });
+        codexLaunch = rendered.launch;
+        return rendered;
+      },
     );
     files.push(mcpFile);
+    if (codexLaunch === undefined) throw new KiokukoError('INTEGRITY_ERROR', 'Codex MCP launch planning produced no result');
+    const launch = codexLaunch;
+    const hookRuntime = launch.args.length === 2
+      ? { node: launch.command, script: launch.args[0]! }
+      : launch.command === 'kiokuko' ? defaultCodexHookRuntime() : undefined;
     files.push(await planFile(planning, path.join(path.dirname(getCodexConfigPath(pathEnvironment)), 'hooks.json'), 'codex', 'hooks', existing => {
-      const content = renderCodexAssuranceHooks(existing ?? '', command, databasePath, command === 'kiokuko' ? defaultCodexHookRuntime() : undefined);
+      const content = renderCodexAssuranceHooks(existing ?? '', launch.command, databasePath, hookRuntime);
       return { content, action: content === existing ? 'unchanged' : existing === undefined ? 'created' : 'updated' };
     }));
     files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'codex'), [], mcpFile.original?.content.includes('# BEGIN KIOKUKO MCP') === true));

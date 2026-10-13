@@ -60,8 +60,11 @@ export function registerCodexHookCommand(cli: Command): void {
         const reason = codexHookFailureCode(error);
         if (name === 'PreToolUse' || name === 'PostToolUse') {
           const message = `Kiokuko hook failed: event=${name} stage=${stage} reason=${reason} id=${id}.`;
+          const admissionDetail = reason === 'completion_without_admission'
+            ? ' No matching PreToolUse admission record was found for this tool call. Task preparation is separate from per-tool admission.'
+            : '';
           const warning = name === 'PostToolUse'
-            ? `${message} Tool already executed; do not rerun automatically. The original tool result is retained, but completion recording and verification are unavailable. Stop and report this fault; do not claim verified completion.`
+            ? `${message}${admissionDetail} Tool already executed; do not rerun automatically. The original tool result is retained, but completion recording and verification are unavailable. Stop and report this fault; do not claim verified completion.`
             : `${message} This tool call did not execute. Stop and report this fault.`;
           // Pre failures deny with valid JSON. Post bookkeeping failures must not
           // exit 2 or block: code mode would reject the already-executed result.

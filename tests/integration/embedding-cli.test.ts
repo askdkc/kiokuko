@@ -135,7 +135,6 @@ test('embedding setup configures clients and refreshes project instructions', as
     };
     assert.deepEqual(setupCalls, [{
       clients: ['codex'],
-      command: 'kiokuko',
       dryRun: true,
       standardSkills: true,
       replaceConflictingMcpServers: [],
@@ -186,7 +185,6 @@ test('embedding setup confirms and replaces a conflicting client MCP identity', 
     assert.deepEqual(setupCalls, [
       {
         clients: ['codex'],
-        command: 'kiokuko',
         dryRun: true,
         standardSkills: true,
         skillDiscoveryMode: 'official',
@@ -194,7 +192,6 @@ test('embedding setup confirms and replaces a conflicting client MCP identity', 
       },
       {
         clients: ['codex'],
-        command: 'kiokuko',
         dryRun: true,
         standardSkills: true,
         skillDiscoveryMode: 'official',

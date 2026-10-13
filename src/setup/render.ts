@@ -12,6 +12,8 @@ import type { SkillDiscoveryMode } from '../skills/types.js';
 import { removeDelimitedBlock, upsertDelimitedBlock, type DelimitedBlockResult } from './managed-text.js';
 import { setupMcpIdentityConflict, setupMcpIdentityConflictClient } from './mcp-conflict.js';
 import { parseStrictTomlDefinitions, parseStrictTomlDocument } from './strict-toml.js';
+import path from 'node:path';
+import type { CodexHookRuntime } from './codex-hooks.js';
 
 export const GLOBAL_INSTRUCTIONS_BEGIN = '<!-- BEGIN KIOKUKO GLOBAL MEMORY -->';
 export const GLOBAL_INSTRUCTIONS_END = '<!-- END KIOKUKO GLOBAL MEMORY -->';
@@ -245,7 +247,11 @@ function removeUnmanagedCodexMcpIdentity(existing: string): string {
   return content;
 }
 
-function parseCanonicalCodexBlock(existing: string): SkillDiscoveryMode | undefined {
+export interface CodexMcpLaunch { command: string; args: string[]; }
+interface CanonicalCodexBlock extends CodexMcpLaunch { skillDiscoveryMode: SkillDiscoveryMode; }
+const absoluteLaunchPath = (value: string) => path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
+
+function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undefined {
   const begins = occurrences(existing, CODEX_MCP_BEGIN);
   const ends = occurrences(existing, CODEX_MCP_END);
   if (begins.length === 0 && ends.length === 0) {
@@ -275,19 +281,21 @@ function parseCanonicalCodexBlock(existing: string): SkillDiscoveryMode | undefi
     || lines[0] !== CODEX_MCP_BEGIN
     || lines[1] !== '# Managed by `kiokuko setup`.'
     || lines[2] !== '[mcp_servers.kiokuko]'
-    || lines[4] !== 'args = ["mcp"]'
     || lines[5] !== 'enabled = true'
     || lines[6] !== 'required = true'
     || lines[endIndex] !== CODEX_MCP_END
   ) codexConflict();
 
   const commandMatch = /^command = ("(?:[^"\\]|\\.)*")$/u.exec(lines[3]!);
+  const argsMatch = /^args = (\[.*\])$/u.exec(lines[4]!);
   const modeMatch = /^env = \{ KIOKUKO_SKILL_DISCOVERY = "(off|official|community)" \}$/u.exec(lines[environmentIndex]!);
-  if (commandMatch === null || modeMatch === null) codexConflict();
+  if (commandMatch === null || argsMatch === null || modeMatch === null) codexConflict();
 
   let command: unknown;
+  let args: unknown;
   try {
     command = JSON.parse(commandMatch[1]!);
+    args = JSON.parse(argsMatch[1]!);
   } catch {
     codexConflict();
   }
@@ -297,13 +305,19 @@ function parseCanonicalCodexBlock(existing: string): SkillDiscoveryMode | undefi
     || command.includes('\0')
     || JSON.stringify(command) !== commandMatch[1]
   ) codexConflict();
+  if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
+    || JSON.stringify(args) !== argsMatch[1]) codexConflict();
+  const direct = args.length === 1 && args[0] === 'mcp';
+  const pinned = args.length === 2 && args[1] === 'mcp' && absoluteLaunchPath(command)
+    && absoluteLaunchPath(args[0]) && /[/\\]dist[/\\]bin[/\\]kiokuko\.js$/u.test(args[0]);
+  if (!direct && !pinned) codexConflict();
   const kiokukoDefinitions = parseStrictTomlDefinitions(existing).filter((definition) => (
     definition.path[0] === 'mcp_servers' && definition.path[1] === 'kiokuko'
   ));
   if (kiokukoDefinitions.some((definition) => definition.offset < begin || definition.offset >= endExclusive)) {
     codexConflict();
   }
-  return modeMatch[1] as SkillDiscoveryMode;
+  return { command, args: args as string[], skillDiscoveryMode: modeMatch[1] as SkillDiscoveryMode };
 }
 
 /** Remove only the marked MCP table, including blocks from older setup versions. */
@@ -324,11 +338,11 @@ export function removeCodexMcpConfig(existing: string): string | undefined {
 
 export function renderCodexMcpConfig(
   existing = '',
-  command = 'kiokuko',
+  command?: string,
   skillDiscoveryMode?: SkillDiscoveryMode,
-  options: { replaceConflictingIdentity?: boolean } = {},
-): DelimitedBlockResult {
-  if (typeof command !== 'string' || command.trim().length === 0 || command.includes('\0')) {
+  options: { replaceConflictingIdentity?: boolean; defaultRuntime?: () => CodexHookRuntime } = {},
+): DelimitedBlockResult & { launch: CodexMcpLaunch } {
+  if (command !== undefined && (typeof command !== 'string' || command.trim().length === 0 || command.includes('\0'))) {
     throw new KiokukoError('VALIDATION_ERROR', 'Codex MCP command must be a non-empty executable path or name');
   }
   if (skillDiscoveryMode !== undefined && !isSkillDiscoveryMode(skillDiscoveryMode)) {
@@ -339,27 +353,40 @@ export function renderCodexMcpConfig(
     throw new KiokukoError('VALIDATION_ERROR', 'Codex MCP replacement authorization is invalid');
   }
   let renderTarget = existing;
-  let currentSkillDiscoveryMode: SkillDiscoveryMode | undefined;
+  let current: CanonicalCodexBlock | undefined;
   try {
-    currentSkillDiscoveryMode = parseCanonicalCodexBlock(renderTarget);
+    current = parseCanonicalCodexBlock(renderTarget);
   } catch (error) {
     if (!options.replaceConflictingIdentity || setupMcpIdentityConflictClient(error) !== 'codex') throw error;
     renderTarget = removeUnmanagedCodexMcpIdentity(renderTarget);
-    currentSkillDiscoveryMode = parseCanonicalCodexBlock(renderTarget);
+    current = parseCanonicalCodexBlock(renderTarget);
   }
   const effectiveSkillDiscoveryMode = skillDiscoveryMode === undefined
-    ? currentSkillDiscoveryMode ?? 'official'
+    ? current?.skillDiscoveryMode ?? 'official'
     : skillDiscoveryMode;
+  // An omitted CLI option is not authorization to replace a working launcher.
+  let launch: CodexMcpLaunch;
+  if (command !== undefined) launch = { command, args: ['mcp'] };
+  else if (current !== undefined) launch = { command: current.command, args: current.args };
+  else if (options.defaultRuntime !== undefined) {
+    const runtime = options.defaultRuntime();
+    if (!absoluteLaunchPath(runtime.node) || !absoluteLaunchPath(runtime.script)
+      || [runtime.node, runtime.script].some(value => value.includes('\0'))
+      || !/[/\\]dist[/\\]bin[/\\]kiokuko\.js$/u.test(runtime.script)) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Codex default runtime must use absolute Node and compiled Kiokuko CLI paths');
+    }
+    launch = { command: runtime.node, args: [runtime.script, 'mcp'] };
+  } else launch = { command: 'kiokuko', args: ['mcp'] };
   const block = [
     CODEX_MCP_BEGIN,
     '# Managed by `kiokuko setup`.',
     '[mcp_servers.kiokuko]',
-    `command = ${JSON.stringify(command)}`,
-    'args = ["mcp"]',
+    `command = ${JSON.stringify(launch.command)}`,
+    `args = ${JSON.stringify(launch.args)}`,
     'enabled = true',
     'required = true',
     `env = { ${SKILL_DISCOVERY_ENV} = ${JSON.stringify(effectiveSkillDiscoveryMode)} }`,
     CODEX_MCP_END,
   ].join('\n');
-  return upsertDelimitedBlock(renderTarget, block, CODEX_MCP_BEGIN, CODEX_MCP_END, 'Codex config.toml');
+  return { ...upsertDelimitedBlock(renderTarget, block, CODEX_MCP_BEGIN, CODEX_MCP_END, 'Codex config.toml'), launch };
 }

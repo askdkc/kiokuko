@@ -530,7 +530,14 @@ test('hook diagnostics distinguish an unpaired completion without exposing its c
     const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath],
       { cwd: process.cwd(), input: JSON.stringify(event), encoding: 'utf8' });
     assert.equal(result.status, 0);
-    assert.match(acceptCodexToolHook(result.stdout, 'PostToolUse').systemMessage!, /completion_without_admission/u);
+    const warning = acceptCodexToolHook(result.stdout, 'PostToolUse').systemMessage!;
+    assert.match(warning, /completion_without_admission/u);
+    assert.match(warning, /No matching PreToolUse admission record was found for this tool call\. Task preparation is separate from per-tool admission\./u);
+    assert.match(warning, /Tool already executed; do not rerun automatically\. The original tool result is retained/u);
+    assert.match(warning, /Stop and report this fault; do not claim verified completion\./u);
+    assert.equal(f.db.prepare('SELECT state,stop_notified FROM codex_hook_requests').get()!.state, 'bound');
+    assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get()!.stop_notified, 0);
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get(f.prepared.run.runId)!.status, 'active');
     assert.match(result.stderr, /event=PostToolUse stage=post_completion reason=completion_without_admission id=[0-9a-f]{16}.*Tool already executed/u);
     assert.doesNotMatch(result.stderr, /private-command-body/u);
     const observation = f.db.prepare("SELECT response_shape FROM codex_hook_observations WHERE event_name='PostToolUse' AND decision='CONFLICT' ORDER BY rowid DESC LIMIT 1")
