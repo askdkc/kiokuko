@@ -36,11 +36,11 @@ for (const [gate,id,args] of [['G0','typecheck',['run','typecheck']],['G1','suit
   if (gate === 'G1') {
     let tests; try { tests=JSON.parse(readFileSync(path.join(output,'G1/tests.json'),'utf8')); } catch { }
     passed &&= tests?.complete === true && tests.counts.tests > 0 && tests.counts.failed === 0 && tests.counts.cancelled === 0 && tests.counts.todo === 0;
-    passed &&= validSuite(tests,policy?.testManifest ?? tests?.ids.map(x=>({id:x.id,optionalSkip:x.skipped})));
+    passed &&= validSuite(tests,policy?.testManifest ?? tests?.ids.map(x=>({id:x.id,optionalSkip:false})));
   }
   if (gate === 'G2') {
     let packaged; try { packaged=JSON.parse(readFileSync(path.join(output,'G2/package.json'),'utf8')); } catch { }
-    passed &&= packaged?.sourceDigest === initial.sourceDigest && packaged?.stages?.length === 5;
+    passed &&= packaged?.classification === 'PASS' && packaged?.sourceDigest === initial.sourceDigest && typeof packaged?.artifactHash === 'string' && packaged?.stages?.length === 5 && packaged.stages.every(stage=>stage.complete===true && stage.exitCode===0 && stage.commands?.length>0);
     writeFileSync(path.join(output,'G2/stages.json'),JSON.stringify(packaged ?? {}));
   }
   const record={...initial,gate,classification:passed ? 'PASS' : result ? 'FAIL_HARNESS' : 'NOT_RUN',command,policyHash:policyDigest,

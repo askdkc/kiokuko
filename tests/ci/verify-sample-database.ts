@@ -1,3 +1,4 @@
+import { completeVerification } from '../../scripts/verification-completion.mjs';
 import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { chmod, copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -365,3 +366,5 @@ try {
   process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
   process.exitCode = 1;
 }
+
+completeVerification({});

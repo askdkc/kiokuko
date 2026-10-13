@@ -50,7 +50,10 @@
     "test:normal-workflow:gates": "node scripts/run-normal-workflow-gates.mjs",
     "test:normal-workflow:live": "node scripts/run-normal-workflow-acceptance.mjs --require-live",
     "test:memory-index:evaluation": "node --import tsx --test --test-name-pattern=\"fixed bilingual index evaluation\" tests/integration/memory-index.test.ts",
-    "test:chatgpt:tunnel": "node scripts/run-tunnel-smoke.mjs"
+    "test:chatgpt:tunnel": "node scripts/run-tunnel-smoke.mjs",
+    "verify": "node scripts/verify.mjs",
+    "verify:plan": "node scripts/verify.mjs --plan",
+    "test:verification": "node --test scripts/verification-contract.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

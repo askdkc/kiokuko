@@ -1,3 +1,4 @@
+import { completeVerification } from '../../scripts/verification-completion.mjs';
 // Run in the dedicated Linux CI container: its /tmp ancestors are controlled.
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -19,3 +20,5 @@ try {
   assert.deepEqual(detectRepositoryRoot({ cwd: child }), { root, source: 'binding' });
   console.log('repository root: no-root, allowDirectory, marker, Git and binding passed');
 } finally { await rm(root, { recursive: true, force: true }); }
+
+completeVerification({});

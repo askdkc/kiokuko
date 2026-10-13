@@ -1,3 +1,4 @@
+import { completeVerification } from '../../scripts/verification-completion.mjs';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
@@ -64,7 +65,8 @@ async function payload(runDir, event) {
 try {
   await mkdir(env.TMPDIR);
   const version = await command(['--version']);
-  assert.equal(version, '0.1.2', 'This compatibility check targets AgenticReplay 0.1.2');
+  const expected=process.env.KIOKUKO_AGENTICREPLAY_CURRENT==='1'?'0.1.4':'0.1.2';
+  assert.equal(version,expected,'This compatibility check uses a declared version fixture');
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -83,7 +85,9 @@ try {
   assert.equal(result.structuredContent.contract.id, 'kiokuko/model-managed');
   assert.match(result.structuredContent.text, /# Kiokuko SOUL router/u);
 
-  const runDir = path.join(fixture, '.agenticreplay/runs', recording.runId);
+  const runDir = recording.runDir;
+  assert.equal(path.dirname(runDir),path.join(fixture,'.agenticreplay/runs'));
+  assert.equal(JSON.parse(await readFile(path.join(runDir,'manifest.json'),'utf8')).run_id,recording.runId);
   const events = (await readFile(path.join(runDir, 'events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
   const captured = events.filter(({ type, attrs }) => type === 'net.request' && attrs.phase === 'body');
   assert.equal(captured.length, 2);
@@ -106,3 +110,5 @@ try {
   }
   await rm(fixture, { recursive: true, force: true });
 }
+
+completeVerification({});

@@ -1,3 +1,4 @@
+import { completeVerification } from '../../scripts/verification-completion.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -48,3 +49,5 @@ try {
     } finally { await client.close(); }
   }
 } finally { await rm(fixture, { recursive: true, force: true }); }
+
+completeVerification({});

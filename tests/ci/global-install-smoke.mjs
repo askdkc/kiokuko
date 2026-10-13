@@ -1,3 +1,4 @@
+import { completeVerification } from '../../scripts/verification-completion.mjs';
 import { firstSetupEnvironment } from '../../scripts/lib/normal-workflow/package-smoke-environment.mjs';
 import { FIRST_SETUP_SCRIPT } from '../../scripts/lib/normal-workflow/package-evidence.mjs';
 import { verifyInstalledTaskHookRecovery } from './task-hook-recovery-smoke.mjs';
@@ -549,8 +550,10 @@ try {
   await writeFile(npmUserConfigPath, '');
   const packageJson = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
   await mkdir(packDirectory, { recursive: true });
-  await run('npm', ['run', 'build'], repositoryRoot);
-  const packed = await run('npm', ['pack', '--pack-destination', packDirectory, '--json'], repositoryRoot);
+  if (!process.env.KIOKUKO_VERIFY_TARBALL) await run('npm', ['run', 'build'], repositoryRoot);
+  const packed = process.env.KIOKUKO_VERIFY_TARBALL
+    ? { stdout: await readFile(process.env.KIOKUKO_VERIFY_PACK_METADATA, 'utf8') }
+    : await run('npm', ['pack', '--pack-destination', packDirectory, '--json'], repositoryRoot);
   const packageFiles = new Set(JSON.parse(packed.stdout)[0].files.map((file) => file.path));
   for (const file of ['templates/chatgpt/memory-policy.json', 'dist/chatgpt/memory-policy.js',
     'dist/mcp/chatgpt-server.js', 'dist/mcp/chatgpt-runtime.js', 'dist/memory/global-conversation-query.js',
@@ -569,7 +572,8 @@ try {
   for (const file of ['migrations/006_conversation_handoffs.sql', 'dist/memory/handoff.js']) {
     assert.ok(packageFiles.has(file), `Conversation handoff package artifact missing: ${file}`);
   }
-  const tarball = packedFilename(packed.stdout, packDirectory);
+  const tarball = process.env.KIOKUKO_VERIFY_TARBALL ?? packedFilename(packed.stdout, packDirectory);
+  if (process.env.KIOKUKO_VERIFY_TARBALL) packageExecutions.push({stage:'pack',...JSON.parse(await readFile(process.env.KIOKUKO_VERIFY_ARTIFACT_REPORT,'utf8')).packExecution});
   recordStage('pack');
   currentPackageStage='install';
   artifactHash = createHash('sha256').update(await readFile(tarball)).digest('hex');
@@ -642,3 +646,5 @@ try {
 }
 
 process.stdout.write('Global install smoke test passed.\n');
+
+completeVerification({});
