@@ -10,6 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { verifyInstalledTaskHookRecovery } from '../ci/task-hook-recovery-smoke.mjs';
 
 test('runtime-prepare publishes a verified, independently launchable runtime', async () => {
+  const packageJson = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-runtime-'));
   try {
     const node = process.env.KIOKUKO_TEST_STANDALONE_NODE ?? process.execPath;
@@ -21,7 +22,7 @@ test('runtime-prepare publishes a verified, independently launchable runtime', a
     assert.equal(typeof result.runtimeId, 'string');
     const manifest = JSON.parse(await readFile(result.manifestPath, 'utf8'));
     assert.equal(manifest.runtimeId, result.runtimeId);
-    assert.equal(manifest.packageVersion, '1.0.35');
+    assert.equal(manifest.packageVersion, packageJson.version);
     assert.ok((await stat(result.nodePath)).isFile());
     const version = spawnSync(result.nodePath, [result.cliPath, 'version'], { encoding: 'utf8', env: { PATH: '' } });
     assert.equal(version.status, 0, version.stderr);

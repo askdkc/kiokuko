@@ -108,7 +108,7 @@ async function recordInstalledPackage(packageDirectory, names) {
   await installedPackageNames(path.join(packageDirectory, 'node_modules'), names);
 }
 
-async function verifyInstalledSavedRuntime(installedRoot, prefixDirectory, fixtureRoot) {
+async function verifyInstalledSavedRuntime(installedRoot, prefixDirectory, fixtureRoot, expectedVersion) {
   await mkdir(fixtureRoot, { recursive: true });
   const sourceModules = path.join(prefixDirectory, 'lib', 'node_modules');
   const parkedModules = path.join(prefixDirectory, 'lib', 'node_modules-parked');
@@ -118,10 +118,12 @@ async function verifyInstalledSavedRuntime(installedRoot, prefixDirectory, fixtu
     '--runtime-root', runtimeRoot, '--node', node, '--json'], fixtureRoot);
   const runtime = JSON.parse(prepared.stdout);
   assert.match(runtime.runtimeId, /^[0-9a-f]{64}$/u);
+  const manifest = JSON.parse(await readFile(runtime.manifestPath, 'utf8'));
+  assert.equal(manifest.packageVersion, expectedVersion);
   await rename(sourceModules, parkedModules);
   try {
     const version = await run(runtime.nodePath, [runtime.cliPath, 'version'], fixtureRoot, {PATH:''});
-    assert.equal(version.stdout.trim(), '1.0.35');
+    assert.equal(version.stdout.trim(), manifest.packageVersion);
     const client = new Client({name:'saved-runtime-package-smoke',version:'1.0.0'});
     try {
       await client.connect(new StdioClientTransport({command:runtime.nodePath,args:[runtime.cliPath,'mcp'],cwd:fixtureRoot,
@@ -643,7 +645,7 @@ try {
   await verifyInstalledChatgptProfile(cliPath, path.join(temporaryRoot, 'chatgpt-fixture'));
   await verifyInstalledTaskVerification(cliPath, path.join(temporaryRoot, 'verification-fixture'));
   await verifyInstalledTaskHookRecovery(installedRoot, path.join(temporaryRoot, 'hook-recovery-fixture'));
-  await verifyInstalledSavedRuntime(installedRoot, prefixDirectory, path.join(temporaryRoot, 'saved-runtime-fixture'));
+  await verifyInstalledSavedRuntime(installedRoot, prefixDirectory, path.join(temporaryRoot, 'saved-runtime-fixture'), packageJson.version);
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 
   recordStage('restart');
