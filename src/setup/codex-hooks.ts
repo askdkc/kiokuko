@@ -1,7 +1,7 @@
 import { KiokukoError } from '../errors.js';
 import { parseStrictJson } from './strict-json.js';
 import { fileURLToPath } from 'node:url';
-export const CODEX_ASSURANCE_EVENTS = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop'] as const;
+export const CODEX_ASSURANCE_EVENTS = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact'] as const;
 const owner = 'Kiokuko memory assurance v1';
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new KiokukoError('VALIDATION_ERROR', 'Codex hook configuration is invalid');

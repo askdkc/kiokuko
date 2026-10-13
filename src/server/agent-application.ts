@@ -1,3 +1,4 @@
+import { createPassiveMemoryRoute, passiveMemoryOperation } from './routes/passive-memory.js';
 import { createTaskAssuranceRoute, taskAssuranceOperation } from './routes/task-assurance.js';
 import { KiokukoError } from '../errors.js';
 import { AgentGatewayService } from '../gateway/agent-service.js';
@@ -17,7 +18,8 @@ import { AgentCheckpointUseCase } from './agent-checkpoint-use-case.js';
 export type AgentHttpServerOptions = Omit<HttpServerOptions, 'app' | 'v1' | 'applicationFactory'>;
 
 function operationFor(method: string, pathname: string): string | undefined {
-  return taskAssuranceOperation(method, pathname)
+  return passiveMemoryOperation(method, pathname)
+    ?? taskAssuranceOperation(method, pathname)
     ?? agentRunsOperation(method, pathname)
     ?? agentPromotionsOperation(method, pathname)
     ?? agentIntakeOperation(method, pathname)
@@ -46,6 +48,7 @@ export function createAgentV1Handler(context: HttpApplicationContext): V1RouteHa
     }),
   };
   const routes: readonly V1RouteHandler[] = [
+    createPassiveMemoryRoute(routeContext),
     createAgentRunsRoute(routeContext),
     createAgentPromotionsRoute(routeContext),
     createAgentIntakeRoute(routeContext),
@@ -60,6 +63,7 @@ export function createAgentV1Handler(context: HttpApplicationContext): V1RouteHa
     }
     return undefined;
   }) as V1RouteHandler;
+  handler.close = () => { for (const route of routes) route.close?.(); };
   handler.operationFor = ({ method, url }) => operationFor(method, url.pathname);
   return handler;
 }
@@ -75,8 +79,11 @@ function rejectConflictingOptions(options: AgentHttpServerOptions): void {
 
 export async function startAgentHttpServer(options: AgentHttpServerOptions = {}): Promise<HttpServerHandle> {
   rejectConflictingOptions(options);
-  return startHttpServer({
+  let route: V1RouteHandler | undefined;
+  const handle = await startHttpServer({
     ...options,
-    applicationFactory: (context) => context.createAuthenticatedApp(createAgentV1Handler(context)),
+    applicationFactory: (context) => { route = createAgentV1Handler(context); return context.createAuthenticatedApp(route); },
   });
+  handle.server.once('close', () => route?.close?.());
+  return handle;
 }

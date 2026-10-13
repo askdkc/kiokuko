@@ -54,7 +54,8 @@ export async function verifyInstalledMissingPromptRecovery(installedRoot, fixtur
     assert.equal(executions, 0);
     const missing = hook({ hook_event_name: 'PreToolUse', agent_id: 'fresh-child',
       tool_name: 'exec_command', tool_use_id: 'unprepared-child', tool_input: { cmd: 'true' } });
-    assert.equal(missing.hookSpecificOutput.permissionDecision, 'deny');
+    assert.notEqual(missing.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(missing.systemMessage, /request_not_observed/u);
     // The parent binding must not be borrowed even when its ID is supplied.
     const childMismatch = hook({ hook_event_name: 'PreToolUse', agent_id: 'fresh-child',
       tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'foreign-prepare', tool_input: { cwd: root, requestId: previousId } });
@@ -63,7 +64,8 @@ export async function verifyInstalledMissingPromptRecovery(installedRoot, fixtur
     assert.notEqual(inspection.isError, true);
     await call('task_inspect', { cwd: root, operation: 'skill', path: 'kiokuko-codex-memory-reasoning' });
     const blocked = hook({ hook_event_name: 'PreToolUse', tool_name: 'exec_command', tool_use_id: 'unprepared', tool_input: { cmd: 'true' } });
-    assert.equal(blocked.hookSpecificOutput.permissionDecision, 'deny');
+    assert.notEqual(blocked.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(blocked.systemMessage, /preparation_required/u);
     const requestId = /requestId (codex-[0-9a-f]{64})/u.exec(blocked.systemMessage)[1];
     assert.notEqual(requestId, previousId);
     const prepared = await prepare(requestId);

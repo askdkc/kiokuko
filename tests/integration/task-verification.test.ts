@@ -154,7 +154,7 @@ test('losing a bound checkout cannot exempt a project run from verification, inc
   } finally { f.close(); }
 });
 
-test('MCP and HTTP verification share receipts; checkpoint and Stop reject incomplete targets', async () => {
+test('MCP and HTTP verification share receipts; optional Stop warns while record completion rejects incomplete targets', async () => {
   const f = await fixture();
   const server = createKiokukoMcpServer({ databasePath: f.databasePath, cwd: () => f.cwd });
   const client = new Client({ name: 'verification-parity', version: '1' });
@@ -168,10 +168,13 @@ test('MCP and HTTP verification share receipts; checkpoint and Stop reject incom
     const http = await route({ method: 'POST', url: new URL(`http://localhost/api/v1/agent/runs/${runId}/verification-define`), headers: { 'idempotency-key': requestId }, body }) as any;
     assert.deepEqual(http.data, result.structuredContent);
     const stop = () => handleCodexHook(f.db, { ...f.hook, hook_event_name: 'Stop' }) as any;
-    assert.equal(stop().continue, false);
+    assert.notEqual(stop().continue, false);
+    assert.match(stop().systemMessage, /records are incomplete/u);
     const checkpoint = () => client.callTool({ name: 'memory_checkpoint', arguments: { cwd: f.cwd, runId, outcome: 'completed', evidence: { tests: [{ runner: 'fixture', outcome: 'passed' }] } } });
     const rejected = await checkpoint();
     assert.equal((rejected.structuredContent as Record<string, unknown>)?.reason, 'task_verification_incomplete');
+    assert.equal((rejected.structuredContent as Record<string, unknown>)?.workMayContinue, true);
+    assert.notEqual((rejected.structuredContent as Record<string, unknown>)?.nextAction, 'proceed');
     assert.equal(new LedgerStore(f.db).readRun(runId)!.status, 'active');
     const service = new AgentGatewayService(f.db);
     const close = { runId, idempotencyKey: 'close-required', request: { apiVersion: '1', status: 'completed' } };

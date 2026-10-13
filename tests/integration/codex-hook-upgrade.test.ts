@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { loadMigrationSnapshot } from '../../src/db/migrate.js';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -56,7 +57,7 @@ test('installed hook upgrades schema 11 before completing an admitted active cal
     assert.deepEqual(JSON.parse(completed.stdout), {});
     assert.equal(cli(event).status, 0);
     db = openConnection(databasePath);
-    assert.equal(db.prepare('SELECT MAX(version) v FROM schema_migrations').get()?.v, 12);
+    assert.equal(db.prepare('SELECT MAX(version) v FROM schema_migrations').get()?.v, loadMigrationSnapshot().migrations.at(-1)!.version);
     assert.equal(db.prepare("SELECT status FROM ledger_runs WHERE run_id='active'").get()?.status, 'active');
     assert.equal(db.prepare("SELECT unknown_exit_calls FROM task_execution_observations WHERE run_id='active'").get()?.unknown_exit_calls, 1);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get()?.n, 0);

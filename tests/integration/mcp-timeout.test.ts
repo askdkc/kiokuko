@@ -57,7 +57,7 @@ test('MCP tool timeout returns a stable public error and the same connection ser
     const timedOut = await client.callTool({ name: 'curator_check', arguments: { cwd: root } });
     assert.equal(timedOut.isError, true);
     assert.deepEqual(timedOut.structuredContent, {
-      code: 'MCP_REQUEST_TIMEOUT',
+      code: 'MCP_REQUEST_TIMEOUT', workMayContinue: true, bookkeepingFailure: true,
       message: 'MCP request timed out',
       operation: 'curator_check',
       retryable: true,

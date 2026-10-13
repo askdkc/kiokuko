@@ -463,7 +463,7 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /rejected precondition does not count as that successful checkpoint/);
     assert.match(instructions, /rejected precondition .*may be retried only after the indicated run-state change/);
     assert.doesNotMatch(instructions, /Call `memory_checkpoint` at most once for the current user request/);
-    assert.match(instructions, /unavailable before a non-trivial build\/debug request can obtain its policy, stop and report/);
+    assert.match(instructions, /unavailable, report unavailable memory and continue unrelated authorized coding/);
     assert.match(instructions, /diagnosing or repairing Kiokuko itself/);
     assert.match(instructions, /`task_prepare` fails before returning scoped context/);
     assert.match(instructions, /continue only from repository evidence without Kiokuko memory/);

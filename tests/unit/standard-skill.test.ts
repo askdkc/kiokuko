@@ -127,12 +127,12 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   const soulSkill = soulFiles.find((file) => file.relativePath === 'SKILL.md')?.content ?? '';
   assert.match(soulSkill, new RegExp(`^---\\nname: ${STANDARD_SOUL_SKILL_NAME}\\ndescription: [^\\n]+\\n---\\n`));
   assert.match(soulSkill, /read this Skill before any other bundled Kiokuko Skill/);
-  assert.match(soulSkill, /Akinator is the mandatory state machine between this SOUL read and every planning or implementation route/);
+  assert.match(soulSkill, /Akinator manages optional Kiokuko records after this SOUL read/);
   assert.match(soulSkill, /Obtain at most one successful preparation through `task_prepare`.*complete capability catalog available in the current client/su);
-  assert.match(soulSkill, /`needs_answer`.*Akinator controls progress.*Do not plan, implement, verify, enter the simple\/code\/UI routes, or call `memory_checkpoint` while unresolved/su);
+  assert.match(soulSkill, /`needs_answer`.*Akinator controls only that record.*Do not complete that memory record while unresolved/su);
   assert.match(soulSkill, /Repeat the same capability catalog and context budget.*continue until `ready` or `exhausted`/su);
   assert.match(soulSkill, /`exhausted`.*`intake\.missingFields` may remain.*do not invent the missing answers/su);
-  assert.match(soulSkill, /Enter planning and implementation routes only after the Akinator gate reaches `ready` or `exhausted` and top-level `nextAction` permits progress/);
+  assert.match(soulSkill, /The optional memory record can proceed after its intake reaches `ready` or `exhausted` and its `nextAction` permits/);
   assert.match(soulSkill, /Keep each route within the user-approved task scope/);
   assert.match(soulSkill, /Read and apply `kiokuko-simple-work` when either condition is true/u);
   assert.match(soulSkill, /introduces no new architecture, dependency, data migration, public protocol, security or authorization policy, or cross-system orchestration/u);
@@ -147,9 +147,9 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
     soulSkill,
     /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `repair-user-workflow`[\s\S]*5\. `kiokuko-simple-work`[\s\S]*6\. `kiokuko-single-purpose-functions`[\s\S]*7\. `one-shot-software-completion`[\s\S]*8\. `coding-ideal-routine-skill`[\s\S]*9\. `kiokuko-ui-design-soul`/u,
   );
-  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Akinator is the mandatory intake state machine before every planning or implementation route/);
-  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/);
-  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Akinator is the intake state machine for an optional Kiokuko task record/);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /do not complete that memory record while `intake\.status=needs_answer`/);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /For the optional record, route after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/);
 });
 
 test('setup bundles the completion core and all four on-demand references', async () => {

@@ -1,3 +1,4 @@
+import { dispatchHookObservation } from '../memory/hook-observation-dispatch.js';
 import { maintainDiagnosticRetention } from '../ledger/diagnostic-retention.js';
 import type { Command } from 'commander';
 import { databaseFileIdentity, openConnection, requireDatabaseFileIdentity } from '../db/connection.js';
@@ -41,6 +42,11 @@ export function registerCodexHookCommand(cli: Command): void {
         }
         event = JSON.parse(raw);
         const input = parseCodexHookInput(event);
+        dispatchHookObservation(input, options.database);
+        if (input.hook_event_name === 'PreCompact' || input.hook_event_name === 'PostCompact') {
+          process.stdout.write('{}\n');
+          return; // New compaction observation never waits for a memory DB.
+        }
         const database = await openHookDatabase(options.database);
         let result: object;
         try {
@@ -53,37 +59,21 @@ export function registerCodexHookCommand(cli: Command): void {
         process.stdout.write(JSON.stringify(result) + '\n');
         if ('systemMessage' in result && typeof result.systemMessage === 'string') process.stderr.write(result.systemMessage + '\n');
       } catch (error) {
+        if (options.diagnoseCall !== undefined) {
+          const reason = codexHookFailureCode(error);
+          process.stdout.write(JSON.stringify({ isError: true, reason }) + '\n');
+          process.stderr.write(`Kiokuko diagnosis failed: ${reason}.\n`);
+          process.exitCode = 2;
+          return;
+        }
         const fields = event && typeof event === 'object' ? event as Record<string, unknown> : {};
         const name = typeof fields.hook_event_name === 'string' ? fields.hook_event_name : 'unknown';
         const id = codexHookCorrelationId(fields);
         const stage = name === 'PostToolUse' ? 'post_completion' : name === 'PreToolUse' ? 'pre_admission' : 'event';
         const reason = codexHookFailureCode(error);
-        if (name === 'PreToolUse' || name === 'PostToolUse') {
-          const message = `Kiokuko hook failed: event=${name} stage=${stage} reason=${reason} id=${id}.`;
-          const admissionDetail = reason === 'completion_without_admission'
-            ? ' No matching PreToolUse admission record was found for this tool call. Task preparation is separate from per-tool admission.'
-            : '';
-          const warning = name === 'PostToolUse'
-            ? `${message}${admissionDetail} Tool already executed; do not rerun automatically. The original tool result is retained, but completion recording and verification are unavailable. Stop and report this fault; do not claim verified completion.`
-            : `${message} This tool call did not execute. Stop and report this fault.`;
-          // Pre failures deny with valid JSON. Post bookkeeping failures must not
-          // exit 2 or block: code mode would reject the already-executed result.
-          process.stdout.write(JSON.stringify({ systemMessage: warning, hookSpecificOutput: name === 'PreToolUse'
-            ? { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: warning }
-            : { hookEventName: 'PostToolUse', additionalContext: warning } }) + '\n');
-          process.stderr.write(warning + '\n');
-          return;
-        }
-        if (name === 'Interrupt') {
-          process.stdout.write(JSON.stringify({ systemMessage: `Hook failure (${reason}, ${id}) prevented interruption recording.` }) + '\n');
-          return;
-        }
-        if (name === 'Stop' || name === 'SubagentStop') {
-          process.stdout.write(JSON.stringify({ continue: false, stopReason: 'Kiokuko verification unavailable', systemMessage: `Hook failure (${reason}, ${id}) prevented verification. Do not claim verified completion.` }) + '\n');
-          return;
-        }
-        process.stderr.write(`Kiokuko hook failed: event=${name} stage=${stage} reason=${reason} id=${id}.${name === 'PostToolUse' ? ' Tool already executed; do not rerun automatically.' : ''}\n`);
-        process.exitCode = 2;
+        const message = `Optional Kiokuko memory observation unavailable: event=${name} stage=${stage} reason=${reason} id=${id}. Work may continue; no execution or persistence success is inferred.${name === 'PostToolUse' ? ' The tool already executed; do not rerun it automatically. Completion recording and memory verification are unavailable.' : ''}`;
+        process.stdout.write(JSON.stringify({ systemMessage: message }) + '\n');
+        process.stderr.write(message + '\n');
       }
     });
 }

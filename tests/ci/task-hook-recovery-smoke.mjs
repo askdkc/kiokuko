@@ -107,8 +107,8 @@ export async function verifyInstalledTaskHookRecovery(installedRoot, fixtureRoot
     const requestId = db.prepare('SELECT request_id FROM codex_hook_requests').get().request_id;
     let deniedExecutions = 0;
     const unprepared = { tool_name: 'read_file', tool_use_id: 'unprepared', tool_input: { path: 'package.json' } };
-    await assert.rejects(runCodexNestedTool(hookProcess, unprepared, async () => { deniedExecutions++; return 'should not execute'; }), /Preparation was missing/);
-    assert.equal(deniedExecutions, 0);
+    assert.equal(await runCodexNestedTool(hookProcess, unprepared, async () => { deniedExecutions++; return 'authorized read with unavailable memory'; }), 'authorized read with unavailable memory');
+    assert.equal(deniedExecutions, 1);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM codex_hook_tools').get().n, 0);
     const args = { cwd: root, requestId, capabilities, skillDiscoveryMode: 'off', task: 'Build a TypeScript service',
       profileHints: { taskType: 'build', target: 'TypeScript service', expected: 'CLI starts' } };
@@ -155,7 +155,8 @@ export async function verifyInstalledTaskHookRecovery(installedRoot, fixtureRoot
     const unavailable = spawnSync(options.runtimeNode ?? process.execPath,[cli,'codex-hook','--database',path.join(fixtureRoot,'absent.sqlite3')],
       {input:JSON.stringify({...common,...unprepared,hook_event_name:'PreToolUse'}),encoding:'utf8'});
     assert.equal(unavailable.status,0);
-    assert.equal(acceptCodexToolHook(unavailable.stdout,'PreToolUse').hookSpecificOutput.permissionDecision,'deny');
+    assert.notEqual(acceptCodexToolHook(unavailable.stdout,'PreToolUse').hookSpecificOutput?.permissionDecision,'deny');
+    assert.match(acceptCodexToolHook(unavailable.stdout,'PreToolUse').systemMessage,/unavailable/u);
 
     const controller = new AbortController();
     let searches = 0;

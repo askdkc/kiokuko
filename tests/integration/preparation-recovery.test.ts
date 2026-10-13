@@ -413,11 +413,15 @@ test('a recovered intake denial cannot be reopened by a forged proceed or delaye
     // Even a misleading model-facing response cannot admit an intake run.
     handleCodexHook(f.db, { ...recover, tool_response: { structuredContent: { ...result, nextAction: 'proceed' } } });
     const ordinary = { ...common, hook_event_name: 'PreToolUse', tool_name: 'exec_command', tool_use_id: 'work', tool_input: { cmd: 'true' } };
-    assert.equal((handleCodexHook(f.db, ordinary) as any).hookSpecificOutput.permissionDecision, 'deny');
-    assert.equal(new LedgerStore(f.db).readRun(result.run.runId)!.status, 'failed');
-    assert.equal((handleCodexHook(f.db, recover) as any).continue, false);
-    assert.equal((handleCodexHook(f.db, { ...recover, tool_name: 'mcp__kiokuko__task_answer' }) as any).continue, false);
-    assert.equal((handleCodexHook(f.db, { ...ordinary, tool_name: 'mcp__kiokuko__task_prepare_recover', tool_input: input }) as any).hookSpecificOutput.permissionDecision, 'deny');
+    const advisory = handleCodexHook(f.db, ordinary) as any;
+    assert.notEqual(advisory.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(advisory.systemMessage, /intake_pending/u);
+    assert.equal(new LedgerStore(f.db).readRun(result.run.runId)!.status, 'intake');
+    assert.equal(f.db.prepare('SELECT state FROM codex_hook_requests').get<{ state: string }>()!.state, 'pending');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools').get<{ n: number }>()!.n, 0);
+    assert.notEqual((handleCodexHook(f.db, recover) as any).continue, false);
+    assert.notEqual((handleCodexHook(f.db, { ...recover, tool_name: 'mcp__kiokuko__task_answer' }) as any).continue, false);
+    assert.deepEqual(handleCodexHook(f.db, { ...ordinary, tool_name: 'mcp__kiokuko__task_prepare_recover', tool_input: input }), {});
   } finally { await f.close(); }
 });
 

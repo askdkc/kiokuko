@@ -1,6 +1,6 @@
 ---
 name: kiokuko-soul
-description: Use before code changes, operations, formal reviews, implementation plans, and investigation requiring a project run. Response-only work with sufficient evidence needs no router read. Run the Akinator intake gate before planning or implementation, then route simple code work, general code work, and interactive UI work to the bundled specialist Skills.
+description: Use before code changes, operations, formal reviews, implementation plans, and investigation requiring a project run. Response-only work with sufficient evidence needs no router read. Use the Akinator intake for optional memory records; route authorized coding from current evidence through simple code work, general code work, and interactive UI work to the bundled specialist Skills.
 ---
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->
@@ -9,9 +9,9 @@ description: Use before code changes, operations, formal reviews, implementation
 
 ## Outcome
 
-Start every coding request (including small fixes), operation, formal review, implementation plan, or investigation requiring a project run by reading one stable router, resolving the Akinator intake gate, then reading the applicable compact specialist indexes and only the expert fragments required by the current task.
+Use this router for optional Kiokuko task records and applicable specialist guidance. Authorized coding may continue from repository evidence when preparation, memory review, verification registration or storage is unavailable. Never claim that the failed record was saved or verified; preserve identity, access and host authorization refusals.
 
-This Skill owns the entry sequence and routes work. Akinator is the mandatory intake state machine, not a specialist route. This Skill does not duplicate specialist instructions, select another model, or authorize effects beyond the user request and current client permissions.
+This Skill owns the entry sequence and routes work. Akinator is the intake state machine for Kiokuko records, not a host authorization mechanism. This Skill does not duplicate specialist instructions, select another model, or authorize effects beyond the user request and current client permissions.
 
 ## Priority
 
@@ -19,7 +19,7 @@ Explicit user instructions outrank these Skills' design, style, workflow, and im
 
 ## Proportionate effort before routing
 
-Choose reasoning depth and tool use separately from uncertainty, consequences of error, reversibility, and evidence already available. Do not classify by request length, a writing label, or repository mention. Repository mentions alone do not require preparation. When current conversation evidence suffices for a response-only request (including drafting, translation, explaining existing results, or acknowledging a correction), answer directly with zero preparation, memory, or verification calls and no task run. If one decision-relevant fact is missing, use only bounded task_inspect reads; operation diff accepts scope auto, staged, or working-tree, with auto preferring staged changes. Answer when that evidence suffices; do not start intake for a limited read alone. For uncertain causes, interacting dependencies, or high error consequences, develop hypotheses and failure conditions and gather only evidence that changes a decision or proves completion. Code changes, operations, formal reviews, and implementation plans retain the existing intake, permissions, memory review, and verification gates. Every additional check must change a decision or prove a completion condition. Stop when the requested result and required evidence are available; do not reread unchanged state, load unrelated Skills, or prepare merely to prepare. Recall memory only when past information is needed for the current decision. No minimum reasoning duration or tool-call quota applies. These rules never release unresolved intake, permission or identity denials, or terminal states. Arbitrary shell commands and JavaScript are execution, not bounded read-only inspection. Hooks control observable calls and state, not private reasoning depth.
+Choose reasoning depth and tool use separately from uncertainty, consequences of error, reversibility, and evidence already available. Do not classify by request length, a writing label, or repository mention. Repository mentions alone do not require preparation. When current conversation evidence suffices for a response-only request (including drafting, translation, explaining existing results, or acknowledging a correction), answer directly with zero preparation, memory, or verification calls and no task run. If one decision-relevant fact is missing, use only bounded task_inspect reads; operation diff accepts scope auto, staged, or working-tree, with auto preferring staged changes. Answer when that evidence suffices; do not start intake for a limited read alone. For uncertain causes, interacting dependencies, or high error consequences, develop hypotheses and failure conditions and gather only evidence that changes a decision or proves completion. Code changes, operations, formal reviews, and implementation plans retain host/OS/user authorization and actual product verification. Kiokuko intake and memory review govern only its optional records. Every additional check must change a decision or prove a completion condition. Stop when the requested result and required evidence are available; do not reread unchanged state, load unrelated Skills, or prepare merely to prepare. Recall memory only when past information is needed for the current decision. No minimum reasoning duration or tool-call quota applies. These rules never release permission or identity denials or user cancellation. Pending intake and terminal memory records do not prohibit unrelated authorized coding. Arbitrary shell commands and JavaScript are execution, not bounded read-only inspection. Hooks control observable calls and state, not private reasoning depth.
 
 ## Ordinary conversation and interaction memory
 
@@ -73,7 +73,7 @@ Handoff state expires 24 hours after a meaningful update. `KIOKUKO_HANDOFF=off`
 disables new saves and updates; existing records can still be loaded or discarded
 until they expire. This state grants no task authority and cannot replace
 `task_prepare`, verification, or `memory_checkpoint`. Save any needed handoff
-before terminal `memory_checkpoint`; do not call tools afterward.
+before terminal `memory_checkpoint`; unrelated authorized tools may continue afterward.
 
 ## Required entry
 
@@ -83,7 +83,7 @@ When Codex hooks supply a request ID, use `task_inspect` with `operation: "skill
 and no path to read this router. Read `memory-reasoning` through the same tool
 before advertising it. Use `task_inspect` for all bounded preparation reads and
 bundled Skills, including `natural-japanese-output`; do not use shell commands
-to read Skills before preparation and memory decisions permit ordinary tools.
+to bypass the record capability checks. Unrelated authorized repository inspection remains available.
 
 Bundled Skill selectors are package identities, not installed client paths.
 Use the exact public Skill name (including its Codex alias) or
@@ -101,13 +101,13 @@ false attestation, missing availability, unknown availability, aliases,
 namespaced copies, and fetched references fail closed. The attestation is an
 explicit client claim; it is not remote proof of model cognition.
 
-Do not choose a planning or implementation route immediately after this read. Enter the Akinator intake gate below first. Treat every returned `nextAction`, required-Skill list, and stop condition as authoritative for that run.
+For an optional Kiokuko task record, enter its Akinator intake gate below first. Unrelated authorized coding may use repository evidence and applicable specialist guidance. Treat every returned `nextAction`, required-Skill list, and stop condition as authoritative for that run.
 
 Read the complete `SKILL.md` index for every applicable route before planning, implementation, review, or verification. Each specialist index defines versioned expert fragments. Read only fragments selected by the concrete task risk; do not load every reference by default. Do not substitute this router's summary for a specialist core contract.
 
 ## Akinator intake gate
 
-Akinator is the mandatory state machine between this SOUL read and every planning or implementation route.
+Akinator manages optional Kiokuko records after this SOUL read. Its procedure does not gate unrelated authorized planning or coding.
 
 Open the gate once for the current logical request:
 
@@ -118,22 +118,21 @@ Open the gate once for the current logical request:
 
 Follow the returned intake state without inventing missing facts:
 
-- **`needs_answer`** or **`nextAction=answer_from_evidence_or_ask_user`**: Akinator controls progress. Use its hypotheses and question purpose only to understand the distinction being tested. Answer the exact current question through `task_answer` only when the value is grounded in the user request or verified repository evidence; otherwise ask the user that question. Repeat the same capability catalog and context budget, inspect the new question and state after every answer, and continue until `ready` or `exhausted`. Do not plan, implement, verify, enter the simple/code/UI routes, or call `memory_checkpoint` while unresolved.
+- **`needs_answer`** or **`nextAction=answer_from_evidence_or_ask_user`**: Akinator controls only that record. Use its hypotheses and question purpose only to understand the distinction being tested. Answer the exact current question through `task_answer` only when the value is grounded in the user request or verified repository evidence; otherwise ask the user that question. Repeat the same capability catalog and context budget, inspect the new question and state after every answer, and continue until `ready` or `exhausted`. Do not complete that memory record while unresolved. Unrelated authorized coding may continue from current repository evidence.
 - **`ready`**: obey top-level `nextAction`, capability requirements, memory policy. Only then select the applicable routes below.
 - **`exhausted`**: no further Akinator question is available, but `intake.missingFields` may remain. Preserve that uncertainty, do not invent the missing answers or describe the intake as fully specified, and route only when top-level `nextAction` permits.
 
-After intake, `nextAction=review_memory_application` requires decisions before
-ordinary tools, code search or execution. Inspect `task_memory_status`, gather
+For a memory record, `nextAction=review_memory_application` requires decisions before
+reusing those memories or completing that record. Inspect `task_memory_status`, gather
 current evidence with `task_inspect`, then call `task_memory_review` sequentially
 for every pending entry using the revision returned by the latest response.
 Register grounded adoption, inapplicability or contradiction; never invent a
-decision to unlock execution. `nextAction=refresh_memory` requires
+decision to manufacture a completed record. `nextAction=refresh_memory` requires
 `task_memory_refresh` on the same run with the bound capability catalog before
 reviewing the new delivery. After reviews, check `task_memory_status`; do not
-repeat `task_prepare`. `nextAction=proceed` permits ordinary tools, but adopted
-code memories still require passing verification before completion.
+repeat `task_prepare`. `nextAction` governs the memory workflow only. Independent tools remain subject to host and user authorization. Adopted memories still require real verification before being described as verified.
 
-If `task_prepare` is unavailable before a non-trivial build or debug request can obtain its policy, stop and report the unavailable policy. The sole exception is diagnosing or repairing Kiokuko itself after `task_prepare` fails before returning scoped context: continue only from repository evidence, and do not call `task_answer` or `memory_checkpoint` for that failed request.
+If task_prepare is unavailable, report unavailable memory and continue unrelated authorized coding from repository evidence. The sole exception is diagnosing or repairing Kiokuko itself after `task_prepare` fails before returning scoped context: continue only from repository evidence, and do not call `task_answer` or `memory_checkpoint` for that failed request.
 
 Correcting preparation does not require a new user request or a “retry implementation” message. If the recovery API is missing from the current tool catalog, report the stale MCP runtime and reload its connection after updating the installed package. Never invent an unavailable tool or bypass the hook.
 
@@ -147,9 +146,9 @@ before continuing. A second conflict, binding mismatch, terminal run or unknown
 failure is not automatically recoverable. An authorization or identity denial ends the
 turn. A recoverable preparation or review denial permits repair within the same turn.
 
-For code implementation, define required checks per target environment with
-`task_verification_define` before editing and record their results with
-`task_verification_record`. Check `completionReady` before reporting completion.
+For optional memory tracking, define required checks per target with
+`task_verification_define` and record their results with
+`task_verification_record`. Check `completionReady` before reporting verified memory-record completion. Registration failure does not waive actual product verification or prohibit unrelated authorized coding.
 `complete` refers only to memory application. Missing, failed, skipped, unknown
 or stale checks do not pass. A null completionReady is legacy/unobserved, never
 proof of task success. PLAN and review need no implementation tests unless code
@@ -158,7 +157,7 @@ do not attribute a product failure to a separate bookkeeping error.
 
 ## Routes
 
-Enter planning and implementation routes only after the Akinator gate reaches `ready` or `exhausted` and top-level `nextAction` permits progress. Select them from the finalized intake rather than from the raw prompt alone.
+The optional memory record can proceed after its intake reaches `ready` or `exhausted` and its `nextAction` permits. Select authorized coding routes from current user intent and repository evidence even when memory intake is unavailable.
 
 ### Workflow completeness
 

@@ -55,9 +55,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(instructions, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/iu);
     assert.match(instructions, /Every `task_prepare` call must set `soulRead: true` only after that read/iu);
     assert.match(instructions, /exact local `kiokuko-soul` capability is required for every task/iu);
-    assert.match(instructions, /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
-    assert.match(instructions, /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
-    assert.match(instructions, /Route only after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
+    assert.match(instructions, /Akinator is the intake state machine for an optional Kiokuko task record/iu);
+    assert.match(instructions, /do not complete that memory record while `intake\.status=needs_answer`/u);
+    assert.match(instructions, /For the optional record, route after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'curator_check',
@@ -67,9 +67,12 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'handoff_save',
       'memory_capture',
       'memory_checkpoint',
+      'memory_context',
       'memory_derive_lesson',
+      'memory_improve',
       'memory_index_review',
       'memory_index_submit',
+      'memory_observe',
       'memory_recall',
       'task_answer',
       'task_execution_evidence',
@@ -99,8 +102,8 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.match(taskPrepareTool?.description ?? '', /reuse it only for an exact transport retry/);
     assert.match(taskPrepareTool?.description ?? '', /Reusing an ID with changed bound input is a conflict/);
     assert.match(taskPrepareTool?.description ?? '', /Inspect the returned nextAction and memoryPolicy before proceeding/);
-    assert.match(taskPrepareTool?.description ?? '', /Akinator is the mandatory intake state machine before every planning or implementation route/iu);
-    assert.match(taskPrepareTool?.description ?? '', /do not plan, implement, verify, enter simple\/code\/UI routes, or checkpoint while `intake\.status=needs_answer`/u);
+    assert.match(taskPrepareTool?.description ?? '', /Akinator is the intake state machine for an optional Kiokuko task record/iu);
+    assert.match(taskPrepareTool?.description ?? '', /do not complete that memory record while `intake\.status=needs_answer`/u);
     assert.match(taskPrepareTool?.description ?? '', /missing or unknown memory-reasoning alone.*nextAction at proceed.*repository evidence/iu);
     assert.match(taskPrepareTool?.description ?? '', /created by kiokuko-curator and matching the current deterministic Curator projection is system-verified/);
     assert.match(taskPrepareTool?.description ?? '', /repairing Kiokuko itself.*fails before returning scoped context.*repository evidence/iu);
@@ -153,7 +156,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       );
       assert.match(schema.properties?.capabilities?.description ?? '', /kind and canonical name/u);
     }
-    assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /call no more tools/);
+    assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /does not prohibit unrelated authorized tools/);
     const checkpointTool = tools.tools.find((tool) => tool.name === 'memory_checkpoint');
     assert.match(checkpointTool?.description ?? '', /runId.*active/u);
     assert.match(checkpointTool?.description ?? '', /needs_answer/);
@@ -481,11 +484,11 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
     assert.equal(JSON.stringify(earlyCheckpoint).includes('private-intake-checkpoint-sentinel'), false);
     assert.deepEqual(earlyCheckpoint.content, [{
       type: 'text',
-      text: 'Checkpoint is blocked while the run awaits intake answers. Complete task_answer before retrying.',
+      text: 'Checkpoint is blocked while the run awaits intake answers. Complete task_answer before retrying.\nThis Kiokuko record failed or is unavailable. Unrelated authorized coding may continue; retain the original record nextAction and do not infer storage or verification.',
     }]);
     assert.deepEqual(earlyCheckpoint.structuredContent, {
       code: 'CHECKPOINT_RUN_NOT_ACTIVE',
-      reason: 'run_awaiting_intake_answer',
+      reason: 'run_awaiting_intake_answer', workMayContinue: true, bookkeepingFailure: true,
       runStatus: 'intake',
       nextAction: 'answer_from_evidence_or_ask_user',
       retryableAfterStateChange: true,
@@ -562,11 +565,11 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
     assert.equal(terminalRetry.isError, true);
     assert.deepEqual(terminalRetry.content, [{
       type: 'text',
-      text: 'Checkpoint is blocked because the run is terminal.',
+      text: 'Checkpoint is blocked because the run is terminal.\nThis Kiokuko record failed or is unavailable. Unrelated authorized coding may continue; retain the original record nextAction and do not infer storage or verification.',
     }]);
     assert.deepEqual(terminalRetry.structuredContent, {
       code: 'CHECKPOINT_RUN_NOT_ACTIVE',
-      reason: 'run_terminal',
+      reason: 'run_terminal', workMayContinue: true, bookkeepingFailure: true,
       runStatus: 'completed',
       nextAction: 'stop',
       retryableAfterStateChange: false,
@@ -614,7 +617,7 @@ test('checkpoint reports pending reviews and evidence-only success without claim
     const blocked = await checkpoint();
     assert.equal(blocked.isError, true);
     assert.deepEqual(blocked.structuredContent, {
-      code: 'CONFLICT', reason: 'assurance_incomplete', retryable: false,
+      code: 'CONFLICT', reason: 'assurance_incomplete', retryable: false, workMayContinue: true, bookkeepingFailure: true,
       assurance: { revision: state.assurance.revision, pending: [entryId], stale: [], missingVerification: [] },
       nextAction: 'read_task_memory_status', requiredActions: ['review_pending_memories'],
     });
@@ -642,7 +645,7 @@ test('checkpoint reports pending reviews and evidence-only success without claim
     });
     const staleRevision = await client.callTool({ name: 'task_memory_review', arguments: { ...review, requestId: 'review-stale', basis: 'New request', expectedRevision: state.assurance.revision } });
     assert.deepEqual(staleRevision.structuredContent, {
-      code: 'CONFLICT', reason: 'assurance_revision_changed', nextAction: 'read_task_memory_status', retryable: false, recoverable: true, maxRecoveryAttempts: 1, expectedRevision: state.assurance.revision, currentRevision: (reviewed.structuredContent as { revision: number }).revision,
+      code: 'CONFLICT', reason: 'assurance_revision_changed', workMayContinue: true, bookkeepingFailure: true, nextAction: 'read_task_memory_status', retryable: false, recoverable: true, maxRecoveryAttempts: 1, expectedRevision: state.assurance.revision, currentRevision: (reviewed.structuredContent as { revision: number }).revision,
     });
     await verifyMcpFixtureTask(client, root, state.run.runId, databasePath);
     const saved = await checkpoint();
@@ -836,10 +839,12 @@ test('MCP generic tool errors expose the complete stable public classification',
         arguments: { soulRead: true, requestId: `public-${entry.code.toLowerCase()}`, task: 'Classify failure', capabilities: [SOUL_CAPABILITY] },
       });
       assert.equal(result.isError, true, entry.code);
-      assert.deepEqual(result.content, [{ type: 'text', text: entry.message }], entry.code);
+      const bookkeeping = ['DATABASE_ERROR','BACKPRESSURE','SERVICE_UNAVAILABLE'].includes(entry.code);
+      assert.deepEqual(result.content, [{ type: 'text', text: entry.message + (bookkeeping ? '\nThis Kiokuko record failed or is unavailable. Unrelated authorized coding may continue; retain the original record nextAction and do not infer storage or verification.' : '') }], entry.code);
       assert.deepEqual(result.structuredContent, {
         code: entry.code,
         retryable: entry.retryable,
+        ...(bookkeeping ? { workMayContinue: true, bookkeepingFailure: true } : {}),
         ...(entry.code === 'BACKPRESSURE' ? { retryAfterSeconds: 60 } : {}),
       }, entry.code);
       assert.equal(JSON.stringify(result).includes(sentinel), false, entry.code);
@@ -960,7 +965,7 @@ test('task_prepare reports exhausted SQLite locking as service backpressure', as
     assert.deepEqual(result.structuredContent, {
       code: 'BACKPRESSURE',
       retryable: true,
-      retryAfterSeconds: 1,
+      retryAfterSeconds: 1, workMayContinue: true, bookkeepingFailure: true,
     });
     assert.equal(beginAttempts, 5);
   } finally {
@@ -1018,7 +1023,7 @@ test('MCP preserves only typed database failures as DATABASE_ERROR', async () =>
     assert.equal(serialized.includes(sentinel), false);
     assert.deepEqual(result.structuredContent, {
       code: 'DATABASE_ERROR',
-      retryable: false,
+      retryable: false, workMayContinue: true, bookkeepingFailure: true,
     });
   } finally {
     await client.close();

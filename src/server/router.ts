@@ -35,6 +35,7 @@ export interface V1RouteOperationRequest {
 export type V1RouteOperationResolver = (request: V1RouteOperationRequest) => string | undefined;
 export type V1RouteHandler = ((request: V1RouteRequest) => unknown | Promise<unknown>) & {
   operationFor?: V1RouteOperationResolver;
+  close?: () => void;
 };
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -136,7 +137,7 @@ export function createRouter(dependencies: RouterDependencies): HttpHandler {
       writeJson(response, ready ? 200 : 503, { ok: ready });
       return;
     }
-    if (url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/')) {
+    if (url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/') || /^\/api\/memory\/(observe|context|improve)$/u.test(url.pathname)) {
       requireBearerAuthorization(request.headers.authorization, dependencies.expectedToken);
       if (dependencies.v1 === undefined) throw new KiokukoError('NOT_FOUND', 'Endpoint not found');
       const routeRequest: V1RouteRequest = {

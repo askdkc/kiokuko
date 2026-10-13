@@ -169,8 +169,8 @@ test('run handoff preserves task status and Codex allows runless handoff tools',
     assert.deepEqual(handleCodexHook(db, { ...common, hook_event_name: 'PreToolUse', tool_name: `mcp__kiokuko__${tool}`,
       tool_use_id: tool, tool_input: {} }), {});
   }
-  assert.equal((handleCodexHook(db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'apply_patch',
-    tool_use_id: 'edit', tool_input: {} }) as { hookSpecificOutput: { permissionDecision: string } }).hookSpecificOutput.permissionDecision, 'deny');
+  assert.notEqual((handleCodexHook(db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'apply_patch',
+    tool_use_id: 'edit', tool_input: {} }) as { hookSpecificOutput: { permissionDecision: string } }).hookSpecificOutput?.permissionDecision, 'deny');
   const prepared = await prepareAgentTask(db, { requestId: 'handoff-run', task: 'Check project status', cwd: root,
     capabilities, profileHints: { taskType: 'analysis', target: 'project status', expected: 'record the status' }, skillDiscoveryMode: 'off',
     client: { kind: 'codex' } });

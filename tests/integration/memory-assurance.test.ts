@@ -27,6 +27,12 @@ function lastHookDiagnostic(db: ReturnType<typeof openConnection>): any {
   const row = db.prepare('SELECT response_shape FROM codex_hook_observations ORDER BY rowid DESC LIMIT 1').get<{ response_shape: string }>()!;
   return (codexHookDiagnostics(db, JSON.parse(row.response_shape).call) as any).events.at(-1);
 }
+function assertMemoryAdvisory(value: any): void {
+  assert.notEqual(value.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.notEqual(value.hookSpecificOutput?.permissionDecision, 'allow');
+  assert.notEqual(value.continue, false);
+  assert.equal(typeof value.systemMessage, 'string');
+}
 test('checkout-free inquiry permits global memory and bundled Skills, without permitting project execution', async () => {
   const base = mkdtempSync(path.join(tmpdir(), 'kiokuko-checkout-free-'));
   const databasePath = path.join(base, 'memory.sqlite3');
@@ -43,8 +49,8 @@ test('checkout-free inquiry permits global memory and bundled Skills, without pe
     for (const [name, args] of [['exec_command', { cmd: 'true' }], ['mcp__kiokuko__task_prepare', { cwd: base }],
       ['mcp__kiokuko__task_inspect', { cwd: base, operation: 'read', path: 'memory.sqlite3' }]] as const) {
       const result = handleCodexHook(db, { ...common, hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: name, tool_input: args }) as any;
-      assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
-      assert.equal(lastHookDiagnostic(db).reason, 'repository_required');
+      if (name === 'exec_command') assertMemoryAdvisory(result);
+      else { assert.equal(result.hookSpecificOutput.permissionDecision, 'deny'); assert.equal(lastHookDiagnostic(db).reason, 'repository_required'); }
     }
     assert.deepEqual(handleCodexHook(db, { ...common, hook_event_name: 'Stop' }), {});
     assert.equal(db.prepare('SELECT COUNT(*) count FROM task_execution_evidence').get<{ count: number }>()!.count, 0);
@@ -151,14 +157,14 @@ test('doctor inspects adopted memory across a symlink and nested Git repositorie
     assert.throws(() => repositoryStateDigest(f.root), /symlink escapes the repository/u);
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
-test('Codex blocks unprepared edits and does not inherit another agent or interrupted request', async () => {
+test('Codex warns for unprepared edits without inheriting another agent or interrupted request', async () => {
   const f = await fixture();
   try {
     const common = { session_id: 'client', turn_id: 'turn', cwd: f.root };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
     const edit = { ...common, hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_use_id: 'edit', tool_input: { command: 'patch' } };
-    assert.equal((handleCodexHook(f.db, edit) as any).hookSpecificOutput.permissionDecision, 'deny');
-    assert.equal((handleCodexHook(f.db, { ...edit, agent_id: 'child' }) as any).hookSpecificOutput.permissionDecision, 'deny');
+    assertMemoryAdvisory((handleCodexHook(f.db, edit) as any));
+    assertMemoryAdvisory((handleCodexHook(f.db, { ...edit, agent_id: 'child' }) as any));
     handleCodexHook(f.db, { ...common, hook_event_name: 'Interrupt' });
     assert.deepEqual(handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }), {});
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
@@ -215,12 +221,12 @@ test('Codex permits user clarification and clock reads before preparation and pe
     assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get<{ n: number }>()!.n, 0);
     const denied = handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'exec_command',
       tool_use_id: 'premature', tool_input: { cmd: 'true' } }) as any;
-    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+    assertMemoryAdvisory(denied);
     assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{ status: string }>(f.prepared.run.runId)!.status, 'active');
     assert.deepEqual(handleCodexHook(f.db, { ...ask('request_user_input_async'), hook_event_name: 'PreToolUse' }), {});
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
-test('hook command exposes policy block reasons to the user without leaking tool input', async () => {
+test('hook command exposes bookkeeping warnings and interruption denials without leaking tool input', async () => {
   const f = await fixture();
   try {
     let common = { session_id: 'visible-block', turn_id: 'request', cwd: f.root };
@@ -230,9 +236,9 @@ test('hook command exposes policy block reasons to the user without leaking tool
           tool_use_id: 'blocked', tool_input: { cmd: 'private-command-body' } }), encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
       const output = JSON.parse(result.stdout);
-      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, expected);
-      assert.equal(output.systemMessage, `Kiokuko blocked this tool call: ${output.hookSpecificOutput.permissionDecisionReason}`);
+      if (expected.source === 'interrupted') assert.equal(output.hookSpecificOutput?.permissionDecision, 'deny');
+      else assertMemoryAdvisory(output);
+      assert.match(output.systemMessage, expected);
       assert.match(result.stderr, expected);
       assert.ok(result.stderr.includes(output.systemMessage));
       assert.doesNotMatch(result.stdout + result.stderr, /private-command-body/u);
@@ -241,17 +247,17 @@ test('hook command exposes policy block reasons to the user without leaking tool
       assert.equal(output.suppressOutput, undefined);
       assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM codex_hook_tools').get<{ n: number }>()!.n, 0);
     };
-    checkBlock(/request start/u);
-    checkBlock(/Preparation was missing/u);
+    checkBlock(/request_not_observed/u);
+    checkBlock(/preparation_required/u);
     common = { ...common, turn_id: 'unprepared' };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
-    checkBlock(/task_prepare/u);
+    checkBlock(/preparation_required/u);
     common = { ...common, turn_id: 'pending-review' };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
     const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE stop_notified=0 ORDER BY rowid DESC LIMIT 1').get<{ request_id: string }>()!.request_id;
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
       tool_use_id: 'prepare', tool_input: { cwd: f.root, requestId }, tool_response: { structuredContent: f.prepared } });
-    checkBlock(/1 pending.*0 stale.*task_memory_status.*task_memory_review/u);
+    checkBlock(/memory_review_pending/u);
     handleCodexHook(f.db, { ...common, hook_event_name: 'Interrupt' });
     checkBlock(/interrupted/u);
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
@@ -402,7 +408,7 @@ test('Codex accepts normal, recoverable deny, terminal deny and internal PreTool
     handleCodexHook(f.db, { ...f.common, turn_id: 'unprepared', hook_event_name: 'UserPromptSubmit' });
     const denied = cli(pending);
     assert.equal(denied.status, 0, denied.stderr);
-    assert.equal(acceptCodexToolHook(denied.stdout, 'PreToolUse').hookSpecificOutput!.permissionDecision, 'deny');
+    assertMemoryAdvisory(acceptCodexToolHook(denied.stdout, 'PreToolUse'));
     assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools WHERE call_id=?').get('pending')?.n, 0);
     const terminal = cli({ ...f.event('terminal'), hook_event_name: 'PreToolUse',
       tool_name: 'mcp__kiokuko__task_memory_status', tool_input: { runId: 'foreign' } });
@@ -410,7 +416,7 @@ test('Codex accepts normal, recoverable deny, terminal deny and internal PreTool
     assert.equal(acceptCodexToolHook(terminal.stdout, 'PreToolUse').hookSpecificOutput!.permissionDecision, 'deny');
     const failure = cli({ ...f.event('failure'), hook_event_name: 'PreToolUse' }, path.join(f.base, 'absent.sqlite3'));
     assert.equal(failure.status, 0, failure.stderr);
-    assert.equal(acceptCodexToolHook(failure.stdout, 'PreToolUse').hookSpecificOutput!.permissionDecision, 'deny');
+    assertMemoryAdvisory(acceptCodexToolHook(failure.stdout, 'PreToolUse'));
     assert.match(failure.stderr, /pre_admission/u);
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
@@ -451,7 +457,7 @@ test('single and batched code-mode inner tools bind each admission and preserve 
   }
 });
 
-test('an admitted edit completes after review invalidation; the next inner read waits for re-review', async () => {
+test('an admitted edit completes after review invalidation; the next inner read keeps pending review advisory', async () => {
   const f = await boundHookFixture();
   const review = () => reviewTaskMemory(f.db, { runId: f.prepared.run.runId, cwd: f.root,
     requestId: `review-${taskAssuranceReport(f.db, f.prepared.run.runId).revision}`,
@@ -469,7 +475,7 @@ test('an admitted edit completes after review invalidation; the next inner read 
     acceptCodexToolHook(JSON.stringify(post), 'PostToolUse');
     const read = { ...f.event('read'), tool_name: 'read_file', tool_input: { path: 'source.ts' } };
     const blocked = handleCodexHook(f.db, { ...read, hook_event_name: 'PreToolUse' }) as any;
-    assert.equal(acceptCodexToolHook(JSON.stringify(blocked), 'PreToolUse').hookSpecificOutput!.permissionDecision, 'deny');
+    assertMemoryAdvisory(acceptCodexToolHook(JSON.stringify(blocked), 'PreToolUse'));
     assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools WHERE call_id=?').get('read')?.n, 0);
     review();
     assert.deepEqual(handleCodexHook(f.db, { ...read, hook_event_name: 'PreToolUse' }), {});
@@ -533,8 +539,8 @@ test('hook diagnostics distinguish an unpaired completion without exposing its c
     const warning = acceptCodexToolHook(result.stdout, 'PostToolUse').systemMessage!;
     assert.match(warning, /completion_without_admission/u);
     assert.match(warning, /No matching PreToolUse admission record was found for this tool call\. Task preparation is separate from per-tool admission\./u);
-    assert.match(warning, /Tool already executed; do not rerun automatically\. The original tool result is retained/u);
-    assert.match(warning, /Stop and report this fault; do not claim verified completion\./u);
+    assert.match(warning, /Tool already executed; do not rerun automatically/u);
+    assert.match(warning, /unrelated authorized work may continue.*Do not claim verified completion/u);
     assert.equal(f.db.prepare('SELECT state,stop_notified FROM codex_hook_requests').get()!.state, 'bound');
     assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get()!.stop_notified, 0);
     assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get(f.prepared.run.runId)!.status, 'active');
@@ -663,8 +669,8 @@ test('next-migration counterexample fails a fixed expectation and passes derived
     let prepared = await prepareAgentTask(f.db, { ...args, skillDiscoveryMode: 'off' });
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: args, tool_response: { structuredContent: { ...prepared, nextAction: 'required_capability_unavailable' } } });
     const blocked = handleCodexHook(f.db, { ...common, hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_use_id: 'blocked-edit', tool_input: {} }) as any;
-    assert.equal(blocked.hookSpecificOutput.permissionDecision, 'deny');
-    assert.equal((handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }) as any).continue, false);
+    assertMemoryAdvisory(blocked);
+    assertMemoryAdvisory(handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }));
     common = { ...common, turn_id: 'fresh-request' };
     handleCodexHook(f.db, { ...common, hook_event_name: 'UserPromptSubmit' });
     args = { ...args, requestId: f.db.prepare('SELECT request_id FROM codex_hook_requests WHERE stop_notified=0 ORDER BY rowid DESC LIMIT 1').get<{ request_id: string }>()!.request_id };
@@ -865,7 +871,8 @@ test('host receipt binds a post-only poll to its admitted command without trusti
     assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,1);
     const rows=f.db.prepare("SELECT evidence_id FROM codex_hook_tools WHERE call_id IN ('host-process','host-poll')").all<any>();
     assert.equal(rows.length,2);assert.ok(rows[0].evidence_id);assert.equal(rows[0].evidence_id,rows[1].evidence_id);
-    assert.throws(()=>handleCodexHook(f.db,{...poll,tool_use_id:'foreign-session',tool_input:{session_id:93}}),/no matching start/);
+    assertMemoryAdvisory(handleCodexHook(f.db,{...poll,tool_use_id:'foreign-session',tool_input:{session_id:93}}));
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<any>()!.n,1);
   } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;f.db.close();rmSync(f.base,{recursive:true,force:true});}
 });
 
@@ -951,12 +958,12 @@ test('recoverable preparation denial leaves same-turn preparation and review rep
   handleCodexHook(f.db,{...common,hook_event_name:'UserPromptSubmit'});
   const requestId=f.db.prepare('SELECT request_id FROM codex_hook_requests').get<any>()!.request_id;
   const pre=(name:string,args:object)=>handleCodexHook(f.db,{...common,hook_event_name:'PreToolUse',tool_name:name,tool_use_id:name,tool_input:args}) as any;
-  assert.equal(pre('exec_command',{}).hookSpecificOutput.permissionDecision,'deny');
+  assertMemoryAdvisory(pre('exec_command',{}));
   assert.equal(lastHookDiagnostic(f.db).reason,'preparation_required');
   assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<any>()!.stop_notified,0);
   assert.deepEqual(pre('mcp__kiokuko__task_prepare',{requestId,cwd:f.root}),{});
   handleCodexHook(f.db,{...common,hook_event_name:'PostToolUse',tool_name:'mcp__kiokuko__task_prepare',tool_use_id:'prepare',tool_input:{requestId,cwd:f.root},tool_response:{structuredContent:f.prepared}});
-  assert.equal(pre('exec_command',{}).hookSpecificOutput.permissionDecision,'deny');
+  assertMemoryAdvisory(pre('exec_command',{}));
   assert.equal(lastHookDiagnostic(f.db).reason,'memory_review_pending');
   assert.deepEqual(pre('mcp__kiokuko__task_memory_status',{runId:f.prepared.run.runId,cwd:f.root}),{});
   reviewTaskMemory(f.db,{runId:f.prepared.run.runId,cwd:f.root,requestId:'repair-review',expectedRevision:taskAssuranceReport(f.db,f.prepared.run.runId).revision!,deliveryId:f.prepared.context!.deliveryId!,entryId:f.entry.id,entryRevision:1,decision:'inapplicable',basis:'Does not apply to current execution'});
@@ -979,7 +986,8 @@ for (const firstTool of ['task_prepare', 'task_inspect', 'exec_command']) {
       }) as any;
       const tool = firstTool === 'exec_command' ? firstTool : `mcp__kiokuko__${firstTool}`;
       const blocked = pre(tool, { cwd: f.root, requestId: previousId, operation: 'skill' });
-      assert.equal(blocked.hookSpecificOutput.permissionDecision, 'deny');
+      if (firstTool === 'exec_command') assertMemoryAdvisory(blocked);
+      else assert.equal(blocked.hookSpecificOutput.permissionDecision, 'deny');
       assert.equal(lastHookDiagnostic(f.db).reason, 'request_not_observed');
       assert.equal(lastHookDiagnostic(f.db).recoverable, true);
       assert.doesNotMatch(blocked.systemMessage, /wait for a new user message/u);
@@ -987,7 +995,7 @@ for (const firstTool of ['task_prepare', 'task_inspect', 'exec_command']) {
       assert.equal(pending.stop_notified, 0);
       assert.equal(pending.run_id, null);
       assert.notEqual(pending.request_id, previousId);
-      assert.match(blocked.hookSpecificOutput.permissionDecisionReason, new RegExp(pending.request_id));
+      assert.match(blocked.hookSpecificOutput?.permissionDecisionReason ?? blocked.systemMessage, new RegExp(pending.request_id));
       assert.equal(f.db.prepare('SELECT COUNT(*) n FROM codex_hook_tools').get<any>()!.n, 0);
       assert.equal(new LedgerStore(f.db).readRun(f.prepared.run.runId)!.status, 'interrupted');
       assert.deepEqual(pre('mcp__kiokuko__task_inspect', { cwd: f.root, operation: 'skill' }), {});
@@ -999,7 +1007,7 @@ for (const firstTool of ['task_prepare', 'task_inspect', 'exec_command']) {
       assert.equal(prepared.run.status, 'active');
       handleCodexHook(f.db, { ...current, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare',
         tool_use_id: 'prepare', tool_input: args, tool_response: { structuredContent: prepared } });
-      assert.equal(pre('exec_command', { cmd: 'true' }).hookSpecificOutput.permissionDecision, 'deny');
+      assertMemoryAdvisory(pre('exec_command', { cmd: 'true' }));
       assert.equal(lastHookDiagnostic(f.db).reason, 'memory_review_pending');
       reviewTaskMemory(f.db, { cwd: f.root, runId: prepared.run.runId, requestId: 'resumed-review',
         expectedRevision: taskAssuranceReport(f.db, prepared.run.runId).revision!, deliveryId: prepared.context!.deliveryId!,
@@ -1095,7 +1103,7 @@ test('a child preparation denial does not inherit or fail the parent binding', a
     handleCodexHook(f.db, { ...child, hook_event_name: 'SubagentStart' });
     const denied = handleCodexHook(f.db, { ...child, hook_event_name: 'PreToolUse', tool_name: 'exec_command',
       tool_use_id: 'child-work', tool_input: {cmd:'true'} }) as any;
-    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+    assertMemoryAdvisory(denied);
     assert.equal(lastHookDiagnostic(f.db).reason, 'preparation_required');
     assert.equal(lastHookDiagnostic(f.db).recoverable, true);
     assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
@@ -1112,7 +1120,7 @@ test('MCP contract mismatch preserves diagnosis and blocks ordinary execution wi
       tool_use_id:'mismatch',tool_input:{requestId,cwd:f.root},tool_response:{structuredContent:incompatible}}) as any;
     assert.match(result.hookSpecificOutput.additionalContext,/contract mismatch/);
     assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<{stop_notified:number}>()!.stop_notified,0);
-    assert.equal((handleCodexHook(f.db,{...f.event('blocked'),hook_event_name:'PreToolUse'}) as any).hookSpecificOutput.permissionDecision,'deny');
+    assertMemoryAdvisory((handleCodexHook(f.db,{...f.event('blocked'),hook_event_name:'PreToolUse'}) as any));
     assert.equal(lastHookDiagnostic(f.db).recoverable,true);
     assert.deepEqual(handleCodexHook(f.db,{...f.common,hook_event_name:'PreToolUse',tool_name:'mcp__kiokuko__task_inspect',
       tool_use_id:'inspect',tool_input:{cwd:f.root,operation:'skill'}}),{});
@@ -1167,7 +1175,7 @@ test('natural response-only requests and bounded staged inspection finish withou
       const event = { ...common, turn_id: tool_name, hook_event_name: 'PreToolUse', tool_name, tool_use_id: 'fake-read', tool_input };
       handleCodexHook(db, { ...event, hook_event_name: 'UserPromptSubmit', prompt: tool_name === 'apply_patch' ? '修正して' : tool_name === 'exec_command' ? '公開して' : 'just read this' });
       if (tool_name === 'mcp__kiokuko__task_inspect') assert.throws(() => inspectTask(tool_input));
-      else assert.equal((handleCodexHook(db, event) as any).hookSpecificOutput.permissionDecision, 'deny');
+      else assertMemoryAdvisory((handleCodexHook(db, event) as any));
     }
   } finally { db.close(); rmSync(base, { recursive: true, force: true }); }
 });
@@ -1384,7 +1392,7 @@ test('MCP sequential review state survives full replacement, errors and restart 
     const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{request_id:string}>()!.request_id;
     handleCodexHook(f.db, { ...common, hook_event_name: 'PostToolUse', tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'prepare', tool_input: {cwd:f.root,requestId}, tool_response:{structuredContent:f.prepared} });
     const ordinary = { ...common, tool_name: 'exec_command', tool_use_id: 'verification', tool_input: {cmd:'true'} };
-    assert.equal((handleCodexHook(f.db,{...ordinary,hook_event_name:'PreToolUse'}) as any).hookSpecificOutput.permissionDecision,'deny');
+    assertMemoryAdvisory((handleCodexHook(f.db,{...ordinary,hook_event_name:'PreToolUse'}) as any));
     let state: any = (await client.callTool({ name:'task_memory_status',arguments:{runId,cwd:f.root} })).structuredContent;
     state = {...state,runId,cwd:f.root,expectedRevision:state.revision};
     assert.equal(state.deliveryId,refreshed.context.deliveryId);
@@ -1463,7 +1471,7 @@ test('missing preparation Post leaves status reconciliation recoverable without 
     assert.equal(binding().run_id,prepared.run.runId);
     assert.deepEqual(handleCodexHook(f.db,{...statusEvent,hook_event_name:'PreToolUse'}),{});
     const ordinary=handleCodexHook(f.db,{...common,hook_event_name:'PreToolUse',tool_name:'exec_command',tool_use_id:'still-pending',tool_input:{cmd:'true'}}) as any;
-    assert.equal(ordinary.hookSpecificOutput.permissionDecision,'deny');
+    assertMemoryAdvisory(ordinary);
     assert.equal(lastHookDiagnostic(f.db).reason,'memory_review_pending');
     assert.equal(binding().stop_notified,0);
     // A conflicting existing binding is still an identity violation, not repair.
