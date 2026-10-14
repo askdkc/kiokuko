@@ -17,6 +17,7 @@ import { inspectEmbeddingHealth } from '../embedding/diagnostics.js';
 import { readPersistedEmbeddingSettings } from '../embedding/settings.js';
 import type { VectorSearchBackend } from '../embedding/types.js';
 import { KiokukoError } from '../errors.js';
+import { diagnosticError } from '../diagnostics/error.js';
 import { inspectLedger } from '../ledger/maintenance.js';
 import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
 import { readEntryRevision } from '../memory/revisions.js';
@@ -38,7 +39,10 @@ export interface DoctorAgentFileFinding {
   repositoryRoot: string;
   repositoryId: string;
   agentFile: string | null;
-  reason: 'missing_agent_file' | 'missing_managed_block' | 'outdated_managed_block' | 'invalid_binding' | 'unreadable_agent_file' | 'invalid_managed_block';
+  reason: 'missing_binding_file' | 'missing_agent_file' | 'missing_managed_block' | 'outdated_managed_block' | 'invalid_binding' | 'unreadable_agent_file' | 'invalid_managed_block';
+  bindingFile?: string;
+  detail?: string;
+  action?: string;
 }
 
 export interface DoctorResult {
@@ -69,7 +73,7 @@ export interface DoctorResult {
     hybridSearch: DoctorCheck;
     embeddings: DoctorCheck;
     codexMcp: DoctorCheck;
-    memoryAssurance: DoctorCheck;
+    memoryAssurance: ReturnType<typeof assuranceDoctor>;
   };
 }
 
@@ -414,7 +418,14 @@ async function collectDoctorResult(
     let agentPath: string | null = null;
     try {
       const binding = await readRegularFile(configPath, { containmentRoot: row.canonicalRoot });
-      if (binding === undefined) throw new KiokukoError('VALIDATION_ERROR', 'Project binding is missing');
+      if (binding === undefined) {
+        agentFileFindings.push({ repositoryRoot: row.canonicalRoot, repositoryId: row.repositoryId,
+          agentFile: null, bindingFile: configPath, reason: 'missing_binding_file',
+          detail: 'This location is registered, but its project binding file is missing.',
+          action: `Restore .kiokuko.json from this project's backup with repositoryId ${row.repositoryId}, then rerun kiokuko doctor. Do not create a new binding identity for the existing memory.`,
+        });
+        continue;
+      }
       const config = parseProjectConfigText(binding.content);
       if (config.repositoryId !== row.repositoryId) throw new KiokukoError('CONFLICT', 'Project binding identity differs from registration');
       agentPath = path.join(row.canonicalRoot, config.agentFile);
@@ -446,12 +457,17 @@ async function collectDoctorResult(
           reason,
         });
       }
-    } catch {
+    } catch (error) {
+      const diagnostic = diagnosticError(error);
       agentFileFindings.push({
         repositoryRoot: row.canonicalRoot,
         repositoryId: row.repositoryId,
         agentFile: agentPath,
         reason: agentPath === null ? 'invalid_binding' : 'unreadable_agent_file',
+        ...(agentPath === null ? { bindingFile: configPath,
+          detail: `${diagnostic.code}: ${diagnostic.message}`,
+          action: 'Correct the reported binding file or restore its original contents from backup, preserving the registered repository identity, then rerun kiokuko doctor.',
+        } : {}),
       });
     }
   }

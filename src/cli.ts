@@ -1128,9 +1128,15 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       ? ''
       : ` Failed checks: ${Object.entries(data.checks).filter(([, check]) => !check.ok).map(([name]) => name).join(', ')}.\nrun kiokuko doctor --json for detailed output`;
     const agentFileNotice = data.checks.agentFiles.findings
-      .map((finding) => `\n  ${finding.agentFile ?? finding.repositoryRoot}: ${finding.reason}`)
+      .map((finding) => `\n  ${finding.bindingFile ?? finding.agentFile ?? finding.repositoryRoot}: ${finding.reason}`
+        + (finding.detail ? ` — ${finding.detail}` : '')
+        + (finding.action ? `\n    ${finding.action}` : ''))
       .join('');
-    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}${agentFileNotice}`);
+    const assuranceNotice = data.checks.memoryAssurance.findings
+      .map((finding) => `\n  Task ${finding.runId} (${finding.repositoryRoot ?? 'repository not bound'}): ${finding.reason}`
+        + `\n    ${finding.code}: ${finding.message}\n    ${finding.action}`)
+      .join('');
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}${agentFileNotice}${assuranceNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 

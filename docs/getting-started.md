@@ -49,6 +49,15 @@ other products' sections. Kiokuko instructions are plugin-only HTML comments;
 normal setup updates migrate older sections to this format.
 JSON and noninteractive checks report the affected path and reason under
 `data.checks.agentFiles.findings` without prompting or changing files.
+Missing `.kiokuko.json` files are reported as `missing_binding_file` with the
+binding path, registered repository ID, and restoration guidance. Invalid bindings
+include the validation error; doctor does not recreate either kind automatically.
+Failed active-task inspections appear under `data.checks.memoryAssurance.findings`
+with the task ID, repository root, exception code and bounded message, and recovery
+guidance. Human output shows the same findings. A snapshot byte-budget error means
+the inspected Git-tracked, unignored and configuration files exceed 64 MiB; review
+large artifacts without deleting task records or memory. Pending reviews and
+missing verification counts alone do not make the assurance health check fail.
 
 ## Embeddings setup
 

@@ -322,6 +322,41 @@ test('noninteractive doctor leaves deleted instructions absent', async () => {
   await assert.rejects(access(value.project.agentFile!));
 });
 
+test('doctor identifies a missing binding with its path and recovery guidance without recreating it', async () => {
+  const value = await deletedAgentProject('binding-missing');
+  await unlink(value.project.bindingFile);
+  const json = await invokeDoctor(value.databasePath, 'y\n', true);
+  const finding = (json.response?.data.checks as any).agentFiles.findings[0];
+  assert.equal(finding.reason, 'missing_binding_file');
+  assert.equal(finding.bindingFile, value.project.bindingFile);
+  assert.match(finding.detail, /registered.*binding file is missing/iu);
+  assert.match(finding.action, /Restore.*\.kiokuko\.json/iu);
+  const human = await invokeDoctor(value.databasePath, 'y\n');
+  assert.ok(human.stdout.includes(value.project.bindingFile));
+  assert.match(human.stdout, /missing_binding_file.*\n.*Restore/u);
+  assert.equal(human.prompt, '');
+  assert.equal(human.exitCode, 8);
+  await assert.rejects(access(value.project.bindingFile));
+});
+
+test('doctor explains malformed bindings without echoing secret input or changing them', async () => {
+  const value = await deletedAgentProject('binding-malformed');
+  const content = '{"password":"do-not-print-this","schemaVersion":1}\n';
+  await writeFile(value.project.bindingFile, content);
+  const json = await invokeDoctor(value.databasePath, '', true);
+  const finding = (json.response?.data.checks as any).agentFiles.findings[0];
+  assert.equal(finding.reason, 'invalid_binding');
+  assert.equal(finding.bindingFile, value.project.bindingFile);
+  assert.match(finding.detail, /Unknown binding field: password/u);
+  assert.match(finding.action, /Correct.*binding/iu);
+  const human = await invokeDoctor(value.databasePath, 'y\n');
+  assert.match(human.stdout, /Unknown binding field: password/u);
+  assert.equal(human.prompt, '');
+  assert.ok(!json.stdout.includes('do-not-print-this'));
+  assert.ok(!human.stdout.includes('do-not-print-this'));
+  assert.equal(await readFile(value.project.bindingFile, 'utf8'), content);
+});
+
 test('doctor never offers to recreate an existing malformed agent file or invalid binding', async () => {
   const value = await deletedAgentProject('agent-invalid');
   const content = 'user rules\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n';

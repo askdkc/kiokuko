@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -334,6 +334,21 @@ async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
   assert.equal(await readFile(project, 'utf8'), migrated);
   assert.equal(await readFile(global, 'utf8'), globalMigrated);
   for (const { file, content } of dshFiles) assert.equal(await readFile(file, 'utf8'), content);
+  const bindingPath = JSON.parse(used.stdout).data.bindingFile;
+  const binding = await readFile(bindingPath, 'utf8');
+  await unlink(bindingPath);
+  try {
+    const missing = spawnSync(cliPath, ['doctor', '--json'], { cwd: fixtureRoot, env: environment, encoding: 'utf8' });
+    assert.equal(missing.status, 8, missing.stderr);
+    const finding = JSON.parse(missing.stdout).data.checks.agentFiles.findings.find(item => item.bindingFile === bindingPath);
+    assert.equal(finding.reason, 'missing_binding_file');
+    assert.match(finding.action, /Restore.*\.kiokuko\.json/u);
+    const human = spawnSync(cliPath, ['doctor'], { cwd: fixtureRoot, env: environment, encoding: 'utf8' });
+    assert.equal(human.status, 8, human.stderr);
+    assert.ok(human.stdout.includes(bindingPath));
+    assert.match(human.stdout, /missing_binding_file/u);
+    await assert.rejects(readFile(bindingPath, 'utf8'), { code: 'ENOENT' });
+  } finally { await writeFile(bindingPath, binding); }
 }
 
 async function verifyBundleLinks(cliPath, installedRoot, fixtureRoot, environment) {

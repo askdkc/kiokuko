@@ -1,7 +1,8 @@
 import { defineTaskVerification, recordTaskVerification } from '../../src/assurance/verification.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { buildCli } from '../../src/cli.js';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, unlinkSync, realpathSync, truncateSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -155,6 +156,61 @@ test('doctor inspects adopted memory across a symlink and nested Git repositorie
     writeFileSync(outside, 'export const secret = true;\n');
     symlinkSync(outside, link);
     assert.throws(() => repositoryStateDigest(f.root), /symlink escapes the repository/u);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor names failed task inspections and their actual exception in JSON and human output', async () => {
+  const f = await fixture();
+  try {
+    const outside = path.join(f.base, 'outside.ts');
+    writeFileSync(outside, 'external source\n');
+    symlinkSync(outside, path.join(f.root, 'escape.ts'));
+    const result = await runDoctor({ databasePath: f.databasePath });
+    const check = result.checks.memoryAssurance as any;
+    assert.equal(check.ok, false);
+    assert.match(check.detail, /inspectionErrors=1/u);
+    assert.deepEqual(check.findings, [{
+      reason: 'task_inspection_failed',
+      runId: f.prepared.run.runId,
+      repositoryRoot: realpathSync(f.root),
+      code: 'VALIDATION_ERROR',
+      message: 'Snapshot symlink escapes the repository',
+      action: 'Check this task\'s repository files and access, correct the reported inspection error, then rerun kiokuko doctor. Keep task records and memory intact.',
+    }]);
+    let stdout = '';
+    const original = process.stdout.write;
+    const previousExitCode = process.exitCode;
+    try {
+      process.stdout.write = ((chunk: string | Uint8Array) => {
+        stdout += chunk.toString(); return true;
+      }) as typeof process.stdout.write;
+      process.exitCode = undefined;
+      await buildCli({ doctorDatabasePath: f.databasePath }).parseAsync(['node', 'kiokuko', 'doctor']);
+      assert.equal(process.exitCode, 8);
+      assert.ok(stdout.includes(f.prepared.run.runId));
+      assert.ok(stdout.includes(realpathSync(f.root)));
+      assert.match(stdout, /VALIDATION_ERROR: Snapshot symlink escapes the repository/u);
+      assert.match(stdout, /Keep task records and memory intact/u);
+    } finally { process.stdout.write = original; process.exitCode = previousExitCode; }
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor explains the snapshot byte budget without deleting or completing the failed task', async () => {
+  const f = await fixture();
+  try {
+    const large = path.join(f.root, 'archive.bin');
+    writeFileSync(large, '');
+    truncateSync(large, 64 * 1024 * 1024);
+    const result = await runDoctor({ databasePath: f.databasePath });
+    const check = result.checks.memoryAssurance as any;
+    assert.equal(check.ok, false);
+    assert.equal(check.findings[0].runId, f.prepared.run.runId);
+    assert.equal(check.findings[0].message, 'Repository snapshot exceeds its byte budget');
+    assert.match(check.findings[0].action, /64 MiB.*Git-tracked and unignored/u);
+    assert.match(check.findings[0].action, /tracked files still count/u);
+    assert.match(check.findings[0].action, /Keep task records and memory intact/u);
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 test('Codex warns for unprepared edits without inheriting another agent or interrupted request', async () => {
