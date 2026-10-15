@@ -1,5 +1,7 @@
 import { completeVerification } from '../../scripts/verification-completion.mjs';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
+import semver from 'semver';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -13,6 +15,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const fixture = await mkdtemp(path.join(tmpdir(), 'kiokuko-agenticreplay-'));
 const recorder = process.env.AGENTICREPLAY_BIN ?? 'agenticreplay';
 const requests = [];
+let replayServer;
 const server = createServer(async (request, response) => {
   try {
     assert.equal(request.url, '/v1/chat/completions');
@@ -57,7 +60,9 @@ async function payload(runDir, event) {
   if (value && typeof value === 'object' && '$blob' in value) {
     const digest = value.$blob.replace(/^sha256:/u, '');
     assert.match(digest, /^[a-f0-9]{64}$/u);
-    value = JSON.parse(await readFile(path.join(runDir, 'blobs', digest.slice(0, 2), digest), 'utf8'));
+    const bytes = await readFile(path.join(runDir, 'blobs', digest.slice(0, 2), digest));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), digest, 'Recorded blob integrity mismatch');
+    value = JSON.parse(bytes.toString('utf8'));
   }
   return typeof value === 'string' ? JSON.parse(value) : value;
 }
@@ -65,8 +70,9 @@ async function payload(runDir, event) {
 try {
   await mkdir(env.TMPDIR);
   const version = await command(['--version']);
-  const expected=process.env.KIOKUKO_AGENTICREPLAY_CURRENT==='1'?'0.1.4':'0.1.2';
-  assert.equal(version,expected,'This compatibility check uses a declared version fixture');
+  const declaredRange = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).devDependencies?.agenticreplay;
+  assert.ok(typeof declaredRange === 'string' && semver.validRange(declaredRange), 'AgenticReplay compatibility range is missing');
+  assert.ok(semver.satisfies(version, declaredRange), `AgenticReplay ${version} does not satisfy ${declaredRange}`);
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -87,8 +93,12 @@ try {
 
   const runDir = recording.runDir;
   assert.equal(await realpath(path.dirname(runDir)),await realpath(path.join(fixture,'.agenticreplay/runs')));
-  assert.equal(JSON.parse(await readFile(path.join(runDir,'manifest.json'),'utf8')).run_id,recording.runId);
-  const events = (await readFile(path.join(runDir, 'events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  const manifest = JSON.parse(await readFile(path.join(runDir, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.run_id, recording.runId);
+  const eventBytes = await readFile(path.join(runDir, 'events.jsonl'));
+  assert.match(manifest.integrity?.events_sha256, /^[a-f0-9]{64}$/u);
+  assert.equal(createHash('sha256').update(eventBytes).digest('hex'), manifest.integrity.events_sha256, 'Recorded event integrity mismatch');
+  const events = eventBytes.toString('utf8').trim().split('\n').map(JSON.parse);
   const captured = events.filter(({ type, attrs }) => type === 'net.request' && attrs.phase === 'body');
   assert.equal(captured.length, 2);
   assert.deepEqual((await payload(runDir, captured[0])).tools, requests[0].tools);
@@ -96,17 +106,71 @@ try {
 
   // The recorded origin must be unavailable during exact replay.
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  const replay = JSON.parse(await command(['replay', recording.runId, '--in-place', '--no-fs',
-    '--no-trace', '--quiet', '--json']));
-  assert.equal(replay.mode, 'exact');
-  assert.equal(replay.exitCode, 0);
-  assert.equal(replay.canonicalExact, 2);
-  for (const key of ['divergences', 'unmatched', 'liveCalls']) assert.equal(replay[key], 0, key);
-  console.log(`AgenticReplay ${version}: real Kiokuko schema/result captured; 2 canonical exact offline matches, 0 live calls.`);
+  // Current AgenticReplay exposes the captured request/response payloads, but no
+  // longer exposes a replay CLI command. Replay those exact captured exchanges
+  // against a fresh Kiokuko host while the original provider is closed.
+  const exchanges = await Promise.all(captured.map(async requestEvent => {
+    const responseEvent = events.find(event => event.type === 'net.response'
+      && event.attrs.request_id === requestEvent.attrs.request_id);
+    assert.ok(responseEvent?.attrs.response_complete);
+    assert.equal(responseEvent.attrs.status, 200);
+    return { request: await payload(runDir, requestEvent), response: await payload(runDir, responseEvent) };
+  }));
+  assert.equal(exchanges.length, 2);
+  assert.deepEqual(exchanges[0].request.tools, requests[0].tools);
+  assert.equal(exchanges[1].request.model, requests[1].model);
+  assert.equal(exchanges[1].request.messages.at(-1).role, 'tool');
+  const replayErrors = [];
+  let replayCount = 0;
+  replayServer = createServer(async (request, response) => {
+    try {
+      assert.equal(request.url, '/v1/chat/completions');
+      assert.equal(request.method, 'POST');
+      const exchange = exchanges[replayCount++];
+      assert.ok(exchange, 'Unexpected live model request');
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const observed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (replayCount === 1) {
+        const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+        assert.equal(fingerprint(observed), fingerprint(requests[0]), 'Initial model request changed');
+      } else {
+        const original = requests[1];
+        assert.equal(observed.model, original.model);
+        assert.deepEqual(observed.tools, original.tools);
+        assert.deepEqual(observed.messages.map(message => message.role), original.messages.map(message => message.role));
+        const delivered = JSON.parse(observed.messages.at(-1).content);
+        assert.equal(delivered.structuredContent.contract.id, 'kiokuko/model-managed');
+        assert.match(delivered.structuredContent.text, /# Kiokuko SOUL router/u);
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(exchange.response));
+    } catch (error) {
+      replayErrors.push(String(error));
+      response.writeHead(500);
+      response.end('offline replay mismatch');
+    }
+  });
+  await new Promise((resolve, reject) => {
+    replayServer.once('error', reject);
+    replayServer.listen(0, '127.0.0.1', resolve);
+  });
+  const replayUrl = `http://127.0.0.1:${replayServer.address().port}/v1`;
+  let replayFailure;
+  try {
+    await execute(process.execPath, [path.join(root, 'tests/ci/agenticreplay-host.mjs')], {
+      cwd: fixture, env: { ...env, OPENAI_BASE_URL: replayUrl }, timeout: 60_000, maxBuffer: 2_000_000,
+    });
+  } catch (error) { replayFailure = error; }
+  assert.deepEqual(replayErrors, []);
+  if (replayFailure) throw new Error('Offline replay host failed', { cause: replayFailure });
+  assert.equal(replayCount, 2);
+  assert.equal(requests.length, 2, 'Original provider received no replay traffic');
+  console.log(`AgenticReplay ${version}: real Kiokuko schema/result captured; 2 recorded responses replayed offline with matching request contracts, 0 original-provider replay calls.`);
 } finally {
-  if (server.listening) {
-    server.closeAllConnections();
-    await new Promise(resolve => server.close(resolve));
+  for (const active of [server, replayServer]) if (active?.listening) {
+    active.closeAllConnections();
+    await new Promise(resolve => active.close(resolve));
   }
   await rm(fixture, { recursive: true, force: true });
 }

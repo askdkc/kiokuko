@@ -34,7 +34,7 @@
     "test:integration": "node scripts/run-tests.mjs tests/integration",
     "test:sqlite-vec": "node --import tsx tests/ci/sqlite-vec-package-smoke.ts",
     "test:global-install": "node tests/ci/global-install-smoke.mjs",
-    "test:agenticreplay": "npm run build && node tests/ci/agenticreplay-smoke.mjs",
+    "test:agenticreplay": "npm run build && node tests/ci/agenticreplay-smoke.mjs && node tests/ci/agenticreplay-regression.mjs",
     "test:evaluation": "npm run build && node scripts/run-retrieval-evaluation.mjs",
     "test:interaction:live": "npm run build && node scripts/run-interaction-memory-smoke.mjs",
     "test:interaction:benchmark": "npm run build && node scripts/run-interaction-memory-benchmark.mjs",
@@ -53,7 +53,7 @@
     "test:chatgpt:tunnel": "node scripts/run-tunnel-smoke.mjs",
     "verify": "node scripts/verify.mjs",
     "verify:plan": "node scripts/verify.mjs --plan",
-    "test:verification": "node --test scripts/verification-contract.test.mjs"
+    "test:verification": "node --test scripts/verification-contract.test.mjs scripts/agenticreplay-dependency.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -95,6 +95,7 @@
     "@huggingface/transformers": "4.2.0",
     "@types/node": "^24.0.0",
     "@types/semver": "^7.8.0",
+    "agenticreplay": ">=0.1.6",
     "sqlite-vec": "0.1.9",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2"

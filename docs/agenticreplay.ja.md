@@ -3,7 +3,8 @@
 Kiokukoに接続したクライアントのモデルAPI通信は
 [AgenticReplay](https://github.com/askdkc/AgenticReplay)で記録できます。
 任意で使う外部ツールです。Kiokukoからインストールしたり、記録のために
-クライアント設定を変更したりはしません。互換性チェックの対象は`agenticreplay@0.1.2`です。
+クライアント設定を変更したりはしません。検証済みの最低版は`package.json`で宣言し、
+`npm ci`は`package-lock.json`で解決された版を導入します。検査は固定版ではなく動作を確認します。
 
 ## コマンドを確認する
 
@@ -14,11 +15,8 @@ agenticreplay --version
 agenticreplay doctor
 ```
 
-未導入のマシンでは、次のコマンドでインストールします。
-
-```bash
-npm install --global agenticreplay@0.1.2
-```
+リポジトリの検証では`npm ci`でローカルに導入します。別途グローバルに
+導入する場合はAgenticReplayの公式手順に従い、以下の互換性チェックで動作を確認してください。
 
 ## クライアントを記録する
 
@@ -32,7 +30,6 @@ Claude Codeの場合：
 ```bash
 agenticreplay record claude -- -p "Use Kiokuko to recall relevant context for this project."
 agenticreplay show last
-agenticreplay replay last --worktree
 ```
 
 記録時はクライアントの既存の認証情報を使い、モデル利用料が発生する場合があります。
@@ -47,7 +44,7 @@ agenticreplay record exec --tls-intercept -- codex
 確認してください。クライアントはレコーダーから起動します。起動済みのデスクトップ
 クライアントには、新しいプロセスの記録用環境変数は引き継がれません。
 
-## 記録を確認して再生する
+## 記録を確認してオフライン検証する
 
 記録は対象プロジェクトの`.agenticreplay/runs/`に保存されます。
 シリアライズされたリクエストから、ホストが実際にモデルへ送ったKiokukoの
@@ -57,19 +54,19 @@ agenticreplay record exec --tls-intercept -- codex
 ```bash
 agenticreplay list
 agenticreplay show last --json
-agenticreplay replay last --worktree --json
+agenticreplay events last --json
 ```
 
-exact replayでは、記録済みのモデル応答を返します。作業用worktreeでプロジェクトの
-ファイルは保護できますが、**Kiokukoのデータベースは巻き戻りません**。
-ツールが再実行され、記憶を書き込む場合があります。書き込み操作のテストでは、
-使い捨てのKiokukoデータディレクトリとクライアント設定を使ってください。
+リポジトリのテストは、元のモデル接続先を閉じてから、記録した応答を別のテスト用ホストへ
+オフラインで返します。検証した現行版にはレコーダーのCLI再生コマンドはありません。
+書き込み操作のテストでは、使い捨てのKiokukoデータディレクトリと
+クライアント設定を使ってください。
 通信本文とファイルのスナップショットは機密情報として扱い、共有前に確認します。
 Kiokukoの記憶は、Git管理下のファイルでなくてもモデルへのリクエストに含まれます。
 
 ## リポジトリの互換性チェック
 
-Node.jsとAgenticReplay 0.1.2が使える環境で実行します。
+Node.jsとlockfileから導入したAgenticReplayを使って実行します。
 
 ```bash
 npm ci
@@ -79,8 +76,9 @@ npm run test:agenticreplay
 Kiokukoをビルドし、テスト用のNodeホストから実際のMCPサーバーを起動して、
 ローカルのモデルfixtureへの2件のリクエストを記録します。
 記録された`task_inspect`のスキーマとSOULの結果を確認した後、モデルの接続先を停止し、
-オフライン再生で2件がcanonical exact一致し、divergences、unmatched、liveCallsがすべて0になることを
-検証します。一時的な記録、設定、記憶データは終了後に削除します。
+記録した2件の応答を別のホストへ返し、必要なリクエストの契約が一致することと、
+元のモデル接続先に再アクセスしないことを検証します。版番号だけが変わっても動作が
+保たれていれば通り、記録機能が欠けていれば失敗します。一時的な記録、設定、記憶データは終了後に削除します。
 コマンドが`PATH`にない場合は、`AGENTICREPLAY_BIN`に実行ファイルのパスを指定できます。
 
 認証情報や有料のモデル呼び出しは不要です。モデル通信と実際のKiokuko MCP境界を

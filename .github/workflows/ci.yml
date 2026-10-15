@@ -81,8 +81,8 @@ jobs:
           node-version: 24.16.0
           cache: npm
       - run: npm ci
-      - name: Install the published recorder
-        run: npm install --global agenticreplay@0.1.2 --ignore-scripts --no-audit --no-fund
+      - name: Use the lockfile-installed recorder
+        run: echo "AGENTICREPLAY_BIN=$GITHUB_WORKSPACE/node_modules/.bin/agenticreplay" >> "$GITHUB_ENV"
       - name: Run repository verification (record)
         run: npm run verify -- --profile record --output "${{ runner.temp }}/verification-record-replay"
       - name: Retain verification plan, logs and results
