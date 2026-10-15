@@ -225,7 +225,7 @@ test('Codex warns for unprepared edits without inheriting another agent or inter
     assert.deepEqual(handleCodexHook(f.db, { ...common, hook_event_name: 'Stop' }), {});
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
-test('Codex policy denial stops the turn durably before every recovery and tool path', async () => {
+test('explicit human interruption stops the turn durably before every recovery and tool path', async () => {
   const f = await fixture();
   try {
     const common = { session_id: 'hard-stop', turn_id: 'first', cwd: f.root };
@@ -233,7 +233,8 @@ test('Codex policy denial stops the turn durably before every recovery and tool 
     handleCodexHook(f.db, prompt);
     const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{ request_id: string }>()!.request_id;
     const call = (name: string, args: object = {}) => ({ ...common, hook_event_name: 'PreToolUse', tool_name: name, tool_use_id: name, tool_input: args });
-    const denied = handleCodexHook(f.db, call('mcp__kiokuko__task_prepare', {cwd:f.root,requestId:'wrong-request'})) as any;
+    handleCodexHook(f.db,{...common,hook_event_name:'Interrupt'});
+    const denied = handleCodexHook(f.db, call('exec_command', {cmd:'true'})) as any;
     assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Do not retry.*new user message/u);
     assert.equal(denied.continue, undefined); // Unsupported here would make Codex fail open.
@@ -246,10 +247,12 @@ test('Codex policy denial stops the turn durably before every recovery and tool 
       assert.equal((handleCodexHook(restarted, prompt) as any).continue, false); // An event replay cannot reset it.
       const late = handleCodexHook(restarted, { ...call('mcp__kiokuko__task_prepare', { cwd: f.root, requestId }),
         hook_event_name: 'PostToolUse', tool_response: { structuredContent: f.prepared } }) as any;
-      assert.equal(late.continue, false);
+      assert.deepEqual(late, {}); // Cancelled request ignores late completion rather than requesting continuation.
+      assert.equal((handleCodexHook(restarted,call("exec_command",{cmd:"true"})) as any).hookSpecificOutput.permissionDecision,"deny");
       assert.equal(restarted.prepare('SELECT run_id FROM codex_hook_requests').get<{ run_id: string | null }>()!.run_id, null);
       for (const stop_hook_active of [false, true]) {
-        assert.equal((handleCodexHook(restarted, { ...common, hook_event_name: 'Stop', stop_hook_active }) as any).continue, false);
+        assert.deepEqual(handleCodexHook(restarted, { ...common, hook_event_name: 'Stop', stop_hook_active }), {});
+        assert.equal((handleCodexHook(restarted,call('exec_command',{cmd:'true'})) as any).hookSpecificOutput.permissionDecision,'deny');
       }
       assert.equal(restarted.prepare('SELECT COUNT(*) AS n FROM codex_hook_tools').get<{ n: number }>()!.n, 0);
       assert.equal(restarted.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get<{ n: number }>()!.n, 0);
@@ -401,7 +404,7 @@ async function boundHookFixture() {
   const event = (id: string) => ({ ...common, tool_name: 'exec_command', tool_use_id: id, tool_input: { cmd: 'true' } });
   return { ...f, common, event };
 }
-test('a denial racing a delayed preparation or execution completion cannot reopen or verify the turn', async () => {
+test('native human Stop racing a delayed preparation or execution completion cannot reopen or verify the turn', async () => {
   for (const phase of ['preparation', 'execution']) {
     const f = await boundHookFixture();
     const common = phase === 'execution' ? f.common : { ...f.common, turn_id: 'racing-prepare' };
@@ -422,8 +425,7 @@ test('a denial racing a delayed preparation or execution completion cannot reope
               const snapshot = statement.get(...params);
               if (!raced) {
                 raced = true;
-                handleCodexHook(second, { ...common, hook_event_name: 'PreToolUse', tool_name: 'mcp__kiokuko__task_prepare',
-                  tool_use_id: 'deny', tool_input: { cwd: f.root, requestId: 'foreign-request' } });
+                handleCodexHook(second, { ...common, hook_event_name: 'Interrupt' });
               }
               return snapshot;
             } };
@@ -1530,10 +1532,11 @@ test('missing preparation Post leaves status reconciliation recoverable without 
     assertMemoryAdvisory(ordinary);
     assert.equal(lastHookDiagnostic(f.db).reason,'memory_review_pending');
     assert.equal(binding().stop_notified,0);
-    // A conflicting existing binding is still an identity violation, not repair.
+    // A conflicting memory binding is rejected without stopping unrelated work.
     handleCodexHook(f.db,{...statusEvent,hook_event_name:'PreToolUse',tool_input:{cwd:f.root,runId:f.prepared.run.runId}});
-    assert.equal(binding().stop_notified,1);
-    assert.equal(lastHookDiagnostic(f.db).recoverable,false);
+    assert.equal(binding().stop_notified,0);
+    assert.equal(lastHookDiagnostic(f.db).recoverable,true);
+    assert.notEqual((handleCodexHook(f.db,{...common,hook_event_name:"PreToolUse",tool_name:"exec_command",tool_use_id:"after-foreign-memory",tool_input:{cmd:"true"}}) as any).hookSpecificOutput?.permissionDecision,"deny");
     assert.equal(f.db.prepare('SELECT COUNT(*) n FROM task_execution_evidence').get<{n:number}>()!.n,0);
   } finally {f.db.close();rmSync(f.base,{recursive:true,force:true});}
 });

@@ -56,14 +56,14 @@ of implementation tests. Reconfirm affected reviews after a memory revision or
 delivery changes. Use `task_memory_refresh` for newly discovered paths/errors
 within the existing run and its capability/scope binding.
 
-Apply the current user's correction to the work immediately. For a reusable
-correction that has no stored entry, use `memory_capture` with
-`basis: "user_correction"` and omit `replaces`; never invent an entry ID. To
-correct an identified stored entry, set `replaces` to its exact entry ID and
-revision. Check the capture response before reporting that storage succeeded.
-Keep transient instructions out of memory. For an existing-entry correction,
-record the trigger, invariant, counterexample and validation result. Do not
-invent a new capture channel or promote unverified records.
+Apply the current user's correction to the work immediately. After the actual task
+is complete, ask permission to organize its recorded experience. Display the exact
+proposal and obtain approval through native human elicitation before saving.
+Comments revise the proposal and require a fresh preview. Do not use model
+`memory_capture`, checkpoint, index or globalize calls to store derived memories.
+Unavailable elicitation, decline, Stop or restart saves nothing. Never substitute
+model-controlled terminal input for human consent. Preserve source references,
+uncertainty and correction attribution; optional memory cannot block normal work.
 
 ## General conversation
 
@@ -74,9 +74,8 @@ communication preferences. Respect the entry's status, trust level, subjects,
 and revision. Current user instructions override remembered preferences; a
 memory never grants permission. A stated evidence basis is a model claim, not
 independent verification. Check changing factual claims against current sources.
-For an explicit correction to an identified recalled entry, pass its entry ID
-and expected revision to `memory_capture`. For a first capture, omit `replaces`.
-Do not overwrite an ambiguous target.
+Preserve the exact entry identity and revision when proposing a correction.
+Do not overwrite an ambiguous target or write without native review approval.
 
 ## Trust and safety boundaries
 

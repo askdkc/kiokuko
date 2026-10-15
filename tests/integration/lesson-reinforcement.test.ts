@@ -158,7 +158,7 @@ test('child runs, declarations, global captures and unevidenced checkpoints cann
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM lesson_observations').get<{ n: number }>()!.n, 0);
 });
 
-test('MCP restart delivers repeated lesson first and requires review plus regression evidence', async t => {
+test('MCP refuses model reinforcement, recalls existing lessons across restart, and preserves actual verification', async t => {
   const f = await fixture(t);
   const connect = async () => {
     const server = createKiokukoMcpServer({ databasePath: f.databasePath, cwd: () => f.root });
@@ -180,16 +180,15 @@ test('MCP restart delivers repeated lesson first and requires review plus regres
           runId: prepared.run.runId, operationId: 'stale-target',
           memories: [{ ...lesson, reinforces: { entryId: entryId!, expectedRevision: 2 } }],
         } });
-        assert.equal(rejected.isError, true);
-        const failure = rejected.structuredContent as { reason: string; storedObservationCount: number };
-        assert.equal(failure.reason, 'reinforcement_revision_changed');
-        assert.equal(failure.storedObservationCount, 0);
+        assert.deepEqual(rejected.structuredContent,{accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
       }
       const capture = await first.client.callTool({ name: 'memory_capture', arguments: {
         runId: prepared.run.runId, operationId: id, memories: [lesson],
       } });
       assert.notEqual(capture.isError, true);
-      entryId = (capture.structuredContent as { items: Array<{ entryId: string }> }).items[0]!.entryId;
+      assert.deepEqual(capture.structuredContent,{accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
+      // Legacy fixture data tests retrieval and verification; native approval is covered separately.
+      entryId=(await captureInteractionMemory(f.db,{runId:prepared.run.runId,operationId:id,memories:[lesson]},{cwd:f.root,clientKind:'reinforcement-test'})).items[0]!.entryId;
     }
   } finally { await first.close(); }
   const second = await connect();

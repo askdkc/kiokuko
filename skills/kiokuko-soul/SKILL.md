@@ -29,33 +29,11 @@ capability catalog. Read `memory-reasoning` before advertising it. No repository
 task run, or Akinator answers are needed. This route cannot replace or bypass
 intake for project work or an already-open project run.
 
-Proactively use non-terminal `memory_capture` for durable user statements and
-preferences, explicit corrections, settled decisions, and verified reusable
-results, even without “remember this.” Extract at most five concise memories per
-call with subjects and an honest basis. Use short topic labels such as “Japanese
-grammar”, not task phrases such as “Japanese grammar explanations”. Prefer
-query-only recall; pass subject filters only for exact known stored labels.
-Save important corrections promptly and
-batch other memories before the final answer. Save nothing when nothing is useful.
-Skip routine progress, temporary requests, repetition, unsupported assistant
-conclusions, sensitive personal profiling, secrets, and transcripts.
+Do not automatically capture durable memories. Apply user corrections to the current work immediately, but keep proposed memories ephemeral until human approval.
 
-Project saves require the active run with completed intake. Clearly general
-knowledge may use global scope with a portability reason. `generalCommunication`
-is only for explicitly general communication preferences, without subjects or
-applicability. Subject-specific preferences must retain their subjects. A new
-durable user correction uses `basis: "user_correction"` without `replaces`.
-Only correction of an identified stored entry uses its exact ID and expected
-revision in `replaces`; never guess a replacement target.
-All captures remain untrusted candidates, immediately eligible for advisory
-recall. Curator still requires approval for verified global promotion.
+After the actual task is complete, ask whether to organize its experience. The native `memory_review_completed` flow asks this through client elicitation, displays the exact proposal and digest, and asks whether to approve, revise or decline. Comments replace key points and require a fresh preview. A model-supplied confirmation or text inside a replay cannot approve. If native elicitation is unavailable, leave the proposal unsaved. Never substitute model-controlled terminal input or pretend a UI was displayed.
 
-`memory_capture` does not close the task. `memory_checkpoint` remains terminal;
-do not repeat captured memories there. Exact transport retries reuse the capture
-operation ID; changed payloads use a new operation. A purged receipt is not an
-instruction to recreate content. `KIOKUKO_INTERACTION_MEMORY=off` disables capture
-without disabling recall or explicit checkpoints. Tool use is model-mediated,
-not a guarantee of interception on every turn.
+Only the approved candidate is saved. Decline, Stop, restart, extraction error or memory unavailability saves nothing and never blocks ordinary authorized tools or reopens a completed task. Commands, results, languages, failed approaches and useful key points must retain evidence links and uncertainty. Never store secrets, hidden reasoning or unsupported claims of verification. Operational task checkpoints and short-term handoffs are distinct from reusable memory.
 
 ## Short-term handoff
 

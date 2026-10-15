@@ -427,7 +427,7 @@ test('partially reviewed expired work resumes without leaving a stuck source que
     reviewIndex(f.db, { ...input(f, next, 'remaining-review'), entryId: added.artifacts[0].entryId, entryRevision: 1, verdict: 'supported', basis: 'The current source supports the complete statement.' });
     assert.equal(f.db.prepare('SELECT 1 FROM memory_index_pending WHERE entry_id=?').get(source.id), undefined);
 });
-test('MCP submit and review transport reaches the same bound candidate storage', async (t) => {
+test('MCP index submission cannot manufacture human approval or write candidates', async (t) => {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
     const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
     const { createKiokukoMcpServer } = await import('../../src/mcp/server.js');
@@ -441,12 +441,9 @@ test('MCP submit and review transport reaches the same bound candidate storage',
     try {
         const result = await client.callTool({ name: 'memory_index_submit', arguments: { ...input(f, w, 'mcp-submit'), units: [unit(f.sources[0]!)] } });
         assert.ok(!result.isError);
-        const saved = JSON.parse((result.content as any)[0].text);
-        const review = await client.callTool({ name: 'memory_index_review', arguments: { ...input(f, w, 'mcp-review'), entryId: saved.artifacts[0].entryId, entryRevision: 1, verdict: 'supported', basis: 'This claim is supported by the full quoted source.' } });
-        assert.ok(!review.isError);
-        const entry = readEntry(f.db, { workspace: f.project.workspace, entryId: saved.artifacts[0].entryId });
-        assert.ok(indexArtifact(f.db, entry));
-        assert.equal(entry.trustLevel, 'untrusted');
+        assert.deepEqual(result.structuredContent, { accepted: false, recorded: false, workMayContinue: true, warnings: ['post_task_review_required'] });
+        assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM memory_index_artifacts').get<{n:number}>()!.n, 0);
+
     }
     finally {
         await client.close();

@@ -15,6 +15,7 @@ import { migrateDatabase } from '../../src/db/migrate.js';
 import { KiokukoError, type ErrorCode } from '../../src/errors.js';
 import { BoundedStdioServerTransport } from '../../src/mcp/bounded-stdio-transport.js';
 import { createKiokukoMcpServer } from '../../src/mcp/server.js';
+import { checkpointScopedMemory } from '../../src/memory/scoped-memory.js';
 import { recordEntry } from '../../src/memory/entries.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { GLOBAL_WORKSPACE } from '../../src/memory/workspaces.js';
@@ -30,7 +31,7 @@ function sqliteError(errcode: number, message = 'sqlite operation failed'): Erro
   return Object.assign(new Error(message), { code: 'ERR_SQLITE_ERROR', errcode });
 }
 
-test('MCP exposes only the gated task and lifecycle tools and persists candidate memory', async () => {
+test('MCP preserves task contracts while model memory writes require exact native-human review', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-repo-'));
   execFileSync('git', ['init', '-q', root]);
   const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-mcp-data-'));
@@ -74,6 +75,7 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       'memory_index_submit',
       'memory_observe',
       'memory_recall',
+      'memory_review_completed',
       'task_answer',
       'task_execution_evidence',
       'task_inspect',
@@ -88,13 +90,13 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
     assert.equal(tools.tools.find((tool) => tool.name === 'task_answer')?.annotations?.idempotentHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.readOnlyHint, false);
     assert.equal(tools.tools.find((tool) => tool.name === 'curator_check')?.annotations?.idempotentHint, false);
-    assert.equal(tools.tools.find((tool) => tool.name === 'curator_globalize')?.annotations?.idempotentHint, true);
-    assert.match(tools.tools.find((tool) => tool.name === 'curator_globalize')?.description ?? '', /stored as verified\/system_verified memory created by kiokuko-curator/);
+    assert.equal(tools.tools.find((tool) => tool.name === 'curator_globalize')?.annotations?.idempotentHint, undefined);
+    assert.match(tools.tools.find((tool) => tool.name === 'curator_globalize')?.description ?? '', /model-supplied confirmed flag is not human approval/);
     assert.equal(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.annotations?.idempotentHint, false);
     const deriveLessonTool = tools.tools.find((tool) => tool.name === 'memory_derive_lesson');
-    assert.equal(deriveLessonTool?.annotations?.idempotentHint, true);
-    assert.equal(deriveLessonTool?.annotations?.openWorldHint, false);
-    assert.match(deriveLessonTool?.description ?? '', /untrusted candidate only.*does not count as an observation/);
+    assert.equal(deriveLessonTool?.annotations?.idempotentHint, undefined);
+    assert.equal(deriveLessonTool?.annotations?.openWorldHint, undefined);
+    assert.match(deriveLessonTool?.description ?? '', /Does not save.*human memory-review interface/);
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
     assert.match(taskPrepareTool?.description ?? '', /once for one logical user request/);
@@ -156,16 +158,9 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       );
       assert.match(schema.properties?.capabilities?.description ?? '', /kind and canonical name/u);
     }
-    assert.match(tools.tools.find((tool) => tool.name === 'memory_checkpoint')?.description ?? '', /does not prohibit unrelated authorized tools/);
     const checkpointTool = tools.tools.find((tool) => tool.name === 'memory_checkpoint');
-    assert.match(checkpointTool?.description ?? '', /runId.*active/u);
-    assert.match(checkpointTool?.description ?? '', /needs_answer/);
-    assert.match(checkpointTool?.description ?? '', /answer_from_evidence_or_ask_user/);
-    assert.match(checkpointTool?.description ?? '', /complete the required `task_answer` loop/);
-    assert.match(checkpointTool?.description ?? '', /successful terminal checkpoint.*at most once/u);
-    assert.match(checkpointTool?.description ?? '', /rejected precondition does not count as that successful checkpoint/u);
-    assert.match(checkpointTool?.description ?? '', /indicated run-state change/);
-    assert.doesNotMatch(checkpointTool?.description ?? '', /Call at most once per user request/u);
+    assert.match(checkpointTool?.description ?? '', /operational.*checkpoint/i);
+    assert.match(checkpointTool?.description ?? '', /human.*approv/i);
     const checkpointSchema = checkpointTool?.inputSchema as ToolInputSchema;
     assert.equal(checkpointSchema.type, 'object');
     assert.equal(checkpointSchema.additionalProperties, false);
@@ -224,9 +219,13 @@ test('MCP exposes only the gated task and lifecycle tools and persists candidate
       },
     });
     assert.equal(checkpoint.isError, undefined);
-    const checkpointContent = checkpoint.structuredContent as { entries: Array<{ status: string; workspace: string }> };
-    assert.equal(checkpointContent.entries[0]?.status, 'candidate');
-    assert.match(checkpointContent.entries[0]?.workspace ?? '', /^project:/);
+    assert.deepEqual(checkpoint.structuredContent,{accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
+    // Seed preexisting durable state directly to preserve the remaining retrieval/intake assertions.
+    // Native approval persistence is positively tested in replay-write-boundary.test.ts.
+    await initializeDatabase({databasePath});
+    const fixtureDb=openConnection(databasePath);
+    try { await checkpointScopedMemory(fixtureDb,{cwd:root,memories:[{kind:'lesson',title:'Implement the durable beacon and add tests',body:'Use the MCP durable-beacon contract.',tags:['src/beacon.ts']}]}); }
+    finally { fixtureDb.close(); }
 
     const prepared = await client.callTool({
       name: 'task_prepare',
@@ -477,7 +476,7 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
       arguments: {
         runId,
         outcome: 'completed',
-        memories: [{ kind: 'lesson', title: 'Recovery sentinel', body: 'token=private-intake-checkpoint-sentinel must not persist during intake.' }],
+        memories: [], evidence:{tests:[{runner:'node:test',outcome:'passed'}]},
       },
     });
     assert.equal(earlyCheckpoint.isError, true);
@@ -539,7 +538,7 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
       arguments: {
         runId,
         outcome: 'completed',
-        memories: [{ kind: 'lesson', title: 'Recovery lesson', body: 'Complete task_answer before checkpointing the run.' }],
+        memories: [], evidence:{tests:[{runner:'node:test',outcome:'passed'}]},
       },
     });
     assert.equal(finalCheckpoint.isError, undefined);
@@ -548,18 +547,18 @@ test('memory_checkpoint returns actionable MCP guidance during intake and succee
       runId,
       status: 'completed',
       feedbackCount: 0,
-      evidenceCount: 0,
-      reasoningPaths: 1,
+      evidenceCount: 1,
+      reasoningPaths: 0,
       qualifiedReasoningPaths: 0,
     });
-    assert.equal(finalContent.entries.length, 1);
+    assert.equal(finalContent.entries.length, 0);
 
     const terminalRetry = await client.callTool({
       name: 'memory_checkpoint',
       arguments: {
         runId,
         outcome: 'completed',
-        memories: [{ kind: 'lesson', title: 'Terminal retry sentinel', body: 'This must not create a second checkpoint.' }],
+        memories: [], evidence:{tests:[{runner:'node:test',outcome:'passed'}]},
       },
     });
     assert.equal(terminalRetry.isError, true);
@@ -597,8 +596,10 @@ test('checkpoint reports pending reviews and evidence-only success without claim
         body: 'Review migration asset lists when changing migrations.', tags: ['src/migrations.ts'] }],
     } });
     assert.notEqual(seeded.isError, true);
-    const entryId = (seeded.structuredContent as { entries: Array<{ id: string }>; storedMemoryCount: number }).entries[0]!.id;
-    assert.equal((seeded.structuredContent as { storedMemoryCount: number }).storedMemoryCount, 1);
+    assert.deepEqual(seeded.structuredContent,{accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
+    await initializeDatabase({databasePath});const fixtureDb=openConnection(databasePath);
+    let entryId:string;
+    try{entryId=(await checkpointScopedMemory(fixtureDb,{cwd:root,memories:[{kind:'lesson',title:'Migration asset review',body:'Review migration asset lists when changing migrations.',tags:['src/migrations.ts']}]})).entries[0]!.id;}finally{fixtureDb.close();}
     const prepared = await client.callTool({ name: 'task_prepare', arguments: {
       soulRead: true, requestId: 'checkpoint-assurance-request', task: 'Debug migration asset review',
       profileHints: { taskType: 'debug', target: 'src/migrations.ts', expected: 'asset list test passes' },
@@ -616,13 +617,8 @@ test('checkpoint reports pending reviews and evidence-only success without claim
     } });
     const blocked = await checkpoint();
     assert.equal(blocked.isError, true);
-    assert.deepEqual(blocked.structuredContent, {
-      code: 'CONFLICT', reason: 'assurance_incomplete', retryable: false, workMayContinue: true, bookkeepingFailure: true,
-      assurance: { revision: state.assurance.revision, pending: [entryId], stale: [], missingVerification: [] },
-      nextAction: 'read_task_memory_status', requiredActions: ['review_pending_memories'],
-    });
-    const blockedText = (blocked as { content: Array<{ type: string; text?: string }> }).content[0];
-    assert.match(blockedText?.type === 'text' ? blockedText.text ?? '' : '', /Checkpoint was not saved/u);
+    assert.equal((blocked.structuredContent as {reason:string}).reason,'task_verification_incomplete');
+    assert.equal((blocked.structuredContent as {workMayContinue:boolean}).workMayContinue,true);
     const before = openConnection(databasePath);
     try {
       assert.equal(before.prepare('SELECT status FROM ledger_runs WHERE run_id = ?').get<{ status: string }>(state.run.runId)?.status, 'active');
@@ -1086,7 +1082,7 @@ test('MCP checkpoint keeps unsupported eligibility details on the generic redact
   try {
     const result = await client.callTool({
       name: 'memory_checkpoint',
-      arguments: { memories: [{ kind: 'lesson', title: 'Redaction test', body: 'bounded' }] },
+      arguments: {runId:'redaction-run',outcome:'failed',memories:[],evidence:{tests:[{runner:'node:test',outcome:'passed'}]}},
     });
     const serialized = JSON.stringify(result);
     assert.equal(result.isError, true);
@@ -1119,7 +1115,7 @@ test('MCP checkpoint does not echo malformed assurance details', async () => {
   await client.connect(a);
   try {
     const result = await client.callTool({ name: 'memory_checkpoint', arguments: {
-      memories: [{ kind: 'lesson', title: 'Redaction test', body: 'bounded' }],
+      runId:'redaction-run',outcome:'failed',memories: [], evidence:{tests:[{runner:'node:test',outcome:'passed'}]},
     } });
     assert.equal(result.isError, true);
     assert.equal(JSON.stringify(result).includes(sentinel), false);

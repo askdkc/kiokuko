@@ -56,14 +56,16 @@ for(const status of ['completed','failed'] as const)test(`terminal ${status} mem
   assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests WHERE request_id=?').get<{stop_notified:number}>(f.requestId)?.stop_notified,0);
  }finally{f.close();}
 });
-test('foreign run identity rejection and user interruption remain denials',async()=>{
+test('foreign memory is denied without stopping ordinary work; human interruption still denies work',async()=>{
  for(const condition of ['identity','interrupt']){
   const f=await fixture();try {
    if(condition==='identity'){
     const rejected=handleCodexHook(f.db,{...f.hook,hook_event_name:'PreToolUse',tool_name:'mcp__kiokuko__task_memory_status',tool_use_id:'foreign-run',tool_input:{cwd:f.root,runId:'foreign-run'}}) as any;
     assert.equal(rejected.hookSpecificOutput?.permissionDecision,'deny');
    }else handleCodexHook(f.db,{...f.hook,hook_event_name:'Interrupt'});
-   assert.equal(f.ordinary().hookSpecificOutput?.permissionDecision,'deny');
+   const ordinary=f.ordinary();
+   if(condition==='interrupt')assert.equal(ordinary.hookSpecificOutput?.permissionDecision,'deny');
+   else {assert.notEqual(ordinary.hookSpecificOutput?.permissionDecision,'deny');assert.equal(execFileSync(process.execPath,['-e',"process.stdout.write('allowed')"],{encoding:'utf8'}),'allowed');assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests WHERE request_id=?').get<{stop_notified:number}>(f.requestId)?.stop_notified,0);}
   }finally{f.close();}
  }
 });
@@ -94,7 +96,7 @@ test('managed template migration preserves user text, scopes procedure stops to 
  const rendered=renderAgentFile(old,{repositoryId:'12345678-1234-4123-8123-123456789abc',workspace:'project',cliCommand:'kiokuko'});
  assert.equal(rendered.action,'updated');assert.match(rendered.content,/User instructions remain/u);assert.match(rendered.content,new RegExp(`kiokuko-template-version: ${AGENT_TEMPLATE_VERSION}`));
  assert.ok(!rendered.content.includes('Old procedure stop.'));assert.match(rendered.content,/Unrelated authorized tools may continue/u);
- assert.match(rendered.content,/An authorization or identity denial ends the turn/u);
+ assert.match(rendered.content,/optional memory identity mismatch rejects only that memory call/u);
  assert.ok(!rendered.content.includes('stop and report the unavailable policy'));
 });
 
@@ -107,4 +109,20 @@ test('checkout-free missing preparation cannot deny independent coding or invent
   assert.equal(record.hookSpecificOutput?.permissionDecision,'deny');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM ledger_runs').get<{n:number}>()?.n,0);
  }finally{db.close();rmSync(base,{recursive:true,force:true});}
+});
+
+test('passing product checks can complete while optional delivered memory is still unreviewed',async()=>{
+ const f=await fixture(true);try{
+  const {defineTaskVerification,recordTaskVerification}=await import('../../src/assurance/verification.js');
+  const {recordTaskEvidence,assertAssuranceCompletion}=await import('../../src/assurance/service.js');
+  const {repositoryStateDigest}=await import('../../src/assurance/snapshot.js');
+  const runId=f.prepared.run.runId;let request=0;
+  const input=()=>({cwd:f.root,runId,requestId:`product-${++request}`,expectedRevision:taskAssuranceReport(f.db,runId).revision!});
+  const definition=defineTaskVerification(f.db,{...input(),reason:'Verify fixture source behavior',checks:[{id:'source',target:'source.ts',expected:'fixture exports x=1',method:'read and assert actual fixture source'}]});
+  const script="const fs=require('node:fs');if(!fs.readFileSync('source.ts','utf8').includes('x=1'))process.exit(1);console.log('source verified')";
+  assert.match(execFileSync(process.execPath,['-e',script],{cwd:f.root,encoding:'utf8'}),/source verified/);
+  const evidence=recordTaskEvidence(f.db,{...input(),deliveryId:f.prepared.context!.deliveryId,execution:`node -e ${script}`,target:'source.ts',stateDigest:repositoryStateDigest(f.root),outcome:'passed',exitCode:0});
+  recordTaskVerification(f.db,{...input(),contractVersion:definition.contractVersion,checkId:'source',target:'source.ts',source:{kind:'local',evidenceId:evidence.evidenceId}});
+  const report=taskAssuranceReport(f.db,runId);assert.ok(report.pending.length>0);assert.equal(report.complete,false);assert.equal(report.verification.ready,true);assert.equal(report.completionReady,true);assert.doesNotThrow(()=>assertAssuranceCompletion(f.db,runId,'completed'));
+ }finally{f.close();}
 });

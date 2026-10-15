@@ -433,18 +433,17 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict/);
     assert.match(instructions, /task_answer/);
     assert.match(instructions, /memory_checkpoint/);
-    assert.match(instructions, /For a durable correction not yet stored, use memory_capture with basis user_correction and omit replaces/u);
-    assert.match(instructions, /Review each delivered memory against the current target and user instructions/u);
-    assert.match(instructions, /Capture a new durable user correction through memory_capture with basis user_correction and no replaces/u);
+    assert.match(instructions, /Do not save derived memory through model capture, checkpoint, index or globalize calls/u);
+    assert.match(instructions, /current instructions and evidence take precedence/u);
+    assert.match(instructions, /human `memory_review_completed` elicitation flow for post-task saves/u);
     assert.doesNotMatch(instructions, /Apply explicit corrections only to a known entry ID and revision/u);
-    assert.match(instructions, /curator_check/);
-    assert.match(instructions, /curator_globalize/);
+
     assert.match(instructions, /Optional external skill discovery is feature-flagged and reference-only/);
     assert.match(instructions, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/iu);
     assert.match(instructions, /Inspect `nextAction` and `memoryPolicy` after every `task_prepare` and `task_answer` response/);
     assert.match(instructions, /`memoryPolicy\.deliveryEmpty=true` with `storedEntryCount>0`.*inspect `contextWithheld`/u);
     assert.match(instructions, /`memory-reasoning` is missing or unknown.*`memoryPolicy\.contextWithheld=true`.*`nextAction=proceed`/u);
-    assert.match(instructions, /`required_capability_unavailable` is a hard stop for missing or unknown `kiokuko-soul`/);
+    assert.match(instructions, /`required_capability_unavailable` rejects that memory operation for missing or unknown required local capabilities/);
     assert.match(instructions, /created by `kiokuko-curator` and matching the current deterministic Curator projection is `system_verified`/);
     assert.match(instructions, /does not by itself require `memory-reasoning`/);
     assert.match(instructions, /continue from repository evidence/);

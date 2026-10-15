@@ -29,47 +29,17 @@ function observation(cwd:string,eventId:string,overrides:Record<string,unknown>=
  return {cwd,eventId,sessionId:'same-session',kind:'completion',summary:'Recorded public actions and outcome',
   tags:['runtime'],source:{producer:'codex',runId:eventId},...overrides};
 }
-test('passive memory retains revisions and current support across restart without inventing verification',async()=>{
+test('passive observation and improvement never save derived memory before human review', async()=>{
  const f=fixture();try {
-  const a=await observeMemory(f.db,observation(f.root,'a'));assert.equal(a.recorded,true);
-  assert.equal((await observeMemory(f.db,observation(f.root,'a'))).duplicate,true);
-  assert.equal((await observeMemory(f.db,observation(f.root,'a',{summary:'conflict'}))).recorded,false);
-  await observeMemory(f.db,observation(f.root,'b'));
-  assert.equal((await improveMemory(f.db,{cwd:f.root})).saved,1);
-  assert.equal((await improveMemory(f.db,{cwd:f.root})).saved,0);
-  let context=await memoryContext(f.db,{cwd:f.root,tags:['runtime'],query:'public'});
-  assert.equal(context.entries.length,2);assert.ok(context.entries.every(e=>e.untrusted&&e.verification==='unknown'));
-  f.db.close();const reopened=openConnection(f.file);
-  try {
-   assert.equal((await observeMemory(reopened,observation(f.root,'a'))).duplicate,true);
-   await observeMemory(reopened,observation(f.root,'a',{summary:'Corrected public actions',source:{producer:'codex',revision:1}}));
-   await observeMemory(reopened,observation(f.root,'a',{summary:'',source:{producer:'codex',revision:2,tombstone:true}}));
-   assert.equal((await observeMemory(reopened,observation(f.root,'a'))).recorded,false);
-   assert.equal((await improveMemory(reopened,{cwd:f.root})).withdrawn,1);
-   context=await memoryContext(reopened,{cwd:f.root});
-   assert.ok(!context.entries.some(e=>e.scope==='global'||('entryId' in a&&e.entryId===a.entryId)));
-   assert.equal(reopened.prepare('SELECT COUNT(*) AS n FROM entry_revisions WHERE entry_id=?').get<{n:number}>(a.entryId??null)?.n,3);
-  } finally {reopened.close();}
- } finally {f.cleanup();}
-});
-test('feedback produces traceable candidates and session handoff stays separate from reusable knowledge',async()=>{
- const f=fixture();try {
-  await observeMemory(f.db,observation(f.root,'switch',{kind:'model_switch',summary:'Continue the runtime fix',fromModel:'old',toModel:'new'}));
-  await observeMemory(f.db,observation(f.root,'generic-stop',{tags:['codex','lifecycle-signal'],summary:'Generic lifecycle metadata'}));
-  const handoff=await memoryContext(f.db,{cwd:f.root,sessionId:'same-session'});
-  assert.equal(handoff.handoff?.summary,'Continue the runtime fix');assert.ok(!handoff.entries.some(e=>e.tags.includes('model_switch')));
-  await observeMemory(f.db,observation(f.root,'complaint',{kind:'complaint',summary:'Recorded failure',issue:'PATH loses the launcher',prevention:'Use the saved interpreter',outcome:'failed'}));
-  await observeMemory(f.db,observation(f.root,'praise',{kind:'praise',summary:'The recorded recovery helped',actions:[{kind:'recover',summary:'Restore the launcher',outcome:'unknown'}]}));
-  await improveMemory(f.db,{cwd:f.root});
-  const context=await memoryContext(f.db,{cwd:f.root,query:'failure'});
-  assert.ok(context.entries.some(e=>e.issue==='PATH loses the launcher'&&e.prevention==='Use the saved interpreter'));
-  const global=await memoryContext(f.db,{cwd:f.root,tags:['principle-candidate']});
-  assert.equal(global.entries.length,2);assert.ok(global.entries.every(e=>e.scope==='global'&&e.sourceEventIds.length>0&&e.verification==='unknown'&&e.confidence<0.5));
-  for(const entry of global.entries)assert.ok(!entry.summary.includes('PATH'));
-  const secret=await observeMemory(f.db,observation(f.root,'secret',{summary:'password=abcdefghijklmnopqrstuvwxyz'}));
-  assert.equal(secret.recorded,false);assert.equal(secret.workMayContinue,true);
-  f.db.close();assert.equal((await observeMemory(f.db,observation(f.root,'closed'))).workMayContinue,true);
- } finally {f.cleanup();}
+  for (const kind of ['completion','compaction','model_switch','complaint','praise']) {
+   const result=await observeMemory(f.db,observation(f.root,kind,{kind}));
+   assert.equal(result.recorded,false);assert.equal(result.workMayContinue,true);
+  }
+  assert.equal((await improveMemory(f.db,{cwd:f.root})).recorded,false);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM memory_observation_heads').get<{n:number}>()?.n,0);
+  assert.deepEqual((await memoryContext(f.db,{cwd:f.root})).entries,[]);
+ }finally{f.cleanup();}
 });
 test('MCP passive APIs are real protocol tools; an unavailable DB fails only its record',async()=>{
  const f=fixture();const server=createKiokukoMcpServer({databasePath:f.file,cwd:()=>f.root});
@@ -78,7 +48,7 @@ test('MCP passive APIs are real protocol tools; an unavailable DB fails only its
  try {
   const tools=await client.listTools();assert.ok(['memory_observe','memory_context','memory_improve'].every(name=>tools.tools.some(t=>t.name===name)));
   const saved=await client.callTool({name:'memory_observe',arguments:observation(f.root,'mcp')});
-  assert.equal((saved.structuredContent as Record<string, unknown> | undefined)?.recorded,true);assert.equal((saved.structuredContent as Record<string, unknown> | undefined)?.workMayContinue,true);
+  assert.equal((saved.structuredContent as Record<string, unknown> | undefined)?.recorded,false);assert.equal((saved.structuredContent as Record<string, unknown> | undefined)?.workMayContinue,true);
   const context=await client.callTool({name:'memory_context',arguments:{cwd:f.root,sessionId:'same-session'}});
   assert.equal((context.structuredContent as Record<string, unknown> | undefined)?.available,true);
  } finally {await client.close();await server.close();f.cleanup();}
@@ -96,7 +66,7 @@ test('HTTP passive aliases retain bearer authorization and scoped record validat
  try {
   const post=(endpoint:string,body:unknown,auth=true)=>fetch(`http://127.0.0.1:${port}${endpoint}`,{method:'POST',headers:{'content-type':'application/json',...(auth?{authorization:'Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}:{})},body:JSON.stringify(body)});
   assert.equal((await post('/api/memory/observe',observation(f.root,'http'),false)).status,401);
-  const saved=await post('/api/memory/observe',observation(f.root,'http'));assert.equal(saved.status,200);assert.equal((await saved.json()).recorded,true);
+  const saved=await post('/api/memory/observe',observation(f.root,'http'));assert.equal(saved.status,200);assert.equal((await saved.json()).recorded,false);
   const invalid=await post('/api/memory/observe',{cwd:f.root});assert.equal((await invalid.json()).recorded,false);
   const context=await post('/api/v1/memory/context',{cwd:f.root});assert.equal((await context.json()).available,true);
  } finally {route.close?.();await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));f.cleanup();}

@@ -1,3 +1,5 @@
+import { createInterface as createHumanPrompt } from 'node:readline/promises';
+import { registerReplayReviewCommand } from './commands/replay-review.js';
 import { registerDiagnosticRetentionCommand } from './commands/diagnostic-retention.js';
 import { registerChatgptCommands } from './commands/chatgpt.js';
 import { registerMemoryIndexCommands } from './commands/memory-index.js';
@@ -809,16 +811,16 @@ async function dispatchRequest(request: CallRequest): Promise<unknown> {
   }
   if (operation === 'use') return useRepository(validateUseCallArguments(args));
   if (operation === 'record') {
-    const input = validateRecordCallArguments(args);
-    return withDatabase((database) => recordEntry(database, input));
+    validateRecordCallArguments(args);
+    return {recorded:false,workMayContinue:true,warnings:['human_review_required']};
   }
   if (operation === 'curator') {
     const input = validateCuratorCallArguments(args);
     return withDatabase((database) => runCuratorCommand(database, { ...input, json: true }));
   }
   if (operation === 'curator_globalize') {
-    const input = validateCuratorGlobalizeCallArguments(args);
-    return withDatabase((database) => globalizeCuratorCandidate(database, input));
+    validateCuratorGlobalizeCallArguments(args);
+    return {recorded:false,workMayContinue:true,warnings:['human_review_required']};
   }
   if (operation === 'guide_start') {
     const input = validateGuideStartCallArguments(args);
@@ -897,6 +899,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   cli.exitOverride();
   cli.configureOutput({ outputError: () => undefined });
 
+  registerReplayReviewCommand(cli);
   registerChatgptCommands(cli);
   registerDiagnosticRetentionCommand(cli);
 
@@ -1032,6 +1035,11 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       'record input must be a JSON object',
     );
     const input = validateRecordInput({ ...parsed, workspace: options.workspace });
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new KiokukoError('VALIDATION_ERROR', 'Human review is required; machine input cannot approve memory');
+    const prompt = createHumanPrompt({input:process.stdin,output:process.stdout});
+    let approved=false;
+    try { process.stdout.write(JSON.stringify(input,null,2)+'\n'); approved=(await prompt.question('Save this exact memory? Type approve or decline: ')).trim()==='approve'; } finally {prompt.close();}
+    if(!approved){process.stdout.write('Memory not saved.\n');return;}
     const data = await withDatabase((database) => recordEntry(database, input));
     humanOrJson(options.json, 'record', data, `Recorded ${data.id}`);
   });

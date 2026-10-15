@@ -1,6 +1,4 @@
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import type { MemoryObservation } from './observation-contract.js';
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -17,21 +15,7 @@ export function lifecycleObservation(raw: unknown): MemoryObservation | undefine
     tags: ['codex', 'lifecycle-signal'], outcome: 'unknown', verification: 'unknown', actions: [],
     source: { producer: 'codex', eventIds: [eventId], revision: 0, tombstone: false } };
 }
-export function dispatchHookObservation(raw: unknown, databasePath: string): boolean {
-  const observation = lifecycleObservation(raw);
-  if (!observation) return false;
-  try {
-    const worker = fileURLToPath(new URL('../bin/memory-observer.js', import.meta.url));
-    const child = spawn(process.execPath, [worker, '--database', databasePath], {
-      detached: true, stdio: ['pipe', 'ignore', 'ignore'],
-      env: { ...process.env },
-    });
-    child.on('error', () => { /* Optional delivery failure never fails coding. */ });
-    child.stdin?.on('error', () => {});
-    child.stdin?.end(JSON.stringify({ observation,
-      ...(process.env.AGENTICREPLAY_RUN_DIR ? { traceDirectory: process.env.AGENTICREPLAY_RUN_DIR } : {}) }));
-    child.unref();
-    // Queued is transport acceptance only; the caller does not claim storage.
-    return true;
-  } catch { return false; }
+/** Lifecycle notifications are not permission to persist or extract memories. */
+export function dispatchHookObservation(_raw: unknown, _databasePath: string): boolean {
+  return false;
 }

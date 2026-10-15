@@ -59,7 +59,9 @@ export async function verifyInstalledMissingPromptRecovery(installedRoot, fixtur
     // The parent binding must not be borrowed even when its ID is supplied.
     const childMismatch = hook({ hook_event_name: 'PreToolUse', agent_id: 'fresh-child',
       tool_name: 'mcp__kiokuko__task_prepare', tool_use_id: 'foreign-prepare', tool_input: { cwd: root, requestId: previousId } });
-    assert.match(childMismatch.systemMessage, /stopped this turn/u);
+    assert.equal(childMismatch.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(childMismatch.systemMessage, /Use requestId codex-[0-9a-f]{64}/u);
+    assert.notEqual(childMismatch.continue, false, 'foreign memory identity must not stop ordinary work');
     const inspection = await call('task_inspect', { cwd: root, operation: 'skill' });
     assert.notEqual(inspection.isError, true);
     await call('task_inspect', { cwd: root, operation: 'skill', path: 'kiokuko-codex-memory-reasoning' });

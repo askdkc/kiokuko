@@ -218,11 +218,10 @@ export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifySta
   const executionObservation = { unknownExitCalls: counters?.unknown_exit_calls ?? 0, runningCalls: counters?.running_calls ?? 0,
     structuredExitCalls: counters?.structured_exit_calls ?? 0, hooksObserved,
     trustedExitMetadata: counters?.last_exit_metadata ?? 'unobserved' as const };
-  return { ...memory, verification, executionObservation, completionReady: verification.mode === 'legacy_unobserved' ? null : memory.complete && verification.ready };
+  return { ...memory, verification, executionObservation, completionReady: verification.mode === 'legacy_unobserved' ? null : verification.ready };
 }
 export function assertAssuranceCompletion(db: SqliteDatabase, runId: string, outcome: string): void {
   if (outcome !== 'completed') return;
   const report = taskAssuranceReport(db, runId);
-  if (!report.complete) throw new KiokukoError('CONFLICT', 'Memory review or regression verification is incomplete', { assurance: report });
   if (report.completionReady === false) throw new TaskStateConflict('task_verification_incomplete');
 }

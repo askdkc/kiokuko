@@ -225,7 +225,7 @@ test('project capture requires its ready active run and preserves terminal check
   assert.equal(saved.items[0]!.workspace, ready.project.workspace);
 });
 
-test('project memory_capture survives a server restart and is delivered from its original workspace', async (t) => {
+test('model capture cannot persist across restart; preexisting fixture memory remains workspace-scoped', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-capture-restart-'));
   const databasePath = path.join(root, 'data.sqlite3');
   execFileSync('git', ['init', '-q', root]);
@@ -257,11 +257,12 @@ test('project memory_capture survives a server restart and is delivered from its
         scope: 'project', subjects: ['migration compatibility'], basis: 'observed_result' }],
     } });
     assert.notEqual(captured.isError, true);
-    const receipt = captured.structuredContent as { items: Array<{ entryId: string; workspace: string; outcome: string; availability: string }> };
-    assert.equal(receipt.items[0]?.outcome, 'created');
-    assert.equal(receipt.items[0]?.availability, 'current');
-    assert.equal(receipt.items[0]?.workspace, workspace);
-    entryId = receipt.items[0]!.entryId;
+    assert.deepEqual(captured.structuredContent, {accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
+    // Existing durable-memory retrieval remains covered independently of the prohibited model writer.
+    // Native approval positive is exercised by replay-write-boundary.test.ts through real elicitation.
+    const fixtureDb=openConnection(databasePath);
+    try { entryId=recordEntry(fixtureDb,{workspace,kind:'lesson',title:'Migration compatibility asset list',body:'When adding a migration, update the explicit module compatibility asset list and run its test.',tags:['migration','compatibility']}).id; }
+    finally { fixtureDb.close(); }
   } finally { await first.client.close(); await first.server.close(); }
 
   const second = await connect();
@@ -323,12 +324,16 @@ test('MCP publishes usable schemas, transport provenance, disable switch, and tw
   assert.equal(oversized.isError, true, 'The model-facing explanation must not weaken validation');
   const saved = await first.callTool({ name: 'memory_capture', arguments: { operationId: 'mcp-first', memories: [grammar] } });
   assert.notEqual(saved.isError, true);
+  assert.deepEqual(saved.structuredContent,{accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM entries').get<{n:number}>()!.n,0);
+  // Seed legacy state directly to test read compatibility, never treat model input as approval.
+  await captureInteractionMemory(db,{operationId:'fixture-existing',memories:[grammar]},{cwd:root,clientKind:'fixture'});
   const second = await connect(false);
   const recalled = await second.callTool({ name: 'memory_recall', arguments: { query: 'Japanese grammar', soulRead: true, capabilities } });
   assert.notEqual(recalled.isError, true);
   assert.match(JSON.stringify(recalled.structuredContent), /examples before terminology/u);
   const disabled = await second.callTool({ name: 'memory_capture', arguments: { operationId: 'disabled', memories: [general] } });
-  assert.deepEqual(disabled.structuredContent, { enabled: false, items: [] });
+  assert.deepEqual(disabled.structuredContent, {accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
   assert.equal(db.prepare('SELECT COUNT(*) n FROM entries').get<{ n: number }>()!.n, 1);
   // This verifies protocol sessions, not natural model tool selection.
 });

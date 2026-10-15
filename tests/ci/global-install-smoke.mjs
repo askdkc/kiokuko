@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, realpath, readdir, readFile, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -596,7 +596,7 @@ async function verifyFirstInstalledEmbeddingSetup(installedRoot, prefixDirectory
 const packagedSourceDigest = sourceFingerprint(repositoryRoot);
 const packageStages = [];
 let artifactHash, tarballSha1, packagePassed=false;
-const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'kiokuko-global-install-'));
+const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'kiokuko-global-install-')));
 const packDirectory = path.join(temporaryRoot, 'pack');
 const prefixDirectory = path.join(temporaryRoot, 'prefix');
 npmCacheDirectory = path.join(temporaryRoot, 'npm-cache');

@@ -12,6 +12,9 @@ import { migrateDatabase } from "../../src/db/migrate.js";
 import { parseRetrievalQuery } from "../../src/memory/retrieval-query.js";
 import { recallScopedMemory } from "../../src/memory/scoped-memory.js";
 import { resolveProjectWorkspace } from "../../src/memory/workspaces.js";
+import { recordEntryInTransaction } from "../../src/memory/entries.js";
+import { reviewCompletedReplay } from "../../src/memory/replay-review.js";
+import { createApprovedReplayMemoryStore } from "../../src/memory/replay-store.js";
 
 const migrations = path.resolve(import.meta.dirname, "../../migrations");
 
@@ -80,19 +83,28 @@ async function startServer(
   return client;
 }
 
-async function checkpointRules(
-  client: Client,
-  title: string,
-  body: string,
+async function approveRules(
+  client: Client, databasePath: string, repo: string, title: string, body: string,
 ): Promise<MemoryCheckpointResult> {
-  const checkpoint = await client.callTool({
-    name: "memory_checkpoint",
-    arguments: {
-      memories: [{ kind: "lesson", title, body }],
-    },
-  });
+  // Model-origin checkpoint must stay write-free. Positive delivery uses the native review contract.
+  const checkpoint = await client.callTool({ name: "memory_checkpoint", arguments: { memories: [{ kind: "lesson", title, body }] } });
   assert.equal(checkpoint.isError, undefined);
-  return checkpoint.structuredContent as MemoryCheckpointResult;
+  assert.deepEqual(checkpoint.structuredContent, { accepted: false, recorded: false, workMayContinue: true, warnings: ['post_task_review_required'] });
+  const db = openConnection(databasePath);
+  try {
+    const project = await resolveProjectWorkspace(db, repo); assert.ok(project);
+    const before = db.prepare('SELECT COUNT(*) n FROM entries').get<{n:number}>()!.n;
+    let entry: {status:string;workspace:string} | undefined;
+    const receipt = await reviewCompletedReplay({ completed: true, workspace: project.workspace, taskId: 'completed-fixture', sessionId: 'review-fixture',
+      extract: async () => ({ schemaVersion: 1, proposalId: 'fixture', revision: 1, source: { workspace: project.workspace, taskId: 'completed-fixture', sessionId: 'review-fixture', traces: [] }, request: { text: title, evidenceRefs: [] }, languages: [], attempts: [], findings: [{kind:'key_point',text:body,basis:'user_corrected',evidenceRefs:[]}],tags:['migration'],keywords:['migration','マイグレーション'] }),
+      ask: async question => { assert.equal(db.prepare('SELECT COUNT(*) n FROM entries').get<{n:number}>()!.n, before); return { questionId:question.id,choice:question.phase==='organize'?'organize':'approve' }; },
+      save: async (proposal,key) => createApprovedReplayMemoryStore(db,project.workspace,() => {
+        const stored = recordEntryInTransaction(db,{workspace:project.workspace,kind:'lesson',title,body,scope:{visibility:'project'},provenance:{type:'user_approved_replay',reference:key},trustLevel:'untrusted',confidence:0.4,createdBy:'review-fixture',actor:'user'});
+        entry = {status:stored.status,workspace:stored.workspace}; return stored;
+      }).save(proposal,key) });
+    assert.equal(receipt.status,'saved'); assert.ok(entry);
+    return {entries:[entry]};
+  } finally { db.close(); }
 }
 
 async function taskPrepare(
@@ -204,8 +216,8 @@ test("delivery smoke: a stored Japanese policy is delivered to the next build ta
   migrateDatabase(database, migrations);
   const client = await startServer(databasePath, repo);
   try {
-    const stored = await checkpointRules(
-      client,
+    const stored = await approveRules(
+      client, databasePath, repo,
       "リポジトリ保守ルール",
       "このリポジトリのマイグレーションは forward-only。過去のマイグレーションファイル(001, 002, 003 など)は絶対に編集・削除・リネームしない。変更は必ず新しい番号のマイグレーションファイルを追加して行う。",
     );
@@ -238,8 +250,8 @@ test(
     migrateDatabase(database, migrations);
     const client = await startServer(databasePath, repo);
     try {
-      await checkpointRules(
-        client,
+      await approveRules(
+        client, databasePath, repo,
         "データストア移行の方針",
         "データストアのマイグレーションは forward-only。過去のマイグレーションファイルは絶対に編集しない。新しい番号のファイルを追加する。",
       );
@@ -306,8 +318,8 @@ test("scope isolation smoke: writes under KIOKUKO_DATA_DIR never touch the user-
 
   const runClient = await startServer(runDatabasePath, repo);
   try {
-    await checkpointRules(
-      runClient,
+    await approveRules(
+      runClient, runDatabasePath, repo,
       "スコープ分離確認",
       "このエントリはラン専用DBへ書かれたことを確認するためのもの。",
     );
@@ -319,7 +331,7 @@ test("scope isolation smoke: writes under KIOKUKO_DATA_DIR never touch the user-
           .get<{ count: number }>()?.count ?? 0;
       assert.ok(
         runEntries >= 1,
-        "the isolated run database must contain the checkpoint entry",
+        "the isolated run database must contain the human-approved entry",
       );
     } finally {
       runConnection.close();

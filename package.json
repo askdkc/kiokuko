@@ -75,9 +75,9 @@
     "fsevents@2.3.3": true
   },
   "peerDependencies": {
-    "@huggingface/hub": "2.16.1",
-    "@huggingface/transformers": "4.2.0",
-    "sqlite-vec": "0.1.9"
+    "@huggingface/hub": "^2.16.1",
+    "@huggingface/transformers": "^4.2.0",
+    "sqlite-vec": "^0.1.9"
   },
   "peerDependenciesMeta": {
     "@huggingface/hub": {

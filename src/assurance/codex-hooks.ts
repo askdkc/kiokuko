@@ -183,7 +183,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
   db.prepare('UPDATE codex_hook_requests SET last_event = ?, updated_at = ? WHERE identity_digest = ?').run(input.hook_event_name, now, identity);
   if (input.hook_event_name === 'Interrupt') {
     withImmediateTransaction(db, () => {
-      db.prepare("UPDATE codex_hook_requests SET state = 'cancelled' WHERE identity_digest = ?").run(identity);
+      db.prepare("UPDATE codex_hook_requests SET state = 'cancelled', stop_notified = 1 WHERE identity_digest = ?").run(identity);
       if (request!.run_id) {
         const store = new LedgerStore(db);
         const run = store.readRun(request!.run_id);
@@ -209,35 +209,36 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
   const operation = kiokukoTool(input.tool_name);
   const args = record(input.tool_input);
   if (input.hook_event_name === 'PreToolUse') {
-    if (['spawn_agent', 'Agent'].includes(input.tool_name)) return denyTurn('Delegation requires a client adapter that supplies distinct agent identity on every child tool event.');
+    // Native host owns delegation authority. Missing memory identity does not deny ordinary delegation.
+    if (['spawn_agent', 'Agent'].includes(input.tool_name)) return {};
     if (operation === 'task_prepare_recover') {
       const receipt = db.prepare('SELECT successor_run_id FROM task_preparation_recoveries WHERE predecessor_run_id=?')
         .get<{ successor_run_id: string }>(String(args.runId));
       if (args.requestId !== requestId
         || (args.runId !== request.run_id && receipt?.successor_run_id !== request.run_id)
         || typeof args.cwd !== 'string' || realpathSync(args.cwd) !== root) {
-        return denyTurn('Recovery must match the pending client request and predecessor');
+        return deny('Recovery must match the pending client request and predecessor','run_binding_mismatch',true);
       }
       return {};
     }
     if (operation === 'task_prepare') {
       // Validate rather than rewrite: MCP updatedInput can trigger client approval.
       // The model must supply its own read attestation and request binding.
-      if (args.requestId !== requestId || typeof args.cwd !== 'string' || realpathSync(args.cwd) !== root) return denyTurn(`Use requestId ${requestId} and cwd ${root} for this request.`);
+      if (args.requestId !== requestId || typeof args.cwd !== 'string' || realpathSync(args.cwd) !== root) return deny(`Use requestId ${requestId} and cwd ${root} for this request.`,'repository_binding_mismatch',true);
       return {};
     }
     if (operation) {
       const boundRun = request.run_id ? new LedgerStore(db).readRun(request.run_id) : null;
       if (boundRun && !['active', 'intake'].includes(boundRun.status)) return deny('Bound Kiokuko record is terminal. This record call is rejected; unrelated authorized coding may continue.', 'run_terminal', true);
-      if (typeof args.cwd === 'string' && realpathSync(args.cwd) !== root) return denyTurn('Tool repository is not bound to this client request', 'repository_binding_mismatch');
+      if (typeof args.cwd === 'string' && realpathSync(args.cwd) !== root) return deny('Tool repository is not bound to this client request', 'repository_binding_mismatch',true);
       // A successful preparation whose Post event was lost has no client
       // binding yet. Status cannot supply that authority, but asking for it
       // must not permanently disable the exact preparation replay that can.
       if (operation === 'task_memory_status' && !request.run_id) return deny(
         'No preparation completion is bound to this request. This status call did not execute. Replay the exact original task_prepare with the same requestId and arguments so its observed completion can restore the binding; do not create a new run or repeat ordinary execution.',
         'preparation_binding_missing', true);
-      if (args.runId !== undefined && args.runId !== request.run_id) return denyTurn('Tool run is not bound to this client request', 'run_binding_mismatch');
-      if (args.runId !== undefined && !request.run_id) return denyTurn('No run is bound to this request');
+      if (args.runId !== undefined && args.runId !== request.run_id) return deny('Tool run is not bound to this client request', 'run_binding_mismatch',true);
+      if (args.runId !== undefined && !request.run_id) return deny('No run is bound to this request','run_binding_mismatch',true);
       const report = request.run_id && request.state === 'bound' ? taskAssuranceReport(db, request.run_id, false) : null;
       const repairTools = new Set(['handoff_save', 'handoff_load', 'handoff_discard', 'memory_recall', 'memory_capture', 'task_inspect', 'task_answer', 'task_memory_status', 'task_memory_refresh', 'task_memory_review']);
       if ((!request.run_id || request.state !== 'bound' || report?.pending.length || report?.stale.length) && !repairTools.has(operation)) {
