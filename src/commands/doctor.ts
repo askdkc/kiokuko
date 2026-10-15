@@ -4,9 +4,9 @@ import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
-import { assertAtomicCleanupComplete, assertFileExpectation, atomicWriteTextIfUnchanged, readDirectoryIdentity, readRegularFile } from '../agent-file/atomic-write.js';
+import { AtomicCommittedMutationError, assertAtomicCleanupComplete, assertFileExpectation, atomicWriteTextIfUnchanged, unlinkRegularFileIfUnchanged, readDirectoryIdentity, readRegularFile } from '../agent-file/atomic-write.js';
 import { isDshOnlyAgentFile, readManagedBlockTemplateVersion } from '../agent-file/managed-block.js';
-import { AGENT_TEMPLATE_VERSION, renderAgentFile } from '../agent-file/render.js';
+import { AGENT_TEMPLATE_VERSION, GENERATED_AGENT_FILE, renderGeneratedAgentFile, renderAgentFile } from '../agent-file/render.js';
 import { getCodexConfigPath, getDatabaseLockPath, getRuntimeDescriptorPath } from '../config/paths.js';
 import { parseProjectConfigText } from '../config/project-config.js';
 import type { SqliteDatabase } from '../db/adapter.js';
@@ -31,6 +31,7 @@ import { initializeDatabase } from './init.js';
 
 export interface DoctorCheck {
   ok: boolean;
+  status?: 'ok' | 'attention' | 'failed';
   count?: number;
   detail?: string;
 }
@@ -39,7 +40,7 @@ export interface DoctorAgentFileFinding {
   repositoryRoot: string;
   repositoryId: string;
   agentFile: string | null;
-  reason: 'missing_binding_file' | 'missing_agent_file' | 'missing_managed_block' | 'outdated_managed_block' | 'invalid_binding' | 'unreadable_agent_file' | 'invalid_managed_block';
+  reason: 'missing_binding_file' | 'missing_generated_file' | 'outdated_generated_file' | 'missing_agent_file' | 'missing_managed_block' | 'outdated_managed_block' | 'invalid_binding' | 'unreadable_agent_file' | 'invalid_managed_block';
   bindingFile?: string;
   detail?: string;
   action?: string;
@@ -47,6 +48,7 @@ export interface DoctorAgentFileFinding {
 
 export interface DoctorResult {
   ok: boolean;
+  status?: 'ok' | 'attention' | 'failed';
   databasePath: string;
   currentVersion: number;
   capabilities: Awaited<ReturnType<typeof initializeDatabase>>['capabilities'] | null;
@@ -78,6 +80,7 @@ export interface DoctorResult {
 }
 
 export interface DoctorOptions {
+  verifyRepositories?: boolean;
   databasePath?: string;
   migrationsDirectory?: string;
   runtimeDescriptorPath?: string;
@@ -104,8 +107,9 @@ export async function promptRepairAgentFiles(
   const input = options.input ?? stdin;
   const output = options.output ?? stdout;
   let created = 0;
+  if ((input as { isTTY?: boolean }).isTTY !== true || (output as { isTTY?: boolean }).isTTY !== true) return created;
   for (const finding of findings) {
-    if (!['missing_agent_file', 'missing_managed_block', 'outdated_managed_block'].includes(finding.reason)
+    if (!['missing_agent_file', 'missing_managed_block', 'outdated_managed_block', 'missing_generated_file', 'outdated_generated_file'].includes(finding.reason)
       || finding.agentFile === null) continue;
     const root = finding.repositoryRoot;
     const bindingPath = path.join(root, '.kiokuko.json');
@@ -131,11 +135,19 @@ export async function promptRepairAgentFiles(
       workspace: config.workspace,
       cliCommand: preferredDoctorCommand(),
     });
-    if (rendered.action === 'unchanged') continue;
+    const generatedPath = path.join(root, GENERATED_AGENT_FILE);
+    const generated = await readRegularFile(generatedPath, { containmentRoot: root });
+    const generatedVersion = generated === undefined ? undefined : readManagedBlockTemplateVersion(generated.content);
+    if (generatedVersion !== undefined && generatedVersion > AGENT_TEMPLATE_VERSION) continue;
+    const generatedParentIdentity = await readDirectoryIdentity(path.dirname(generatedPath));
+    const renderedGenerated = renderGeneratedAgentFile(generated?.content, {
+      repositoryId: config.repositoryId, workspace: config.workspace, cliCommand: preferredDoctorCommand(),
+    });
+    if (rendered.action === 'unchanged' && renderedGenerated.action === 'unchanged') continue;
     output.write(`Doctor found ${missing ? 'a missing agent instruction file' : 'a missing or outdated Kiokuko section'}:\n  ${agentPath}\n`);
     output.write(missing
       ? 'This creates Kiokuko instructions only; deleted custom instructions cannot be restored.\n'
-      : 'This updates only the Kiokuko section; user instructions and other products are preserved.\n');
+      : 'This updates only the Kiokuko pointer and .kiokuko/AGENTS.md managed section; user instructions and other products are preserved.\n');
     const prompt = createInterface({ input, output });
     let closed = false;
     const cancelled = new Promise<string>((resolve) => {
@@ -144,26 +156,77 @@ export async function promptRepairAgentFiles(
     let answer: string;
     try {
       answer = (await Promise.race([
-        prompt.question(missing ? 'Create this missing agent file? [y/N] ' : 'Repair this Kiokuko section? [y/N] '),
+        prompt.question(missing ? 'Create this missing agent file? [y/N] ' : 'Repair this Kiokuko section? [Y/n] '),
         cancelled,
       ])).trim();
       if (closed) return created;
     } finally {
       prompt.close();
     }
-    if (!/^(?:y|yes|はい)$/iu.test(answer)) continue;
+    if (!(answer === '' && !missing) && !/^(?:y|yes|はい)$/iu.test(answer)) continue;
     await assertFileExpectation(bindingPath, {
       expected: binding,
       containmentRoot: root,
       ...(rootIdentity === undefined ? {} : { expectedParentDirectory: rootIdentity }),
     });
-    const result = await atomicWriteTextIfUnchanged(agentPath, rendered.content, {
-      expected: original,
-      ...(original === undefined ? {} : { mode: original.mode }),
-      containmentRoot: root,
-      ...(parentIdentity === undefined ? {} : { expectedParentDirectory: parentIdentity }),
-    });
-    assertAtomicCleanupComplete(result);
+    // Recheck both plans before publishing either file. Each write remains CAS-bound.
+    await assertFileExpectation(agentPath, { expected: original, containmentRoot: root,
+      ...(parentIdentity === undefined ? {} : { expectedParentDirectory: parentIdentity }) });
+    await assertFileExpectation(generatedPath, { expected: generated, containmentRoot: root,
+      ...(generatedParentIdentity === undefined ? {} : { expectedParentDirectory: generatedParentIdentity }) });
+    let installedGenerated: Awaited<ReturnType<typeof atomicWriteTextIfUnchanged>> | undefined;
+    let installedRoot: Awaited<ReturnType<typeof atomicWriteTextIfUnchanged>> | undefined;
+    try {
+      if (renderedGenerated.action !== 'unchanged') {
+        try { installedGenerated = await atomicWriteTextIfUnchanged(generatedPath, renderedGenerated.content, {
+          expected: generated, containmentRoot: root,
+          ...(generatedParentIdentity === undefined ? {} : { expectedParentDirectory: generatedParentIdentity }),
+        }, generated?.mode ?? 0o644); } catch (error) {
+          if (error instanceof AtomicCommittedMutationError) installedGenerated = error.outcome;
+          throw error;
+        }
+        assertAtomicCleanupComplete(installedGenerated);
+      }
+      if (rendered.action !== 'unchanged') {
+        try { installedRoot = await atomicWriteTextIfUnchanged(agentPath, rendered.content, {
+          expected: original, containmentRoot: root,
+          ...(parentIdentity === undefined ? {} : { expectedParentDirectory: parentIdentity }),
+        }, original?.mode ?? 0o644); } catch (error) {
+          if (error instanceof AtomicCommittedMutationError) installedRoot = error.outcome;
+          throw error;
+        }
+        assertAtomicCleanupComplete(installedRoot);
+      }
+      await assertFileExpectation(bindingPath, { expected: binding, containmentRoot: root,
+        ...(rootIdentity === undefined ? {} : { expectedParentDirectory: rootIdentity }) });
+      await assertFileExpectation(agentPath, { expected: installedRoot?.installed ?? original, containmentRoot: root,
+        ...(parentIdentity === undefined ? {} : { expectedParentDirectory: parentIdentity }) });
+      await assertFileExpectation(generatedPath, { expected: installedGenerated?.installed ?? generated, containmentRoot: root });
+    } catch (error) {
+      if (installedRoot !== undefined) {
+        try {
+          const expected = { expected: installedRoot.installed, containmentRoot: root };
+          const restored = original === undefined
+            ? await unlinkRegularFileIfUnchanged(agentPath, expected)
+            : await atomicWriteTextIfUnchanged(agentPath, original.content, expected, original.mode);
+          assertAtomicCleanupComplete(restored);
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Agent repair failed; root instructions could not be safely restored');
+        }
+      }
+      if (installedGenerated !== undefined) {
+        try {
+          const expected = { expected: installedGenerated.installed, containmentRoot: root };
+          const restored = generated === undefined
+            ? await unlinkRegularFileIfUnchanged(generatedPath, expected)
+            : await atomicWriteTextIfUnchanged(generatedPath, generated.content, expected, generated.mode);
+          assertAtomicCleanupComplete(restored);
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Agent repair failed; generated instructions could not be safely restored');
+        }
+      }
+      throw error;
+    }
     output.write(`${missing ? 'Created' : 'Repaired'} ${agentPath}\n`);
     created += 1;
   }
@@ -286,6 +349,7 @@ async function runtimeCheck(databasePath: string, descriptorPath = getRuntimeDes
 }
 
 interface DoctorCollectionOptions {
+  verifyRepositories?: boolean;
   databasePath: string;
   databaseVersion: number;
   currentVersion: number;
@@ -409,7 +473,7 @@ async function collectDoctorResult(
 
   const bindingRows = listRepositoryLocations(database);
   const missingRoots = bindingRows.filter((row) => !existsSync(row.canonicalRoot)).length;
-  const bindingCheck = { ok: missingRoots === 0, count: missingRoots, detail: `locations=${bindingRows.length}` };
+  const bindingCheck = { ok: missingRoots === 0, status: missingRoots === 0 ? 'ok' as const : 'attention' as const, count: missingRoots, detail: `locations=${bindingRows.length}` };
 
   const agentFileFindings: DoctorAgentFileFinding[] = [];
   for (const row of bindingRows) {
@@ -421,7 +485,7 @@ async function collectDoctorResult(
       if (binding === undefined) {
         agentFileFindings.push({ repositoryRoot: row.canonicalRoot, repositoryId: row.repositoryId,
           agentFile: null, bindingFile: configPath, reason: 'missing_binding_file',
-          detail: 'This location is registered, but its project binding file is missing.',
+          detail: 'This location is registered, but its project binding file is missing. Binding identity is unverified; this does not establish memory corruption.',
           action: `Restore .kiokuko.json from this project's backup with repositoryId ${row.repositoryId}, then rerun kiokuko doctor. Do not create a new binding identity for the existing memory.`,
         });
         continue;
@@ -444,6 +508,18 @@ async function collectDoctorResult(
             workspace: config.workspace,
             cliCommand: preferredDoctorCommand(),
           }).action !== 'unchanged') reason = 'outdated_managed_block';
+          else {
+            const generatedPath = path.join(row.canonicalRoot, GENERATED_AGENT_FILE);
+            const generated = await readRegularFile(generatedPath, { containmentRoot: row.canonicalRoot });
+            if (generated === undefined) reason = 'missing_generated_file';
+            else {
+              const generatedVersion = readManagedBlockTemplateVersion(generated.content);
+              if (generatedVersion !== undefined && generatedVersion > AGENT_TEMPLATE_VERSION) reason = 'invalid_managed_block';
+              else if (renderGeneratedAgentFile(generated.content, {
+                repositoryId: config.repositoryId, workspace: config.workspace, cliCommand: preferredDoctorCommand(),
+              }).action !== 'unchanged') reason = 'outdated_generated_file';
+            }
+          }
         } catch (error) {
           if (!(error instanceof KiokukoError && error.code === 'VALIDATION_ERROR')) throw error;
           reason = 'invalid_managed_block';
@@ -471,7 +547,10 @@ async function collectDoctorResult(
       });
     }
   }
-  const agentFilesCheck = { ok: agentFileFindings.length === 0, count: agentFileFindings.length, findings: agentFileFindings };
+  const agentFilesStatus = agentFileFindings.length === 0 ? 'ok' as const
+    : agentFileFindings.every(finding => ['missing_binding_file', 'missing_agent_file', 'missing_managed_block', 'outdated_managed_block', 'missing_generated_file', 'outdated_generated_file'].includes(finding.reason))
+      ? 'attention' as const : 'failed' as const;
+  const agentFilesCheck = { ok: agentFileFindings.length === 0, status: agentFilesStatus, count: agentFileFindings.length, findings: agentFileFindings };
 
   let secretCount = 0;
   const secretRows = database.prepare(`
@@ -524,11 +603,13 @@ async function collectDoctorResult(
     hybridSearch: hybridCheck,
     embeddings: embeddings.check,
     codexMcp: options.codexMcp,
-    memoryAssurance: assuranceDoctor(database, options.hooksPath),
+    memoryAssurance: assuranceDoctor(database, options.hooksPath, options.verifyRepositories),
   };
   const ok = Object.values(checks).every((check) => check.ok);
+  const status = ok ? 'ok' as const : Object.values(checks).some((check: DoctorCheck) => !check.ok && check.status !== 'attention') ? 'failed' as const : 'attention' as const;
   return {
     ok,
+    status,
     databasePath: '<redacted>',
     currentVersion: options.currentVersion,
     capabilities: options.capabilities,
@@ -586,6 +667,7 @@ export async function runDoctor(
         ? {}
         : { embeddingBackend: opened.backend ?? options.embeddingBackend }),
       codexMcp,
+      ...(options.verifyRepositories === undefined ? {} : { verifyRepositories: options.verifyRepositories }),
       ...(options.databasePath === undefined ? { hooksPath: path.join(path.dirname(getCodexConfigPath()), 'hooks.json') } : {}),
     });
   } catch (error) {

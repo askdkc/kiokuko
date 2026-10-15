@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
@@ -7,7 +7,7 @@ import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
 import { promptRepairAgentFiles, runDoctor } from '../../src/commands/doctor.js';
 import { useRepository } from '../../src/commands/use.js';
-import { renderManagedBlock } from '../../src/agent-file/render.js';
+import { GENERATED_AGENT_FILE, renderManagedBlock } from '../../src/agent-file/render.js';
 import { openConnection, SqliteVecLoadError } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { parseEmbeddingConfig, requireEnabledEmbeddingConfig } from '../../src/embedding/config.js';
@@ -20,8 +20,12 @@ import {
   removeMissingRepositoryLocations,
 } from '../../src/repository/binding.js';
 
+const temporaryDirectories: string[] = [];
+test.after(async () => { for (const directory of temporaryDirectories) await rm(directory, { recursive: true, force: true }); });
+
 async function temporaryDatabase(prefix: string) {
   const directory = await mkdtemp(path.join(tmpdir(), `kiokuko-doctor-${prefix}-`));
+  temporaryDirectories.push(directory);
   const databasePath = path.join(directory, 'kiokuko.sqlite3');
   const database = openConnection(databasePath);
   migrateDatabase(database);
@@ -129,7 +133,7 @@ test('doctor adds its missing plugin section without treating foreign ownership 
   assert.equal(await readFile(value.project.agentFile!, 'utf8'), foreign);
   assert.equal(declined.exitCode, 8);
   const repaired = await invokeDoctor(value.databasePath, 'y\n');
-  assert.match(repaired.prompt, /Repair this Kiokuko section\? \[y\/N\]/u);
+  assert.match(repaired.prompt, /Repair this Kiokuko section\? \[Y\/n\]/u);
   assert.equal(repaired.exitCode, undefined);
   const content = await readFile(value.project.agentFile!, 'utf8');
   assert.ok(content.startsWith(foreign));
@@ -234,8 +238,10 @@ test('interactive doctor asks before recreating a deleted configured agent file 
   assert.match(result.stdout, /Kiokuko doctor: OK/u);
   assert.equal(result.exitCode, undefined);
   const restored = await readFile(value.project.agentFile!, 'utf8');
-  assert.ok(restored.includes(value.project.repositoryId));
-  assert.ok(restored.includes(value.project.workspace));
+  assert.match(restored, /Read.*\.kiokuko\/AGENTS\.md/u);
+  const generated = await readFile(path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE), 'utf8');
+  assert.ok(generated.includes(value.project.repositoryId));
+  assert.ok(generated.includes(value.project.workspace));
   assert.equal(await readFile(value.project.bindingFile, 'utf8'), bindingBefore);
   const repeated = await invokeDoctor(value.databasePath, 'y\n');
   assert.equal(repeated.prompt, '');
@@ -278,7 +284,7 @@ test('doctor asks separately for multiple missing agent files', async () => {
   assert.equal(result.prompt.split('Create this missing agent file?').length - 1, 2);
   // The registry scans canonical roots in order: other-project first, then project.
   await assert.rejects(access(other.agentFile!));
-  assert.ok((await readFile(value.project.agentFile!, 'utf8')).includes(value.project.workspace));
+  assert.ok((await readFile(path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE), 'utf8')).includes(value.project.workspace));
   assert.equal(result.exitCode, 8);
 });
 
@@ -287,7 +293,7 @@ for (const answer of ['n\n', '\n']) {
     const value = await deletedAgentProject('agent-decline');
     const result = await invokeDoctor(value.databasePath, answer);
     assert.match(result.prompt, /Create this missing agent file\? \[y\/N\]/u);
-    assert.match(result.stdout, /Kiokuko doctor: FAILED/u);
+    assert.match(result.stdout, /Kiokuko doctor: ATTENTION/u);
     assert.equal(result.exitCode, 8);
     await assert.rejects(access(value.project.agentFile!));
   });
@@ -301,6 +307,7 @@ test('JSON doctor reports the missing configured agent path without prompting or
   assert.equal(result.response?.data.ok, false);
   assert.deepEqual((result.response?.data.checks as Record<string, unknown>).agentFiles, {
     ok: false,
+    status: 'attention',
     count: 1,
     findings: [{
       repositoryRoot: value.project.repositoryRoot,
@@ -317,7 +324,7 @@ test('noninteractive doctor leaves deleted instructions absent', async () => {
   const value = await deletedAgentProject('agent-nontty');
   const result = await invokeDoctor(value.databasePath, 'y\n', false, false);
   assert.equal(result.prompt, '');
-  assert.match(result.stdout, /Kiokuko doctor: FAILED/u);
+  assert.match(result.stdout, /Kiokuko doctor: ATTENTION/u);
   assert.equal(result.exitCode, 8);
   await assert.rejects(access(value.project.agentFile!));
 });
@@ -453,8 +460,8 @@ test('declining interactive doctor cleanup preserves missing locations', async (
 
   const result = await invokeDoctor(value.databasePath, 'n\n');
   assert.match(result.prompt, /Remove these stale locations\? \[Y\/n\]/u);
-  assert.match(result.stdout, /Kiokuko doctor: FAILED/u);
-  assert.match(result.stdout, /Failed checks: bindings\./u);
+  assert.match(result.stdout, /Kiokuko doctor: ATTENTION/u);
+  assert.match(result.stdout, /Checks needing attention: bindings\./u);
   assert.match(result.stdout, /\nrun kiokuko doctor --json for detailed output/u);
 
   const database = openConnection(value.databasePath);
@@ -626,4 +633,71 @@ test('doctor accepts the canonical Codex Kiokuko MCP identity', async () => {
     count: 0,
     detail: 'config=canonical-or-not-configured',
   });
+});
+
+for (const answer of ['\n', 'y\n', 'yes\n']) {
+  test(`bounded section repair defaults to Yes (${JSON.stringify(answer)}) and remains idempotent`, async () => {
+    const value = await deletedAgentProject('default-yes-section');
+    const human = 'Keep these user rules.\r\n';
+    await writeFile(value.project.agentFile!, human);
+    const binding = await readFile(value.project.bindingFile, 'utf8');
+    const result = await invokeDoctor(value.databasePath, answer);
+    assert.match(result.prompt, /Repair this Kiokuko section\? \[Y\/n\]/u);
+    assert.equal(result.exitCode, undefined);
+    const repaired = await readFile(value.project.agentFile!, 'utf8');
+    assert.ok(repaired.startsWith(human));
+    assert.equal(await readFile(value.project.bindingFile, 'utf8'), binding);
+    assert.equal((await invokeDoctor(value.databasePath, '\n')).prompt, '');
+    assert.equal(await readFile(value.project.agentFile!, 'utf8'), repaired);
+  });
+}
+
+for (const mode of ['no', 'eof', 'non-tty', 'json'] as const) {
+  test(`bounded section repair does not write after ${mode}`, async () => {
+    const value = await deletedAgentProject(`section-${mode}`);
+    const human = 'Only my instructions.\n';
+    await writeFile(value.project.agentFile!, human);
+    const generatedPath = path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE);
+    const generated = await readFile(generatedPath, 'utf8');
+    const result = await invokeDoctor(value.databasePath, mode === 'no' ? 'n\n' : '\n', mode === 'json', mode !== 'non-tty', undefined, mode === 'eof');
+    assert.equal(await readFile(value.project.agentFile!, 'utf8'), human);
+    assert.equal(await readFile(generatedPath, 'utf8'), generated);
+    assert.equal(result.exitCode, 8);
+  });
+}
+
+test('doctor repairs a missing generated body without changing the root pointer', async () => {
+  const value = await deletedAgentProject('generated-missing');
+  await invokeDoctor(value.databasePath, 'y\n');
+  const root = await readFile(value.project.agentFile!, 'utf8');
+  const generatedPath = path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE);
+  await unlink(generatedPath);
+  const before = await runDoctor({ databasePath: value.databasePath });
+  assert.equal(before.checks.agentFiles.findings[0]?.reason, 'missing_generated_file');
+  const result = await invokeDoctor(value.databasePath, '\n');
+  assert.equal(result.exitCode, undefined);
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), root);
+  assert.ok((await readFile(generatedPath, 'utf8')).includes(value.project.repositoryId));
+});
+
+test('doctor preserves concurrent generated edits during a root-section repair', async () => {
+  const value = await deletedAgentProject('generated-race');
+  await writeFile(value.project.agentFile!, 'Human rules\n');
+  const generatedPath = path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE);
+  await assert.rejects(invokeDoctor(value.databasePath, '\n', false, true, async () => {
+    await writeFile(generatedPath, 'Concurrent generated-file edit\n');
+  }), { code: 'CONFLICT' });
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), 'Human rules\n');
+  assert.equal(await readFile(generatedPath, 'utf8'), 'Concurrent generated-file edit\n');
+});
+
+test('doctor recreates an absent generated directory with Enter and preserves the pointer', async () => {
+  const value = await deletedAgentProject('generated-directory');
+  await invokeDoctor(value.databasePath, 'y\n');
+  const original = await readFile(value.project.agentFile!, 'utf8');
+  await rm(path.join(value.project.repositoryRoot, '.kiokuko'), { recursive: true });
+  const result = await invokeDoctor(value.databasePath, '\n');
+  assert.equal(result.exitCode, undefined);
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), original);
+  assert.ok((await readFile(path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE), 'utf8')).includes(value.project.repositoryId));
 });

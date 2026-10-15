@@ -17,7 +17,7 @@ import { LedgerStore } from '../../src/ledger/store.js';
 import { isBookkeepingFailure } from '../../src/assurance/bookkeeping-policy.js';
 import { createKiokukoMcpServer } from '../../src/mcp/server.js';
 import { KiokukoError } from '../../src/errors.js';
-import { renderAgentFile, AGENT_TEMPLATE_VERSION } from '../../src/agent-file/render.js';
+import { renderAgentFile, renderGeneratedAgentFile, AGENT_TEMPLATE_VERSION } from '../../src/agent-file/render.js';
 
 const capabilities=[{kind:'skill',name:'kiokuko-soul'},{kind:'skill',name:'memory-reasoning'}];
 async function fixture(withMemory=false) {
@@ -93,11 +93,15 @@ test('classification never treats identity/ownership/access/host authorization o
 });
 test('managed template migration preserves user text, scopes procedure stops to records, and keeps identity denial',()=>{
  const old='User instructions remain.\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n<!-- kiokuko-template-version: 38 -->\nOld procedure stop.\n<!-- END KIOKUKO MANAGED BLOCK -->\n';
- const rendered=renderAgentFile(old,{repositoryId:'12345678-1234-4123-8123-123456789abc',workspace:'project',cliCommand:'kiokuko'});
- assert.equal(rendered.action,'updated');assert.match(rendered.content,/User instructions remain/u);assert.match(rendered.content,new RegExp(`kiokuko-template-version: ${AGENT_TEMPLATE_VERSION}`));
- assert.ok(!rendered.content.includes('Old procedure stop.'));assert.match(rendered.content,/Unrelated authorized tools may continue/u);
- assert.match(rendered.content,/optional memory identity mismatch rejects only that memory call/u);
- assert.ok(!rendered.content.includes('stop and report the unavailable policy'));
+ const values={repositoryId:'12345678-1234-4123-8123-123456789abc',workspace:'project',cliCommand:'kiokuko' as const};
+ const rendered=renderAgentFile(old,values);
+ const generated=renderGeneratedAgentFile(undefined,values);
+ assert.equal(rendered.action,'updated');assert.match(rendered.content,/User instructions remain/u);
+ assert.match(rendered.content,/Read `\.kiokuko\/AGENTS\.md`/u);
+ assert.match(generated.content,new RegExp(`kiokuko-template-version: ${AGENT_TEMPLATE_VERSION}`));
+ assert.ok(!rendered.content.includes('Old procedure stop.'));assert.match(generated.content,/Unrelated authorized tools may continue/u);
+ assert.match(generated.content,/optional memory identity mismatch rejects only that memory call/u);
+ assert.ok(!generated.content.includes('stop and report the unavailable policy'));
 });
 
 test('checkout-free missing preparation cannot deny independent coding or invent a project record',()=>{

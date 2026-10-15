@@ -91,6 +91,20 @@ On Linux, use `${XDG_DATA_HOME:-$HOME/.local/share}/kiokuko/runtimes` as the run
 
 An npm update alone does not switch the saved version. To upgrade, stop Codex after current work, prepare the new version, run the setup command with its new manifest, then restart. Keep the old saved directory for recovery; old versions are not deleted automatically. If the new version migrated the memory database, check database compatibility before returning to an older version. Allow several hundred megabytes per saved version, depending on Node and installed optional dependencies; check the actual directory size before keeping multiple versions.
 
+### Repository instruction files
+
+`kiokuko use` keeps a short, stable pointer in the repository's `AGENTS.md`
+(or the configured agent file). Kiokuko's generated instructions live in
+`.kiokuko/AGENTS.md`, relative to the repository root. Template upgrades and
+repository identity changes update that generated file without rewriting the
+root pointer. Keep custom instructions outside Kiokuko's managed markers.
+Existing versioned Kiokuko blocks migrate to the pointer on the next use/setup
+refresh; user text and other products' sections remain unchanged. A missing
+root instruction file is not recreated by routine setup; use `kiokuko doctor`
+to review a repair. Missing generated instructions can be restored by use/setup
+or an approved doctor repair. Uninstall removes only Kiokuko's managed regions
+from both files, preserving surrounding content.
+
 ## Uninstall
 
 Stop clients using Kiokuko and any `kiokuko serve` process first.

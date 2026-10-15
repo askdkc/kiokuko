@@ -2,7 +2,8 @@ import { removeCodexAssuranceHooks } from '../setup/codex-hooks.js';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
-import { removeManagedBlock } from '../agent-file/managed-block.js';
+import { GENERATED_AGENT_FILE } from '../agent-file/render.js';
+import { readManagedBlockTemplateVersion, removeManagedBlock } from '../agent-file/managed-block.js';
 import {
   getClaudeConfigDirectory, getClaudeInstructionsPath, getClaudeMcpConfigPath, getClaudeSkillsDirectory,
   getCodexConfigPath, getCodexHome, getCodexInstructionsPath, getCodexSkillsDirectory,
@@ -180,7 +181,9 @@ async function planProjects(plan: UninstallPlan, databasePath: string): Promise<
       agentFile = config.agentFile;
       return undefined;
     });
-    await planText(plan, path.join(location.repositoryRoot, agentFile), source => removeManagedBlock(source).content);
+    await planText(plan, path.join(location.repositoryRoot, agentFile), source => { readManagedBlockTemplateVersion(source); return removeManagedBlock(source).content; });
+    await planText(plan, path.join(location.repositoryRoot, GENERATED_AGENT_FILE), source => { readManagedBlockTemplateVersion(source); return removeManagedBlock(source).content; });
+    await planEmptyDirectory(plan, path.join(location.repositoryRoot, '.kiokuko'));
     await planText(plan, path.join(location.repositoryRoot, '.gitignore'), removeBindingIgnore);
     // Keep the custom agent-file path until its cleanup succeeds, so retries can find it.
     if (binding !== undefined) plan.text.push(binding);

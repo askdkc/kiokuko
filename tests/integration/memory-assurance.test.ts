@@ -135,19 +135,19 @@ test('doctor inspects adopted memory across a symlink and nested Git repositorie
       counterexample: 'Change the link target after verification', verification: 'Run doctor against the fixture',
       evidenceIds: [evidence.evidenceId],
     });
-    const healthy = await runDoctor({ databasePath: f.databasePath });
+    const healthy = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
     assert.equal(healthy.checks.memoryAssurance.ok, true);
     assert.match(healthy.checks.memoryAssurance.detail!, /inspectionErrors=0/u);
 
     writeFileSync(path.join(nestedRoot, 'nested.ts'), 'export const value = 2;\n');
-    const changedModule = await runDoctor({ databasePath: f.databasePath });
+    const changedModule = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
     assert.match(changedModule.checks.memoryAssurance.detail!, /pending=1; stale=0; missingVerification=0; inspectionErrors=0/u);
     writeFileSync(path.join(nestedRoot, 'nested.ts'), 'export const value = 1;\n');
 
     writeFileSync(path.join(f.root, 'other.ts'), 'export const other = true;\n');
     unlinkSync(link);
     symlinkSync('other.ts', link);
-    const stale = await runDoctor({ databasePath: f.databasePath });
+    const stale = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
     assert.equal(stale.checks.memoryAssurance.ok, true);
     assert.match(stale.checks.memoryAssurance.detail!, /pending=1; stale=0; missingVerification=0; inspectionErrors=0/u);
 
@@ -165,12 +165,13 @@ test('doctor names failed task inspections and their actual exception in JSON an
     const outside = path.join(f.base, 'outside.ts');
     writeFileSync(outside, 'external source\n');
     symlinkSync(outside, path.join(f.root, 'escape.ts'));
-    const result = await runDoctor({ databasePath: f.databasePath });
+    const result = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
     const check = result.checks.memoryAssurance as any;
     assert.equal(check.ok, false);
     assert.match(check.detail, /inspectionErrors=1/u);
     assert.deepEqual(check.findings, [{
       reason: 'task_inspection_failed',
+      verification: 'unverified',
       runId: f.prepared.run.runId,
       repositoryRoot: realpathSync(f.root),
       code: 'VALIDATION_ERROR',
@@ -185,7 +186,7 @@ test('doctor names failed task inspections and their actual exception in JSON an
         stdout += chunk.toString(); return true;
       }) as typeof process.stdout.write;
       process.exitCode = undefined;
-      await buildCli({ doctorDatabasePath: f.databasePath }).parseAsync(['node', 'kiokuko', 'doctor']);
+      await buildCli({ doctorDatabasePath: f.databasePath }).parseAsync(['node', 'kiokuko', 'doctor', '--verify-repositories']);
       assert.equal(process.exitCode, 8);
       assert.ok(stdout.includes(f.prepared.run.runId));
       assert.ok(stdout.includes(realpathSync(f.root)));
@@ -202,14 +203,16 @@ test('doctor explains the snapshot byte budget without deleting or completing th
     const large = path.join(f.root, 'archive.bin');
     writeFileSync(large, '');
     truncateSync(large, 64 * 1024 * 1024);
-    const result = await runDoctor({ databasePath: f.databasePath });
+    const result = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
     const check = result.checks.memoryAssurance as any;
     assert.equal(check.ok, false);
     assert.equal(check.findings[0].runId, f.prepared.run.runId);
     assert.equal(check.findings[0].message, 'Repository snapshot exceeds its byte budget');
-    assert.match(check.findings[0].action, /64 MiB.*Git-tracked and unignored/u);
-    assert.match(check.findings[0].action, /tracked files still count/u);
-    assert.match(check.findings[0].action, /Keep task records and memory intact/u);
+    assert.equal(check.status, 'attention');
+    assert.equal(check.findings[0].verification, 'unverified');
+    assert.match(check.findings[0].action, /64 MiB inspection budget/u);
+    assert.match(check.findings[0].action, /does not establish memory corruption/u);
+    assert.match(check.findings[0].action, /Keep repository files, task records and memory intact/u);
     assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
@@ -1567,4 +1570,41 @@ test('status continuation reads revision and report from one concurrent database
     assert.deepEqual(taskAssuranceReport(f.db,runId).pending,['memory_retrieval']);
     assert.equal(taskAssuranceReport(f.db,runId).revision,before+1);
   } finally {writer.close();f.db.close();rmSync(f.base,{recursive:true,force:true});}
+});
+
+test('default doctor leaves unrelated oversized active repositories unverified without snapshotting or changing records', async () => {
+  const f = await fixture();
+  try {
+    const large = path.join(f.root, 'archive.bin');
+    writeFileSync(large, '');
+    truncateSync(large, 65 * 1024 * 1024);
+    const before = f.db.prepare('SELECT * FROM task_assurance WHERE run_id=?').get(f.prepared.run.runId);
+    const result = await runDoctor({ databasePath: f.databasePath });
+    const check = result.checks.memoryAssurance;
+    assert.equal(check.status, 'attention');
+    assert.equal(check.ok, false);
+    assert.equal(check.findings[0]?.reason, 'task_verification_not_requested');
+    assert.equal(check.findings[0]?.verification, 'unverified');
+    assert.match(check.detail, /inspectionErrors=0/u);
+    assert.match(check.detail, /pending=unverified; stale=unverified; missingVerification=unverified/u);
+    assert.match(check.detail, /retrieval=unverified/u);
+    assert.equal(result.checks.integrity.ok, true);
+    assert.deepEqual(f.db.prepare('SELECT * FROM task_assurance WHERE run_id=?').get(f.prepared.run.runId), before);
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
+    const deep = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
+    assert.equal(deep.checks.memoryAssurance.findings[0]?.message, 'Repository snapshot exceeds its byte budget');
+    assert.equal(deep.checks.memoryAssurance.status, 'attention');
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('doctor keeps confirmed ledger corruption failed while live verification is unverified', async () => {
+  const f = await fixture();
+  try {
+    f.db.prepare('UPDATE ledger_events SET event_hash=?').run('f'.repeat(64));
+    const result = await runDoctor({ databasePath: f.databasePath });
+    assert.equal(result.checks.memoryAssurance.status, 'attention');
+    assert.equal(result.checks.ledger.ok, false);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'failed');
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });

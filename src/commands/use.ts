@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstat } from 'node:fs/promises';
+import { lstat, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -22,7 +22,7 @@ import {
   readManagedBlockTemplateVersion,
   removeManagedBlock,
 } from '../agent-file/managed-block.js';
-import { AGENT_TEMPLATE_VERSION, renderAgentFile } from '../agent-file/render.js';
+import { AGENT_TEMPLATE_VERSION, GENERATED_AGENT_FILE, isManagedAgentPointer, renderAgentFile, renderGeneratedAgentFile } from '../agent-file/render.js';
 import { getGlobalDatabasePath } from '../config/paths.js';
 import {
   parseProjectConfig,
@@ -1068,6 +1068,10 @@ async function useRepositoryAttempt(
     templateVersion: AGENT_TEMPLATE_VERSION,
   });
   const agentFile = ensureChildPath(repositoryRoot, nextBinding.agentFile);
+  const generatedAgentFile = path.join(repositoryRoot, GENERATED_AGENT_FILE);
+  if (agentFile === generatedAgentFile) {
+    throw new KiokukoError('VALIDATION_ERROR', 'agentFile must not be the generated Kiokuko instruction file');
+  }
   const agentParentIdentity = await existingParentIdentity(agentFile);
   if (retryParents !== undefined
     && !sameFileIdentity(agentParentIdentity, retryParents.agentParentIdentity)) {
@@ -1142,6 +1146,9 @@ async function useRepositoryAttempt(
     && existingBinding.agentFile !== nextBinding.agentFile
     ? ensureChildPath(repositoryRoot, existingBinding.agentFile)
     : undefined;
+  if (previousAgentFile === generatedAgentFile) {
+    throw new KiokukoError('CONFLICT', 'Previous agentFile occupies the generated Kiokuko instruction path');
+  }
   const previousAgentParentIdentity = previousAgentFile === undefined
     ? bindingParentIdentity
     : await existingParentIdentity(previousAgentFile);
@@ -1187,6 +1194,14 @@ async function useRepositoryAttempt(
   const rendered = options.noAgentFile
     ? undefined
     : renderAgentFile(existingAgent?.content, agentTemplateValues);
+  const generatedAgent = await readRegularFile(generatedAgentFile, { containmentRoot: repositoryRoot });
+  assertSupportedManagedTemplate(generatedAgent, 'Generated agentFile');
+  if (options.noAgentFile && plannedAgent !== undefined && isManagedAgentPointer(plannedAgent.content)
+    && renderGeneratedAgentFile(generatedAgent?.content, agentTemplateValues).action !== 'unchanged') {
+    throw new KiokukoError('CONFLICT', 'Cannot use --no-agent-file while the prospective agentFile contains a stale managed block or missing generated instructions');
+  }
+  const renderedGenerated = options.noAgentFile ? undefined
+    : renderGeneratedAgentFile(generatedAgent?.content, agentTemplateValues);
   const databasePath = options.databasePath ?? getGlobalDatabasePath();
   const result: UseResult = {
     repositoryRoot,
@@ -1195,7 +1210,8 @@ async function useRepositoryAttempt(
     databasePath,
     bindingFile,
     agentFile: options.noAgentFile ? null : agentFile,
-    agentFileAction: options.noAgentFile ? 'skipped' : rendered?.action ?? 'unchanged',
+    agentFileAction: options.noAgentFile ? 'skipped' : rendered?.action !== 'unchanged'
+      ? rendered?.action ?? 'unchanged' : renderedGenerated?.action === 'unchanged' ? 'unchanged' : 'updated',
     bindingAction: options.dryRun ? 'planned' : bindingAction(bindingSnapshot?.content, nextBindingText),
     dryRun: options.dryRun ?? false,
     templateVersion: AGENT_TEMPLATE_VERSION,
@@ -1326,6 +1342,43 @@ async function useRepositoryAttempt(
         gitignoreFile,
         expectation(gitignoreSnapshot, repositoryRoot, bindingParentIdentity),
       );
+    }
+
+    // Install the generated body before publishing its stable pointer. Use the
+    // same compare-and-swap and rollback journal as binding and root updates.
+    let resolvedGenerated = generatedAgent;
+    let generatedParentIdentity: FileIdentity | undefined;
+    if (renderedGenerated !== undefined) {
+      await assertFileExpectation(generatedAgentFile, expectation(generatedAgent, repositoryRoot));
+      await mkdir(path.dirname(generatedAgentFile), { recursive: true });
+      generatedParentIdentity = await existingParentIdentity(generatedAgentFile);
+      if (renderedGenerated.action !== 'unchanged') {
+        try {
+          const writeGenerated = options.forceRebind ? writeStrict : writeOrConvergeIdentical;
+          const resolution = await writeGenerated(
+            dependencies, generatedAgentFile, renderedGenerated.content, generatedAgent,
+            generatedAgent?.mode ?? 0o644, repositoryRoot, generatedParentIdentity,
+          );
+          resolvedGenerated = resolution.snapshot;
+          if (resolution.owned) installed.push({
+            path: generatedAgentFile, original: generatedAgent, installed: resolution.snapshot,
+            containmentRoot: repositoryRoot, parentIdentity: generatedParentIdentity,
+          });
+          assertAtomicCleanupComplete(resolution);
+        } catch (error) {
+          if (error instanceof AtomicCommittedMutationError) installed.push({
+            path: generatedAgentFile, original: generatedAgent, installed: error.outcome.installed,
+            containmentRoot: repositoryRoot, parentIdentity: generatedParentIdentity,
+          });
+          else if (error instanceof AtomicCommittedUnlinkError && generatedAgent !== undefined) installed.push({
+            path: generatedAgentFile, original: generatedAgent, installed: undefined,
+            containmentRoot: repositoryRoot, parentIdentity: generatedParentIdentity,
+          });
+          throw error;
+        }
+      }
+      await assertFileExpectation(generatedAgentFile,
+        expectation(resolvedGenerated, repositoryRoot, generatedParentIdentity));
     }
 
     let resolvedAgent = existingAgent;
@@ -1482,6 +1535,10 @@ async function useRepositoryAttempt(
         gitignoreFile,
         expectation(resolvedGitignore, repositoryRoot, bindingParentIdentity),
       );
+    }
+    if (renderedGenerated !== undefined) {
+      await assertFileExpectation(generatedAgentFile,
+        expectation(resolvedGenerated, repositoryRoot, generatedParentIdentity));
     }
     if (!options.noAgentFile) {
       await assertFileExpectation(

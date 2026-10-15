@@ -6,7 +6,7 @@ import { HANDOFF_INSTRUCTIONS } from '../memory/handoff.js';
 import { ADAPTIVE_EFFORT_INSTRUCTIONS, SOUL_ROUTING_ENTRY_CONTRACT, TASK_PREPARATION_REQUEST_CONTRACT } from '../akinator/instructions.js';
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
 import { validateRepositoryBindingIdentity } from '../repository/identity-value.js';
-import { BEGIN_MARKER, END_MARKER, upsertManagedBlock } from './managed-block.js';
+import { BEGIN_MARKER, END_MARKER, readManagedBlockTemplateVersion, upsertManagedBlock } from './managed-block.js';
 import { commentPluginInstructions } from './plugin-comment.js';
 
 export const AGENT_TEMPLATE_VERSION = 40;
@@ -76,7 +76,39 @@ export function renderManagedBlock(values: AgentTemplateValues): string {
   ].join('\n'));
 }
 
-export function renderAgentFile(existing: string | undefined, values: AgentTemplateValues): RenderedAgentFile {
+export function renderGeneratedAgentFile(existing: string | undefined, values: AgentTemplateValues): RenderedAgentFile {
+  if (existing !== undefined) readManagedBlockTemplateVersion(existing);
   const result = upsertManagedBlock(existing ?? '', renderManagedBlock(values));
+  return { content: result.content, action: result.action };
+}
+
+/** A stable repository entry point; changing template bodies never changes this block. */
+export const GENERATED_AGENT_FILE = '.kiokuko/AGENTS.md';
+export const AGENT_POINTER_DECLARATION = '<!-- kiokuko-instructions-pointer: 1 -->';
+
+export function renderAgentPointer(): string {
+  return commentPluginInstructions([
+    BEGIN_MARKER,
+    '<!-- kiokuko-template-version: 1 -->',
+    AGENT_POINTER_DECLARATION,
+    '',
+    'Read `.kiokuko/AGENTS.md` relative to the repository root for Kiokuko instructions.',
+    'If that file is missing, report it and continue ordinary work without Kiokuko memory.',
+    END_MARKER,
+  ].join('\n'));
+}
+
+export function isManagedAgentPointer(existing: string): boolean {
+  // Validate ownership and marker structure before recognizing the stable pointer.
+  readManagedBlockTemplateVersion(existing);
+  return existing.replaceAll('\r\n', '\n').includes(renderAgentPointer());
+}
+
+export function renderAgentFile(existing: string | undefined, values: AgentTemplateValues): RenderedAgentFile {
+  validateRepositoryBindingIdentity(values.repositoryId, values.workspace);
+  // Only migrate a recognized, versioned Kiokuko block. Unknown/ambiguous
+  // markers must fail before either instruction file is changed.
+  if (existing !== undefined) readManagedBlockTemplateVersion(existing);
+  const result = upsertManagedBlock(existing ?? '', renderAgentPointer());
   return { content: result.content, action: result.action };
 }

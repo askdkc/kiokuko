@@ -130,3 +130,33 @@ project cleanup, so a failed configuration edit retains the registry for retry.
 
 After complete cleanup, the human success output ends with `npm uninstall --global kiokuko`. Uninstall
 does not execute npm, remove the running package, or request sudo itself.
+
+## Doctor: stored health and explicit repository verification
+
+`kiokuko doctor` checks stored database/ledger integrity and lightweight registered
+binding/instruction files. It does not take full repository-content snapshots.
+Active tasks are reported as `task_verification_not_requested` with
+`verification: "unverified"`; stored health does not prove that live source still
+matches past execution evidence. No task is completed, deleted or invalidated by
+this diagnostic.
+
+`kiokuko doctor --verify-repositories` explicitly requests live verification of
+the latest 20 active tasks across registered projects, including other checkouts.
+The output states whether the sample was truncated. Snapshot byte/file/depth
+limits mean verification is unavailable, not that memory is corrupt. The budget
+remains enforced; doctor never instructs the user to delete/move an archive or
+reset its identity just to satisfy that limit.
+
+JSON `ok: false` and exit status 8 remain for incomplete checks. `status` separates
+`attention` (missing/recoverable metadata or unverified live state) from `failed`
+(confirmed integrity/validation failures). Human output uses `ATTENTION
+(verification incomplete)` accordingly; a genuine failed check takes precedence.
+
+Interactive repair of an existing Kiokuko section defaults to Yes (`[Y/n]`).
+Enter accepts only the bounded Kiokuko pointer/generated-section repair; `n`
+declines. Creating a missing root instruction file retains `[y/N]` because deleted
+custom instructions cannot be recovered. EOF/cancellation, non-TTY input or
+output, and `--json` never authorize these repairs. Both planned files and the
+original binding are checked for concurrent changes before writes. User text and
+other products' sections are preserved. Missing bindings are reported for verified
+backup recovery without minting a replacement repository identity.

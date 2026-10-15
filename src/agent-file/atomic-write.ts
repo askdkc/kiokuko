@@ -278,7 +278,7 @@ async function rejectLinkedComponents(root: string, filePath: string): Promise<v
 
 function decodeUtf8(buffer: Buffer, filePath: string): string {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer);
   } catch {
     throw new KiokukoError('VALIDATION_ERROR', `Managed text file is not valid UTF-8: ${filePath}`);
   }

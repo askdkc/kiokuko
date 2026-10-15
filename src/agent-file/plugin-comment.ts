@@ -9,7 +9,7 @@ export function commentPluginInstructions(block: string): string {
   const end = lines.pop()!;
   const metadata: string[] = [];
   const body = lines.filter((line) => {
-    if (/^<!-- (?:kiokuko-template-version:|KIOKUKO CONTRACT )/u.test(line)) {
+    if (/^<!-- (?:kiokuko-template-version:|kiokuko-instructions-pointer:|KIOKUKO CONTRACT )/u.test(line)) {
       metadata.push(line);
       return false;
     }

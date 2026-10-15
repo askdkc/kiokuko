@@ -701,7 +701,7 @@ test('setup applies the use-managed AGENTS update to every registered live proje
   });
   const staleAgentPath = path.join(stale.repositoryRoot, 'AGENTS.md');
   const staleBindingPath = path.join(stale.repositoryRoot, '.kiokuko.json');
-  const staleAgent = await readFile(staleAgentPath, 'utf8');
+  const staleAgent = await readFile(path.join(stale.repositoryRoot, '.kiokuko/AGENTS.md'), 'utf8');
   const staleBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as Record<string, unknown>;
   await writeFile(
     staleAgentPath,
@@ -794,13 +794,14 @@ test('setup applies the use-managed AGENTS update to every registered live proje
 
   const refreshedAgent = await readFile(staleAgentPath, 'utf8');
   assert.match(refreshedAgent, /^human project rule\n/u);
-  assert.ok(refreshedAgent.includes(`kiokuko-template-version: ${AGENT_TEMPLATE_VERSION}`));
+  assert.ok(refreshedAgent.includes('kiokuko-instructions-pointer: 1'));
+  assert.ok((await readFile(path.join(stale.repositoryRoot, '.kiokuko/AGENTS.md'), 'utf8')).includes(`kiokuko-template-version: ${AGENT_TEMPLATE_VERSION}`));
   assert.equal(refreshedAgent.includes('kiokuko-template-version: 14'), false);
   assert.equal(stale.agentFile, staleAgentPath);
   const refreshedBinding = JSON.parse(await readFile(staleBindingPath, 'utf8')) as { templateVersion: number };
   assert.equal(refreshedBinding.templateVersion, AGENT_TEMPLATE_VERSION);
 
-  const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, 'AGENTS.md'), 'utf8');
+  const locationOnlyAgent = await readFile(path.join(locationOnlyRoot, '.kiokuko/AGENTS.md'), 'utf8');
   assert.match(locationOnlyAgent, /repo_setup_refresh_location_only/u);
   assert.match(locationOnlyAgent, /project:setup-refresh-location-only/u);
   const locationOnlyBinding = JSON.parse(

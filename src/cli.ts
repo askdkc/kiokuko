@@ -1094,8 +1094,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'backup', result, `Backup written to ${options.output}`);
   });
 
-  cli.command('doctor').description('Check health; ask before cleaning missing repository locations or repairing Kiokuko agent sections').option('--json').action(async (options: { json?: boolean }) => {
+  cli.command('doctor').description('Check health; ask before cleaning missing repository locations or repairing Kiokuko agent sections').option('--verify-repositories', 'Explicitly hash repositories for the latest 20 active tasks across registered projects').option('--json').action(async (options: { json?: boolean; verifyRepositories?: boolean }) => {
     const doctorOptions: Parameters<typeof runDoctor>[0] = {
+      ...(options.verifyRepositories === undefined ? {} : { verifyRepositories: options.verifyRepositories }),
       ...(dependencies.doctorDatabasePath === undefined ? {} : { databasePath: dependencies.doctorDatabasePath }),
       ...(dependencies.doctorRuntimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: dependencies.doctorRuntimeDescriptorPath }),
       ...(dependencies.embeddingEnvironment === undefined ? {} : { embeddingEnvironment: dependencies.embeddingEnvironment }),
@@ -1134,7 +1135,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       : ` Removed ${removed} missing repository location${removed === 1 ? '' : 's'}.`;
     const failureNotice = data.ok
       ? ''
-      : ` Failed checks: ${Object.entries(data.checks).filter(([, check]) => !check.ok).map(([name]) => name).join(', ')}.\nrun kiokuko doctor --json for detailed output`;
+      : ` ${data.status === 'attention' ? 'Checks needing attention' : 'Failed checks'}: ${Object.entries(data.checks).filter(([, check]) => !check.ok).map(([name]) => name).join(', ')}.\nrun kiokuko doctor --json for detailed output`;
     const agentFileNotice = data.checks.agentFiles.findings
       .map((finding) => `\n  ${finding.bindingFile ?? finding.agentFile ?? finding.repositoryRoot}: ${finding.reason}`
         + (finding.detail ? ` — ${finding.detail}` : '')
@@ -1144,7 +1145,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       .map((finding) => `\n  Task ${finding.runId} (${finding.repositoryRoot ?? 'repository not bound'}): ${finding.reason}`
         + `\n    ${finding.code}: ${finding.message}\n    ${finding.action}`)
       .join('');
-    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}${agentFileNotice}${assuranceNotice}`);
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}${agentFileNotice}${assuranceNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 

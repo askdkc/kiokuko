@@ -147,7 +147,7 @@ test('new-binding ignore update is restored when the later agent-file write fail
   await assert.rejects(
     useRepository({ root, databasePath, ensureNewBindingIgnored: true }, {
       atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
-        if (path.basename(filePath) === 'AGENTS.md') throw new Error('injected agent failure');
+        if ((path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) throw new Error('injected agent failure');
         return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
       },
     }),
@@ -181,7 +181,7 @@ test('use adopts one exact concurrent binding and converges on an exact agent-fi
           workspace: 'project:concurrent-winner',
         }, null, 2)}\n`, { mode });
         await chmod(filePath, mode);
-      } else if (path.basename(filePath) === 'AGENTS.md') {
+      } else if ((path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         agentAttempts += 1;
         const peerOutcome = await atomicWriteTextIfUnchanged(
           filePath,
@@ -250,7 +250,7 @@ test('binding convergence retries when the intended agent result replaces a stal
     },
     readAgentFileForConvergence: async (filePath, options) => {
       const snapshot = await readRegularFile(filePath, options);
-      if (path.basename(filePath) === 'AGENTS.md') {
+      if ((path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         agentReads += 1;
         if (bindingInjected && !observationRaceInjected && snapshot !== undefined) {
           observationRaceInjected = true;
@@ -312,7 +312,7 @@ test('initial agent planning retries when a concurrent setup installs the intend
   }, {
     readAgentFileForConvergence: async (filePath, options) => {
       const snapshot = await readRegularFile(filePath, options);
-      if (!injected && path.basename(filePath) === 'AGENTS.md') {
+      if (!injected && (path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         injected = true;
         if (snapshot === undefined) assert.fail('planned agent file is missing');
         const outcome = await atomicWriteTextIfUnchanged(
@@ -334,7 +334,7 @@ test('initial agent planning retries when a concurrent setup installs the intend
   assert.equal(injected, true);
   assert.equal(result.repositoryId, repositoryId);
   assert.equal(result.workspace, workspace);
-  assert.equal(result.agentFileAction, 'unchanged');
+  assert.equal(result.agentFileAction, 'updated');
   assert.equal(await readFile(agentPath, 'utf8'), intendedAgent);
 });
 
@@ -355,7 +355,7 @@ test('use rejects desired agent bytes written in place on the planned inode', as
     workspace: 'project:in-place-agent',
   }, {
     atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
-      if (!injected && path.basename(filePath) === 'AGENTS.md') {
+      if (!injected && (path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         injected = true;
         await writeFile(filePath, content, { mode });
         if (mode !== undefined) await chmod(filePath, mode);
@@ -550,7 +550,7 @@ test('use retries when a concurrent setup installs the binding after the initial
   assert.equal(result.repositoryId, winner.repositoryId);
   assert.equal(result.workspace, winner.workspace);
   assert.equal(result.bindingAction, 'unchanged');
-  assert.equal(result.agentFileAction, 'unchanged');
+  assert.equal(result.agentFileAction, 'updated');
   assert.equal(await readFile(bindingPath, 'utf8'), winnerBinding);
   assert.equal(await readFile(agentPath, 'utf8'), winnerAgent);
 });
@@ -643,7 +643,7 @@ test('use waits for an identical concurrent atomic agent write to leave its quar
     workspace: 'project:concurrent-quarantine',
   }, {
     atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
-      if (!injected && path.basename(filePath) === 'AGENTS.md') {
+      if (!injected && (path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         injected = true;
         concurrentWrite = atomicWriteTextIfUnchanged(filePath, content, expectation, mode, {
           afterRename: async () => {
@@ -670,7 +670,7 @@ test('use waits for an identical concurrent atomic agent write to leave its quar
       const snapshot = await readRegularFile(filePath, options);
       if (injected
         && !observationRaceInjected
-        && path.basename(filePath) === 'AGENTS.md'
+        && (path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')
         && snapshot === undefined) {
         observationRaceInjected = true;
         releaseConcurrentWriter.resolve();
@@ -752,7 +752,7 @@ test('use never plans a missing agent file from another writer\'s quarantine win
   const result = await concurrentUse;
 
   assert.equal(result.repositoryId, initial.repositoryId);
-  assert.equal(result.agentFileAction, 'unchanged');
+  assert.equal(result.agentFileAction, 'updated');
   assert.match(await readFile(agentPath, 'utf8'), /^human header\n/u);
   assert.deepEqual(
     (await readdir(initial.repositoryRoot)).filter((name) => name.startsWith('.AGENTS.md.')),
@@ -903,7 +903,7 @@ test('post-CAS convergence rejects an exact agent result with retained cleanup',
     workspace: 'project:post-cas-cleanup',
   }, {
     atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
-      if (!injected && path.basename(filePath) === 'AGENTS.md') {
+      if (!injected && (path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         injected = true;
         const peerOutcome = await atomicWriteTextIfUnchanged(
           filePath,
@@ -970,7 +970,7 @@ test('use never adopts an exact concurrent agent target while a hard-link alias 
           workspace: 'project:concurrent-hardlink',
         }, null, 2)}\n`, { mode });
         await chmod(filePath, mode);
-      } else if (!aliasInjected && path.basename(filePath) === 'AGENTS.md') {
+      } else if (!aliasInjected && (path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         aliasInjected = true;
         await writeFile(filePath, content, { mode });
         await chmod(filePath, mode);
@@ -1011,7 +1011,7 @@ test('use does not retry disappearance after a create-only agent CAS conflict', 
     workspace: 'project:create-disappearance',
   }, {
     atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
-      if (!injected && path.basename(filePath) === 'AGENTS.md') {
+      if (!injected && (path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         injected = true;
         await writeFile(filePath, content, { mode });
         if (mode !== undefined) await chmod(filePath, mode);
@@ -1155,7 +1155,7 @@ test('use fails closed on a non-identical agent CAS after one binding convergenc
           workspace: 'project:concurrent-winner',
         }, null, 2)}\n`, { mode });
         await chmod(filePath, mode);
-      } else if (path.basename(filePath) === 'AGENTS.md') {
+      } else if ((path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         agentAttempts += 1;
         await writeFile(filePath, 'concurrent human edit\n', { mode });
       }
@@ -1197,7 +1197,7 @@ test('use never rolls back exact concurrent binding and agent-file results it do
           workspace: 'project:concurrent-owner',
         }, null, 2)}\n`, { mode });
         await chmod(filePath, mode);
-      } else if (path.basename(filePath) === 'AGENTS.md') {
+      } else if ((path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         const peerOutcome = await atomicWriteTextIfUnchanged(
           filePath,
           content,
@@ -1308,7 +1308,8 @@ test('use upgrades a version-1 binding and managed block without changing identi
   assert.equal(upgradedBinding.workspace, 'upgrade-workspace');
   assert.equal(upgradedBinding.templateVersion, AGENT_TEMPLATE_VERSION);
   assert.match(upgradedAgent, /^human before\r\n/);
-  assert.ok(upgradedAgent.includes(`<!-- kiokuko-template-version: ${AGENT_TEMPLATE_VERSION} -->`));
+  assert.ok(upgradedAgent.includes('<!-- kiokuko-instructions-pointer: 1 -->'));
+  assert.ok((await readFile(path.join(root, '.kiokuko/AGENTS.md'), 'utf8')).includes(`<!-- kiokuko-template-version: ${AGENT_TEMPLATE_VERSION} -->`));
   assert.match(upgradedAgent, /\r\nhuman after\r\n$/);
 
   const repeatedAgent = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
@@ -1588,7 +1589,7 @@ test('use exposes the initiating failure and every failed restore after attempti
 
   await assert.rejects(useRepository({ root, databasePath }, {
     atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
-      if (path.basename(filePath) === 'AGENTS.md') throw initiatingFailure;
+      if ((path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) throw initiatingFailure;
       return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
     },
     unlinkRegularFileIfUnchanged: async (filePath) => {
@@ -1606,6 +1607,7 @@ test('use exposes the initiating failure and every failed restore after attempti
   });
 
   assert.deepEqual(restoreAttempts.map((filePath) => path.basename(filePath)), [
+    'AGENTS.md',
     '.kiokuko.json',
   ]);
 });
@@ -1615,6 +1617,7 @@ test('use rejects non-canonical or binding-alias agent-file paths before any per
     '../AGENTS.md',
     '/tmp/absolute-agents.md',
     '.kiokuko.json',
+    '.kiokuko/AGENTS.md',
     '.KIOKUKO.JSON',
     '.kiokuko.json/AGENTS.md',
     'nested/',
@@ -1870,7 +1873,7 @@ test('use leaves no repository or location rows when agent installation fails', 
 
   await assert.rejects(useRepository({ root, databasePath }, {
     atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
-      if (path.basename(filePath) === 'AGENTS.md') throw failure;
+      if ((path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) throw failure;
       return atomicWriteTextIfUnchanged(filePath, content, expectation, mode);
     },
   }), (error: unknown) => error === failure);
@@ -1907,7 +1910,7 @@ test('use preserves committed files when database close fails after registration
     repositoryId: string;
     workspace: string;
   };
-  assert.match(await readFile(agentPath, 'utf8'), new RegExp(binding.repositoryId, 'u'));
+  assert.match(await readFile(path.join(root, '.kiokuko/AGENTS.md'), 'utf8'), new RegExp(binding.repositoryId, 'u'));
   const database = openConnection(databasePath);
   try {
     const registration = database.prepare(`
@@ -1941,7 +1944,7 @@ test('use preserves files when COMMIT succeeds but reports an uncertain transact
     workspace: string;
   };
   assert.match(
-    await readFile(path.join(root, 'AGENTS.md'), 'utf8'),
+    await readFile(path.join(root, '.kiokuko/AGENTS.md'), 'utf8'),
     new RegExp(binding.repositoryId, 'u'),
   );
   const database = openConnection(databasePath);
@@ -1987,7 +1990,7 @@ test('use preserves files and aggregates close failure after an uncertain COMMIT
     workspace: string;
   };
   assert.match(
-    await readFile(path.join(root, 'AGENTS.md'), 'utf8'),
+    await readFile(path.join(root, '.kiokuko/AGENTS.md'), 'utf8'),
     new RegExp(binding.repositoryId, 'u'),
   );
   const database = openConnection(databasePath);
@@ -2040,7 +2043,7 @@ test('use rollback preserves a byte-identical binding replaced by another actor'
 
   await assert.rejects(useRepository({ root, databasePath }, {
     atomicWriteTextIfUnchanged: async (filePath, content, expectation, mode) => {
-      if (path.basename(filePath) === 'AGENTS.md') {
+      if ((path.basename(filePath) === 'AGENTS.md' && path.basename(path.dirname(filePath)) !== '.kiokuko')) {
         const identical = await readFile(bindingPath, 'utf8');
         await rename(bindingPath, displacedPath);
         await writeFile(bindingPath, identical);
@@ -2208,7 +2211,8 @@ test('force-rebind replaces the exact existing identity and rejects no-op force'
   assert.equal(rebound.workspace, 'project:rebind-after');
   assert.equal(rebound.bindingAction, 'updated');
   assert.equal(rebound.agentFileAction, 'updated');
-  assert.match(await readFile(agentPath, 'utf8'), /Workspace: `project:rebind-after`/u);
+  assert.equal(await readFile(agentPath, 'utf8'), agentBefore);
+  assert.match(await readFile(path.join(root, '.kiokuko/AGENTS.md'), 'utf8'), /Workspace: `project:rebind-after`/u);
   assert.doesNotMatch(await readFile(agentPath, 'utf8'), /project:rebind-before/u);
 
   const database = openConnection(databasePath);
@@ -2309,16 +2313,17 @@ test('no-agent-file rejects a stale managed block at a prospective relocation ta
     const prospectivePath = path.join(initial.repositoryRoot, 'OTHER.md');
     const bindingBefore = await readFile(bindingPath, 'utf8');
     const oldAgentBefore = await readFile(oldAgentPath, 'utf8');
+    const legacyBody = await readFile(path.join(root, '.kiokuko/AGENTS.md'), 'utf8');
     const prospectiveBefore = variant === 'force'
-      ? oldAgentBefore
-      : oldAgentBefore.replace(
+      ? legacyBody
+      : legacyBody.replace(
         `Workspace: \`${initial.workspace}\``,
         'Workspace: `project:foreign-managed-block`',
       );
     if (variant === 'ordinary') {
       assert.notEqual(prospectiveBefore, oldAgentBefore);
     } else {
-      assert.equal(prospectiveBefore, oldAgentBefore);
+      assert.equal(prospectiveBefore, legacyBody);
     }
     await writeFile(prospectivePath, prospectiveBefore);
 
@@ -2359,8 +2364,8 @@ test('existing-binding transitions reject byte-identical concurrent agent replac
     workspace: 'project:exact-agent-before',
   });
   const bindingPath = path.join(root, '.kiokuko.json');
-  const agentPath = path.join(root, 'AGENTS.md');
-  const plannedAgentPath = path.join(initial.repositoryRoot, 'AGENTS.md');
+  const agentPath = path.join(root, '.kiokuko/AGENTS.md');
+  const plannedAgentPath = path.join(initial.repositoryRoot, '.kiokuko/AGENTS.md');
   const bindingBefore = await readFile(bindingPath, 'utf8');
   let replaced = false;
   let registrationCalls = 0;
@@ -2480,7 +2485,7 @@ test('force-rebind can move one exact location to an existing repository identit
   });
   assert.equal(rebound.repositoryId, target.repositoryId);
   assert.equal(rebound.workspace, target.workspace);
-  assert.match(await readFile(path.join(sourceRoot, 'AGENTS.md'), 'utf8'), new RegExp(target.repositoryId, 'u'));
+  assert.match(await readFile(path.join(sourceRoot, '.kiokuko/AGENTS.md'), 'utf8'), new RegExp(target.repositoryId, 'u'));
 
   const database = openConnection(databasePath);
   try {
