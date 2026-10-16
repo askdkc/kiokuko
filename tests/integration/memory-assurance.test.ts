@@ -1581,10 +1581,11 @@ test('default doctor leaves unrelated oversized active repositories unverified w
     const before = f.db.prepare('SELECT * FROM task_assurance WHERE run_id=?').get(f.prepared.run.runId);
     const result = await runDoctor({ databasePath: f.databasePath });
     const check = result.checks.memoryAssurance;
-    assert.equal(check.status, 'attention');
-    assert.equal(check.ok, false);
-    assert.equal(check.findings[0]?.reason, 'task_verification_not_requested');
-    assert.equal(check.findings[0]?.verification, 'unverified');
+    assert.equal(check.status, 'ok');
+    assert.equal(check.ok, true);
+    assert.equal(check.count, 0);
+    assert.deepEqual(check.findings, []);
+    assert.match(check.detail, /repositoryVerification=not_requested/u);
     assert.match(check.detail, /inspectionErrors=0/u);
     assert.match(check.detail, /pending=unverified; stale=unverified; missingVerification=unverified/u);
     assert.match(check.detail, /retrieval=unverified/u);
@@ -1602,7 +1603,7 @@ test('doctor keeps confirmed ledger corruption failed while live verification is
   try {
     f.db.prepare('UPDATE ledger_events SET event_hash=?').run('f'.repeat(64));
     const result = await runDoctor({ databasePath: f.databasePath });
-    assert.equal(result.checks.memoryAssurance.status, 'attention');
+    assert.equal(result.checks.memoryAssurance.status, 'ok');
     assert.equal(result.checks.ledger.ok, false);
     assert.equal(result.ok, false);
     assert.equal(result.status, 'failed');

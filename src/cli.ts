@@ -1145,7 +1145,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       .map((finding) => `\n  Task ${finding.runId} (${finding.repositoryRoot ?? 'repository not bound'}): ${finding.reason}`
         + `\n    ${finding.code}: ${finding.message}\n    ${finding.action}`)
       .join('');
-    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}${agentFileNotice}${assuranceNotice}`);
+    const assuranceScopeNotice = options.verifyRepositories ? ''
+      : '\n  Live repository verification was not requested. Use kiokuko doctor --verify-repositories to inspect up to 20 active tasks.';
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}${agentFileNotice}${assuranceNotice}${assuranceScopeNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 

@@ -5,7 +5,7 @@ import { taskAssuranceReport } from './service.js';
 import { diagnosticError } from '../diagnostics/error.js';
 
 export interface AssuranceDoctorFinding {
-  reason: 'task_inspection_failed' | 'task_verification_not_requested';
+  reason: 'task_inspection_failed';
   runId: string;
   repositoryRoot: string | null;
   code: string;
@@ -30,12 +30,7 @@ export function assuranceDoctor(db: SqliteDatabase, hooksPath?: string, verifyRe
   let pending = 0; let stale = 0; let verification = 0; let errors = 0;
   const retrieval: Record<string, number> = {};
   for (const row of active.slice(0, 20)) {
-    if (!verifyRepositories) {
-      findings.push({ reason: 'task_verification_not_requested', runId: row.run_id, repositoryRoot: row.repository_root,
-        code: 'UNVERIFIED', message: 'Live repository state was not inspected during this stored-health check.',
-        verification: 'unverified', action: 'Use kiokuko doctor --verify-repositories to explicitly verify the latest 20 active tasks across registered repositories. Ordinary doctor does not take full repository-content snapshots.' });
-      continue;
-    }
+    if (!verifyRepositories) continue;
     try {
       const report = taskAssuranceReport(db, row.run_id);
       pending += report.pending.length; stale += report.stale.length; verification += report.missingVerification.length;
@@ -54,7 +49,7 @@ export function assuranceDoctor(db: SqliteDatabase, hooksPath?: string, verifyRe
   }
   const lastExecution = db.prepare("SELECT response_shape FROM codex_hook_observations WHERE event_name='PostToolUse' AND tool_name IN ('Bash','exec_command','write_stdin') ORDER BY rowid DESC LIMIT 1").get<{response_shape:string}>();
   const exitMetadata = lastExecution ? JSON.parse(lastExecution.response_shape).exitMetadata ?? 'unconfirmed' : 'unconfirmed';
-  const status = !verifyRepositories && active.length > 0 ? 'attention' as const : errors === 0 ? 'ok' as const : findings.every(finding => finding.code === 'VALIDATION_ERROR' && /^Repository snapshot exceeds its (?:byte|file|submodule depth) budget$/u.test(finding.message)) ? 'attention' as const : 'failed' as const;
-  return { ok: status === 'ok', status, count: pending + stale + verification + errors + (!verifyRepositories ? active.length : 0), findings,
-    detail: `repositoryVerification=${verifyRepositories ? 'requested' : 'unverified'}; configuration=${configured}; historicalHookRequests=${observed}; currentClient=unconfirmed; pending=${verifyRepositories ? pending : 'unverified'}; stale=${verifyRepositories ? stale : 'unverified'}; missingVerification=${verifyRepositories ? verification : 'unverified'}; inspectionErrors=${errors}; sampled=${active.length > 20}; retrieval=${verifyRepositories ? JSON.stringify(retrieval) : 'unverified'}; lastExecutionExitMetadata=${exitMetadata}; hookActivityDoesNotProveExitMetadata=true` };
+  const status = errors === 0 ? 'ok' as const : findings.every(finding => finding.code === 'VALIDATION_ERROR' && /^Repository snapshot exceeds its (?:byte|file|submodule depth) budget$/u.test(finding.message)) ? 'attention' as const : 'failed' as const;
+  return { ok: status === 'ok', status, count: pending + stale + verification + errors, findings,
+    detail: `repositoryVerification=${verifyRepositories ? 'requested' : 'not_requested'}; configuration=${configured}; historicalHookRequests=${observed}; currentClient=unconfirmed; pending=${verifyRepositories ? pending : 'unverified'}; stale=${verifyRepositories ? stale : 'unverified'}; missingVerification=${verifyRepositories ? verification : 'unverified'}; inspectionErrors=${errors}; sampled=${active.length > 20}; retrieval=${verifyRepositories ? JSON.stringify(retrieval) : 'unverified'}; lastExecutionExitMetadata=${exitMetadata}; hookActivityDoesNotProveExitMetadata=true` };
 }

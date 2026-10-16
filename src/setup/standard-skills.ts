@@ -226,21 +226,34 @@ export function hostSkillFile(file: BundledStandardSkillFile, host: string): Bun
     managedMarker: hostSkillText(file.managedMarker, host),
     content: body + `\n<!-- KIOKUKO DEPLOYMENT ${JSON.stringify(manifest)} -->\n` };
 }
-function assertDeploymentOwnership(existing: string, bundled: BundledStandardSkillFile, destinationPath?: string): void {
+function deploymentStamp(content: string): Record<string, unknown> | null {
   try {
-    const intended = JSON.parse(DEPLOYMENT_STAMP.exec(bundled.content)?.[1] ?? 'null');
-    if (intended && isOwnedSkillDeployment(existing, intended.host, intended.logicalName)) return;
-  } catch { /* The same bounded ownership conflict applies to invalid manifests. */ }
+    const stamp: unknown = JSON.parse(DEPLOYMENT_STAMP.exec(content)?.[1] ?? 'null');
+    return stamp !== null && typeof stamp === 'object' && !Array.isArray(stamp)
+      ? stamp as Record<string, unknown> : null;
+  } catch { return null; }
+}
+
+function deploymentIdentityMatches(stamp: Record<string, unknown> | null, host: string, logicalName: string): boolean {
+  return stamp?.owner === INTEGRATION_CONTRACT.owner && stamp.id === INTEGRATION_CONTRACT.id
+    && Number.isInteger(stamp.version) && (stamp.version as number) > 0
+    && (stamp.version as number) <= INTEGRATION_CONTRACT.version
+    && stamp.host === host && stamp.logicalName === logicalName;
+}
+
+function assertDeploymentOwnership(existing: string, bundled: BundledStandardSkillFile, destinationPath?: string): void {
+  const intended = deploymentStamp(bundled.content);
+  if (intended && isOwnedSkillDeployment(existing, intended.host as string, intended.logicalName as string)) return;
   const target = destinationPath ?? bundled.skillName;
-  throw new KiokukoError('CONFLICT', `Refusing to overwrite a foreign or modified Skill deployment: ${target}. Inspect and back up or rename that file, then rerun kiokuko setup.`);
+  const stamp = deploymentStamp(existing);
+  if (intended && deploymentIdentityMatches(stamp, intended.host as string, intended.logicalName as string)) {
+    throw new KiokukoError('CONFLICT', `Refusing to overwrite a modified Skill deployment: ${target}. Its deployment hash does not match the file content. Inspect and back up or rename that file, then rerun kiokuko setup.`);
+  }
+  throw new KiokukoError('CONFLICT', `Refusing to overwrite a foreign Skill deployment: ${target}. Inspect and back up or rename that file, then rerun kiokuko setup.`);
 }
 /** Removal obeys the same ownership boundary as update. Legacy shared Skills are retained. */
 export function isOwnedSkillDeployment(content: string, host: string, logicalName: string): boolean {
-  try {
-    const stamp = JSON.parse(DEPLOYMENT_STAMP.exec(content)?.[1] ?? 'null');
-    return stamp?.owner === INTEGRATION_CONTRACT.owner && stamp.id === INTEGRATION_CONTRACT.id
-      && Number.isInteger(stamp.version) && stamp.version > 0 && stamp.version <= INTEGRATION_CONTRACT.version
-      && stamp.host === host && stamp.logicalName === logicalName
-      && stamp.hash === createHash('sha256').update(content.replace(DEPLOYMENT_STAMP, '')).digest('hex');
-  } catch { return false; }
+  const stamp = deploymentStamp(content);
+  return deploymentIdentityMatches(stamp, host, logicalName)
+    && stamp?.hash === createHash('sha256').update(content.replace(DEPLOYMENT_STAMP, '')).digest('hex');
 }

@@ -121,6 +121,16 @@ async function deletedAgentProject(prefix: string, agentFile = 'AGENTS.md') {
   return { ...value, project };
 }
 
+test('ordinary doctor reports the optional live verification scope once', async () => {
+  const value = await temporaryDatabase('unrequested-live-verification');
+  value.database.close();
+  const result = await invokeDoctor(value.databasePath, '', false, false);
+  assert.equal(result.exitCode, undefined);
+  assert.match(result.stdout, /Kiokuko doctor: OK/u);
+  assert.equal(result.stdout.match(/Live repository verification was not requested/gu)?.length, 1);
+  assert.doesNotMatch(result.stdout, /task_verification_not_requested/u);
+});
+
 test('doctor adds its missing plugin section without treating foreign ownership as malformed', async () => {
   const value = await deletedAgentProject('foreign-agent');
   const foreign = 'User rules\r\n<!-- BEGIN KIOKUKO-AI MANAGED BLOCK -->\r\nForeign rules\r\n<!-- END KIOKUKO-AI MANAGED BLOCK -->\r\n';
@@ -331,6 +341,7 @@ test('noninteractive doctor leaves deleted instructions absent', async () => {
 
 test('doctor identifies a missing binding with its path and recovery guidance without recreating it', async () => {
   const value = await deletedAgentProject('binding-missing');
+  const originalBinding = await readFile(value.project.bindingFile, 'utf8');
   await unlink(value.project.bindingFile);
   const json = await invokeDoctor(value.databasePath, 'y\n', true);
   const finding = (json.response?.data.checks as any).agentFiles.findings[0];
@@ -344,6 +355,18 @@ test('doctor identifies a missing binding with its path and recovery guidance wi
   assert.equal(human.prompt, '');
   assert.equal(human.exitCode, 8);
   await assert.rejects(access(value.project.bindingFile));
+
+  await writeFile(value.project.bindingFile, originalBinding);
+  const restored = await invokeDoctor(value.databasePath, '', true);
+  const restoredFindings = (restored.response?.data.checks as any).agentFiles.findings;
+  assert.ok(restoredFindings.every((item: { reason: string }) => item.reason !== 'missing_binding_file'));
+  assert.equal(await readFile(value.project.bindingFile, 'utf8'), originalBinding);
+  const database = openConnection(value.databasePath);
+  try {
+    const row = database.prepare('SELECT repository_id AS id FROM repository_locations WHERE canonical_root=?')
+      .get<{ id: string }>(value.project.repositoryRoot);
+    assert.equal(row?.id, value.project.repositoryId);
+  } finally { database.close(); }
 });
 
 test('doctor explains malformed bindings without echoing secret input or changing them', async () => {

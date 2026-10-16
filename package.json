@@ -65,7 +65,7 @@
   },
   "overrides": {
     "adm-zip": "0.6.1",
-    "sharp": "0.35.4"
+    "sharp": "^0.35.5"
   },
   "allowScripts": {
     "onnxruntime-node": true,
@@ -92,7 +92,7 @@
   },
   "devDependencies": {
     "@huggingface/hub": "2.16.1",
-    "@huggingface/transformers": "4.2.0",
+    "@huggingface/transformers": ">=4.3.1",
     "@types/node": "^24.0.0",
     "@types/semver": "^7.8.0",
     "agenticreplay": ">=0.1.6",

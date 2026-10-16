@@ -951,10 +951,34 @@ test('setup preserves shared legacy Skills and updates only unchanged owned Code
   const deployedPath = path.join(directory, 'kiokuko-codex-soul', 'SKILL.md');
   const original = await readFile(deployedPath, 'utf8');
   await writeFile(deployedPath, original + 'user edit\n');
-  await assert.rejects(setupGlobalClients({ ...options, clients: [...options.clients] }), /foreign or modified/);
+  await assert.rejects(setupGlobalClients({ ...options, clients: [...options.clients] }), /foreign Skill deployment/);
   assert.equal(await readFile(deployedPath, 'utf8'), original + 'user edit\n');
   await writeFile(legacy, 'DSH setup ran after Codex\n');
   assert.equal(await readFile(deployedPath, 'utf8'), original + 'user edit\n');
+});
+
+test('setup upgrades an intact older owned Skill and protects a later edit to its body', async () => {
+  const temporary = await temporaryEnvironment('older-owned-skill-upgrade');
+  const options = { clients: ['codex'] as const, platform: 'linux' as const, env: temporary.env, databasePath: temporary.databasePath };
+  const source = (await loadBundledStandardSkillFiles()).find(file => file.skillName === 'kiokuko-soul' && file.relativePath === 'SKILL.md')!;
+  const previous = hostSkillFile({ ...source, content: `${source.content}\nPrevious official edition.\n` }, 'codex');
+  const current = hostSkillFile(source, 'codex');
+  const deployedPath = path.join(temporary.home, '.agents', 'skills', previous.skillName, previous.relativePath);
+  await mkdir(path.dirname(deployedPath), { recursive: true });
+  await writeFile(deployedPath, previous.content);
+
+  const upgraded = await setupGlobalClients({ ...options, clients: [...options.clients] });
+  assert.equal(upgraded.files.find(file => file.path === deployedPath)?.action, 'updated');
+  assert.equal(await readFile(deployedPath, 'utf8'), current.content);
+  const repeated = await setupGlobalClients({ ...options, clients: [...options.clients] });
+  assert.ok(repeated.files.every(file => file.action === 'unchanged'));
+
+  const edited = current.content.replace('## Outcome', '## User-edited outcome');
+  assert.notEqual(edited, current.content);
+  await writeFile(deployedPath, edited);
+  await assert.rejects(setupGlobalClients({ ...options, clients: [...options.clients] }),
+    /modified Skill deployment:.*deployment hash does not match the file content/u);
+  assert.equal(await readFile(deployedPath, 'utf8'), edited);
 });
 
 test('setup adds the workflow repair route to existing Codex installations and keeps it idempotent', async () => {
