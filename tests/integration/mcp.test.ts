@@ -55,7 +55,7 @@ test('MCP preserves task contracts while model memory writes require exact nativ
     assert.match(instructions, /OpenCode filesystem tools, prefer canonical absolute paths under that root/u);
     assert.match(instructions, /read and apply the complete bundled `kiokuko-soul` Skill before any other Kiokuko Skill/iu);
     assert.match(instructions, /Every `task_prepare` call must set `soulRead: true` only after that read/iu);
-    assert.match(instructions, /exact local `kiokuko-soul` capability is required for every task/iu);
+    assert.match(instructions, /exact local `kiokuko-soul` capability is required only by an attempted task_prepare call/iu);
     assert.match(instructions, /Akinator is the intake state machine for an optional Kiokuko task record/iu);
     assert.match(instructions, /do not complete that memory record while `intake\.status=needs_answer`/u);
     assert.match(instructions, /For the optional record, route after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);

@@ -4,7 +4,7 @@ import { TASK_RECOVERY_INSTRUCTIONS } from '../assurance/conflicts.js';
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
 import { HANDOFF_INSTRUCTIONS } from '../memory/handoff.js';
-import { ADAPTIVE_EFFORT_INSTRUCTIONS, SOUL_ROUTING_ENTRY_CONTRACT, TASK_PREPARATION_REQUEST_CONTRACT } from '../akinator/instructions.js';
+import { ADAPTIVE_EFFORT_INSTRUCTIONS, ORDINARY_WORK_INSTRUCTIONS, SOUL_ROUTING_ENTRY_CONTRACT, TASK_PREPARATION_REQUEST_CONTRACT } from '../akinator/instructions.js';
 import { KiokukoError } from '../errors.js';
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
 import { isSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
@@ -27,6 +27,8 @@ export function renderGlobalInstructions(existing = '', host?: string): Delimite
     '',
     '## Kiokuko global memory',
     `<!-- KIOKUKO CONTRACT ${INTEGRATION_CONTRACT.id}@${INTEGRATION_CONTRACT.version} -->`,
+    '',
+    ORDINARY_WORK_INSTRUCTIONS,
     '',
     'When the Kiokuko MCP tools are available:',
     '',

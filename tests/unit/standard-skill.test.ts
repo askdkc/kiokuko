@@ -126,26 +126,28 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.equal(STANDARD_SKILL_MANIFESTS.at(-1)?.name, STANDARD_SOUL_SKILL_NAME);
   const soulSkill = soulFiles.find((file) => file.relativePath === 'SKILL.md')?.content ?? '';
   assert.match(soulSkill, new RegExp(`^---\\nname: ${STANDARD_SOUL_SKILL_NAME}\\ndescription: [^\\n]+\\n---\\n`));
-  assert.match(soulSkill, /read this Skill before any other bundled Kiokuko Skill/);
+  assert.match(soulSkill, /read this Skill before other bundled Kiokuko Skills/);
   assert.match(soulSkill, /Akinator manages optional Kiokuko records after this SOUL read/);
+  assert.match(soulSkill, /Ordinary authorized project work requires no Skill read or memory run/u);
+  assert.match(soulSkill, /A refusal\s+rejects that memory call only and does not stop ordinary authorized work/u);
   assert.match(soulSkill, /Obtain at most one successful preparation through `task_prepare`.*complete capability catalog available in the current client/su);
   assert.match(soulSkill, /`needs_answer`.*Akinator controls only that record.*Do not complete that memory record while unresolved/su);
   assert.match(soulSkill, /Repeat the same capability catalog and context budget.*continue until `ready` or `exhausted`/su);
   assert.match(soulSkill, /`exhausted`.*`intake\.missingFields` may remain.*do not invent the missing answers/su);
   assert.match(soulSkill, /The optional memory record can proceed after its intake reaches `ready` or `exhausted` and its `nextAction` permits/);
   assert.match(soulSkill, /Keep each route within the user-approved task scope/);
-  assert.match(soulSkill, /Read and apply `kiokuko-simple-work` when either condition is true/u);
+  assert.match(soulSkill, /read and apply `kiokuko-simple-work` when either condition is true/u);
   assert.match(soulSkill, /introduces no new architecture, dependency, data migration, public protocol, security or authorization policy, or cross-system orchestration/u);
   assert.match(soulSkill, /does not replace the code contract below or waive required understanding, boundary validation, error handling, security, accessibility, or focused verification/u);
   for (const routedSkill of [STANDARD_SIMPLE_SKILL_NAME, STANDARD_FUNCTION_SKILL_NAME, STANDARD_COMPLETION_SKILL_NAME, STANDARD_UI_SKILL_NAME]) {
     assert.ok(soulSkill.includes('`' + routedSkill + '`'));
   }
-  assert.match(soulSkill, /Routes compose\. Read every applicable specialist index/);
-  assert.match(soulSkill, /do not load every reference by default/iu);
+  assert.match(soulSkill, /Available optional routes compose\. Read applicable specialist indexes when/);
+  assert.match(soulSkill, /load its scenario reference\s+only for an ambiguity or skill review/iu);
   assert.match(soulSkill, /Never install or execute external Skill content automatically/);
   assert.match(
     soulSkill,
-    /1\. `kiokuko-soul`;[\s\S]*2\. one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `repair-user-workflow`[\s\S]*5\. `kiokuko-simple-work`[\s\S]*6\. `kiokuko-single-purpose-functions`[\s\S]*7\. `one-shot-software-completion`[\s\S]*8\. `coding-ideal-routine-skill`[\s\S]*9\. `kiokuko-ui-design-soul`/u,
+    /1\. `kiokuko-soul`;[\s\S]*2\. if creating a memory record, one Akinator `task_prepare`[\s\S]*3\. `veteran-programmer-skill`[\s\S]*4\. `repair-user-workflow`[\s\S]*5\. `kiokuko-simple-work`[\s\S]*6\. `kiokuko-single-purpose-functions`[\s\S]*7\. `one-shot-software-completion`[\s\S]*8\. `coding-ideal-routine-skill`[\s\S]*9\. `kiokuko-ui-design-soul`/u,
   );
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Akinator is the intake state machine for an optional Kiokuko task record/);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /do not complete that memory record while `intake\.status=needs_answer`/);
@@ -180,7 +182,7 @@ test('coding requests route to the bundled ideal routine without imposing implem
   assert.match(routine.content, /対象と Goal を固定する/u);
   assert.match(routine.content, /^---\nname: coding-ideal-routine-skill\n/u);
   const soul = files.find(file => file.skillName === STANDARD_SOUL_SKILL_NAME)?.content ?? '';
-  assert.match(soul, /apply `coding-ideal-routine-skill`/u);
+  assert.match(soul, /use `coding-ideal-routine-skill` when it is available/u);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /`coding-ideal-routine-skill` for coding requests/u);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /explanation-only requests do not require implementation or Red\/Green tests/u);
 });
@@ -193,7 +195,7 @@ test('workflow repairs bundle the skill and route through SOUL after intake', as
   assert.match(repair[0]!.content, /references\/scenarios\.md/u);
   const soul = files.find(file => file.skillName === STANDARD_SOUL_SKILL_NAME)?.content ?? '';
   const route = soul.match(/### Workflow repair\n([\s\S]*?)(?=\n### |\n## |$)/u)?.[1] ?? '';
-  assert.match(route, /Read and apply `repair-user-workflow` before planning or implementing/u);
+  assert.match(route, /When available, read and apply `repair-user-workflow` for fixes to/u);
   assert.match(route, /installation, updates, build, registration, generated configuration, shortcuts,/u);
   assert.match(route, /installed artifact, current profile, or actual consumer fails/u);
   assert.match(route, /ordinary launch,[\s\S]*use, restart, or exit fails/u);
@@ -202,7 +204,7 @@ test('workflow repairs bundle the skill and route through SOUL after intake', as
   assert.match(route, /do not depend on\s+keyword matches or `catalog_similarity` recommendations/u);
   assert.match(route, /explanation-only requests, commit-message drafting,\s+or isolated logic fixes without a workflow boundary/u);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /`repair-user-workflow` for workflow defect repairs/u);
-  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Read and apply `repair-user-workflow` before planning or implementing the repair/u);
+  assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /Use `repair-user-workflow` as optional guidance when available/u);
   assert.match(SOUL_ROUTING_ENTRY_CONTRACT, /explanation-only requests, commit-message drafting, or isolated logic fixes without a workflow boundary/u);
 });
 

@@ -1,6 +1,6 @@
 ---
 name: kiokuko-soul
-description: Use before code changes, operations, formal reviews, implementation plans, and investigation requiring a project run. Response-only work with sufficient evidence needs no router read. Use the Akinator intake for optional memory records; route authorized coding from current evidence through simple code work, general code work, and interactive UI work to the bundled specialist Skills.
+description: Optional Kiokuko task-memory router and specialist guidance. Ordinary authorized code changes, operations, reviews, and completion do not require this Skill, its MCP tools, or Akinator intake. When task memory is chosen, use its intake and review contract; save reusable experience only after user approval.
 ---
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: kiokuko-soul -->
@@ -19,15 +19,14 @@ Explicit user instructions outrank these Skills' design, style, workflow, and im
 
 ## Proportionate effort before routing
 
-Choose reasoning depth and tool use separately from uncertainty, consequences of error, reversibility, and evidence already available. Do not classify by request length, a writing label, or repository mention. Repository mentions alone do not require preparation. When current conversation evidence suffices for a response-only request (including drafting, translation, explaining existing results, or acknowledging a correction), answer directly with zero preparation, memory, or verification calls and no task run. If one decision-relevant fact is missing, use only bounded task_inspect reads; operation diff accepts scope auto, staged, or working-tree, with auto preferring staged changes. Answer when that evidence suffices; do not start intake for a limited read alone. For uncertain causes, interacting dependencies, or high error consequences, develop hypotheses and failure conditions and gather only evidence that changes a decision or proves completion. Code changes, operations, formal reviews, and implementation plans retain host/OS/user authorization and actual product verification. Kiokuko intake and memory review govern only its optional records. Every additional check must change a decision or prove a completion condition. Stop when the requested result and required evidence are available; do not reread unchanged state, load unrelated Skills, or prepare merely to prepare. Recall memory only when past information is needed for the current decision. No minimum reasoning duration or tool-call quota applies. These rules never release permission or identity denials or user cancellation. Pending intake and terminal memory records do not prohibit unrelated authorized coding. Arbitrary shell commands and JavaScript are execution, not bounded read-only inspection. Hooks control observable calls and state, not private reasoning depth.
+Choose reasoning depth and tool use separately from uncertainty, consequences of error, reversibility, and evidence already available. Do not classify by request length, a writing label, or repository mention. Repository mentions alone do not require preparation. When current conversation evidence suffices for a response-only request (including drafting, translation, explaining existing results, or acknowledging a correction), answer directly with zero preparation, memory, or verification calls and no task run. If one decision-relevant fact is missing, use authorized bounded reads; `task_inspect` is optional when available and its diff operation accepts scope auto, staged, or working-tree, with auto preferring staged changes. Answer when that evidence suffices; do not start intake for a limited read alone. For uncertain causes, interacting dependencies, or high error consequences, develop hypotheses and failure conditions and gather only evidence that changes a decision or proves completion. Code changes, operations, formal reviews, and implementation plans retain host/OS/user authorization and actual product verification. Kiokuko intake and memory review govern only its optional records. Every additional check must change a decision or prove a completion condition. Stop when the requested result and required evidence are available; do not reread unchanged state, load unrelated Skills, or prepare merely to prepare. Recall memory only when past information is needed for the current decision. No minimum reasoning duration or tool-call quota applies. These rules never release permission or identity denials or user cancellation. Pending intake and terminal memory records do not prohibit unrelated authorized coding. Arbitrary shell commands and JavaScript are execution, not bounded read-only inspection. Hooks control observable calls and state, not private reasoning depth.
 
 ## Ordinary conversation and interaction memory
 
 For ordinary conversation that needs past context and does not involve project work, use `memory_recall`
 with the current query, optional subjects, `soulRead: true`, and the complete
 capability catalog. Read `memory-reasoning` before advertising it. No repository,
-task run, or Akinator answers are needed. This route cannot replace or bypass
-intake for project work or an already-open project run.
+task run, or Akinator answers are needed. This route does not change the rules of an optional, already-open project memory run.
 
 Do not automatically capture durable memories. Apply user corrections to the current work immediately, but keep proposed memories ephemeral until human approval.
 
@@ -55,13 +54,14 @@ before terminal `memory_checkpoint`; unrelated authorized tools may continue aft
 
 ## Required entry
 
-When a project run or memory recall is needed, read this Skill before any other bundled Kiokuko Skill. Response-only work with sufficient evidence requires no Skill read.
+When choosing an optional Kiokuko task-memory record or recall, read this Skill before other bundled Kiokuko Skills. Ordinary authorized project work requires no Skill read or memory run.
 
-When Codex hooks supply a request ID, use `task_inspect` with `operation: "skill"`
-and no path to read this router. Read `memory-reasoning` through the same tool
-before advertising it. Use `task_inspect` for all bounded preparation reads and
-bundled Skills, including `natural-japanese-output`; do not use shell commands
-to bypass the record capability checks. Unrelated authorized repository inspection remains available.
+When opting into a memory run and Codex hooks supply a request ID, use
+`task_inspect` with `operation: "skill"` and no path to read this router if the
+tool is available. Read `memory-reasoning` before advertising it. Use
+`task_inspect` for bounded memory-preparation reads and bundled Skills when
+available; do not use shell commands to bypass record capability checks.
+Ordinary authorized repository inspection remains available without that tool.
 
 Bundled Skill selectors are package identities, not installed client paths.
 Use the exact public Skill name (including its Codex alias) or
@@ -74,14 +74,19 @@ does not authorize external reads or remove the current intake/review gate.
 
 For every `task_prepare` call, set `soulRead: true` only after reading this
 complete local `SKILL.md` for the current logical request. `task_prepare` also
-requires the exact local `kiokuko-soul` capability for every task. Omission,
+requires the exact local `kiokuko-soul` capability for each attempted memory task. Omission,
 false attestation, missing availability, unknown availability, aliases,
 namespaced copies, and fetched references fail closed. The attestation is an
-explicit client claim; it is not remote proof of model cognition.
+explicit client claim; it is not remote proof of model cognition. A refusal
+rejects that memory call only and does not stop ordinary authorized work.
 
 For an optional Kiokuko task record, enter its Akinator intake gate below first. Unrelated authorized coding may use repository evidence and applicable specialist guidance. Treat every returned `nextAction`, required-Skill list, and stop condition as authoritative for that run.
 
-Read the complete `SKILL.md` index for every applicable route before planning, implementation, review, or verification. Each specialist index defines versioned expert fragments. Read only fragments selected by the concrete task risk; do not load every reference by default. Do not substitute this router's summary for a specialist core contract.
+When choosing available specialist guidance, read its complete `SKILL.md`
+index and only the expert fragments selected by the concrete task risk.
+Unavailable optional Skills never delay ordinary planning, implementation,
+review, or verification. Do not substitute this router's summary for a
+specialist core contract you claim to have applied.
 
 ## Akinator intake gate
 
@@ -110,7 +115,7 @@ decision to manufacture a completed record. `nextAction=refresh_memory` requires
 reviewing the new delivery. After reviews, check `task_memory_status`; do not
 repeat `task_prepare`. `nextAction` governs the memory workflow only. Independent tools remain subject to host and user authorization. Adopted memories still require real verification before being described as verified.
 
-If task_prepare is unavailable, report unavailable memory and continue unrelated authorized coding from repository evidence. The sole exception is diagnosing or repairing Kiokuko itself after `task_prepare` fails before returning scoped context: continue only from repository evidence, and do not call `task_answer` or `memory_checkpoint` for that failed request.
+If task_prepare is unavailable, report unavailable memory and continue authorized work from repository evidence. When diagnosing or repairing Kiokuko itself after `task_prepare` fails before returning scoped context, do not call `task_answer` or `memory_checkpoint` for that failed record; the product repair may continue from repository evidence.
 
 Correcting preparation does not require a new user request or a “retry implementation” message. If the recovery API is missing from the current tool catalog, report the stale MCP runtime and reload its connection after updating the installed package. Never invent an unavailable tool or bypass the hook.
 
@@ -139,30 +144,31 @@ The optional memory record can proceed after its intake reaches `ready` or `exha
 
 ### Workflow completeness
 
-Read and apply `veteran-programmer-skill` before and after implementation when changes span setup, delivery, persisted state, or runtime handoffs. Check that the requested behavior reaches its actual consumer. An isolated edit needs no additional audit.
+When available, apply `veteran-programmer-skill` before and after implementation when changes span setup, delivery, persisted state, or runtime handoffs. Its absence does not stop authorized work. Check that the requested behavior reaches its actual consumer. An isolated edit needs no additional audit.
 
 ### Workflow repair
 
-Read and apply `repair-user-workflow` before planning or implementing fixes for
+When available, read and apply `repair-user-workflow` for fixes to
 installation, updates, build, registration, generated configuration, shortcuts,
 plugins, services, or caller-to-runtime handoffs when the next ordinary launch,
 use, restart, or exit fails after upstream success, source/helper checks pass but
 the installed artifact, current profile, or actual consumer fails, or a previous
 fix still needs manual rescue. Judge these conditions from the reported workflow,
 including Japanese reports such as 「更新は成功したが起動しない」; do not depend on
-keyword matches or `catalog_similarity` recommendations. Resolve this route after intake and memory
-review permit progress. Read the complete skill index; load its scenario reference
+keyword matches or `catalog_similarity` recommendations. For an optional memory-guided route, resolve it after intake and memory
+review permit use of that record. Read the complete skill index; load its scenario reference
 only for an ambiguity or skill review.
 
 Do not select this route for explanation-only requests, commit-message drafting,
 or isolated logic fixes without a workflow boundary.
-Use it alongside the coding routine and applicable code/UI skills, and stop if the
-required local skill is unavailable. The repair must reach the ordinary consumer;
+Use it alongside available coding and code/UI guidance. If the Skill is unavailable,
+continue the authorized repair from repository evidence and report that limitation.
+The repair must reach the ordinary consumer;
 skill selection alone does not establish that the workflow works.
 
 ### Simple code work
 
-Read and apply `kiokuko-simple-work` when either condition is true:
+When available, read and apply `kiokuko-simple-work` when either condition is true:
 
 - the request is a bounded code change with a clear target and expected result, and it introduces no new architecture, dependency, data migration, public protocol, security or authorization policy, or cross-system orchestration;
 - the user explicitly requests the simplest, shortest, minimal, YAGNI, dependency-free, or Ponytail approach.
@@ -171,46 +177,46 @@ This route minimizes the solution; it does not replace the code contract below o
 
 ### Code work
 
-Read and apply the `kiokuko-single-purpose-functions` index before writing, modifying, debugging, refactoring, or reviewing code, and before decomposing a code-changing plan. Select one to three `code.*` expert fragments for each cohesive function or task.
+When available, read and apply the `kiokuko-single-purpose-functions` index for writing, modifying, debugging, refactoring, or reviewing code, and for decomposing a code-changing plan. Select one to three `code.*` expert fragments for each cohesive function or task. Its absence does not block coding.
 
 ### Software completion for every coding request
 
-Before code-changing planning or implementation, apply the compact
-`one-shot-software-completion/SKILL.md` core, including for small, minimal/YAGNI,
-test and UI changes. Reuse its unchanged full text already in active context;
-otherwise read it. A summary is insufficient. Load references only for concrete
-risks; this route does not require reading them all. Follow availability rules below.
+When available, apply the compact `one-shot-software-completion/SKILL.md` core
+to coding requests, including small, minimal/YAGNI, test and UI changes.
+Reuse its unchanged full text already in active context; otherwise read it.
+A summary is insufficient when claiming to apply this Skill. Load references
+only for concrete risks. Its absence does not defer authorized coding.
 
 ### Interactive UI work
 
-Read and apply the `kiokuko-ui-design-soul` index before designing, implementing, modifying, debugging, or reviewing an interactive interface. Select one to three `ui.*` expert fragments for the actual interaction risks. If UI work changes code, apply both the code and UI indexes.
+When available, read and apply the `kiokuko-ui-design-soul` index for designing, implementing, modifying, debugging, or reviewing an interactive interface. Select one to three `ui.*` expert fragments for the actual interaction risks. If UI work changes code, use both available code and UI guidance.
 
 ### Coding delivery routine
 
-For coding requests, read and apply `coding-ideal-routine-skill` after intake and
-before changing code, tests, or behavior-affecting configuration or distribution.
-`task_prepare` and `task_answer` automatically load the complete package-owned
-core into `codingRoutine` once intake permits routing. Its `required: true`
-means apply the full text after memory review permits progress; it is independent
-of catalog similarity, optional discovery, local installation, and memory budgets.
-Reuse that full text when already in context. If it is absent or lost, read the
-complete core through `task_inspect` before coding. Read only applicable linked
-references; never enter this route while intake or memory review is pending.
-It connects investigation, meaningful Red/Green evidence, the user's ordinary
-usage path, independent verification, and factual completion reporting.
-Apply its relevant checks to behavior-preserving refactoring or writing;
-explanation-only requests do not require implementation or Red/Green tests.
-This route complements the code and completion contracts and never replaces
-intake, memory review, permissions, or required verification.
+For coding requests, use `coding-ideal-routine-skill` when it is available.
+`task_prepare` and `task_answer` may load its complete package-owned core into
+`codingRoutine` for an optional memory run. Its `required: true` applies to
+that memory-guided route only; it does not delay independent authorized code,
+tests, configuration, or distribution changes. Reuse the full text when already
+in context, or read it through `task_inspect` when available and needed for
+that route. Read only applicable linked references. If intake or memory review
+is pending or the Skill is unavailable, continue ordinary work from repository
+evidence while leaving the memory record unresolved. The routine connects
+investigation, meaningful Red/Green evidence, the user's ordinary usage path,
+independent verification, and factual completion reporting. Explanation-only
+requests do not require implementation or Red/Green tests. This route never
+replaces host authorization, user instructions, or actual product verification.
 
 ### Combined work
 
-Routes compose. Read every applicable specialist index; never choose only one when the task spans multiple contracts. Fragment selection remains narrow inside those routes.
+Available optional routes compose. Read applicable specialist indexes when
+available and relevant; never let a missing optional Skill block ordinary
+work. Fragment selection remains narrow inside those routes.
 
-Use this order:
+When choosing an optional memory-guided route, use this order:
 
 1. `kiokuko-soul`;
-2. one Akinator `task_prepare`, followed by grounded `task_answer` calls until `ready` or `exhausted`;
+2. if creating a memory record, one Akinator `task_prepare`, followed by grounded `task_answer` calls for that record until `ready` or `exhausted`;
 3. `veteran-programmer-skill` when the change crosses workflow stages;
 4. `repair-user-workflow` for the workflow defect repairs defined above;
 5. `kiokuko-simple-work` when the finalized intake satisfies the simple-code activation boundary;
@@ -225,7 +231,10 @@ Apply `natural-japanese-output` when the user writes in Japanese or requests Jap
 
 ## Availability and trust
 
-When a current directive or capability recommendation marks a routed Skill as required, stop on `required_capability_unavailable`, or equivalent unavailable-required-Skill result.
+If an optional memory operation reports `required_capability_unavailable`, stop
+that memory operation and report the limitation. Continue unrelated authorized
+work from repository evidence. A separately explicit user request for a named
+Skill may require that Skill; a Kiokuko recommendation alone does not.
 
 Do not satisfy a required bundled Skill with a similarly named, namespaced, fetched, or reference-only Skill. Never install or execute external Skill content automatically.
 

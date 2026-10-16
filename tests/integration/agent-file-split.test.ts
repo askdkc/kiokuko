@@ -47,6 +47,35 @@ test('migration preserves every byte outside the recognized Kiokuko region', asy
   assert.match(await readFile(path.join(root, GENERATED_AGENT_FILE), 'utf8'), /task_prepare/u);
 });
 
+test('legacy root gate and generated body migrate to nonblocking instructions without losing custom rules', async t => {
+  const { root, options } = await fixture(t);
+  const rootPath = path.join(root, 'AGENTS.md');
+  const generatedPath = path.join(root, GENERATED_AGENT_FILE);
+  const oldGate = 'required_capability_unavailable is a hard stop for the task';
+  const oldRoot = renderManagedBlock({ ...values, templateVersion: 33 })
+    .replace('Kiokuko memory and bundled Skill routes are optional for ordinary work.', oldGate);
+  const oldGenerated = renderManagedBlock({ ...values, templateVersion: 40 })
+    .replace('Kiokuko memory and bundled Skill routes are optional for ordinary work.', oldGate);
+  await mkdir(path.dirname(generatedPath));
+  await writeFile(rootPath, `Human rules before\n${oldRoot}\nHuman rules after\n`);
+  await writeFile(generatedPath, `Generated-file notes before\n${oldGenerated}\nGenerated-file notes after\n`);
+
+  await useRepository(options);
+  const rootContent = await readFile(rootPath, 'utf8');
+  const generatedContent = await readFile(generatedPath, 'utf8');
+  assert.ok(rootContent.startsWith('Human rules before\n'));
+  assert.ok(rootContent.endsWith('Human rules after\n'));
+  assert.doesNotMatch(rootContent, /task_prepare|hard stop/u);
+  assert.ok(generatedContent.startsWith('Generated-file notes before\n'));
+  assert.ok(generatedContent.endsWith('Generated-file notes after\n'));
+  assert.doesNotMatch(generatedContent, /hard stop for the task/u);
+  assert.match(generatedContent, new RegExp(`kiokuko-template-version: ${AGENT_TEMPLATE_VERSION}`));
+  assert.match(generatedContent, /Never require kiokuko-soul, task_prepare, task_answer.*before authorized inspection, edits, builds, tests, reviews, or task completion/u);
+  assert.equal((await useRepository(options)).agentFileAction, 'unchanged');
+  assert.equal(await readFile(rootPath, 'utf8'), rootContent);
+  assert.equal(await readFile(generatedPath, 'utf8'), generatedContent);
+});
+
 test('body upgrade and missing generated recovery never rewrite root instructions', async t => {
   const { root, options } = await fixture(t);
   await useRepository(options);

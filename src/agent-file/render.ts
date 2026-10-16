@@ -3,13 +3,13 @@ import { TASK_RECOVERY_INSTRUCTIONS } from '../assurance/conflicts.js';
 import { INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
 import { MEMORY_ASSURANCE_INSTRUCTIONS } from '../assurance/instructions.js';
 import { HANDOFF_INSTRUCTIONS } from '../memory/handoff.js';
-import { ADAPTIVE_EFFORT_INSTRUCTIONS, SOUL_ROUTING_ENTRY_CONTRACT, TASK_PREPARATION_REQUEST_CONTRACT } from '../akinator/instructions.js';
+import { ADAPTIVE_EFFORT_INSTRUCTIONS, ORDINARY_WORK_INSTRUCTIONS, SOUL_ROUTING_ENTRY_CONTRACT, TASK_PREPARATION_REQUEST_CONTRACT } from '../akinator/instructions.js';
 import { CHECKPOINT_CONTRACT_FRAGMENT, TASK_ANSWER_CONTRACT_FRAGMENT } from '../ledger/checkpoint-contract.js';
 import { validateRepositoryBindingIdentity } from '../repository/identity-value.js';
 import { BEGIN_MARKER, END_MARKER, readManagedBlockTemplateVersion, upsertManagedBlock } from './managed-block.js';
 import { commentPluginInstructions } from './plugin-comment.js';
 
-export const AGENT_TEMPLATE_VERSION = 40;
+export const AGENT_TEMPLATE_VERSION = 41;
 
 export interface AgentTemplateValues {
   repositoryId: string;
@@ -36,12 +36,14 @@ export function renderManagedBlock(values: AgentTemplateValues): string {
     '',
     'This repository uses Kiokuko as its external project memory.',
     '',
+    ORDINARY_WORK_INSTRUCTIONS,
+    '',
     '- Repository ID: `' + values.repositoryId + '`',
     '- Workspace: `' + values.workspace + '`',
     '- Preferred command: `' + values.cliCommand + '`',
     '',
     'Use the Kiokuko MCP tools rather than reading or modifying the SQLite file directly. Keep project knowledge in this workspace; clearly general interaction memories may use global scope as untrusted candidates.',
-    `For work requiring intake on Codex, read \`${deployedSkillName('kiokuko-soul', 'codex')}\` and \`${deployedSkillName('memory-reasoning', 'codex')}\`; the Skill names below are logical package names resolved by the fixed deployment manifest. Do not use another host's shared SOUL. Other clients retain the canonical bundled names.`,
+    `Only when opting into an optional Kiokuko memory record on Codex, read \`${deployedSkillName('kiokuko-soul', 'codex')}\` and \`${deployedSkillName('memory-reasoning', 'codex')}\` if available. Their absence does not delay ordinary work. The Skill names below are logical package names resolved by the fixed deployment manifest. Do not use another host's shared SOUL. Other clients retain the canonical bundled names.`,
     '',
     '### Before non-trivial work',
     '',

@@ -396,7 +396,8 @@ async function verifyInstalledSelectors(cliPath, installedRoot, fixtureRoot, env
       deployed.push({ name: identity, references });
       if (index.includes('# Kiokuko SOUL router')) {
         const route = index.match(/### Workflow repair\n([\s\S]*?)(?=\n### |\n## |$)/u)?.[1] ?? '';
-        repairSelector = route.match(/Read and apply `([^`]+)`/u)?.[1];
+        repairSelector = route.match(/When available, read and apply `([^`]+)`/u)?.[1];
+        assert.match(route, /If the Skill is unavailable,\s+continue the authorized repair from repository evidence/u);
       }
     }
     assert.equal(repairSelector, host === 'codex' ? 'kiokuko-codex-repair-user-workflow' : 'repair-user-workflow');

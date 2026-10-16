@@ -990,8 +990,9 @@ test('setup adds the workflow repair route to existing Codex installations and k
   await runCliJson('linux', temporary.env, args);
   const soul = await readFile(path.join(directory, 'kiokuko-codex-soul', 'SKILL.md'), 'utf8');
   const route = soul.match(/### Workflow repair\n([\s\S]*?)(?=\n### |\n## |$)/u)?.[1] ?? '';
-  const selector = route.match(/Read and apply `([^`]+)`/u)?.[1];
+  const selector = route.match(/When available, read and apply `([^`]+)`/u)?.[1];
   assert.equal(selector, 'kiokuko-codex-repair-user-workflow');
+  assert.match(route, /If the Skill is unavailable,\s+continue the authorized repair from repository evidence/u);
   const skill = await readFile(path.join(directory, selector!, 'SKILL.md'), 'utf8');
   assert.match(skill, /^---\nname: kiokuko-codex-repair-user-workflow\n/u);
   assert.match(skill, /references\/scenarios\.md/u);
