@@ -32,8 +32,6 @@ function fakeDatabase(): SqliteDatabase {
 
 const fakeLoader = {
   id: 'sqlite-vec',
-  packageVersion: '0.1.9',
-  extensionVersion: 'v0.1.9',
   load: () => undefined,
 } as SqliteVecLoader;
 

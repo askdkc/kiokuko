@@ -323,7 +323,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
     const prepared = new LedgerStore(db).readRun(runId)?.status === 'active' && compatible && ['proceed', 'review_memory_application', 'refresh_memory'].includes(String(result.nextAction));
     const updated = db.prepare('UPDATE codex_hook_requests SET run_id = ?, state = ? WHERE identity_digest = ? AND stop_notified=0 RETURNING identity_digest').get(runId, prepared ? 'bound' : 'pending', identity);
     if (!updated) return stopTurn('PostToolUse');
-    if (!compatible) return context('PostToolUse', 'Integration contract mismatch: ordinary execution remains blocked. Inspect the loaded MCP and hook contract versions, reload matching components, and prepare a new request. Diagnosis and bounded inspection remain available.');
+    if (!compatible) return context('PostToolUse', 'Integration contract mismatch: memory binding is unavailable; inspect matching components before reusing that record. Unrelated authorized work may continue.');
     return prepared ? memoryStepContext(db, runId, root) : {};
   }
   if (['task_memory_review', 'task_memory_refresh'].includes(operation ?? '') && request.state === 'bound'

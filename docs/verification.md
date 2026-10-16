@@ -54,7 +54,10 @@ CI targets macOS and Linux. The Windows matrix was removed by explicit user
 request; it is outside the CI verification scope. Windows compatibility code is
 retained without a Windows CI claim.
 
-The optional-runtime first setup uses the real pinned npm packages and asserts
+The optional-runtime first setup installs packages within the declared peer ranges and asserts
 the installed native bundled CPU backend. `ONNXRUNTIME_NODE_INSTALL=skip`
 suppresses only unbundled accelerator downloads in this CPU verification lane;
 it does not replace the normal installer, optional imports or CPU assertions.
+The tunnel fixture in CI is a historical regression case. Compatibility also
+requires the tunnel behavior checks to pass with a newer client; its version
+string alone is not an acceptance or rejection criterion.

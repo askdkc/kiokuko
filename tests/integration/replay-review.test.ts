@@ -65,6 +65,21 @@ test('causal identity dominates reused attempt IDs and unbound errors never atta
  writeFileSync(path.join(dir,'events.jsonl'),events.map(e=>JSON.stringify(e)).join('\n'));const p=await extractReplayProposal({cwd:f.root,traceDirectory:dir,workspace:'repo',taskId:'task',sessionId:'session'});assert.equal(p.attempts.length,2);assert.equal(p.attempts[0]?.outcome,'succeeded');assert.equal(p.attempts[1]?.outcome,'unknown');assert.equal(p.attempts[1]?.resultRef,undefined);assert.equal(p.attempts[0]?.taskId,null);
  }finally{f.close();}});
 
+test('replay proposal accepts a compatible newer trace schema and rejects missing event payload',async()=>{
+ const f=fixture();try{
+  const dir=path.join(f.root,'.agenticreplay','runs','run_abcdef');mkdirSync(dir,{recursive:true});
+  const input={cwd:f.root,traceDirectory:dir,workspace:'repo',taskId:'task',sessionId:'session'};
+  const write=(events:unknown[])=>{const bytes=events.map(event=>JSON.stringify(event)).join('\n')+'\n';
+   writeFileSync(path.join(dir,'events.jsonl'),bytes);
+   writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({schema_version:'0.4.1',run_id:'run_abcdef',cwd:f.root,integrity:{events_sha256:createHash('sha256').update(bytes).digest('hex')}}));};
+  write([{seq:1,type:'user.message',payload:{text:'Check sqlite'}},{seq:2,type:'shell.call',attrs:{attemptId:'one'},payload:{command:'sqlite test'}},
+   {seq:3,type:'shell.result',attrs:{attemptId:'one',exit_code:0},payload:{stdout:'passed'}}]);
+  const accepted=await extractReplayProposal(input);assert.equal(accepted.request.text,'Check sqlite');assert.equal(accepted.attempts[0]?.outcome,'succeeded');
+  write([{seq:1,type:'user.message'}]);
+  await assert.rejects(extractReplayProposal(input),/replay_event_invalid/);
+ }finally{f.close();}
+});
+
  test('failed COMMIT and ROLLBACK cannot report the writer own uncommitted receipt as saved',()=>{const f=fixture();try{const adapter={filePath:f.db.filePath,close:()=>f.db.close(),prepare:f.db.prepare.bind(f.db),exec(sql:string){if(sql==='COMMIT'||sql==='ROLLBACK')throw new Error('before SQL execution');f.db.exec(sql);}};assert.throws(()=>createApprovedReplayMemoryStore(adapter,'repo').save(candidate(),'e'.repeat(64)),/uncertain/);assert.equal(count(f.db),1);const other=openConnection(f.db.filePath,{readOnly:true});try{assert.equal(count(other),0);}finally{other.close();}f.db.exec('ROLLBACK');assert.equal(count(f.db),0);}finally{f.close();}});
 
 test('unresolved approved save retains exact identity for read-only reconciliation without asking or writing again',async()=>{const f=fixture();try{let retained:{p:ReplayMemoryProposal;k:string}|undefined;let asks=0;const result=await reviewCompletedReplay({completed:true,workspace:'repo',taskId:'task',sessionId:'session',extract:async()=>candidate(),ask:async q=>{asks++;return {questionId:q.id,choice:q.phase==='organize'?'organize':'approve'};},onApproved:(p,k)=>{retained={p,k};},save:async()=>{throw new Error('uncertain unavailable');}});assert.equal(result.status,'unavailable');assert.ok(retained);assert.equal(result.approvalKey,retained.k);const store=createApprovedReplayMemoryStore(f.db,'repo');assert.equal(store.reconcile(retained.p,retained.k),'unavailable');assert.equal(count(f.db),0);store.save(retained.p,retained.k);assert.equal(store.reconcile(retained.p,retained.k),'saved');assert.equal(store.reconcile({...retained.p,revision:2},retained.k),'unavailable');assert.equal(asks,2);assert.equal(count(f.db),1);}finally{f.close();}});

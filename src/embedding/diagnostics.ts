@@ -6,6 +6,7 @@ import { readActiveEmbeddingProfile, readEmbeddingRuntimeState } from './store.j
 import { decodeVector, hashVectorBytes } from './vector.js';
 import type { EmbeddingConfig, EmbeddingMode, EmbeddingProfile, VectorSearchBackend } from './types.js';
 import { readPersistedEmbeddingSettings } from './settings.js';
+import { detectSqliteVecCapability } from '../db/capabilities.js';
 
 const EMBEDDING_TABLES = [
   'embedding_profiles',
@@ -70,15 +71,15 @@ function objectNames(database: SqliteDatabase, kind: 'table' | 'index' | 'trigge
   `).all<{ name: string }>(kind).map((row) => row.name));
 }
 
-function configuredBackend(config: EmbeddingConfig, backend: VectorSearchBackend | undefined): { id: string | null; version: string | null } {
+function configuredBackend(database: SqliteDatabase, config: EmbeddingConfig, backend: VectorSearchBackend | undefined): { id: string | null; version: string | null } {
   if (config.mode === 'off') return { id: null, version: null };
-  if (backend !== undefined) return { id: backend.id, version: backend.id === 'sqlite-vec' ? 'v0.1.9' : null };
-  if (config.vectorBackend === 'sqlite-vec') return { id: 'sqlite-vec', version: 'v0.1.9' };
+  if (backend !== undefined) return { id: backend.id, version: backend.id === 'sqlite-vec' ? detectSqliteVecCapability(database).version : null };
+  if (config.vectorBackend === 'sqlite-vec') return { id: 'sqlite-vec', version: null };
   return { id: 'javascript', version: null };
 }
 
-function emptyStatus(config: EmbeddingConfig, backend?: VectorSearchBackend): EmbeddingStatus {
-  const selectedBackend = configuredBackend(config, backend);
+function emptyStatus(database: SqliteDatabase, config: EmbeddingConfig, backend?: VectorSearchBackend): EmbeddingStatus {
+  const selectedBackend = configuredBackend(database, config, backend);
   return {
     mode: config.mode,
     activeProfileId: null,
@@ -108,10 +109,10 @@ function activeStatus(
   active: EmbeddingProfile | null,
   backend?: VectorSearchBackend,
 ): EmbeddingStatus {
-  const selectedBackend = configuredBackend(config, backend);
+  const selectedBackend = configuredBackend(database, config, backend);
   const eligibleEntries = countRows(database, 'SELECT COUNT(*) AS count FROM entries');
   if (active === null) {
-    return { ...emptyStatus(config, backend), eligibleEntries, missingVectors: eligibleEntries };
+    return { ...emptyStatus(database, config, backend), eligibleEntries, missingVectors: eligibleEntries };
   }
   const readyVectors = countRows(database, `
     SELECT COUNT(*) AS count
@@ -292,7 +293,7 @@ export function inspectEmbeddingHealth(
     timeoutMs: 30_000,
     batchSize: 16,
   };
-  let status = emptyStatus(config, backend);
+  let status = emptyStatus(database, config, backend);
   let findings = parsed.invalid ? 1 : 0;
   const tables = objectNames(database, 'table');
   const indexes = objectNames(database, 'index');

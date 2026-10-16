@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { MemoryObservation } from './observation-contract.js';
+import { compatibleReplayEvent, declaredReplaySchema } from './replay-contract.js';
 
-/** AgenticReplay directory trace schema 0.4.0. Never read blobs or copy payloads. */
+/** Read compatible AgenticReplay event metadata. Never read blobs or copy payloads. */
 export async function readReplayObservation(input: {
   cwd: string; traceDirectory: string; sessionId: string; kind: 'compaction' | 'completion';
 }): Promise<{ observation?: MemoryObservation; warnings: string[] }> {
@@ -21,7 +22,7 @@ export async function readReplayObservation(input: {
     const manifestBytes = await readFile(manifestPath);
     if (manifestBytes.length > 64 * 1024) return { warnings: ['replay_source_bound'] };
     const manifest = JSON.parse(manifestBytes.toString('utf8')) as Record<string, unknown>;
-    if (manifest.schema_version !== '0.4.0' || typeof manifest.run_id !== 'string'
+    if (!declaredReplaySchema(manifest.schema_version) || typeof manifest.run_id !== 'string'
       || !/^run_[0-9a-f]{6,32}$/u.test(manifest.run_id) || typeof manifest.cwd !== 'string'
       || await realpath(manifest.cwd) !== cwd) return { warnings: ['replay_contract_mismatch'] };
     const bytes = await readFile(eventsPath);
@@ -40,7 +41,7 @@ export async function readReplayObservation(input: {
       if (!line.trim()) continue;
       if (++count > 10000) return { warnings: ['replay_source_bound'] };
       const event = JSON.parse(line) as Record<string, unknown>;
-      if (!Number.isSafeInteger(event.seq) || Number(event.seq) <= sequence || typeof event.type !== 'string') {
+      if (!compatibleReplayEvent(event) || Number(event.seq) <= sequence) {
         return { warnings: ['replay_event_invalid'] };
       }
       sequence = Number(event.seq); lastSequence = sequence;

@@ -1172,7 +1172,7 @@ test('a child preparation denial does not inherit or fail the parent binding', a
   } finally { f.db.close(); rmSync(f.base,{recursive:true,force:true}); }
 });
 
-test('MCP contract mismatch preserves diagnosis and blocks ordinary execution without latching', async () => {
+test('MCP contract mismatch leaves ordinary execution available and the memory record unbound', async () => {
   const f = await boundHookFixture();
   try {
     const requestId = f.db.prepare('SELECT request_id FROM codex_hook_requests').get<{request_id:string}>()!.request_id;
@@ -1180,9 +1180,13 @@ test('MCP contract mismatch preserves diagnosis and blocks ordinary execution wi
     const result = handleCodexHook(f.db, {...f.common, hook_event_name:'PostToolUse',tool_name:'mcp__kiokuko__task_prepare',
       tool_use_id:'mismatch',tool_input:{requestId,cwd:f.root},tool_response:{structuredContent:incompatible}}) as any;
     assert.match(result.hookSpecificOutput.additionalContext,/contract mismatch/);
+    assert.match(result.hookSpecificOutput.additionalContext,/memory binding is unavailable/u);
+    assert.match(result.hookSpecificOutput.additionalContext,/authorized work may continue/u);
+    assert.doesNotMatch(result.hookSpecificOutput.additionalContext,/ordinary execution remains blocked/u);
     assert.equal(f.db.prepare('SELECT stop_notified FROM codex_hook_requests').get<{stop_notified:number}>()!.stop_notified,0);
     assertMemoryAdvisory((handleCodexHook(f.db,{...f.event('blocked'),hook_event_name:'PreToolUse'}) as any));
     assert.equal(lastHookDiagnostic(f.db).recoverable,true);
+    assertMemoryAdvisory(handleCodexHook(f.db,{...f.common,hook_event_name:'Stop'}));
     assert.deepEqual(handleCodexHook(f.db,{...f.common,hook_event_name:'PreToolUse',tool_name:'mcp__kiokuko__task_inspect',
       tool_use_id:'inspect',tool_input:{cwd:f.root,operation:'skill'}}),{});
   } finally { f.db.close();rmSync(f.base,{recursive:true,force:true}); }

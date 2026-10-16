@@ -6,6 +6,7 @@ import { withSqliteLockRetry } from './sqlite-retry.js';
 import { KiokukoError } from '../errors.js';
 import {
   isSqliteVecLoader,
+  probeSqliteVec,
   type SqliteVecLoader,
 } from '../embedding/sqlite-vec-loader.js';
 
@@ -45,9 +46,8 @@ function loadSqliteVec(database: DatabaseSync, loader: SqliteVecLoader): void {
     loader.load(database);
     database.enableLoadExtension(false);
     loadingDisabled = true;
-    const version = database.prepare('SELECT vec_version() AS version').get()?.version;
-    if (version !== loader.extensionVersion) {
-      throw new SqliteVecLoadError('The loaded sqlite-vec version is unsupported');
+    if (probeSqliteVec((sql, ...vectors) => database.prepare(sql).get(...vectors)) === null) {
+      throw new SqliteVecLoadError('The loaded sqlite-vec vector API is unavailable or incompatible');
     }
   } catch (error) {
     failure = error;

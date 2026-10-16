@@ -1,9 +1,6 @@
 import path from 'node:path';
 
 export const SQLITE_VEC_LOADER_ID = 'sqlite-vec' as const;
-export const SQLITE_VEC_PACKAGE_VERSION = '0.1.9' as const;
-export const SQLITE_VEC_EXTENSION_VERSION = 'v0.1.9' as const;
-export const SQLITE_VEC_VERSION = SQLITE_VEC_PACKAGE_VERSION;
 
 export interface SqliteVecLoadConnection {
   loadExtension(path: string): void;
@@ -11,9 +8,26 @@ export interface SqliteVecLoadConnection {
 
 export interface SqliteVecLoader {
   readonly id: typeof SQLITE_VEC_LOADER_ID;
-  readonly packageVersion: typeof SQLITE_VEC_PACKAGE_VERSION;
-  readonly extensionVersion: typeof SQLITE_VEC_EXTENSION_VERSION;
   load(database: SqliteVecLoadConnection): void;
+}
+
+/** Probe the scalar operation used by the search backend, not a release number. */
+export function probeSqliteVec(read: (sql: string, ...vectors: Uint8Array[]) => unknown): string | null {
+  try {
+    const versionRow = read('SELECT vec_version() AS version') as { version?: unknown } | null;
+    const version = versionRow?.version;
+    if (typeof version !== 'string' || version.length === 0 || version.length > 100 || /[\u0000-\u001f\u007f]/u.test(version)) return null;
+    const axis = new Uint8Array(8), other = new Uint8Array(8);
+    new DataView(axis.buffer).setFloat32(0, 1, true);
+    new DataView(other.buffer).setFloat32(4, 1, true);
+    const sql = 'SELECT vec_distance_cosine(?, ?) AS distance';
+    const self = read(sql, axis, axis) as { distance?: unknown } | null;
+    const orthogonal = read(sql, axis, other) as { distance?: unknown } | null;
+    if (typeof self?.distance !== 'number' || typeof orthogonal?.distance !== 'number'
+      || !Number.isFinite(self.distance) || !Number.isFinite(orthogonal.distance)
+      || Math.abs(self.distance) > 0.0001 || Math.abs(orthogonal.distance - 1) > 0.0001) return null;
+    return version;
+  } catch { return null; }
 }
 
 interface SqliteVecPackage {
@@ -58,8 +72,6 @@ export async function createSqliteVecLoader(): Promise<SqliteVecLoader | null> {
 
   const loader = Object.freeze({
     id: SQLITE_VEC_LOADER_ID,
-    packageVersion: SQLITE_VEC_PACKAGE_VERSION,
-    extensionVersion: SQLITE_VEC_EXTENSION_VERSION,
     load(database: SqliteVecLoadConnection): void {
       candidate.load(database);
     },

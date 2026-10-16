@@ -10,7 +10,7 @@ kiokuko embeddings status --json
 kiokuko setup --offline
 ```
 
-Setup installs only the pinned runtime and verifies every artifact before loading
+Setup installs only the declared peer-compatible runtime and verifies every artifact before loading
 it. `--offline` requires an already verified local installation; `--dry-run` does
 not download, write, or change the active profile; `--replace` switches from a
 different active profile. Model weights are not included in the npm package.

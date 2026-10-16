@@ -1,7 +1,7 @@
 # Setup and embedding CLI contract
 
 The npm package stays lightweight. The default setup command configures clients,
-installs the pinned optional runtime when needed, downloads the verified local
+installs an optional runtime within the declared peer ranges when needed, downloads the verified local
 model, and enables semantic retrieval:
 
 ```bash

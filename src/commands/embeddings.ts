@@ -1,8 +1,10 @@
 import type { Command } from 'commander';
 import { execFile, spawn } from 'node:child_process';
 import { dirname } from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import semver from 'semver';
 import type { PathEnvironment } from '../config/paths.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
@@ -37,11 +39,17 @@ import {
 
 const MAX_SYNC_JOBS = 64;
 const DRAIN_DEADLINE_MS = 120_000;
-const OPTIONAL_RUNTIME_PACKAGES = [
-  '@huggingface/hub@2.16.1',
-  '@huggingface/transformers@4.2.0',
-  'sqlite-vec@0.1.9',
-] as const;
+const optionalRuntimePeerRanges = (createRequire(import.meta.url)('../../package.json') as {
+  peerDependencies?: Record<string, unknown>;
+}).peerDependencies ?? {};
+const OPTIONAL_RUNTIME_NAMES = ['@huggingface/hub', '@huggingface/transformers', 'sqlite-vec'] as const;
+const OPTIONAL_RUNTIME_PACKAGES = OPTIONAL_RUNTIME_NAMES.map((name) => {
+  const range = optionalRuntimePeerRanges[name];
+  if (typeof range !== 'string' || semver.validRange(range) === null || semver.valid(range) !== null) {
+    throw new Error(`A compatible peer range is required for ${name}`);
+  }
+  return `${name}@${range}`;
+});
 const OPTIONAL_RUNTIME_SCRIPT_ARGS = ['--allow-scripts=onnxruntime-node,sharp,protobufjs'] as const;
 const OPTIONAL_RUNTIME_INSTALL_ARGS = [
   'install',

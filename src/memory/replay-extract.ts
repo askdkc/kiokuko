@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { findSecret, findSecretInValue } from './secrets.js';
+import { compatibleReplayEvent, declaredReplaySchema } from './replay-contract.js';
 import type { ReplayMemoryProposal } from './replay-review.js';
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -26,7 +27,8 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
   const runs = await realpath(path.join(root, '.agenticreplay', 'runs'));
   if (!runs.startsWith(root + path.sep) || !directory.startsWith(runs + path.sep)) throw new Error('replay_scope_mismatch');
   const manifest = object(JSON.parse((await bounded(path.join(directory, 'manifest.json'), directory, 65536)).toString('utf8')));
-  if (manifest.schema_version !== '0.4.0' || typeof manifest.run_id !== 'string' || !/^run_[0-9a-f]{6,32}$/u.test(manifest.run_id)) throw new Error('replay_contract_mismatch');
+  if (!declaredReplaySchema(manifest.schema_version) || typeof manifest.run_id !== 'string' || !/^run_[0-9a-f]{6,32}$/u.test(manifest.run_id)
+    || typeof manifest.cwd !== 'string' || await realpath(manifest.cwd) !== root) throw new Error('replay_contract_mismatch');
   const candidates: Buffer[] = [];
   for (const name of ['events.jsonl', 'event.jsonl']) {
     try { candidates.push(await bounded(path.join(directory, name), directory, 8 * 1024 * 1024)); }
@@ -42,7 +44,7 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
     if (!line.trim()) continue;
     if (events.length >= 10000) throw new Error('replay_event_bound');
     const raw = object(JSON.parse(line));
-    if (!Number.isSafeInteger(raw.seq) || Number(raw.seq) <= sequence || typeof raw.type !== 'string') throw new Error('replay_event_invalid');
+    if (!compatibleReplayEvent(raw) || Number(raw.seq) <= sequence) throw new Error('replay_event_invalid');
     sequence = Number(raw.seq);
     let payload = object(raw.payload), payloadHash = hash(JSON.stringify(payload));
     if ('$blob' in payload) {

@@ -19,7 +19,7 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Prepare the declared official tunnel fixture
+      - name: Prepare the historical tunnel regression fixture
         run: |
           node scripts/install-tunnel-fixture.mjs "${{ runner.temp }}/tunnel-fixture"
           echo "KIOKUKO_TUNNEL_CLIENT=${{ runner.temp }}/tunnel-fixture/tunnel-client" >> "$GITHUB_ENV"

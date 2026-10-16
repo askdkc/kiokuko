@@ -273,8 +273,7 @@
     },
     "tunnel-client": {
       "environment": "KIOKUKO_TUNNEL_CLIENT",
-      "binary": "tunnel-client",
-      "versionPattern": "^0\\.0\\.14(?:\\+|\\s|$)"
+      "binary": "tunnel-client"
     },
     "ripwire": {
       "environment": "KIOKUKO_TEST_RIPWIRE",

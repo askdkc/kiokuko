@@ -24,7 +24,8 @@ test('handoff survives reopening, updates only on new content, and expires after
   t.after(async () => rm(root, { recursive: true, force: true }));
   let now = new Date('2026-09-24T00:00:00.000Z');
   const options = { cwd: root, clientKind: 'codex', now: () => now };
-  const state = { goal: 'Continue the current conversation', corrections: ['Use Japanese'] };
+  const state = { goal: 'Continue the current conversation', corrections: ['Use Japanese'],
+    references: ['src/example.ts:42', 'run-17:event-3 sha256:0123456789abcdef'] };
   const db = openConnection(databasePath);
   const create = { operationId: 'create', state };
   const first = await saveHandoff(db, create, options);
@@ -38,6 +39,7 @@ test('handoff survives reopening, updates only on new content, and expires after
   const loaded = loadHandoff(db, { handoffId: first.handoffId, soulRead: true, capabilities }, options);
   assert.ok(loaded.state);
   assert.equal(loaded.state.state.goal, state.goal);
+  assert.deepEqual(loaded.state.state.references, state.references);
   assert.equal(loadHandoff(db, { handoffId: first.handoffId, soulRead: true, capabilities: [] }, options).state, null);
   now = new Date('2026-09-24T01:00:00.000Z');
   const same = await saveHandoff(db, { operationId: 'same', handoffId: first.handoffId, expectedRevision: 1, state }, options);
@@ -137,6 +139,7 @@ test('four MCP client identities can save and load across a server restart', asy
     try {
       const tools = (await first.client.listTools()).tools;
       for (const tool of ['handoff_save', 'handoff_load', 'handoff_discard']) assert.ok(tools.some(item => item.name === tool));
+      assert.match(tools.find(item => item.name === 'handoff_save')!.description ?? '', /ordinary progress and completion need no handoff/u);
       const saved = await first.client.callTool({ name: 'handoff_save', arguments: {
         operationId: `mcp-create-${name}`, state: { goal: 'Resume writing', nextAction: 'Continue' },
       } });

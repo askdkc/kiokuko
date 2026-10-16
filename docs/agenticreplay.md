@@ -80,6 +80,8 @@ and records two requests to a local model fixture. It verifies the captured
 `task_inspect` schema and SOUL result, stops the model endpoint, then replays both captured responses to a fresh host with matching request
 contracts and no calls to the original provider. A version-only change is accepted
 when the behavior still works; missing recording behavior is rejected.
+Trace readers likewise accept a new schema label only when the manifest scope,
+event fields, order and any declared digest satisfy their reading contract.
 Temporary recordings, configuration and memory data are removed afterward.
 Set `AGENTICREPLAY_BIN` to an executable path when the command is not on `PATH`.
 

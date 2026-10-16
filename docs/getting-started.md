@@ -61,7 +61,7 @@ missing verification counts alone do not make the assurance health check fail.
 
 ## Embeddings setup
 
-`kiokuko setup` installs the pinned local semantic runtime and runs client
+`kiokuko setup` installs the declared peer-compatible local semantic runtime and runs client
 configuration, including conflict confirmation, managed MCP replacement, and
 registered-project instruction refresh. `kiokuko embeddings setup` is a compatibility
 entrypoint for the same implementation and also accepts `--no-embeddings`.

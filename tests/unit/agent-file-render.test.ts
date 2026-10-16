@@ -39,6 +39,18 @@ test('global and project instructions share correction semantics without contrad
   }
 });
 
+test('public instructions reserve handoffs for real transfers and retain original evidence locators', async () => {
+  const project = renderManagedBlock({ repositoryId: 'repo-fixture', workspace: 'project:fixture', cliCommand: 'kiokuko' });
+  const global = renderGlobalInstructions('', 'codex').content;
+  const soul = await readFile(new URL('../../skills/kiokuko-soul/SKILL.md', import.meta.url), 'utf8');
+  for (const instructions of [project, global, soul]) {
+    assert.match(instructions, /ordinary progress and completion need no handoff/iu);
+    assert.match(instructions, /original evidence locators/iu);
+    assert.match(instructions, /never required\s+for task completion or (?:`)?memory_checkpoint/iu);
+    assert.doesNotMatch(instructions, /save (?:a short structured state|a concise state).*after meaningful corrections/iu);
+  }
+});
+
 test('template placeholders produce exactly the programmatic managed block', async () => {
   const values = {
     repositoryId: 'repo-fixture',

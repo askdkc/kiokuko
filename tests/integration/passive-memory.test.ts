@@ -91,6 +91,19 @@ test('production AgenticReplay directory metadata excludes payloads, rejects for
  } finally {f.cleanup();}
 });
 
+test('a newer replay schema with the same required event contract is observed, but malformed events are rejected',async()=>{
+ const f=fixture();try {
+  const run=path.join(f.root,'.agenticreplay','runs','run_abcdef');mkdirSync(run,{recursive:true});
+  const input={cwd:f.root,traceDirectory:run,sessionId:'session',kind:'completion' as const};
+  const write=(event:unknown)=>{const bytes=JSON.stringify(event)+'\n';writeFileSync(path.join(run,'events.jsonl'),bytes);
+   writeFileSync(path.join(run,'manifest.json'),JSON.stringify({schema_version:'0.4.1',run_id:'run_abcdef',cwd:f.root,integrity:{events_sha256:createHash('sha256').update(bytes).digest('hex')}}));};
+  write({seq:1,type:'shell.result',attrs:{exit_code:0},payload:{stdout:'ok'}});
+  const accepted=await readReplayObservation(input);assert.ok(accepted.observation);assert.equal(accepted.observation.actions[0]?.outcome,'passed');
+  write({type:'shell.result',attrs:{exit_code:0},payload:{stdout:'ok'}});
+  assert.deepEqual((await readReplayObservation(input)).warnings,['replay_event_invalid']);
+ }finally{f.cleanup();}
+});
+
 test('host compaction and completion projections carry only public lifecycle identity',()=>{
  for(const hook_event_name of ['PostCompact','Stop','SubagentStop']) {
   const event=lifecycleObservation({hook_event_name,cwd:'/tmp/repository',session_id:'same-session',turn_id:'turn',

@@ -5,7 +5,6 @@ import { migrateDatabase } from '../../src/db/migrate.js';
 import { openEmbeddingDatabase } from '../../src/embedding/backend.js';
 import {
   createSqliteVecLoader,
-  SQLITE_VEC_EXTENSION_VERSION,
 } from '../../src/embedding/sqlite-vec-loader.js';
 import { SqliteVecVectorSearchBackend } from '../../src/embedding/sqlite-vec-backend.js';
 import { JavaScriptVectorSearchBackend } from '../../src/embedding/javascript-backend.js';
@@ -53,10 +52,11 @@ async function main(): Promise<void> {
   const database = opened.database;
   try {
     assert.equal(opened.backend?.id, 'sqlite-vec');
-    assert.deepEqual(detectSqliteVecCapability(database), {
+    const capability = detectSqliteVecCapability(database);
+    assert.deepEqual(capability, {
       id: 'sqlite-vec',
       available: true,
-      version: SQLITE_VEC_EXTENSION_VERSION,
+      version: database.prepare('SELECT vec_version() AS version').get()?.version,
     });
     assert.throws(
       () => database.prepare('SELECT load_extension(?)').get('sqlite-vec'),
