@@ -342,12 +342,54 @@ async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
     assert.equal(missing.status, 8, missing.stderr);
     const finding = JSON.parse(missing.stdout).data.checks.agentFiles.findings.find(item => item.bindingFile === bindingPath);
     assert.equal(finding.reason, 'missing_binding_file');
-    assert.match(finding.action, /Restore.*\.kiokuko\.json/u);
+    assert.match(finding.action, /kiokuko doctor --fix --repair-root/u);
     const human = spawnSync(cliPath, ['doctor'], { cwd: fixtureRoot, env: environment, encoding: 'utf8' });
     assert.equal(human.status, 8, human.stderr);
     assert.ok(human.stdout.includes(bindingPath));
     assert.match(human.stdout, /missing_binding_file/u);
     await assert.rejects(readFile(bindingPath, 'utf8'), { code: 'ENOENT' });
+
+    const databasePath = path.join(environment.KIOKUKO_DATA_DIR, 'kiokuko.sqlite3');
+    const databaseBefore = await readFile(databasePath);
+    const repairBinding = () => spawnSync(cliPath, ['doctor', '--fix', '--repair-root', path.dirname(bindingPath), '--json'], {
+      cwd: fixtureRoot, env: environment, encoding: 'utf8',
+    });
+    const repaired = repairBinding();
+    assert.equal(repaired.status, 8, repaired.stderr);
+    const repairData = JSON.parse(repaired.stdout).data;
+    assert.equal(repairData.repairs.length, 1);
+    assert.equal(repairData.repairs[0].status, 'created');
+    assert.equal(repairData.repairs[0].repositoryId, JSON.parse(binding).repositoryId);
+    assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')), JSON.parse(binding));
+    assert.equal(repairData.checks.agentFiles.ok, true);
+    assert.equal(repairData.checks.hybridSearch.status, 'attention');
+    assert.match(repairData.checks.hybridSearch.detail, /read-only/u);
+    assert.deepEqual(await readFile(databasePath), databaseBefore);
+
+    const restored = await stat(bindingPath, { bigint: true });
+    const repeated = repairBinding();
+    assert.equal(repeated.status, 8, repeated.stderr);
+    assert.equal(JSON.parse(repeated.stdout).data.repairs[0].status, 'unchanged');
+    const repeatedState = await stat(bindingPath, { bigint: true });
+    assert.equal(repeatedState.ino, restored.ino);
+    assert.equal(repeatedState.mtimeNs, restored.mtimeNs);
+
+    const broken = '{ invalid installed binding\n';
+    await writeFile(bindingPath, broken);
+    const recreated = repairBinding();
+    assert.equal(recreated.status, 8, recreated.stderr);
+    const recreation = JSON.parse(recreated.stdout).data;
+    assert.equal(recreation.repairs[0].status, 'recreated');
+    const backupPath = recreation.repairs[0].backupPath;
+    assert.equal(path.dirname(backupPath), path.dirname(bindingPath));
+    assert.equal((await stat(backupPath)).isFile(), true);
+    assert.equal(await readFile(backupPath, 'utf8'), broken);
+    assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')), JSON.parse(binding));
+    assert.equal(recreation.checks.agentFiles.ok, true);
+    assert.deepEqual(await readFile(databasePath), databaseBefore);
+    assert.equal(await readFile(project, 'utf8'), migrated);
+    assert.equal(await readFile(global, 'utf8'), globalMigrated);
+    for (const { file, content } of dshFiles) assert.equal(await readFile(file, 'utf8'), content);
   } finally { await writeFile(bindingPath, binding); }
 }
 

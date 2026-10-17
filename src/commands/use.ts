@@ -1349,7 +1349,6 @@ async function useRepositoryAttempt(
     let resolvedGenerated = generatedAgent;
     let generatedParentIdentity: FileIdentity | undefined;
     if (renderedGenerated !== undefined) {
-      await assertFileExpectation(generatedAgentFile, expectation(generatedAgent, repositoryRoot));
       await mkdir(path.dirname(generatedAgentFile), { recursive: true });
       generatedParentIdentity = await existingParentIdentity(generatedAgentFile);
       if (renderedGenerated.action !== 'unchanged') {

@@ -30,9 +30,10 @@ async function captureCli(argv: string[]): Promise<{ exitCode: number; envelope:
 }
 
 async function withIsolatedDataHome<T>(root: string, operation: () => Promise<T>): Promise<T> {
-  const keys = ['HOME', 'XDG_DATA_HOME', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE'] as const;
+  const keys = ['HOME', 'XDG_DATA_HOME', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE', 'KIOKUKO_DATA_DIR'] as const;
   const originals = Object.fromEntries(keys.map((key) => [key, process.env[key]])) as Record<(typeof keys)[number], string | undefined>;
   process.env.HOME = root;
+  process.env.KIOKUKO_DATA_DIR = path.join(root, 'kiokuko-data');
   process.env.XDG_DATA_HOME = path.join(root, 'data');
   process.env.LOCALAPPDATA = path.join(root, 'local-app-data');
   process.env.APPDATA = path.join(root, 'app-data');
