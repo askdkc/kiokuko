@@ -47,7 +47,7 @@ function fixture(checks){
  writeFileSync(path.join(root,'scripts/verification.json'),JSON.stringify({package:'fixture',profiles:['full'],checks,testExclusions:[]}));
  execFileSync('git',['init','-q'],{cwd:root});return root;
 }
-function execute(root){const output=mkdtempSync(path.join(tmpdir(),'verify-contract-results-'));const child=spawnSync(process.execPath,['scripts/verify.mjs','--output',output],{cwd:root,encoding:'utf8'});return {child,report:JSON.parse(readFileSync(path.join(output,'result.json')))};}
+function execute(root,env={}){const output=mkdtempSync(path.join(tmpdir(),'verify-contract-results-'));const child=spawnSync(process.execPath,['scripts/verify.mjs','--output',output],{cwd:root,encoding:'utf8',env:{...process.env,...env}});return {child,report:JSON.parse(readFileSync(path.join(output,'result.json')))};}
 test('the real entry reports missing required native capability as prerequisite-missing',()=>{
  const root=fixture([{...check,requires:['required-native-that-is-absent'],result:'command'}]);const {child,report}=execute(root);
  assert.equal(child.status,1);assert.equal(report.checks[0].status,'prerequisite-missing');assert.equal(report.completionReady,false);
@@ -61,9 +61,9 @@ test('a newer tunnel client reaches the behavioral check, which rejects a missin
  writeFileSync(path.join(root,'scripts/verification.json'),JSON.stringify(definition));
  writeFileSync(path.join(root,'probe.mjs'),`import {spawnSync} from 'node:child_process';const r=spawnSync(process.env.KIOKUKO_TUNNEL_CLIENT,['probe'],{encoding:'utf8'});if(r.status!==0||r.stdout.trim()!=='ready')process.exit(1);`);
  writeFileSync(binary,"#!/usr/bin/env node\nif(process.argv[2]==='--version')console.log('0.0.15+compatible');else if(process.argv[2]==='probe')console.log('ready');else process.exit(2);\n",{mode:0o700});
- const accepted=execute(root);assert.equal(accepted.report.checks[0].status,'passed');assert.equal(accepted.child.status,0);
+ const accepted=execute(root,{KIOKUKO_TUNNEL_CLIENT:binary});assert.equal(accepted.report.checks[0].status,'passed');assert.equal(accepted.child.status,0);
  writeFileSync(binary,"#!/usr/bin/env node\nif(process.argv[2]==='--version')console.log('0.0.15+compatible');else process.exit(77);\n",{mode:0o700});
- const missing=execute(root);assert.equal(missing.report.checks[0].status,'failed');assert.equal(missing.child.status,1);
+ const missing=execute(root,{KIOKUKO_TUNNEL_CLIENT:binary});assert.equal(missing.report.checks[0].status,'failed');assert.equal(missing.child.status,1);
 });
 test('the real entry rejects an exit-zero Node suite with no tests',()=>{
  const root=fixture([{...check,argv:['node','--test','empty.test.mjs'],result:'node'}]);writeFileSync(path.join(root,'empty.test.mjs'),'// no tests\n');
