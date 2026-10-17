@@ -1,3 +1,4 @@
+import { repairRegisteredBindings } from './repository/binding-repair.js';
 import { createInterface as createHumanPrompt } from 'node:readline/promises';
 import { registerReplayReviewCommand } from './commands/replay-review.js';
 import { registerDiagnosticRetentionCommand } from './commands/diagnostic-retention.js';
@@ -1094,8 +1095,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'backup', result, `Backup written to ${options.output}`);
   });
 
-  cli.command('doctor').description('Check health; ask before cleaning missing repository locations or repairing Kiokuko agent sections').option('--verify-repositories', 'Explicitly hash repositories for the latest 20 active tasks across registered projects').option('--json').action(async (options: { json?: boolean; verifyRepositories?: boolean }) => {
+  cli.command('doctor').description('Check health; --fix restores registered bindings, interactive diagnosis can repair Kiokuko sections').option('--verify-repositories', 'Explicitly hash repositories for the latest 20 active tasks across registered projects').option('--fix', 'Create missing or back up and recreate broken registered bindings; read the database only').option('--repair-root <path...>', 'Limit --fix to these exact registered canonical roots').option('--json').action(async (options: { json?: boolean; verifyRepositories?: boolean; fix?: boolean; repairRoot?: string[] }) => {
+    if (options.repairRoot && !options.fix) throw new KiokukoError('VALIDATION_ERROR', '--repair-root requires --fix');
     const doctorOptions: Parameters<typeof runDoctor>[0] = {
+      ...(options.fix ? { readOnly: true } : {}),
       ...(options.verifyRepositories === undefined ? {} : { verifyRepositories: options.verifyRepositories }),
       ...(dependencies.doctorDatabasePath === undefined ? {} : { databasePath: dependencies.doctorDatabasePath }),
       ...(dependencies.doctorRuntimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: dependencies.doctorRuntimeDescriptorPath }),
@@ -1106,10 +1109,18 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       ? {}
       : { databasePath: dependencies.doctorDatabasePath };
     let data = await runDoctor(doctorOptions);
+    if (options.fix) {
+      const database = openConnection(doctorOptions.databasePath ?? getGlobalDatabasePath(), { readOnly: true });
+      let repairs;
+      try { repairs = await repairRegisteredBindings(database, options.repairRoot ? { roots: options.repairRoot } : {}); }
+      finally { database.close(); }
+      data = { ...await runDoctor(doctorOptions), repairs };
+      if (repairs.some(r => r.status === 'refused' || r.status === 'failed')) data = { ...data, ok: false, status: data.status === 'failed' ? 'failed' : 'attention' };
+    }
     let removed = 0;
     const input = dependencies.doctorInput ?? process.stdin;
     const output = dependencies.doctorOutput ?? process.stdout;
-    const interactive = options.json !== true
+    const interactive = !options.fix && options.json !== true
       && (input as { isTTY?: boolean }).isTTY === true
       && (output as { isTTY?: boolean }).isTTY === true;
     if (interactive && data.checks.bindings.ok === false && (data.checks.bindings.count ?? 0) > 0) {
@@ -1130,6 +1141,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         data = await runDoctor(doctorOptions);
       }
     }
+    const repairNotice = data.repairs?.map(r => '\n  Binding ' + r.repositoryRoot + ': ' + r.status + ' — ' + r.detail + (r.backupPath ? '\n    Recoverable backup: ' + r.backupPath : '')).join('') ?? '';
     const cleanupNotice = removed === 0
       ? ''
       : ` Removed ${removed} missing repository location${removed === 1 ? '' : 's'}.`;
@@ -1147,7 +1159,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       .join('');
     const assuranceScopeNotice = options.verifyRepositories ? ''
       : '\n  Live repository verification was not requested. Use kiokuko doctor --verify-repositories to inspect up to 20 active tasks.';
-    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${failureNotice}${agentFileNotice}${assuranceNotice}${assuranceScopeNotice}`);
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${repairNotice}${failureNotice}${agentFileNotice}${assuranceNotice}${assuranceScopeNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 

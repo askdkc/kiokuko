@@ -348,10 +348,11 @@ test('doctor identifies a missing binding with its path and recovery guidance wi
   assert.equal(finding.reason, 'missing_binding_file');
   assert.equal(finding.bindingFile, value.project.bindingFile);
   assert.match(finding.detail, /registered.*binding file is missing/iu);
-  assert.match(finding.action, /Restore.*\.kiokuko\.json/iu);
+  assert.match(finding.action, /kiokuko doctor --fix --repair-root/u);
+  assert.ok(finding.action.includes(JSON.stringify(value.project.repositoryRoot)));
   const human = await invokeDoctor(value.databasePath, 'y\n');
   assert.ok(human.stdout.includes(value.project.bindingFile));
-  assert.match(human.stdout, /missing_binding_file.*\n.*Restore/u);
+  assert.match(human.stdout, /missing_binding_file.*\n.*kiokuko doctor --fix/u);
   assert.equal(human.prompt, '');
   assert.equal(human.exitCode, 8);
   await assert.rejects(access(value.project.bindingFile));

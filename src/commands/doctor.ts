@@ -10,7 +10,10 @@ import { AGENT_TEMPLATE_VERSION, GENERATED_AGENT_FILE, renderGeneratedAgentFile,
 import { getCodexConfigPath, getDatabaseLockPath, getRuntimeDescriptorPath } from '../config/paths.js';
 import { parseProjectConfigText } from '../config/project-config.js';
 import type { SqliteDatabase } from '../db/adapter.js';
-import { openConnection } from '../db/connection.js';
+import { openConnection, databaseFileIdentity } from '../db/connection.js';
+import { inspectMigrationSnapshot, loadMigrationSnapshot } from '../db/migrate.js';
+import { getGlobalDatabasePath } from '../config/paths.js';
+import type { BindingRepairResult } from '../repository/binding-repair.js';
 import { EmbeddingBackendUnavailableError, openEmbeddingDatabase } from '../embedding/backend.js';
 import { parseEmbeddingConfig } from '../embedding/config.js';
 import { inspectEmbeddingHealth } from '../embedding/diagnostics.js';
@@ -47,6 +50,7 @@ export interface DoctorAgentFileFinding {
 }
 
 export interface DoctorResult {
+  repairs?: BindingRepairResult[];
   ok: boolean;
   status?: 'ok' | 'attention' | 'failed';
   databasePath: string;
@@ -80,6 +84,7 @@ export interface DoctorResult {
 }
 
 export interface DoctorOptions {
+  readOnly?: boolean;
   verifyRepositories?: boolean;
   databasePath?: string;
   migrationsDirectory?: string;
@@ -349,6 +354,7 @@ async function runtimeCheck(databasePath: string, descriptorPath = getRuntimeDes
 }
 
 interface DoctorCollectionOptions {
+  readOnly?: boolean;
   verifyRepositories?: boolean;
   databasePath: string;
   databaseVersion: number;
@@ -444,6 +450,8 @@ async function collectDoctorResult(
 
   const revisionHashCheck = { ok: revisionHashMismatches === 0, count: revisionHashMismatches };
   const hybridCheck = (() => {
+    if (options.readOnly) return { ok: false, status: 'attention' as const, count: 0,
+      detail: 'FTS integrity verification was not run: it requires SQLite write commands; this doctor connection is read-only. Run ordinary doctor separately to verify it.' };
     try {
       const projection = hybridSearchProjectionStatus(database);
       return {
@@ -486,7 +494,7 @@ async function collectDoctorResult(
         agentFileFindings.push({ repositoryRoot: row.canonicalRoot, repositoryId: row.repositoryId,
           agentFile: null, bindingFile: configPath, reason: 'missing_binding_file',
           detail: 'This location is registered, but its project binding file is missing. Binding identity is unverified; this does not establish memory corruption.',
-          action: `Restore .kiokuko.json from this project's backup with repositoryId ${row.repositoryId}, then rerun kiokuko doctor. Do not create a new binding identity for the existing memory.`,
+          action: `Run kiokuko doctor --fix --repair-root ${JSON.stringify(row.canonicalRoot)} to create a binding from registered identity ${row.repositoryId}. Unrecorded settings use standard defaults; no memory is moved.`,
         });
         continue;
       }
@@ -623,6 +631,22 @@ export async function runDoctor(
   options: DoctorOptions = {},
   dependencies: DoctorDependencies = {},
 ): Promise<DoctorResult> {
+  if (options.readOnly) {
+    const databasePath = options.databasePath ?? getGlobalDatabasePath();
+    const database = (dependencies.openConnection ?? openConnection)(databasePath, { readOnly: true, expectedFileIdentity: databaseFileIdentity(databasePath) });
+    try {
+      const plan = inspectMigrationSnapshot(database, loadMigrationSnapshot(options.migrationsDirectory));
+      return await collectDoctorResult(database, {
+        databasePath, databaseVersion: plan.databaseVersion, currentVersion: plan.currentVersion, readOnly: true,
+        capabilities: null, codexMcp: options.databasePath === undefined ? await codexMcpCheck() : skippedCodexMcpCheck(),
+        ...(options.verifyRepositories === undefined ? {} : { verifyRepositories: options.verifyRepositories }),
+        ...(options.runtimeDescriptorPath === undefined ? {} : { runtimeDescriptorPath: options.runtimeDescriptorPath }),
+        ...(options.embeddingEnvironment === undefined ? {} : { embeddingEnvironment: options.embeddingEnvironment }),
+        ...(options.embeddingBackend === undefined ? {} : { embeddingBackend: options.embeddingBackend }),
+        ...(options.databasePath === undefined ? { hooksPath: path.join(path.dirname(getCodexConfigPath()), 'hooks.json') } : {}),
+      });
+    } finally { database.close(); }
+  }
   const initOptions = {
     ...(options.databasePath === undefined ? {} : { databasePath: options.databasePath }),
     ...(options.migrationsDirectory === undefined ? {} : { migrationsDirectory: options.migrationsDirectory }),
