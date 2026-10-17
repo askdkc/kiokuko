@@ -5,6 +5,9 @@ on:
   workflow_dispatch: null
 permissions:
   contents: read
+env:
+  # CPU-only CI uses binaries bundled with the npm package.
+  ONNXRUNTIME_NODE_INSTALL: skip
 jobs:
   verify:
     runs-on: ubuntu-latest

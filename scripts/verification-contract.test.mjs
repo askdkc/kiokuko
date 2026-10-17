@@ -1,3 +1,6 @@
+import { createRequire } from 'node:module';
+import { Script } from 'node:vm';
+import { parse as parseYaml } from 'yaml';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, cpSync, existsSync } from 'node:fs';
@@ -124,3 +127,67 @@ test('SIGTERM preserves an interrupted terminal result with no completion succes
    writeFileSync(file,JSON.stringify({...report,...change}));const observed=spawnSync(process.execPath,['scripts/verify.mjs','--status',file],{cwd:root,encoding:'utf8'});assert.equal(observed.status,1);assert.equal(JSON.parse(observed.stdout).completionReady,false);
   }
  });
+
+// Execute the installed dependency's Linux-x64 decision path with no network or
+// host-platform mutation. This is an installer branch test, not a Linux ABI test.
+function inspectOrtCiInstall(environment) {
+  const require = createRequire(import.meta.url);
+  const manifestPath = require.resolve('onnxruntime-node/package.json');
+  const scriptPath = path.join(path.dirname(manifestPath), 'script/install.js');
+  const vendorRequire = createRequire(scriptPath);
+  const utils = vendorRequire('./install-utils.js');
+  const flagKeys = ['ONNXRUNTIME_NODE_INSTALL', 'ONNXRUNTIME_NODE_INSTALL_CUDA',
+    'npm_config_onnxruntime_node_install', 'npm_config_onnxruntime_node_install_cuda'];
+  const previous = new Map(flagKeys.map(key => [key, process.env[key]]));
+  const requests = [];
+  const exit = Symbol('installer exit');
+  try {
+    for (const key of flagKeys) {
+      if (environment[key] === undefined) delete process.env[key];
+      else process.env[key] = String(environment[key]);
+    }
+    const installRequire = name => {
+      if (name === 'os') return { platform: () => 'linux', arch: () => 'x64' };
+      if (name === 'path') return path;
+      if (name === 'fs') return { existsSync: () => false };
+      if (name === 'global-agent') return { bootstrap() {} };
+      if (name === './install-metadata.js') return vendorRequire(name);
+      if (name === './install-utils.js') return { ...utils, installPackages(packages, manifests) {
+        requests.push({ packages: [...packages], manifests });
+        throw Object.assign(new Error('fixture NuGet timeout'), { code: 'ETIMEDOUT' });
+      } };
+      throw new Error(`Unexpected installer dependency: ${name}`);
+    };
+    const installerProcess = { env: { ...environment,
+      npm_config_local_prefix: path.resolve(import.meta.dirname, '..'), npm_package_json: manifestPath },
+      exit(code) { throw { kind: exit, code }; } };
+    const execute = new Script(`(function(require, __dirname, process) {\n${readFileSync(scriptPath, 'utf8')}\n})`, { filename: scriptPath }).runInThisContext();
+    try { execute(installRequire, path.dirname(scriptPath), installerProcess); return { exitCode: null, requests }; }
+    catch (error) {
+      if (error?.kind === exit) return { exitCode: error.code, requests };
+      return { exitCode: null, requests, error };
+    }
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+}
+
+test('CI dependency installation avoids the optional Linux CUDA NuGet download', () => {
+  const defaultInstall = inspectOrtCiInstall({});
+  assert.equal(defaultInstall.error?.code, 'ETIMEDOUT');
+  assert.ok(defaultInstall.requests.some(request => request.packages.some(pkg => /gpu\.linux/iu.test(pkg.name))));
+  const workflow = parseYaml(readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  let installs = 0;
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    for (const step of job.steps ?? []) {
+      if (typeof step.run !== 'string' || !/\bnpm\s+ci\b/u.test(step.run)) continue;
+      installs += 1;
+      const result = inspectOrtCiInstall({ ...workflow.env, ...job.env, ...step.env });
+      assert.equal(result.exitCode, 0, `${name}: install must finish without unneeded CUDA downloads`);
+      assert.deepEqual(result.requests, [], `${name}: installation must not contact NuGet for CUDA`);
+    }
+  }
+  assert.ok(installs > 0, 'the workflow must contain observed npm ci steps');
+});
