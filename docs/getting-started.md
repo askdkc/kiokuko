@@ -41,13 +41,16 @@ whether to replace a conflicting identity; JSON, non-interactive, and dry-run ca
 return `CONFLICT` without mutation. The same rule applies to other supported clients.
 
 Restart a running client after setup. Use `kiokuko doctor --json` to inspect runtime,
-database, and Codex MCP health without changing files. Interactive `kiokuko doctor`
-asks before recreating a missing registered agent instruction file or adding and
-updating its Kiokuko section; Enter defaults to No. Recreation restores only
-Kiokuko instructions, not deleted custom content. Repair preserves user text and
-other products' sections. Kiokuko instructions are plugin-only HTML comments;
-normal setup updates migrate older sections to this format.
-JSON and noninteractive checks report the affected path and reason under
+database, and Codex MCP health without changing files. Ordinary `kiokuko doctor`
+automatically creates missing registered root and generated instruction files in
+TTY and noninteractive use, without waiting for input. Recreation restores only
+Kiokuko instructions, not deleted custom content. It verifies the current registered
+identity, workspace, binding, and file identities, preserves existing files, and
+reports recovery failures while continuing other registered targets.
+Interactive repair of existing Kiokuko sections still asks for confirmation.
+Repair preserves user text and other products' sections. Kiokuko instructions are
+plugin-only HTML comments; normal setup updates migrate older sections to this format.
+JSON checks report the affected path and reason under
 `data.checks.agentFiles.findings` without prompting or changing files.
 Missing `.kiokuko.json` files are reported as `missing_binding_file` with the
 binding path, registered repository ID, and restoration guidance. Invalid bindings
@@ -81,4 +84,4 @@ unmanaged MCP identity.
 
 Answer-only requests use the evidence already in the conversation without creating a task run or recalling memory. A decision-relevant missing fact can use bounded `task_inspect`; `operation: "diff"` accepts `scope: "auto" | "staged" | "working-tree"`. Auto prefers the index when staged changes exist and returns the selected scope. External diff, textconv and worktree filters are disabled. Code changes, operations, formal reviews and implementation plans retain intake and verification. Additional checks must change a decision or establish completion; there is no minimum thinking duration.
 
-Normal setup updates preserve custom instruction text and refresh existing managed blocks and Skills. If a previously configured client's global instruction file or a registered project's instruction file is absent, setup reports it as skipped instead of recreating it. Use the existing interactive `kiokuko doctor` confirmation when you want to restore a registered project's missing file.
+Normal setup updates preserve custom instruction text and refresh existing managed blocks and Skills. If a previously configured client's global instruction file or a registered project's instruction file is absent, setup reports it as skipped instead of recreating it. Run ordinary `kiokuko doctor` to restore a registered project's missing Kiokuko instructions without waiting for confirmation.

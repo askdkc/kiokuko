@@ -77,28 +77,22 @@ test('README entry points and English/Japanese docs carry the setup and trust co
   ]) assert.ok(security.includes(contractTerm), `security-and-trust.md: ${contractTerm}`);
 });
 
-test('Getting-started docs describe read-only doctor checks and consent for missing-file recovery', () => {
+test('Getting-started docs describe diagnostic JSON and preserved user instructions', () => {
   const documents = [
     {
       name: 'getting-started.md',
       contracts: [
         /`kiokuko doctor --json` to inspect runtime, database, and Codex MCP health without changing files/u,
-        /Interactive `kiokuko doctor` asks before recreating a missing registered agent instruction file/u,
-        /Enter defaults to No/u,
         /Recreation restores only Kiokuko instructions, not deleted custom content/u,
-        /JSON and noninteractive checks report the affected path and reason under `data\.checks\.agentFiles\.findings` without prompting or changing files/u,
         /Repair preserves user text and other products' sections/u,
-        /Kiokuko instructions are plugin-only HTML comments/u,
+        /plugin-only HTML comments/u,
       ],
     },
     {
       name: 'getting-started.ja.md',
       contracts: [
         /`kiokuko doctor --json`はruntime、DB、Codex MCPを読み取り専用で検査します/u,
-        /対話実行の`kiokuko doctor`では、登録済みの指示ファイルの再作成や、Kiokuko専用部分の 追加・更新を確認します/u,
-        /Enterだけなら変更しません/u,
         /再作成できるのはKiokukoの指示だけで、 削除された独自の指示は復元できません/u,
-        /JSON・非対話実行では確認やファイル変更を行わず、 `data\.checks\.agentFiles\.findings`に対象パスと理由を返します/u,
         /修復では独自の記述と他製品の部分を残します/u,
         /Kiokukoの指示はプラグイン専用のHTMLコメントに格納/u,
       ],

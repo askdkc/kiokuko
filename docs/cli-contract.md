@@ -152,11 +152,17 @@ JSON `ok: false` and exit status 8 remain for incomplete checks. `status` separa
 (confirmed integrity/validation failures). Human output uses `ATTENTION
 (verification incomplete)` accordingly; a genuine failed check takes precedence.
 
+Ordinary human-output doctor automatically creates missing registered root and
+generated instruction files, with TTY or non-TTY streams and no input read. It
+reads registered identity and workspace from the database, checks the binding and
+canonical directory, and creates only absent files with conditional writes.
+Deleted custom instructions cannot be recovered. Per-target failures are reported
+and do not stop recovery of other registered targets. Existing files are preserved.
+`--json` remains diagnostic-only; `--fix` remains the explicit binding repair path.
+
 Interactive repair of an existing Kiokuko section defaults to Yes (`[Y/n]`).
 Enter accepts only the bounded Kiokuko pointer/generated-section repair; `n`
-declines. Creating a missing root instruction file retains `[y/N]` because deleted
-custom instructions cannot be recovered. EOF/cancellation, non-TTY input or
-output, and `--json` never authorize these repairs. Both planned files and the
-original binding are checked for concurrent changes before writes. User text and
-other products' sections are preserved. Missing bindings are reported for verified
+declines. EOF/cancellation and non-TTY streams do not authorize section updates.
+Both planned files and the original binding are checked for concurrent changes
+before writes. User text and other products' sections are preserved. Missing bindings are reported for verified
 backup recovery without minting a replacement repository identity.

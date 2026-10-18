@@ -336,6 +336,23 @@ async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
   for (const { file, content } of dshFiles) assert.equal(await readFile(file, 'utf8'), content);
   const bindingPath = JSON.parse(used.stdout).data.bindingFile;
   const binding = await readFile(bindingPath, 'utf8');
+  const generatedPath = path.join(path.dirname(bindingPath), '.kiokuko', 'AGENTS.md');
+  const generatedBefore = await readFile(generatedPath, 'utf8');
+  await unlink(project);
+  await unlink(generatedPath);
+  const automaticDoctor = await run(cliPath, ['doctor'], fixtureRoot, environment);
+  assert.match(automaticDoctor.stdout, /Kiokuko doctor: OK/u);
+  assert.doesNotMatch(automaticDoctor.stdout, /\? \[/u);
+  assert.equal(await readFile(bindingPath, 'utf8'), binding);
+  assert.equal(await readFile(generatedPath, 'utf8'), generatedBefore);
+  const createdPointer = await readFile(project, 'utf8');
+  assert.ok(createdPointer.includes('.kiokuko/AGENTS.md'));
+  const rootIdentity = await stat(project, { bigint: true });
+  const bodyIdentity = await stat(generatedPath, { bigint: true });
+  await run(cliPath, ['doctor'], fixtureRoot, environment);
+  assert.equal(await readFile(project, 'utf8'), createdPointer);
+  assert.equal((await stat(project, { bigint: true })).ino, rootIdentity.ino);
+  assert.equal((await stat(generatedPath, { bigint: true })).ino, bodyIdentity.ino);
   await unlink(bindingPath);
   try {
     const missing = spawnSync(cliPath, ['doctor', '--json'], { cwd: fixtureRoot, env: environment, encoding: 'utf8' });
@@ -387,7 +404,7 @@ async function verifyInstalledAgentComments(cliPath, fixtureRoot, environment) {
     assert.deepEqual(JSON.parse(await readFile(bindingPath, 'utf8')), JSON.parse(binding));
     assert.equal(recreation.checks.agentFiles.ok, true);
     assert.deepEqual(await readFile(databasePath), databaseBefore);
-    assert.equal(await readFile(project, 'utf8'), migrated);
+    assert.equal(await readFile(project, 'utf8'), createdPointer);
     assert.equal(await readFile(global, 'utf8'), globalMigrated);
     for (const { file, content } of dshFiles) assert.equal(await readFile(file, 'utf8'), content);
   } finally { await writeFile(bindingPath, binding); }

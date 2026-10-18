@@ -2,6 +2,7 @@ import { assuranceDoctor } from '../assurance/doctor.js';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { realpath } from 'node:fs/promises';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { AtomicCommittedMutationError, assertAtomicCleanupComplete, assertFileExpectation, atomicWriteTextIfUnchanged, unlinkRegularFileIfUnchanged, readDirectoryIdentity, readRegularFile } from '../agent-file/atomic-write.js';
@@ -13,7 +14,7 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { openConnection, databaseFileIdentity } from '../db/connection.js';
 import { inspectMigrationSnapshot, loadMigrationSnapshot } from '../db/migrate.js';
 import { getGlobalDatabasePath } from '../config/paths.js';
-import type { BindingRepairResult } from '../repository/binding-repair.js';
+import { bindingRegistrations, planBindingRepair, type BindingRepairResult } from '../repository/binding-repair.js';
 import { EmbeddingBackendUnavailableError, openEmbeddingDatabase } from '../embedding/backend.js';
 import { parseEmbeddingConfig } from '../embedding/config.js';
 import { inspectEmbeddingHealth } from '../embedding/diagnostics.js';
@@ -25,7 +26,7 @@ import { inspectLedger } from '../ledger/maintenance.js';
 import { hybridSearchProjectionStatus } from '../memory/rebuild-search.js';
 import { readEntryRevision } from '../memory/revisions.js';
 import { findSecret } from '../memory/secrets.js';
-import { listRepositoryLocations, type RepositoryLocation } from '../repository/binding.js';
+import { type RepositoryLocation } from '../repository/binding.js';
 import { isPidAlive } from '../server/instance-lock.js';
 import { readRuntimeDescriptor } from '../server/runtime-descriptor.js';
 import { setupMcpIdentityConflictClient } from '../setup/mcp-conflict.js';
@@ -51,6 +52,7 @@ export interface DoctorAgentFileFinding {
 
 export interface DoctorResult {
   repairs?: BindingRepairResult[];
+  agentFileRepairs?: DoctorAgentFileRepair[];
   ok: boolean;
   status?: 'ok' | 'attention' | 'failed';
   databasePath: string;
@@ -104,15 +106,63 @@ export interface DoctorPromptOptions {
 
 const MAX_DOCTOR_PROMPT_LOCATIONS = 20;
 
+export interface DoctorAgentFileRepair {
+  repositoryRoot: string;
+  status: 'created' | 'unchanged' | 'failed';
+  detail: string;
+}
+
+interface AgentFileRepairOptions extends DoctorPromptOptions {
+  missingOnly?: boolean;
+  validate?: (bindingContent: string) => Promise<void>;
+  beforeWrite?: (repositoryRoot: string) => void | Promise<void>;
+}
+
+/** Restore absent instructions from registered identity; never update an existing file or the database. */
+export async function recoverMissingAgentFiles(
+  database: SqliteDatabase,
+  findings: readonly DoctorAgentFileFinding[],
+  options: DoctorPromptOptions & { beforeWrite?: (repositoryRoot: string) => void | Promise<void> } = {},
+): Promise<DoctorAgentFileRepair[]> {
+  const results: DoctorAgentFileRepair[] = [];
+  for (const finding of findings) {
+    if (!['missing_agent_file', 'missing_generated_file'].includes(finding.reason)) continue;
+    try {
+      const validate = async (bindingContent: string) => {
+        const plan = planBindingRepair(finding.repositoryRoot, bindingRegistrations(database), bindingContent);
+        if (plan.kind !== 'unchanged' || plan.config.repositoryId !== finding.repositoryId) {
+          throw new KiokukoError('CONFLICT', 'Project binding does not match the current registered identity and workspace');
+        }
+        if (await realpath(finding.repositoryRoot) !== finding.repositoryRoot) {
+          throw new KiokukoError('CONFLICT', 'Registered directory no longer resolves to its canonical path');
+        }
+      };
+      const count = await repairAgentFiles([finding], { ...options, missingOnly: true, validate });
+      results.push({ repositoryRoot: finding.repositoryRoot, status: count ? 'created' : 'unchanged',
+        detail: count ? 'Created missing Kiokuko instructions only; deleted custom instructions cannot be restored.'
+          : 'No missing instruction file was safely creatable; existing files were preserved.' });
+    } catch (error) {
+      const diagnostic = diagnosticError(error);
+      results.push({ repositoryRoot: finding.repositoryRoot, status: 'failed', detail: `${diagnostic.code}: ${diagnostic.message}` });
+    }
+  }
+  return results;
+}
+
 /** Offer only bounded, renderable repairs; require consent and unchanged file identities. */
 export async function promptRepairAgentFiles(
   findings: readonly DoctorAgentFileFinding[],
   options: DoctorPromptOptions = {},
 ): Promise<number> {
+  return repairAgentFiles(findings, options);
+}
+
+/** One conditional publication/rollback owner for automatic creation and approved section updates. */
+async function repairAgentFiles(findings: readonly DoctorAgentFileFinding[], options: AgentFileRepairOptions): Promise<number> {
   const input = options.input ?? stdin;
   const output = options.output ?? stdout;
   let created = 0;
-  if ((input as { isTTY?: boolean }).isTTY !== true || (output as { isTTY?: boolean }).isTTY !== true) return created;
+  if (!options.missingOnly && ((input as { isTTY?: boolean }).isTTY !== true || (output as { isTTY?: boolean }).isTTY !== true)) return created;
   for (const finding of findings) {
     if (!['missing_agent_file', 'missing_managed_block', 'outdated_managed_block', 'missing_generated_file', 'outdated_generated_file'].includes(finding.reason)
       || finding.agentFile === null) continue;
@@ -120,6 +170,7 @@ export async function promptRepairAgentFiles(
     const bindingPath = path.join(root, '.kiokuko.json');
     const binding = await readRegularFile(bindingPath, { containmentRoot: root });
     if (binding === undefined) throw new KiokukoError('CONFLICT', 'Project binding disappeared before agent file recovery');
+    await options.validate?.(binding.content);
     const config = parseProjectConfigText(binding.content);
     const agentPath = path.join(root, config.agentFile);
     if (config.repositoryId !== finding.repositoryId || agentPath !== finding.agentFile) {
@@ -135,40 +186,47 @@ export async function promptRepairAgentFiles(
     if (config.templateVersion > AGENT_TEMPLATE_VERSION) continue;
     const version = original === undefined ? undefined : readManagedBlockTemplateVersion(original.content);
     if (version !== undefined && version > AGENT_TEMPLATE_VERSION) continue;
-    const rendered = renderAgentFile(original?.content, {
+    const rendered = options.missingOnly && original !== undefined
+      ? { action: 'unchanged', content: original.content } : renderAgentFile(original?.content, {
       repositoryId: config.repositoryId,
       workspace: config.workspace,
       cliCommand: preferredDoctorCommand(),
     });
     const generatedPath = path.join(root, GENERATED_AGENT_FILE);
     const generated = await readRegularFile(generatedPath, { containmentRoot: root });
-    const generatedVersion = generated === undefined ? undefined : readManagedBlockTemplateVersion(generated.content);
+    if (options.missingOnly && finding.reason === 'missing_generated_file' && generated !== undefined) continue;
+    const generatedVersion = options.missingOnly || generated === undefined ? undefined : readManagedBlockTemplateVersion(generated.content);
     if (generatedVersion !== undefined && generatedVersion > AGENT_TEMPLATE_VERSION) continue;
     const generatedParentIdentity = await readDirectoryIdentity(path.dirname(generatedPath));
-    const renderedGenerated = renderGeneratedAgentFile(generated?.content, {
+    const renderedGenerated = options.missingOnly && generated !== undefined
+      ? { action: 'unchanged', content: generated.content } : renderGeneratedAgentFile(generated?.content, {
       repositoryId: config.repositoryId, workspace: config.workspace, cliCommand: preferredDoctorCommand(),
     });
     if (rendered.action === 'unchanged' && renderedGenerated.action === 'unchanged') continue;
-    output.write(`Doctor found ${missing ? 'a missing agent instruction file' : 'a missing or outdated Kiokuko section'}:\n  ${agentPath}\n`);
-    output.write(missing
-      ? 'This creates Kiokuko instructions only; deleted custom instructions cannot be restored.\n'
-      : 'This updates only the Kiokuko pointer and .kiokuko/AGENTS.md managed section; user instructions and other products are preserved.\n');
-    const prompt = createInterface({ input, output });
-    let closed = false;
-    const cancelled = new Promise<string>((resolve) => {
-      prompt.once('close', () => { closed = true; resolve(''); });
-    });
-    let answer: string;
-    try {
-      answer = (await Promise.race([
-        prompt.question(missing ? 'Create this missing agent file? [y/N] ' : 'Repair this Kiokuko section? [Y/n] '),
-        cancelled,
-      ])).trim();
-      if (closed) return created;
-    } finally {
-      prompt.close();
+    if (!options.missingOnly) {
+      output.write(`Doctor found ${missing ? 'a missing agent instruction file' : 'a missing or outdated Kiokuko section'}:\n  ${agentPath}\n`);
+      output.write(missing
+        ? 'This creates Kiokuko instructions only; deleted custom instructions cannot be restored.\n'
+        : 'This updates only the Kiokuko pointer and .kiokuko/AGENTS.md managed section; user instructions and other products are preserved.\n');
+      const prompt = createInterface({ input, output });
+      let closed = false;
+      const cancelled = new Promise<string>((resolve) => {
+        prompt.once('close', () => { closed = true; resolve(''); });
+      });
+      let answer: string;
+      try {
+        answer = (await Promise.race([
+          prompt.question(missing ? 'Create this missing agent file? [y/N] ' : 'Repair this Kiokuko section? [Y/n] '),
+          cancelled,
+        ])).trim();
+        if (closed) return created;
+      } finally {
+        prompt.close();
+      }
+      if (!(answer === '' && !missing) && !/^(?:y|yes|はい)$/iu.test(answer)) continue;
     }
-    if (!(answer === '' && !missing) && !/^(?:y|yes|はい)$/iu.test(answer)) continue;
+    await options.beforeWrite?.(root);
+    await options.validate?.(binding.content);
     await assertFileExpectation(bindingPath, {
       expected: binding,
       containmentRoot: root,
@@ -202,6 +260,7 @@ export async function promptRepairAgentFiles(
         }
         assertAtomicCleanupComplete(installedRoot);
       }
+      await options.validate?.(binding.content);
       await assertFileExpectation(bindingPath, { expected: binding, containmentRoot: root,
         ...(rootIdentity === undefined ? {} : { expectedParentDirectory: rootIdentity }) });
       await assertFileExpectation(agentPath, { expected: installedRoot?.installed ?? original, containmentRoot: root,
@@ -233,6 +292,7 @@ export async function promptRepairAgentFiles(
       throw error;
     }
     output.write(`${missing ? 'Created' : 'Repaired'} ${agentPath}\n`);
+    if (options.missingOnly) output.write('Created missing Kiokuko instructions only; deleted custom instructions cannot be restored.\n');
     created += 1;
   }
   return created;
@@ -479,7 +539,7 @@ async function collectDoctorResult(
     WHERE l.relation = 'contradicts' AND f.status = 'verified' AND t.status = 'verified'
   `);
 
-  const bindingRows = listRepositoryLocations(database);
+  const bindingRows = bindingRegistrations(database);
   const missingRoots = bindingRows.filter((row) => !existsSync(row.canonicalRoot)).length;
   const bindingCheck = { ok: missingRoots === 0, status: missingRoots === 0 ? 'ok' as const : 'attention' as const, count: missingRoots, detail: `locations=${bindingRows.length}` };
 
@@ -499,7 +559,7 @@ async function collectDoctorResult(
         continue;
       }
       const config = parseProjectConfigText(binding.content);
-      if (config.repositoryId !== row.repositoryId) throw new KiokukoError('CONFLICT', 'Project binding identity differs from registration');
+      if (config.repositoryId !== row.repositoryId || config.workspace !== row.workspace) throw new KiokukoError('CONFLICT', 'Project binding identity or workspace differs from registration');
       agentPath = path.join(row.canonicalRoot, config.agentFile);
       const agent = await readRegularFile(agentPath, { containmentRoot: row.canonicalRoot });
       let reason: DoctorAgentFileFinding['reason'] | undefined;

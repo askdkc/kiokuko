@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { access, mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
-import { promptRepairAgentFiles, runDoctor } from '../../src/commands/doctor.js';
+import { recoverMissingAgentFiles, promptRepairAgentFiles, runDoctor } from '../../src/commands/doctor.js';
 import { useRepository } from '../../src/commands/use.js';
 import { GENERATED_AGENT_FILE, renderManagedBlock } from '../../src/agent-file/render.js';
 import { openConnection, SqliteVecLoadError } from '../../src/db/connection.js';
@@ -239,75 +239,119 @@ test('doctor rejects reversed and inline markers and preserves newer templates',
   }
 });
 
-test('interactive doctor asks before recreating a deleted configured agent file and reruns health checks', async () => {
-  const value = await deletedAgentProject('agent-create', 'instructions/AGENTS.md');
-  const bindingBefore = await readFile(value.project.bindingFile, 'utf8');
-  const result = await invokeDoctor(value.databasePath, 'y\n');
-  assert.ok(result.prompt.includes(value.project.agentFile!));
-  assert.match(result.prompt, /Create this missing agent file\? \[y\/N\]/u);
-  assert.match(result.stdout, /Kiokuko doctor: OK/u);
-  assert.equal(result.exitCode, undefined);
-  const restored = await readFile(value.project.agentFile!, 'utf8');
-  assert.match(restored, /Read.*\.kiokuko\/AGENTS\.md/u);
-  const generated = await readFile(path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE), 'utf8');
-  assert.ok(generated.includes(value.project.repositoryId));
-  assert.ok(generated.includes(value.project.workspace));
-  assert.equal(await readFile(value.project.bindingFile, 'utf8'), bindingBefore);
-  const repeated = await invokeDoctor(value.databasePath, 'y\n');
-  assert.equal(repeated.prompt, '');
-  assert.equal(await readFile(value.project.agentFile!, 'utf8'), restored);
-});
+for (const interactive of [true, false]) {
+  test(`ordinary doctor automatically restores missing instructions without input (TTY=${interactive})`, async () => {
+    const value = await deletedAgentProject('automatic-regression', 'instructions/AGENTS.md');
+    const binding = await readFile(value.project.bindingFile, 'utf8');
+    const result = await invokeDoctor(value.databasePath, 'n\n', false, interactive);
+    assert.equal(result.exitCode, undefined);
+    assert.doesNotMatch(result.prompt, /\? \[/u);
+    const restored = await readFile(value.project.agentFile!, 'utf8');
+    assert.ok(restored.includes('.kiokuko/AGENTS.md'));
+    assert.equal(await readFile(value.project.bindingFile, 'utf8'), binding);
+    const repeated = await invokeDoctor(value.databasePath, '', false, interactive);
+    assert.equal(repeated.prompt, '');
+    assert.equal(await readFile(value.project.agentFile!, 'utf8'), restored);
+  });
+}
 
-test('agent recreation never overwrites a file created during confirmation', async () => {
-  const value = await deletedAgentProject('agent-race');
-  await assert.rejects(invokeDoctor(value.databasePath, 'y\n', false, true, async () => {
-    await writeFile(value.project.agentFile!, 'concurrent user instructions\n');
-  }), { code: 'CONFLICT' });
-  assert.equal(await readFile(value.project.agentFile!, 'utf8'), 'concurrent user instructions\n');
-});
-
-test('agent recreation rejects a binding changed during confirmation', async () => {
-  const value = await deletedAgentProject('binding-race');
-  await assert.rejects(invokeDoctor(value.databasePath, 'y\n', false, true, async () => {
-    const config = JSON.parse(await readFile(value.project.bindingFile, 'utf8')) as Record<string, unknown>;
-    await writeFile(value.project.bindingFile, `${JSON.stringify({ ...config, agentFile: 'OTHER.md' })}\n`);
-  }), { code: 'CONFLICT' });
-  await assert.rejects(access(value.project.agentFile!));
-  await assert.rejects(access(path.join(value.project.repositoryRoot, 'OTHER.md')));
-});
-
-test('closing input during agent confirmation returns without recreating the file', async () => {
-  const value = await deletedAgentProject('agent-eof');
-  const result = await invokeDoctor(value.databasePath, '', false, true, undefined, true);
-  assert.match(result.prompt, /Create this missing agent file\?/u);
-  assert.equal(result.exitCode, 8);
-  await assert.rejects(access(value.project.agentFile!));
-});
-
-test('doctor asks separately for multiple missing agent files', async () => {
+test('ordinary doctor restores multiple registered projects from an unrelated working directory', async () => {
   const value = await deletedAgentProject('agent-multiple');
   const otherRoot = path.join(value.directory, 'other-project');
   await mkdir(otherRoot);
   const other = await useRepository({ root: otherRoot, allowDirectory: true, databasePath: value.databasePath });
   await unlink(other.agentFile!);
-  const result = await invokeDoctor(value.databasePath, 'n\ny\n');
-  assert.equal(result.prompt.split('Create this missing agent file?').length - 1, 2);
-  // The registry scans canonical roots in order: other-project first, then project.
-  await assert.rejects(access(other.agentFile!));
-  assert.ok((await readFile(path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE), 'utf8')).includes(value.project.workspace));
-  assert.equal(result.exitCode, 8);
+  const oldCwd = process.cwd();
+  try {
+    process.chdir(value.directory);
+    const result = await invokeDoctor(value.databasePath, '', false, false);
+    assert.doesNotMatch(result.prompt, /\? \[/u);
+    assert.equal(result.exitCode, undefined);
+    for (const project of [value.project, other]) {
+      assert.ok((await readFile(project.agentFile!, 'utf8')).includes('.kiokuko/AGENTS.md'));
+      assert.ok((await readFile(path.join(project.repositoryRoot, GENERATED_AGENT_FILE), 'utf8')).includes(project.workspace));
+    }
+    await assert.rejects(access(path.join(value.directory, 'AGENTS.md')));
+  } finally { process.chdir(oldCwd); }
 });
 
-for (const answer of ['n\n', '\n']) {
-  test(`declining agent recreation preserves the deleted file (${JSON.stringify(answer)})`, async () => {
-    const value = await deletedAgentProject('agent-decline');
-    const result = await invokeDoctor(value.databasePath, answer);
-    assert.match(result.prompt, /Create this missing agent file\? \[y\/N\]/u);
-    assert.match(result.stdout, /Kiokuko doctor: ATTENTION/u);
-    assert.equal(result.exitCode, 8);
-    await assert.rejects(access(value.project.agentFile!));
-  });
+async function automaticRecovery(value: Awaited<ReturnType<typeof deletedAgentProject>>, beforeWrite?: (root: string) => Promise<void>) {
+  const diagnosis = await runDoctor({ databasePath: value.databasePath });
+  const database = openConnection(value.databasePath, { readOnly: true });
+  try { return await recoverMissingAgentFiles(database, diagnosis.checks.agentFiles.findings, { output: ttyOutput(), ...(beforeWrite ? { beforeWrite } : {}) }); }
+  finally { database.close(); }
 }
+
+test('automatic recovery preserves a concurrent creator and leaves diagnosis available', async () => {
+  const value = await deletedAgentProject('agent-race');
+  const result = await automaticRecovery(value, async () => {
+    await writeFile(value.project.agentFile!, 'concurrent user instructions\n');
+  });
+  assert.equal(result[0]?.status, 'failed');
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), 'concurrent user instructions\n');
+});
+
+test('automatic recovery refuses changed binding or registered workspace without guessing', async () => {
+  for (const change of ['binding', 'registration']) {
+    const value = await deletedAgentProject(`identity-${change}`);
+    const result = await automaticRecovery(value, async () => {
+      if (change === 'binding') {
+        const config = JSON.parse(await readFile(value.project.bindingFile, 'utf8'));
+        await writeFile(value.project.bindingFile, JSON.stringify({ ...config, agentFile: 'OTHER.md' }));
+      } else {
+        const writer = openConnection(value.databasePath);
+        try { writer.prepare('UPDATE repositories SET workspace = ? WHERE repository_id = ?').run('project:changed', value.project.repositoryId); }
+        finally { writer.close(); }
+      }
+    });
+    assert.equal(result[0]?.status, 'failed');
+    await assert.rejects(access(value.project.agentFile!));
+    await assert.rejects(access(path.join(value.project.repositoryRoot, 'OTHER.md')));
+  }
+});
+
+test('automatic recovery reports permission failure and continues other registered targets', async () => {
+  const value = await deletedAgentProject('permission');
+  const otherRoot = path.join(value.directory, 'other'); await mkdir(otherRoot);
+  const other = await useRepository({ root: otherRoot, allowDirectory: true, databasePath: value.databasePath });
+  await unlink(other.agentFile!);
+  await chmod(value.project.repositoryRoot, 0o555);
+  try {
+    const results = await automaticRecovery(value);
+    assert.equal(results.find(r => r.repositoryRoot === value.project.repositoryRoot)?.status, 'failed');
+    assert.equal(results.find(r => r.repositoryRoot === other.repositoryRoot)?.status, 'created');
+    await assert.rejects(access(value.project.agentFile!));
+    assert.ok((await readFile(other.agentFile!, 'utf8')).includes('.kiokuko/AGENTS.md'));
+  } finally { await chmod(value.project.repositoryRoot, 0o755); }
+});
+
+test('automatic recovery rejects symlink targets and preserves their destination', async () => {
+  const value = await deletedAgentProject('symlink');
+  const target = path.join(value.directory, 'external.md'); await writeFile(target, 'outside instructions\n');
+  const results = await automaticRecovery(value, async () => { await symlink(target, value.project.agentFile!); });
+  assert.equal(results[0]?.status, 'failed');
+  assert.equal(await readFile(target, 'utf8'), 'outside instructions\n');
+});
+
+test('missing generated-file recovery preserves custom root text, binding, and logical memory', async () => {
+  const value = await deletedAgentProject('memory-preservation');
+  await invokeDoctor(value.databasePath, '', false, false);
+  const original = await readFile(value.project.agentFile!, 'utf8');
+  const custom = `Custom user instructions\n${original}\nOther custom instructions\n`;
+  await writeFile(value.project.agentFile!, custom);
+  await unlink(path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE));
+  const binding = await readFile(value.project.bindingFile, 'utf8');
+  const diagnosis = await runDoctor({ databasePath: value.databasePath });
+  const before = await readFile(value.databasePath);
+  const database = openConnection(value.databasePath, { readOnly: true });
+  let results;
+  try { results = await recoverMissingAgentFiles(database, diagnosis.checks.agentFiles.findings, { output: ttyOutput() }); }
+  finally { database.close(); }
+  assert.equal(results[0]?.status, 'created');
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), custom);
+  assert.equal(await readFile(value.project.bindingFile, 'utf8'), binding);
+  assert.deepEqual(await readFile(value.databasePath), before);
+});
 
 test('JSON doctor reports the missing configured agent path without prompting or creating it', async () => {
   const value = await deletedAgentProject('agent-json');
@@ -326,15 +370,6 @@ test('JSON doctor reports the missing configured agent path without prompting or
       reason: 'missing_agent_file',
     }],
   });
-  assert.equal(result.exitCode, 8);
-  await assert.rejects(access(value.project.agentFile!));
-});
-
-test('noninteractive doctor leaves deleted instructions absent', async () => {
-  const value = await deletedAgentProject('agent-nontty');
-  const result = await invokeDoctor(value.databasePath, 'y\n', false, false);
-  assert.equal(result.prompt, '');
-  assert.match(result.stdout, /Kiokuko doctor: ATTENTION/u);
   assert.equal(result.exitCode, 8);
   await assert.rejects(access(value.project.agentFile!));
 });
@@ -715,7 +750,7 @@ test('doctor preserves concurrent generated edits during a root-section repair',
   assert.equal(await readFile(generatedPath, 'utf8'), 'Concurrent generated-file edit\n');
 });
 
-test('doctor recreates an absent generated directory with Enter and preserves the pointer', async () => {
+test('doctor automatically recreates an absent generated directory and preserves the pointer', async () => {
   const value = await deletedAgentProject('generated-directory');
   await invokeDoctor(value.databasePath, 'y\n');
   const original = await readFile(value.project.agentFile!, 'utf8');

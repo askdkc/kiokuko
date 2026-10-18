@@ -103,8 +103,10 @@ root pointer. Keep custom instructions outside Kiokuko's managed markers.
 Existing versioned Kiokuko blocks migrate to the pointer on the next use/setup
 refresh; user text and other products' sections remain unchanged. A missing
 root instruction file is not recreated by routine setup; use `kiokuko doctor`
-to review a repair. Missing generated instructions can be restored by use/setup
-or an approved doctor repair. Uninstall removes only Kiokuko's managed regions
+to automatically create missing registered Kiokuko instructions without a prompt.
+Missing generated instructions can also be restored by use/setup. Existing files
+are preserved; deleted custom instructions cannot be restored. Uninstall removes
+only Kiokuko's managed regions
 from both files, preserving surrounding content.
 
 ## Uninstall

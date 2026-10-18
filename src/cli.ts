@@ -16,7 +16,7 @@ import { answerAkinator, startAkinator } from './akinator/orchestrator.js';
 import { registerAgentCommand, type AgentCommandDependencies } from './commands/agent.js';
 import { createBackup } from './commands/backup.js';
 import { runCuratorCommand } from './commands/curator.js';
-import { promptRepairAgentFiles, promptRemoveMissingRepositoryLocations, runDoctor } from './commands/doctor.js';
+import { recoverMissingAgentFiles, promptRepairAgentFiles, promptRemoveMissingRepositoryLocations, runDoctor } from './commands/doctor.js';
 import { registerEmbeddingsCommands } from './commands/embeddings.js';
 import { registerRerankerCommands } from './commands/reranker.js';
 import { writeExport } from './commands/export.js';
@@ -1096,7 +1096,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     humanOrJson(options.json, 'backup', result, `Backup written to ${options.output}`);
   });
 
-  cli.command('doctor').description('Check health; --fix restores registered bindings, interactive diagnosis can repair Kiokuko sections').option('--verify-repositories', 'Explicitly hash repositories for the latest 20 active tasks across registered projects').option('--fix', 'Create missing or back up and recreate broken registered bindings; read the database only').option('--repair-root <path...>', 'Limit --fix to these exact registered canonical roots').option('--json').action(async (options: { json?: boolean; verifyRepositories?: boolean; fix?: boolean; repairRoot?: string[] }) => {
+  cli.command('doctor').description('Check health and create missing registered instructions; --fix restores bindings, interactive diagnosis can repair sections').option('--verify-repositories', 'Explicitly hash repositories for the latest 20 active tasks across registered projects').option('--fix', 'Create missing or back up and recreate broken registered bindings; read the database only').option('--repair-root <path...>', 'Limit --fix to these exact registered canonical roots').option('--json').action(async (options: { json?: boolean; verifyRepositories?: boolean; fix?: boolean; repairRoot?: string[] }) => {
     if (options.repairRoot && !options.fix) throw new KiokukoError('VALIDATION_ERROR', '--repair-root requires --fix');
     const doctorOptions: Parameters<typeof runDoctor>[0] = {
       ...(options.fix ? { readOnly: true } : {}),
@@ -1121,6 +1121,14 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     let removed = 0;
     const input = dependencies.doctorInput ?? process.stdin;
     const output = dependencies.doctorOutput ?? process.stdout;
+    let agentFileRepairs: Awaited<ReturnType<typeof recoverMissingAgentFiles>> = [];
+    if (!options.fix && options.json !== true) {
+      const database = openConnection(doctorOptions.databasePath ?? getGlobalDatabasePath(), { readOnly: true });
+      try { agentFileRepairs = await recoverMissingAgentFiles(database, data.checks.agentFiles.findings, { output }); }
+      finally { database.close(); }
+      if (agentFileRepairs.length > 0) data = await runDoctor(doctorOptions);
+    }
+
     const interactive = !options.fix && options.json !== true
       && (input as { isTTY?: boolean }).isTTY === true
       && (output as { isTTY?: boolean }).isTTY === true;
@@ -1138,10 +1146,13 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       }
     }
     if (interactive && data.checks.agentFiles.findings.length > 0) {
-      if (await promptRepairAgentFiles(data.checks.agentFiles.findings, { input, output }) > 0) {
+      if (await promptRepairAgentFiles(data.checks.agentFiles.findings.filter(finding => !agentFileRepairs.some(repair => repair.repositoryRoot === finding.repositoryRoot)), { input, output }) > 0) {
         data = await runDoctor(doctorOptions);
       }
     }
+    if (agentFileRepairs.length > 0) data = { ...data, agentFileRepairs };
+    if (agentFileRepairs.some(repair => repair.status === 'failed')) data = { ...data, ok: false, status: data.status === 'failed' ? 'failed' : 'attention' };
+    const agentRepairNotice = agentFileRepairs.filter(repair => repair.status === 'failed').map(repair => `\n  Instruction recovery ${repair.repositoryRoot}: ${repair.detail}`).join('');
     const repairNotice = data.repairs?.map(r => '\n  Binding ' + r.repositoryRoot + ': ' + r.status + ' — ' + r.detail + (r.backupPath ? '\n    Recoverable backup: ' + r.backupPath : '')).join('') ?? '';
     const cleanupNotice = removed === 0
       ? ''
@@ -1160,7 +1171,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       .join('');
     const assuranceScopeNotice = options.verifyRepositories ? ''
       : '\n  Live repository verification was not requested. Use kiokuko doctor --verify-repositories to inspect up to 20 active tasks.';
-    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${repairNotice}${failureNotice}${agentFileNotice}${assuranceNotice}${assuranceScopeNotice}`);
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${repairNotice}${agentRepairNotice}${failureNotice}${agentFileNotice}${assuranceNotice}${assuranceScopeNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 
