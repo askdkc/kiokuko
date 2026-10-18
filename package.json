@@ -1,6 +1,6 @@
 {
   "name": "kiokuko",
-  "version": "1.0.41",
+  "version": "1.0.42",
   "description": "Model-agnostic external memory for AI coding agents",
   "type": "module",
   "bin": {
