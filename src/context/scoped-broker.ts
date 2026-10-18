@@ -1,3 +1,5 @@
+import { attachRelationDelivery, type RelationDelivery } from '../memory/relation-delivery.js';
+import { DEFAULT_CONTEXT_CHARACTERS } from '../memory/context-budget.js';
 import { hasTargetPathMatch } from './memory-obligation.js';
 import { bindAssuranceDelivery } from '../assurance/service.js';
 import { TaskStateConflict } from '../assurance/conflicts.js';
@@ -35,7 +37,7 @@ import { reorderScoredCandidates, scoreLocalReranker } from '../reranker/service
 import { deduplicateDeliverableLessonSources, formatLessonSourceReferences, readDeliverableLessonSourceReferences, type LessonDeduplicationResult } from '../memory/lesson-derivation.js';
 
 export const SCOPED_CONTEXT_POLICY_VERSION = 'context-ranking-v11' as const;
-export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = 8_000;
+export const SCOPED_CONTEXT_DEFAULT_CHARACTER_BUDGET = DEFAULT_CONTEXT_CHARACTERS;
 export const SCOPED_CONTEXT_MAX_CHARACTER_BUDGET = 100_000;
 
 export interface ScopedContextQuery {
@@ -92,6 +94,7 @@ export interface ScopedContextItem {
 }
 
 export interface ScopedContextResult {
+  relationDelivery?: RelationDelivery;
   memoryIndexDiagnostics?: ReturnType<typeof observeIndex>;
   retrieval?: RetrievalDiagnostics;
   project: ResolvedProjectWorkspace | null;
@@ -1000,8 +1003,9 @@ function persistPreparedScopedContext(
         assertPreparedScopedState(database, prepared);
       }
       if (prepared.replayDelivery !== null) bindAssuranceDelivery(database, prepared.replayDelivery);
-      afterPersist?.(prepared.result);
-      return prepared.result;
+      const result = attachRelationDelivery(database, prepared.result);
+      afterPersist?.(result);
+      return result;
     });
   }
   const request = prepared.pendingDelivery;
@@ -1016,12 +1020,12 @@ function persistPreparedScopedContext(
       database,
       { ...request, deliveryId: scopedDeliveryId(request) },
     );
-    const result = {
+    const result = attachRelationDelivery(database, {
       ...prepared.result,
       items: storedScopedItems(database, delivery, prepared.relatedMode),
       deliveryId: delivery.deliveryId,
       truncated: delivery.truncated,
-    };
+    });
     afterPersist?.(result);
     return result;
   });

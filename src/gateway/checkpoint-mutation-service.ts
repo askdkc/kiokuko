@@ -1,3 +1,4 @@
+import { DEFAULT_CONTEXT_CHARACTERS } from '../memory/context-budget.js';
 import { randomUUID } from 'node:crypto';
 import { isProxy } from 'node:util/types';
 import { readAkinatorSession, readRunIntakeLink } from '../akinator/store.js';
@@ -452,7 +453,7 @@ function normalizeRequest(raw: unknown, workspace: string, now: string): Checkpo
   })();
   for (const feedback of contextFeedback) events.push(event('context.feedback', jsonValue(feedback), now));
   if (events.length === 0 || events.length > 200) validation();
-  const characterBudget = value.characterBudget === undefined ? 8_000 : value.characterBudget;
+  const characterBudget = value.characterBudget === undefined ? DEFAULT_CONTEXT_CHARACTERS : value.characterBudget;
   if (typeof characterBudget !== 'number' || !Number.isSafeInteger(characterBudget) || characterBudget < 1 || characterBudget > 100_000) validation();
   return { events, contextFeedback, characterBudget };
 }

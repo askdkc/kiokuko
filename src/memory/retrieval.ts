@@ -1,3 +1,5 @@
+import { attachRelationDelivery, type RelationDelivery } from './relation-delivery.js';
+import { DEFAULT_CONTEXT_CHARACTERS } from './context-budget.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry, type EntryRecord } from './entries.js';
@@ -38,6 +40,7 @@ export interface RecallEntriesInput extends SearchEntriesInput {
 }
 
 export interface RecallItem {
+  revision?: number;
   id: string;
   workspace: string;
   kind: EntryKind;
@@ -55,6 +58,7 @@ export interface RecallItem {
 }
 
 export interface RecallResult {
+  relationDelivery?: RelationDelivery;
   items: RecallItem[];
   count: number;
   characterCount: number;
@@ -77,7 +81,7 @@ export interface RankedRecallResult {
 
 const DEFAULT_SEARCH_LIMIT = 20;
 const DEFAULT_RECALL_LIMIT = 5;
-const DEFAULT_RECALL_MAX_CHARS = 8000;
+const DEFAULT_RECALL_MAX_CHARS = DEFAULT_CONTEXT_CHARACTERS;
 const MAX_LIMIT = 1000;
 const MAX_RECALL_CHARS = 100_000;
 
@@ -195,12 +199,13 @@ export function recallEntries(
   const reasons = new Map<string, string[]>();
   for (const id of retained) reasons.set(id, ['duplicate_source_suppressed']);
   return {
-    ...packRecallEntries(input, deduplicated.entries, selected.truncated || suppressed.size > 0, maxChars, sourceNotes, reasons),
+    ...packRecallEntries(database, input, deduplicated.entries, selected.truncated || suppressed.size > 0, maxChars, sourceNotes, reasons),
     lessonDeduplicationDiagnostics: deduplicated.diagnostics,
   };
 }
 
 function packRecallEntries(
+  database: SqliteDatabase,
   input: RecallEntriesInput,
   entries: readonly EntryRecord[],
   selectedTruncated: boolean,
@@ -229,6 +234,7 @@ function packRecallEntries(
       || characterCount(entry.body) > characterCount(snippet)) truncated = true;
     items.push({
       id: entry.id,
+      revision: entry.revision,
       workspace: entry.workspace,
       kind: entry.kind,
       status: entry.status,
@@ -244,7 +250,7 @@ function packRecallEntries(
   }
 
   if (items.length < entries.length || selectedTruncated) truncated = true;
-  return { items, count: items.length, characterCount: characters, truncated };
+  return attachRelationDelivery(database, { items, count: items.length, characterCount: characters, truncated }, { itemLimit: input.limit ?? DEFAULT_RECALL_LIMIT, selectionOmissions: [...(selectedTruncated ? ['item_limit' as const] : []), ...(truncated ? ['body_budget' as const] : [])] });
 }
 
 export async function recallEntriesWithReranker(
@@ -284,7 +290,7 @@ export async function recallEntriesWithReranker(
   }) !== originalHash) {
     throw new KiokukoError('CONFLICT', 'Recall selection changed during reranker inference');
   }
-  const result = packRecallEntries(input, reranked.candidates.map(({ entry }) => entry), baseline.truncated || suppressed.size > 0, maxChars, sourceNotes, reasons);
+  const result = packRecallEntries(database, input, reranked.candidates.map(({ entry }) => entry), baseline.truncated || suppressed.size > 0, maxChars, sourceNotes, reasons);
   return {
     ...result,
     lessonDeduplicationDiagnostics: deduplicated.diagnostics,

@@ -1,3 +1,4 @@
+import { DEFAULT_CONTEXT_CHARACTERS } from './memory/context-budget.js';
 import { repairRegisteredBindings } from './repository/binding-repair.js';
 import { createInterface as createHumanPrompt } from 'node:readline/promises';
 import { registerReplayReviewCommand } from './commands/replay-review.js';
@@ -315,7 +316,7 @@ async function withPreparedSemanticRuntime<T>(
 
 function configureRecallCommand(command: Command, dependencies: CliDependencies): Command {
   const recall = addWorkspaceOptions(command.description('Human/operator management: recall relevant memory entries').argument('<query>'))
-    .option('--limit <number>', 'Maximum entries', '5').option('--max-chars <number>', 'Context character budget', '8000')
+    .option('--limit <number>', 'Maximum entries', '5').option('--max-chars <number>', 'Context Unicode character budget', String(DEFAULT_CONTEXT_CHARACTERS))
     .option('--scope <scope>', 'auto, project, ecosystem, or global', 'auto').option('--cwd <path>', 'Repository path used for scoped recall')
     .option('--temporal-basis <basis>', 'recorded or occurred')
     .option('--temporal-mode <mode>', 'boost or restrict')

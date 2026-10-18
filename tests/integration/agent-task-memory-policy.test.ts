@@ -662,7 +662,7 @@ test('requestId identifies one logical task request and conflicts on changed bou
     const exactRetry = await prepareAgentTask(database, request);
     const normalizedDefaultRetry = await prepareAgentTask(database, {
       ...request,
-      maxContextChars: 8_000,
+      maxContextChars: 16_000,
     });
     const distinctRequest = await prepareAgentTask(database, {
       ...request,

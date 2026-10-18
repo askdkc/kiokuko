@@ -48,7 +48,7 @@ await runMcpServer({databasePath:${JSON.stringify(path.join(fixtureRoot,'cancel.
     while(pending.intake.status==='needs_answer'){
       const controller=new AbortController();
       input={cwd:root,runId:pending.run.runId,sessionId:pending.intake.sessionId,
-        questionId:pending.intake.question.id,value:answers[pending.intake.question.id],capabilities,maxContextChars:12000};
+        questionId:pending.intake.question.id,value:answers[pending.intake.question.id],capabilities};
       const answer=client.callTool({name:'task_answer',arguments:input},undefined,{signal:controller.signal,timeout:10000});
       const result=await Promise.race([answer.then(value=>({value})),discoveryStarted.then(()=>({started:true}))]);
       if(result.started){controller.abort(new Error('package caller cancellation'));await assert.rejects(answer);break;}

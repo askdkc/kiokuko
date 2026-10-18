@@ -1,3 +1,4 @@
+import { configuredRelationDeliveryOptions, markLegacyModelContext, packRelationDelivery } from '../memory/relation-delivery.js';
 import { assertPreparationCapabilities } from './capability-contract.js';
 import { scopedMemoryUseSignal } from '../context/scoped-memory-use.js';
 import { readContextDelivery } from '../context/delivery.js';
@@ -742,7 +743,7 @@ async function selectFinalTaskContext(
     const memoryUse = scopedMemoryUseSignal(input.database, input.project.workspace, candidate);
     const closed = missingMemoryCapability && memoryUse === 'actionable';
     const returnEmptyWithoutDelivery = missingMemoryCapability && !closed && candidate.items.length === 0;
-    if (returnEmptyWithoutDelivery) approvedEmptyContext = { ...candidate, deliveryId: null };
+    if (returnEmptyWithoutDelivery) approvedEmptyContext = { ...candidate, deliveryId: null, relationDelivery: packRelationDelivery([], configuredRelationDeliveryOptions()) };
     return {
       persist: !closed && !returnEmptyWithoutDelivery,
       value: { closed, memoryUse, candidate },
@@ -846,7 +847,7 @@ function failTaskRunAfterAbort(database: SqliteDatabase, runId: string, cause: u
   throw cause;
 }
 
-export async function prepareAgentTask(database: SqliteDatabase, input: PrepareAgentTaskInput): Promise<PreparedAgentTask> {
+async function prepareAgentTaskImplementation(database: SqliteDatabase, input: PrepareAgentTaskInput): Promise<PreparedAgentTask> {
   const requestId = taskRequestId(input.requestId);
   assertPreparationCapabilities(input.capabilities);
   const maxContextChars = taskContextCharacterBudget(input.maxContextChars);
@@ -934,8 +935,8 @@ export async function prepareAgentTask(database: SqliteDatabase, input: PrepareA
   }
 }
 
-export async function answerAgentTask(database: SqliteDatabase, input: AnswerAgentTaskInput): Promise<PreparedAgentTask> {
-  const maxContextChars = taskContextCharacterBudget(input.maxContextChars);
+async function answerAgentTaskImplementation(database: SqliteDatabase, input: AnswerAgentTaskInput): Promise<PreparedAgentTask> {
+  const requestedBudget = input.maxContextChars === undefined ? undefined : taskContextCharacterBudget(input.maxContextChars);
   const { project, executionContext } = await requireRegisteredProjectReadOnly(database, input.cwd);
   await drainEmbeddingsBeforeRetrieval(input.embeddingRuntime, project.workspace);
   const manifestSnapshot = captureProjectManifestSnapshot(project);
@@ -951,6 +952,9 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
   };
   const gateway = new AgentGatewayService(database, { profileMemory });
   const runMetadata = gateway.readRun({ runId: runRow.runId }).metadata;
+  const storedBinding = runMetadata[AGENT_TASK_CONTEXT_BINDING_METADATA_KEY];
+  const savedBudget = typeof storedBinding === 'object' && storedBinding !== null && !Array.isArray(storedBinding) ? storedBinding.maxContextChars : undefined;
+  const maxContextChars = requestedBudget ?? taskContextCharacterBudget(savedBudget);
   assertProjectManifestSnapshotBinding(runMetadata, project, manifestSnapshot);
   assertSkillDiscoveryRequestBinding(runMetadata, discoveryRequest);
   const retrievalBinding = assertTaskContextRequestBinding(runMetadata, maxContextChars);
@@ -997,4 +1001,12 @@ export async function answerAgentTask(database: SqliteDatabase, input: AnswerAge
     if (input.signal?.aborted) return failTaskRunAfterAbort(database, answered.runId, error);
     throw error;
   }
+}
+
+export async function prepareAgentTask(...args: Parameters<typeof prepareAgentTaskImplementation>) {
+  return markLegacyModelContext(await prepareAgentTaskImplementation(...args));
+}
+
+export async function answerAgentTask(...args: Parameters<typeof answerAgentTaskImplementation>) {
+  return markLegacyModelContext(await answerAgentTaskImplementation(...args));
 }

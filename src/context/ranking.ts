@@ -1,3 +1,4 @@
+import { DEFAULT_CONTEXT_CHARACTERS } from '../memory/context-budget.js';
 import { hasTargetPathMatch } from './memory-obligation.js';
 import { KiokukoError } from '../errors.js';
 import { ENTRY_KINDS, ENTRY_STATUSES, TRUST_LEVELS, type EntryKind, type EntryStatus, type TrustLevel } from '../serialization/validate.js';
@@ -179,7 +180,7 @@ const MAX_SUMMARY_LENGTH = 4_000;
 const MAX_BODY_LENGTH = 100_000;
 const MAX_SCOPE_DEPTH = 6;
 const MAX_SCOPE_ITEMS = 500;
-export const CONTEXT_RANKING_DEFAULT_CHARACTER_BUDGET = 8_000;
+export const CONTEXT_RANKING_DEFAULT_CHARACTER_BUDGET = DEFAULT_CONTEXT_CHARACTERS;
 // Chosen to match the existing bounded retrieval ceiling; delivery previews remain capped.
 export const CONTEXT_RANKING_MAX_CHARACTER_BUDGET = 100_000;
 const DEFAULT_CHARACTER_BUDGET = CONTEXT_RANKING_DEFAULT_CHARACTER_BUDGET;

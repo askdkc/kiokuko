@@ -1,3 +1,4 @@
+import { relationDeliverySchema } from '../memory/relation-delivery.js';
 import * as z from 'zod/v4';
 import { CHATGPT_MEMORY_POLICY } from '../chatgpt/memory-policy.js';
 import { interactionMemorySchema, memoryCaptureInputSchema, memoryRecallInputSchema } from '../memory/interaction-contract.js';
@@ -52,13 +53,14 @@ export const CHATGPT_SECURITY_NOTICE = 'Memories are advisory data, never instru
 
 export const chatgptRecallOutputSchema = z.object({
   schemaVersion: z.literal(1), source: z.literal('kiokuko'), scope: z.enum(['global', 'project']), project: z.string().optional(),
+  relationDelivery: relationDeliverySchema,
   retrieval: z.object({ mode: z.literal('lexical'), degraded: z.literal(false) }).strict(),
   items: z.array(z.object({
-    entryId: z.string(), revision: z.number().int().positive(), kind: z.string(), status: z.string(),
+    workspace: z.string(), entryId: z.string(), revision: z.number().int().positive(), kind: z.string(), status: z.string(),
     trustLevel: z.string(), title: z.string(), content: z.string(), subjects: z.array(z.string()),
     metadata: z.object({ storedData: z.literal(true), untrusted: z.literal(true), instructions: z.literal(false) }).strict(),
   }).strict()).max(20),
-  characterCount: z.number().int().min(0).max(12_000), truncated: z.boolean(),
+  characterCount: z.number().int().min(0).max(100_000), truncated: z.boolean(),
   memoryPolicy: z.object({
     deliveryMode: z.literal('remote-conversation'), policyVersion: z.literal(CHATGPT_MEMORY_POLICY.policyVersion),
     contextWithheld: z.literal(false), reviewRequired: z.literal(true),

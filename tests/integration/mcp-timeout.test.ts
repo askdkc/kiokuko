@@ -167,7 +167,7 @@ test('MCP caller cancellation of final intake recovers on the same connection wi
     assert.equal(cancellation.receipts.length,1);
     const receipt=cancellation.receipts[0];
     assert.equal(receipt.operation,'task_answer');
-    assert.equal(receipt.requestHash,canonicalContentHash({...last,maxContextChars:12000}));
+    assert.equal(receipt.requestHash,canonicalContentHash(last));
     assert.equal(receipt.source,'mcp_sdk_signal');
     assert.equal(receipt.handlerSettled,true);
     assert.equal(typeof receipt.abortReceivedAt,'string');

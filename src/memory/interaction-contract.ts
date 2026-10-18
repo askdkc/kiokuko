@@ -1,3 +1,4 @@
+import { DEFAULT_CONTEXT_CHARACTERS } from './context-budget.js';
 import * as z from 'zod/v4';
 import { absoluteCwdSchema } from '../repository/cwd-schema.js';
 import { checkpointMemorySchema } from './checkpoint-contract.js';
@@ -58,8 +59,8 @@ export const memoryRecallInputSchema = z.object({
   relatedMode: z.enum(['off', 'observe', 'active']).optional()
     .describe('Enable bounded one-hop same-workspace related candidate discovery; off preserves the existing selection.'),
   limit: z.number().int().min(1).max(20).default(8),
-  maxContextChars: z.number().int().min(100).max(12_000).default(4_000)
-    .describe('Total recall response budget: integer from 100 to 12000 characters. Omit to use 4000. This is not the task_prepare context-lane budget.'),
+  maxContextChars: z.number().int().min(100).max(100_000).default(DEFAULT_CONTEXT_CHARACTERS)
+    .describe('Recall body envelope budget: 100 to 100000 Unicode characters, default 16000. Relation metadata has a separate finite budget.'),
 }).strict();
 
 const sourceRevision = z.object({

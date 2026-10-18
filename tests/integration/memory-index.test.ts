@@ -146,7 +146,7 @@ test('atomic quota is cumulative across submissions and generated entries never 
 test('whole-source maintenance reports over-budget sources without slicing', async (t) => {
     const f = await fixture(t);
     const e = f.sources[0]!;
-    updateCandidateEntry(f.db, { workspace: e.workspace, entryId: e.id, expectedRevision: 1, kind: 'fact', title: e.title, body: 'SQLite '.repeat(2000), scope: e.scope });
+    updateCandidateEntry(f.db, { workspace: e.workspace, entryId: e.id, expectedRevision: 1, kind: 'fact', title: e.title, body: 'SQLite '.repeat(5000), scope: e.scope });
     const w = await work(f, 'atomic', 'oversized');
     assert.ok(w.indexing.unprocessed.some((p: any) => p.entryId === e.id));
     assert.ok(!w.indexing.sources.some((s: any) => s.entryId === e.id));

@@ -315,11 +315,11 @@ test('MCP publishes usable schemas, transport provenance, disable switch, and tw
   const budget = tools.find((tool) => tool.name === 'memory_recall')!.inputSchema.properties?.maxContextChars as {
     maximum: number; default: number; description: string;
   };
-  assert.equal(budget.maximum, 12_000);
-  assert.equal(budget.default, 4_000);
-  assert.match(budget.description, /100 to 12000/u, 'Code-mode clients need the numeric bound in the rendered field description too');
+  assert.equal(budget.maximum, 100_000);
+  assert.equal(budget.default, 16_000);
+  assert.match(budget.description, /100 to 100000/u, 'Code-mode clients need the numeric bound in the rendered field description too');
   const oversized = await first.callTool({ name: 'memory_recall', arguments: {
-    query: 'Japanese grammar', soulRead: true, capabilities, maxContextChars: 16_000,
+    query: 'Japanese grammar', soulRead: true, capabilities, maxContextChars: 100_001,
   } });
   assert.equal(oversized.isError, true, 'The model-facing explanation must not weaken validation');
   const saved = await first.callTool({ name: 'memory_capture', arguments: { operationId: 'mcp-first', memories: [grammar] } });

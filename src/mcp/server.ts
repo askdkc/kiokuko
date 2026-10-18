@@ -1,3 +1,4 @@
+import { DEFAULT_CONTEXT_CHARACTERS } from '../memory/context-budget.js';
 import { createMcpReplayReview } from './replay-review.js';
 import { isBookkeepingFailure, BOOKKEEPING_POLICY } from '../assurance/bookkeeping-policy.js';
 import { observationSchema, memoryContextSchema, memoryImproveSchema } from '../memory/observation-contract.js';
@@ -397,7 +398,7 @@ function bindCancellationObservation(database: SqliteDatabase, observation: McpC
 function toolResult(value: object): { content: Array<{ type: 'text'; text: string }>; structuredContent: Record<string, unknown> } {
   const structuredContent = value as Record<string, unknown>;
   return {
-    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    content: [{ type: 'text', text: JSON.stringify(value) }],
     structuredContent,
   };
 }
@@ -430,7 +431,7 @@ const taskPrepareInputSchema = z.object({
   profileHints: profileHints.optional().describe('Task type, target, success condition, and constraints inferred from current evidence'),
   capabilities: capabilityCatalog.optional().describe("Complete capability descriptors for every capability available in this client as Array<{kind:'skill'|'mcp_tool';name:string;description?:string}>. Every item must include its kind and canonical name; description is optional and bounded. An explicit empty array means known-empty; omission or any malformed/dropped item means unknown. The catalog is ephemeral and never stored"),
   client: z.object({ kind: z.string().trim().min(1).max(200).optional(), version: z.string().trim().min(1).max(100).optional(), sessionId: clientSessionId.optional() }).strict().optional().describe('Optional client metadata. Known client names are normalized against MCP initialize clientInfo. A session ID is metadata, not authorization ownership.'),
-  maxContextChars: z.number().int().min(1000).max(50_000).default(12_000).describe('Maximum characters for each bounded context lane; this normalized value is bound to the run'),
+  maxContextChars: z.number().int().min(1000).max(50_000).default(DEFAULT_CONTEXT_CHARACTERS).describe('Maximum characters for each bounded context lane; this normalized value is bound to the run'),
   temporal: z.unknown().optional().transform(value => normalizeTemporalConstraint(value))
     .describe('Optional absolute time filter. task_prepare normalizes it once and answer/refresh/replay reuse that exact condition.'),
   relatedMode: z.enum(['off', 'observe', 'active']).optional()
@@ -443,7 +444,7 @@ const taskAnswerInputSchema = z.object({
   value: z.string().trim().min(1).max(64 * 1024).describe(TASK_ANSWER_CONTRACT_FRAGMENT),
   cwd: absoluteCwdSchema.optional().describe('Absolute current working directory; defaults to the MCP process cwd and is returned in canonical form through executionContext'),
   capabilities: capabilityCatalog.optional().describe("Complete current client capability catalog as Array<{kind:'skill'|'mcp_tool';name:string;description?:string}>. Repeat the exact list from task_prepare. Every item must include its kind and canonical name; description is optional and bounded. Any malformed or dropped item makes availability unknown. The catalog is ephemeral and never stored"),
-  maxContextChars: z.number().int().min(1000).max(50_000).default(12_000).describe('Must match the context budget bound by task_prepare'),
+  maxContextChars: z.number().int().min(1000).max(50_000).optional().describe('Omit to reuse the context budget bound by task_prepare; an explicit value must match it'),
 }).strict();
 const curatorCheckInputSchema = z.object({
   cwd: absoluteCwdSchema.optional().describe('Absolute current working directory; defaults to the MCP process cwd'),
@@ -601,7 +602,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
         cwd: effectiveCwd,
         ...(capabilities === undefined ? {} : { capabilities }),
         ...(dependencies.fetchImpl === undefined ? {} : { fetchImpl: dependencies.fetchImpl }),
-        maxContextChars,
+        ...(maxContextChars === undefined ? {} : { maxContextChars }),
         ...(embeddingRuntime === undefined ? {} : { embeddingRuntime }),
         signal,
       }));

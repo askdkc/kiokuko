@@ -23,10 +23,10 @@ test('policy digest and version come from one bundled source; attestation is exa
 
 test('remote schemas enforce limits and reject local authority and unknown fields', () => {
   assert.equal(chatgptRecallInputSchema.parse({ query: 'memory' }).limit, 8);
-  assert.equal(chatgptRecallInputSchema.parse({ query: 'memory' }).maxContextChars, 4000);
+  assert.equal(chatgptRecallInputSchema.parse({ query: 'memory' }).maxContextChars, 16000);
   for (const extra of [
     { query: '' }, { query: 'x'.repeat(4001) }, { limit: 0 }, { limit: 21 },
-    { maxContextChars: 99 }, { maxContextChars: 12001 }, { subjects: [] },
+    { maxContextChars: 99 }, { maxContextChars: 100001 }, { subjects: [] },
     { subjects: ['x'.repeat(81)] }, { subjects: ['a', 'b', 'c', 'd', 'e', 'f'] },
     ...['scope', 'workspace', 'cwd', 'databasePath', 'capabilities', 'runId', 'access', 'client', 'soulRead'].map(key => ({ [key]: 'forbidden' })),
     { policy: { extra: true } },

@@ -703,3 +703,32 @@ test('generic Agent open fails instead of persisting a revision that changes aft
     database.close();
   }
 });
+
+test('HTTP intake and checkpoint publish the final broker relation snapshot and checkpoint default budget', async () => {
+  const value = await fixture('typed-relations');
+  try {
+    const database = openConnection(value.databasePath);
+    let otherId: string;
+    try {
+      const { linkEntries } = await import('../../src/memory/lifecycle.js');
+      const other = recordEntry(database, { workspace: value.workspace, kind: 'reference', title: 'Beacon regression counterexample', body: 'A counterexample to the beacon workflow.' });
+      otherId = other.id;
+      for (const relation of ['supports', 'contradicts'] as const) linkEntries(database, { workspace: value.workspace, fromEntryId: value.entryId, toEntryId: other.id, relation });
+    } finally { database.close(); }
+    const capabilities = soulCapabilities({ kind: 'skill', name: 'memory-reasoning' });
+    const body = openBody(value.workspace, capabilities); body.task.profileHints.taskType = 'analysis';
+    const opened = await request(value.runtime.url, '/api/v1/agent/runs', { key: 'typed-relations-open', body });
+    assert.equal(opened.response.status, 200);
+    const context = opened.data.context;
+    assert.equal(context.relationDelivery.status, 'complete'); assert.equal(context.relationDelivery.edges.length, 2);
+    assert.ok(context.items.every((item: {workspace:string}) => item.workspace === value.workspace));
+    assert.ok(context.items.some((item: {entryId:string}) => item.entryId === otherId));
+    const checkpoint = await request(value.runtime.url, '/api/v1/agent/runs/' + opened.data.runId + '/checkpoints', {
+      key: 'typed-relations-checkpoint', body: { apiVersion: '1', currentGoal: 'Review the beacon counterexample', capabilities },
+    });
+    assert.equal(checkpoint.response.status, 200); assert.equal(checkpoint.data.characterBudget, 16000);
+    assert.ok(checkpoint.data.context.relationDelivery);
+    const ids = new Set(checkpoint.data.context.items.map((item: {entryId:string}) => item.entryId));
+    assert.ok(checkpoint.data.context.relationDelivery.edges.every((edge: {from:{entryId:string};to:{entryId:string}}) => ids.has(edge.from.entryId) && ids.has(edge.to.entryId)));
+  } finally { await value.runtime.close(); }
+});

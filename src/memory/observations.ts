@@ -1,3 +1,5 @@
+import { attachRelationDelivery } from './relation-delivery.js';
+import { KiokukoError } from '../errors.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { observationSchema, memoryContextSchema, type MemoryContextResponse, type MemoryContextItem, type MemoryRecordResponse } from './observation-contract.js';
 import { readEntry, type EntryRecord } from './entries.js';
@@ -13,7 +15,7 @@ function contextItem(entry: EntryRecord, scope: 'project' | 'global'): MemoryCon
   try { const decoded: unknown = JSON.parse(entry.body); if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) body = decoded as Record<string, unknown>; } catch { /* Legacy prose is advisory. */ }
   const value = body.verification;
   const actions = observationSchema.shape.actions.safeParse(body.actions);
-  return { entryId: entry.id, revision: entry.revision, kind: entry.kind, summary: entry.summary ?? entry.body.slice(0, 2048),
+  return { workspace: entry.workspace, entryId: entry.id, revision: entry.revision, kind: entry.kind, summary: entry.summary ?? Array.from(entry.body).slice(0, 2048).join(''),
     tags: entry.tags, confidence: entry.confidence,
     verification: value === 'passed' || value === 'failed' ? value : 'unknown',
     verificationProvenance: value === 'passed' || value === 'failed' ? 'declared' : 'unknown',
@@ -31,7 +33,8 @@ export async function memoryContext(db: SqliteDatabase, raw: unknown): Promise<M
     if (!parsed.success) return empty('memory_input_invalid');
     const input = parsed.data, project = await resolveProjectWorkspace(db, input.cwd);
     if (!project) return empty('memory_repository_unavailable');
-    const rows = recallEntries(db, { workspace: project.workspace, query: input.query, limit: 50, maxChars: 48000, ...(input.tags[0] ? { tag: input.tags[0].toLowerCase() } : {}) });
+    // Preserve the existing bounded candidate/dedup policy; only the final model body uses maxContextChars.
+    const rows = recallEntries(db, { workspace: project.workspace, query: input.query, limit: 50, maxChars: 48_000, ...(input.tags[0] ? { tag: input.tags[0].toLowerCase() } : {}) });
     const entries: MemoryContextItem[] = [];
     for (const hit of rows.items) {
       const entry = readEntry(db, { workspace: project.workspace, entryId: hit.id });
@@ -41,8 +44,20 @@ export async function memoryContext(db: SqliteDatabase, raw: unknown): Promise<M
       entries.push(contextItem(entry, 'project'));
     }
     const handoff = null; // Legacy passive handoffs have no user-save approval.
-    return { available: true, workMayContinue: true, entries: entries.slice(0, input.limit), handoff, warnings: [] };
-  } catch { return empty('memory_context_unavailable'); }
+    const provided = entries.slice(0, input.limit);
+    let budgetOmitted = false;
+    while (Array.from(JSON.stringify({ entries: provided, handoff })).length > input.maxContextChars) {
+      budgetOmitted = true;
+      if (!provided.length) throw new KiokukoError('VALIDATION_ERROR', 'Memory context budget cannot fit its explicit body envelope');
+      provided.pop();
+    }
+    const shown = attachRelationDelivery(db, { items: provided }, { selectionOmissions: [
+      ...(budgetOmitted ? ['body_budget' as const] : []), ...(entries.length >= input.limit || rows.truncated ? ['item_limit' as const] : []),
+    ] });
+    return { available: true, workMayContinue: true, entries: shown.items, relationDelivery: shown.relationDelivery,
+      characterCount: Array.from(JSON.stringify({ entries: shown.items, handoff })).length,
+      truncated: budgetOmitted || rows.truncated || entries.length > provided.length, handoff, warnings: [] };
+  } catch (error) { return empty(error instanceof KiokukoError ? error.code : 'memory_context_unavailable'); }
 }
 /** Passive events and maintenance are suggestions, never permission to save derived memories. */
 export async function observeMemory(_db: SqliteDatabase, raw: unknown): Promise<MemoryRecordResponse> {

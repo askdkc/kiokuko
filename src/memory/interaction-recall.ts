@@ -1,3 +1,4 @@
+import { configuredRelationDeliveryOptions, packRelationDelivery } from './relation-delivery.js';
 import { hasBlockingRequiredCapability, memoryReasoningCapabilityAvailability, resolveCapabilities } from '../akinator/capabilities.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
@@ -25,7 +26,7 @@ export async function recallInteractionMemory(database: SqliteDatabase, raw: unk
   const blocked = hasBlockingRequiredCapability(capabilities);
   const availability = memoryReasoningCapabilityAvailability(input.capabilities);
   const withheld = availability !== 'available';
-  const empty = { items: [], characterCount: 0, truncated: false, capabilities,
+  const empty = { relationDelivery: packRelationDelivery([], configuredRelationDeliveryOptions()), items: [], characterCount: 0, truncated: false, capabilities,
     memoryPolicy: { memoryReasoningRequired: true, contextWithheld: withheld,
       withheldReason: withheld ? availability === 'missing' ? 'memory_reasoning_missing' : 'memory_reasoning_unknown' : null },
     nextAction: blocked ? 'required_capability_unavailable' : 'proceed',

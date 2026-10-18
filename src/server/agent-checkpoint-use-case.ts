@@ -196,6 +196,7 @@ export class AgentCheckpointUseCase {
       profileHash: gated.broker.profileHash,
       projection,
       ...gated.value,
+      context: gated.value.context === null ? null : gated.broker.context,
       nudge,
       requestBindingHash: input.requestBindingHash,
       untrusted: true,

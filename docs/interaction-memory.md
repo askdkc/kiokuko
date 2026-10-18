@@ -80,7 +80,7 @@ not a deletion tombstone bypass prevention mechanism.
 
 `memory_recall` takes `soulRead: true`, the complete current capability catalog,
 `query`, optional `subjects`, `limit` (default 8, maximum 20), and
-`maxContextChars` (default 4,000, range 100–12,000). Read the exact local
+`maxContextChars` (default 16,000 Unicode characters, range 100–100,000; relation metadata is separately bounded). Read the exact local
 `kiokuko-soul` and `memory-reasoning` Skills before advertising them. Missing SOUL
 blocks recall; missing or unknown memory-reasoning withholds ordinary memories.
 Current managed Curator projections retain the existing trusted-memory exception.

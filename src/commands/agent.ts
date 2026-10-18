@@ -1,3 +1,4 @@
+import { markLegacyModelContext, relationDeliverySchema } from '../memory/relation-delivery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';
@@ -566,8 +567,9 @@ function validateScoreComponentsSchema(value: unknown): void {
 
 function validateContextSchema(value: unknown): Record<string, JsonValue> | null {
   if (value === null) return null;
-  const object = responseObject(value, [
-    'deliveryId', 'runId', 'throughSequence', 'taskProfileHash', 'queryHash', 'policyVersion', 'items', 'untrusted',
+  const presented = markLegacyModelContext({ context: value }).context;
+  const object = responseObject(presented, [
+    'deliveryId', 'runId', 'throughSequence', 'taskProfileHash', 'queryHash', 'policyVersion', 'items', 'untrusted', 'relationDelivery',
   ]);
   if (object.deliveryId !== null) responseIdentifier(object.deliveryId);
   responseIdentifier(object.runId);
@@ -579,13 +581,15 @@ function validateContextSchema(value: unknown): Record<string, JsonValue> | null
   }
   const items = responseArray(object.items, 100);
   const entryIds = new Set<string>();
+  const entryWorkspaces = new Map<string, string>();
   for (const value of items) {
     const item = responseObject(value, [
       'entryId', 'entryRevision', 'rank', 'scoreComponents', 'selectionReasons', 'content', 'untrusted',
-    ], ['origin']);
+    ], ['origin', 'workspace']);
     const entryId = responseIdentifier(item.entryId);
     if (entryIds.has(entryId)) throw responseIntegrityError();
     entryIds.add(entryId);
+    if (item.workspace !== undefined) entryWorkspaces.set(entryId, responseIdentifier(item.workspace));
     responseInteger(item.entryRevision, 1);
     responseInteger(item.rank, 1);
     if (item.untrusted !== true) throw responseIntegrityError();
@@ -604,6 +608,10 @@ function validateContextSchema(value: unknown): Record<string, JsonValue> | null
     if (typeof content.truncated !== 'boolean') throw responseIntegrityError();
     if (Object.hasOwn(item, 'origin')) responseEnum(item.origin, ['project', 'ecosystem', 'global']);
   }
+  const relations = relationDeliverySchema.safeParse(object.relationDelivery);
+  if (!relations.success || relations.data.status === 'complete' && entryWorkspaces.size !== entryIds.size
+    || relations.success && relations.data.edges.some(edge => entryWorkspaces.get(edge.from.entryId) !== edge.from.workspace
+      || entryWorkspaces.get(edge.to.entryId) !== edge.to.workspace)) throw responseIntegrityError();
   return object;
 }
 
@@ -928,6 +936,7 @@ function validateIntakeResponse(value: JsonValue, binding: AgentResponseBinding)
   }
   if (object.untrusted !== true) throw responseIntegrityError();
   const context = needsAnswer ? null : validateContextSchema(object.context);
+  object.context = context;
   if (context !== null && (context.runId !== runId || context.taskProfileHash !== object.profileHash)) {
     throw responseIntegrityError();
   }
@@ -967,6 +976,7 @@ function validateCheckpointResponse(value: JsonValue, binding: AgentResponseBind
   responseInteger(object.characterBudget, 1, 100_000);
   if (object.untrusted !== true) throw responseIntegrityError();
   const context = validateContextSchema(object.context);
+  object.context = context;
   if (context !== null && (context.runId !== runId || context.taskProfileHash !== object.profileHash)) {
     throw responseIntegrityError();
   }

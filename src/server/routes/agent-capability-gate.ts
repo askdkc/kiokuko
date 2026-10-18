@@ -272,5 +272,6 @@ export async function attachCapabilityGatedContext(
     profileHash: intakeStatus === 'needs_answer' ? null : gated.broker.profileHash,
     recommendedTags: [...gated.broker.recommendedTags],
     ...gated.value,
+    context: gated.value.context === null ? null : gated.broker.context,
   };
 }

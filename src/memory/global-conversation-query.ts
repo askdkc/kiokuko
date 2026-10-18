@@ -1,3 +1,4 @@
+import { attachRelationDelivery } from './relation-delivery.js';
 import { rankedEntryHits } from './retrieval.js';
 import { readEntry } from './entries.js';
 import type { SqliteDatabase } from '../db/adapter.js';
@@ -52,14 +53,14 @@ export function queryGlobalConversationMemory(
       }
       candidates = input.orderedEntryIds.map((entryId) => byId.get(entryId)!);
     }
-    const items: Array<{ entryId: string; revision: number; kind: string; status: string; trustLevel: string;
+    const items: Array<{ workspace: string; entryId: string; revision: number; kind: string; status: string; trustLevel: string;
       title: string; content: string; subjects: string[]; metadata: { storedData: true; untrusted: true; instructions: false } }> = [];
     let characters = 2;
     let truncated = result.truncated;
     for (const { entry } of candidates) {
       const content = entry.summary ?? entry.body;
       if (withholdOrdinary && !isCuratorManagedGlobalMemory(entry)) continue;
-      const item = { entryId: entry.id, revision: entry.revision, kind: entry.kind, status: entry.status,
+      const item = { workspace: entry.workspace, entryId: entry.id, revision: entry.revision, kind: entry.kind, status: entry.status,
         trustLevel: entry.trustLevel, title: entry.title, content: '', subjects: memorySubjects(entry),
         metadata: { storedData: true as const, untrusted: true as const, instructions: false as const } };
       const overhead = Array.from(JSON.stringify(item)).length + (items.length ? 1 : 0);
@@ -80,6 +81,8 @@ export function queryGlobalConversationMemory(
       characters += Array.from(JSON.stringify(item)).length + (items.length ? 1 : 0);
       items.push(item);
     }
-    return { items, characterCount: items.length ? characters : 0, truncated };
+    return attachRelationDelivery(database, { items, characterCount: items.length ? characters : 0, truncated }, { itemLimit: input.limit,
+      selectionOmissions: [...(result.truncated ? ['item_limit' as const] : []), ...(truncated ? ['body_budget' as const] : []),
+        ...(withholdOrdinary ? ['final_filter' as const] : [])] });
   });
 }
