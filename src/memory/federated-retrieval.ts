@@ -464,8 +464,13 @@ export function globalLaneCandidates(
         ...(features.temporal?.mode === 'boost' && matchesTemporalConstraint(database, entry, features.temporal)
           ? ['temporal_match'] : [])] } }];
   }).slice(0, 2);
+  // General communication preferences are useful, but must not consume every
+  // slot when retrieval found a memory matching the current question.
+  // Preserve their existing priority whenever the result budget permits it.
+  const preferenceSlots = Math.max(0, limit - (eligible.length > 0 ? 1 : 0));
+  const selectedPreferences = preferences.slice(0, preferenceSlots);
   return {
-    candidates: [...preferences, ...eligible].slice(0, limit),
+    candidates: [...selectedPreferences, ...eligible].slice(0, limit),
     truncated: ranked.truncated || preferences.length + eligible.length > limit,
   };
 }

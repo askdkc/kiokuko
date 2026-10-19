@@ -63,6 +63,30 @@ test('standalone conversation learns subject and general preferences without a p
   }
 });
 
+test('specific corrections survive low limits alongside general communication preferences', async (t) => {
+  const { capture, recall } = await fixture(t);
+  await capture('two-general-preferences', [
+    general,
+    { ...general, title: 'Answer specificity', body: 'Give concrete examples when explaining.' },
+  ]);
+  const saved = await capture('runtime-correction', [{
+    kind: 'lesson', title: 'Daily runtime validation',
+    body: 'Validate chosen decisions in daily runtime and report defects for correction.',
+    scope: 'global', portableReason: 'Use the operational feedback when assessing decisions in later conversations.',
+    basis: 'user_correction', subjects: ['daily runtime'],
+  }]);
+  const entryId = saved.items[0]!.entryId;
+  const query = 'daily runtime defects correction';
+  assert.deepEqual((await recall(query, { limit: 1 })).items.map(item => item.entryId), [entryId]);
+  const two = await recall(query, { limit: 2 });
+  assert.equal(two.items.length, 2);
+  assert.ok(two.items.some(item => item.entryId === entryId));
+  const three = await recall(query, { limit: 3 });
+  assert.equal(three.items.length, 3);
+  assert.ok(three.items.some(item => item.entryId === entryId));
+  assert.equal((await recall('advanced tensor mathematics', { limit: 2 })).items.length, 2);
+});
+
 test('explicit subject filters precede candidate limits and preference injection', async (t) => {
   const { capture, recall } = await fixture(t);
   for (let i = 0; i < 130; i++) await capture(`noise-${i}`, [{ ...grammar, kind: 'fact', title: `Particles ${i}`, subjects: ['physics'], body: `Particles experiment ${i}` }]);
