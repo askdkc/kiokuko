@@ -53,9 +53,9 @@ test('README entry points and English/Japanese docs carry the setup and trust co
   assert.ok(renderCodexMcpConfig('').content.includes(requiredCore));
 
   for (const name of ['README.md', 'README.ja.md', 'README.zh-CN.md', 'README.ko.md']) {
-    const readme = readFileSync(new URL(`../../${name}`, import.meta.url), 'utf8');
+    const readme = readFileSync(new URL(`../../${name}`, import.meta.url), 'utf8').replace(/\*\*/gu, '');
     assert.match(readme, /Node\.js 24\.16\.0/u, name);
-    assert.match(readme, /npm install --global kiokuko/u, name);
+    assert.match(readme, /npm i -g kiokuko/u, name);
     assert.match(readme, /kiokuko setup/u, name);
     assert.match(readme, /docs\/(README|getting-started)/u, name);
   }
@@ -113,6 +113,10 @@ test('README and documentation index links resolve inside the repository', () =>
     'README.ko.md',
     'docs/README.md',
     'docs/README.ja.md',
+    'docs/setup-notes.md',
+    'docs/setup-notes.ja.md',
+    'docs/setup-notes.zh-CN.md',
+    'docs/setup-notes.ko.md',
   ];
   for (const relativeSource of sources) {
     const sourcePath = path.join(repositoryRoot, relativeSource);
