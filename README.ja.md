@@ -1,177 +1,39 @@
 # Kiokuko（記憶庫）
 
-1.0では旧DBを利用できません。新規DBで開始してください。[破壊的変更と旧設定の撤去手順](docs/breaking-changes-1.0.md)を参照してください。
-
 [English](README.md) | 日本語 | [简体中文](README.zh-CN.md) | [한국어](README.ko.md)
 
-**MCPで接続し、必要な記憶を検索し、作業後に知識を蓄積する。**
+AIエージェント用のローカルメモリです。好み・判断・訂正をSQLiteに保存し、
+必要な文脈をMCP経由で検索します。
 
-KiokukoはAIコーディングエージェント向けのローカル外部メモリです。SQLiteに知識を保存し、
-次のタスクに関係する文脈を検索し、作業結果から再利用できる知識を記録します。
+**Codex・OpenCode・Claude Code・Hermes Agent**に対応。
+[ChatGPTへの接続はプレビュー版です](docs/setup-notes.ja.md#chatgpt)。
 
-## 基本概念
+## インストール
 
-```text
-依頼 → MCP接続 → 関係する記憶を検索 → 作業
-                                  ↓
-                         再利用できる知識を保存
-```
-
-記憶はProject・Ecosystem・Globalに分離されます。現在のコード、設定、実行結果が過去の記憶より優先されます。
-
-## 最短セットアップ
-
-Node.js 24.16.0以上が必要です（Node.js 26.1.0以上にも対応）。
+Node.js **24.16.0以上**が必要です。
 
 ```bash
 npm install --global kiokuko
 kiokuko setup
 ```
 
-`setup`はローカルDB・標準Skill・MCP接続に加えて、ローカルsemantic検索も設定します。
-初回は埋め込みランタイムとモデルを導入します。
-起動中のクライアントは、設定後に一度再起動してください。正確な設定規則は
-[導入ガイド](docs/getting-started.ja.md)を参照してください。
+クライアントを再起動すれば、あとは普段どおり使えます。MCP・標準Skill・
+ローカルsemantic検索を設定します。埋め込みモデルのダウンロードを省く場合は
+`kiokuko setup --no-embeddings`を使ってください。
 
-埋め込みランタイムとモデルを導入せず、クライアント設定だけ行う場合:
+1.0未満からの更新には新規DBが必要です。
+[移行と旧設定の撤去](docs/breaking-changes-1.0.md)。
 
-```bash
-kiokuko setup --no-embeddings
-```
-
-埋め込みのセットアップを省略します。既存の埋め込み設定は変更しません。
+## ドキュメント
 
 <a id="setup-messages"></a>
 
-### npmの通知とセットアップエラー
-
-`install scripts not yet covered by allowScripts`は、依存パッケージのスクリプトに実行許可が記録されていないという通知です。
-`esbuild`はビルドツール、`fsevents`はmacOSのファイル監視用です。この通知だけではセットアップの失敗とは限りません。
-
-通知が出たパッケージのディレクトリで確認します。
-
-```bash
-npm install-scripts ls
-```
-
-`esbuild`と`fsevents`が表示され、スクリプトを確認したうえで実行を許可する場合は、次のコマンドで記録します。
-
-```bash
-npm install-scripts approve esbuild fsevents
-```
-
-許可はそのディレクトリの`package.json`に保存されます。macOSでKiokukoをグローバルインストールした場合は、エラーに表示されたKiokukoのインストール先で実行してください。
-別のプロジェクトで実行すると、そのプロジェクトの許可設定を確認・変更します。
-詳しくは[npmのスクリプト許可ガイド](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/)を参照してください。
-
-最後に`Local semantic retrieval dependencies remain unavailable`と`Cannot find package ... @huggingface/hub/index.js`が出た場合は、
-埋め込みランタイムを読み込めず、semantic検索の設定が完了していません。スクリプトの許可でこの読み込みエラーが直るとは確認できていません。
-問い合わせる際は、エラー全文と`kiokuko --version`、`node --version`、`npm --version`の結果を添えてください。
-
-### Codex用の保存済み実行版
-
-npmの導入先が置き換わってもCodexのMCPとライフサイクルhookを同じ版で動かすには、ユーザー専用のアプリケーションデータ領域に実行版を用意します。進行中の作業を終え、Codexを停止してから設定を切り替えてください。
-
-```bash
-kiokuko runtime-prepare --runtime-root "$HOME/Library/Application Support/Kiokuko/runtimes" --json
-kiokuko setup --clients codex --no-embeddings --no-standard-skills --runtime-manifest /absolute/path/to/runtime/manifest.json --client-stopped
-kiokuko runtime-diagnose --manifest /absolute/path/to/runtime/manifest.json --json
-```
-
-Linuxでは実行版の保存先に`${XDG_DATA_HOME:-$HOME/.local/share}/kiokuko/runtimes`を使います。2行目と3行目のmanifestは、1行目が返す`manifestPath`に置き換えます。現在のNodeがバイナリ外の共有ライブラリに依存する場合、準備は失敗します。その場合は`--node /absolute/path/to/node`で単独起動できるNodeを指定してください。準備だけではクライアント設定は変わりません。`setup`は保存したファイルを検証し、管理対象のMCPと全hookを同じ版へ更新します。途中で失敗した設定ファイルは元に戻します。診断結果が`readyForRestart: true`になってからCodexを再起動してください。独自のMCP起動コマンドは保持され、別途移行が必要です。
-
-npmを更新しただけでは使用版は切り替わりません。更新時は作業を終えてCodexを停止し、新版を準備して、そのmanifestで`setup`を実行してから再起動します。旧実行版は自動削除しません。新版がメモリDBをmigrationした後に旧版へ戻す場合は、先にDB互換性を確認してください。保存容量はNodeと導入済みの任意依存によって変わりますが、1版につき数百MBを見込み、複数版を残す前に実際の容量を確認してください。
-
-## アンインストール
-
-Kiokukoを使うクライアントと`kiokuko serve`を終了してから実行します。
-
-```bash
-kiokuko uninstall --dry-run
-kiokuko uninstall
-# 全エージェントを選択して正常終了後、最後に表示されたコマンドを実行
-npm uninstall --global kiokuko
-```
-
-↑↓で移動、Spaceで選択を切り替え、Enterで確定、Escで中止します。初期状態は未選択です。
-選択したエージェントの管理設定・Skillだけを削除します。**全4エージェントを選ぶと記憶DB・埋め込みモデル・登録済みプロジェクトの管理部分も削除**し、最後にnpmの削除コマンドを表示します。一部だけを選んだ場合は共有データとnpmパッケージを残します。ユーザーが書いた内容は保持します。
-スクリプトでは `kiokuko uninstall --clients opencode,claude`、完全削除には `kiokuko uninstall --all` を使います。
-独自の配置先を指定していた場合は、セットアップ時と同じ環境変数で実行してください。[削除範囲と失敗時の扱い](docs/cli-contract.md#uninstall)
-
-## 主な機能
-
-- **RAGメモリ**: lexical検索に加え、`setup`でローカルsemantic検索を設定。
-- **Akinator**: 曖昧な依頼を作業前に具体化。
-- **ローカルWeb UI**: 保存した記憶の確認と整理。
-- **参照専用Skill**: 外部Skillは検証して保存するが、自動実行しない。
-
-`kiokuko embeddings setup`は、`kiokuko setup`と同じ処理を行う互換コマンドとして利用できます。
-
-managed MCP blockと登録済みプロジェクトのinstructionsを更新します。unmanaged identityの置換は対話確認後だけ行い、
-非対話または`--dry-run --json`では変更せずfail closedします。詳細は
-[semantic retrievalガイド](docs/semantic-retrieval.ja.md)を参照してください。
-
-## 対応クライアント
-
-Codex、OpenCode、Claude Code、Hermes Agentに対応しています。client別の設定、再起動、Web UIは
-[導入ガイド](docs/getting-started.ja.md)にまとめています。
-
-セッションの記録には[AgenticReplay](docs/agenticreplay.ja.md)を使い、Kiokukoに接続する
-クライアントをレコーダーから起動します。任意で使うツールで、別途インストールします。
-
-## ChatGPTで使う（プレビュー）
-
-Developer modeで自分用プラグインとして接続し、記憶を保存・検索します。ストア配布版はありません。
-
-1. **Kiokukoを準備する。** `kiokuko mcp --help`に`--profile`と`--access`がある版を使います。なければ[ソース版を導入](docs/chatgpt.ja.md)。DBが未作成なら`kiokuko init`を実行します。
-2. **Tunnelクライアントを入れる。** macOSでは[公式Homebrew手順](https://github.com/openai/tunnel-client#install-with-homebrew)でインストールします。
-
-   ```bash
-   brew install openai/tools/tunnel-client
-   tunnel-client --version
-   ```
-
-   他のOSは[公式配布先](https://github.com/openai/tunnel-client/releases/latest)を参照。[Tunnel設定](https://platform.openai.com/settings/organization/tunnels)で利用するChatGPT workspaceに関連付けたTunnel IDと、Tunnels Read + Use権限の[実行用APIキー](https://platform.openai.com/settings/organization/api-keys)を用意します。
-
-3. **手元のPCで接続を起動する。** `<tunnel_id>`と`<runtime_api_key>`を取得した値に置き換えます。
-
-   ```bash
-   export CONTROL_PLANE_API_KEY="<runtime_api_key>"
-   tunnel-client init \
-     --sample sample_mcp_stdio_local \
-     --profile kiokuko-chatgpt \
-     --tunnel-id "<tunnel_id>" \
-     --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
-   tunnel-client doctor --profile kiokuko-chatgpt --explain
-   kiokuko chatgpt run --profile kiokuko-chatgpt
-   ```
-
-   利用中は起動したままにします。別の端末で起動する場合はAPIキーを再設定し、最後の`run`を実行します。
-
-4. **ChatGPTに登録する。** 設定 → **Security and login → Developer mode**を有効化。**Plugins → ＋**で名前を`Kiokuko`、説明を「記憶の保存と検索」にし、**Connection → Tunnel**で同じIDを指定します。新しい会話のツールメニューからKiokukoを選びます。[公式の画面手順](https://developers.openai.com/plugins/deploy/connect-chatgpt)
-
-使い方: 「この内容をKiokukoに保存して」「Kiokukoから○○についての記憶を探して」。書き込み確認が出たら内容を確認して承認します。
-
-検索だけなら起動コマンドの`read-write`を`read`に変更します。ChatGPT標準メモリの保存先は変わりません。**ChatGPT実機での接続確認は未実施**です。[困ったとき](docs/chatgpt.ja.md)
-
-## 安全性と制約
-
-会話全文は保存せず、パスワード、API key、token、秘密鍵に似た内容を拒否します。保存された記憶は参考情報であり、
-現在のリポジトリと実行結果で確認してください。
-
-MCPの利用はclientとモデルが決めるため、**毎回必ずKiokukoが呼ばれる保証はありません**。信頼境界と公開エラーは
-[Security and trust](docs/security-and-trust.ja.md)で説明しています。
-
-## 詳細ドキュメント
-
-- [ドキュメント目次](docs/README.ja.md)
 - [導入ガイド](docs/getting-started.ja.md)
-- [基本概念](docs/concepts.ja.md)
-- [Semantic retrieval](docs/semantic-retrieval.ja.md)
-- [Akinator のプロフィール補助](docs/akinator-memory.md)
-- [記憶の適用記録・検証結果・Codex フック](docs/memory-assurance.md)
-- [Security and trust](docs/security-and-trust.ja.md)
-- [CLI contract](docs/cli-contract.md)
+- [設定・トラブルシューティング・アンインストール](docs/setup-notes.ja.md)
+- [記憶と検索](docs/concepts.ja.md)
+- [履歴とコードの証拠（英語）](docs/history-evidence.md)
+- [ドキュメント一覧](docs/README.ja.md)
 
-実装者向け資料は[architecture](docs/architecture.md)、[database](docs/database.md)、[execution ledger](docs/execution-ledger.md)、
-[client compatibility](docs/client-compatibility.md)を参照してください。
+保存した記憶には誤りがありえます。秘密情報に見える内容は拒否し、会話全文は保存しません。
+MCPの呼び出しはクライアントとモデルの判断に依存します。
+[安全性と信頼の境界](docs/security-and-trust.ja.md)。

@@ -1,3 +1,6 @@
+import {registerCodeVersionCommands} from './commands/code-version.js';
+import {finalizeHistoryRecall} from './memory/history-delivery.js';
+import {resolveProjectWorkspaceReadOnly} from './memory/workspaces.js';
 import { DEFAULT_CONTEXT_CHARACTERS } from './memory/context-budget.js';
 import { repairRegisteredBindings } from './repository/binding-repair.js';
 import { createInterface as createHumanPrompt } from 'node:readline/promises';
@@ -324,10 +327,25 @@ function configureRecallCommand(command: Command, dependencies: CliDependencies)
     .option('--temporal-end <instant>', 'Exclusive ISO-8601 upper bound')
     .option('--anchor-time <instant>', 'ISO-8601 request time fixed for replay')
     .option('--timezone <zone>', 'IANA time zone used to normalize the request', 'UTC')
-    .option('--related-mode <mode>', 'off, observe, or active bounded one-hop related candidates');
+    .option('--related-mode <mode>', 'off, observe, or active bounded related candidates')
+    .option('--history', 'Project history: separate immutable ancestry and code evidence; implies JSON output')
+    .option('--max-output-chars <number>', 'Hard Unicode limit on the complete serialized project recall response; implies JSON output');
   recall.action(async (query: string, options: Record<string, unknown>) => {
     const temporal = temporalOption(options);
     const relatedMode = relatedModeOption(options);
+    if (options.history === true || options.maxOutputChars !== undefined) {
+      if (options.scope === 'global' || options.scope === 'ecosystem') throw new KiokukoError('VALIDATION_ERROR', 'History and final-output recall budgets require project scope');
+      const value = await withEmbeddingDatabase(dependencies, (database, backend) => withPreparedSemanticRuntime(dependencies, database, backend, query, async runtime => {
+        const cwd = typeof options.cwd === 'string' ? options.cwd : process.cwd();
+        const project = await resolveProjectWorkspaceReadOnly(database, cwd);
+        if (!project || options.workspace !== undefined && String(options.workspace) !== project.workspace) throw new KiokukoError('NOT_FOUND', 'Recall history requires the exact registered project workspace and cwd');
+        const base = await recallEntriesWithReranker(database, {workspace:project.workspace,cwd,query,limit:Number(options.limit),maxChars:Number(options.maxChars),relatedMode:options.relatedMode===undefined?'active':relatedMode,...(temporal===undefined?{}:{temporal})}, runtime);
+        return finalizeHistoryRecall(database,base,{workspace:project.workspace,cwd,includeHistory:options.history===true,...(options.maxOutputChars===undefined?{}:{maxOutputChars:Number(options.maxOutputChars)}),
+          measure:packet=>Array.from(JSON.stringify(successEnvelope('recall',packet,{count:(packet as RecallResult).count,truncated:(packet as RecallResult).truncated}))).length+1});
+      }));
+      process.stdout.write(JSON.stringify(successEnvelope('recall',value,{count:value.count,truncated:value.truncated}))+'\n');
+      return;
+    }
     let data: RecallResult | ScopedRecallResult;
     if (options.workspace !== undefined) {
       data = await withEmbeddingDatabase(dependencies, (database, backend) => withPreparedSemanticRuntime(
@@ -1179,6 +1197,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   registerAgentCommand(cli, dependencies.agent);
   registerCodexHookCommand(cli);
   registerLedgerCommands(cli, { withDatabase });
+  registerCodeVersionCommands(cli, { withDatabase });
   registerAkinatorMemoryCommands(cli);
   registerMemoryIndexCommands(cli, {withDatabase});
   registerSkillsCommands(cli, dependencies.skills ?? { withDatabase });

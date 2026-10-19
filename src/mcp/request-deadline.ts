@@ -13,6 +13,8 @@ export type McpToolOperation =
   | 'task_prepare_recover'
   | 'task_answer'
   | 'task_inspect'
+  | 'task_history_recall'
+  | 'task_code_version'
   | 'task_memory_review'
   | 'task_execution_evidence'
   | 'task_memory_refresh'
@@ -103,6 +105,7 @@ const EXTERNAL_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
 ]);
 
 const MUTATION_OPERATIONS: ReadonlySet<McpToolOperation> = new Set([
+  'task_code_version',
   'task_memory_review',
   'task_execution_evidence',
   'task_memory_refresh',

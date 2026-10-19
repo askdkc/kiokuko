@@ -5,6 +5,8 @@ Choose a guide by what you need to do:
 - [Getting started](getting-started.md) — install, configure Codex/OpenCode/Claude/Hermes, restart clients, and use the Web UI.
 - [npm notices and setup errors](../README.md#setup-messages) — review script approvals and distinguish them from missing embedding dependencies.
 - [Concepts](concepts.md) — RAG, memory lifecycle, Project/Ecosystem/Global scopes, and Akinator.
+- [Context delivery](context-delivery.md) — Unicode body budgets, separate typed-relation limits, and explicit omissions.
+- [History and code evidence](history-evidence.md) — scoped ancestry, immutable failed versions, enforced environment conditions and hard output limits.
 - [Semantic retrieval](semantic-retrieval.md) — embedding runtime setup, operation, offline mode, and fallback.
 - [Interaction memory](interaction-memory.md) — automatic candidate capture, subject recall, corrections, and the disable switch.
 - [ChatGPT memory](chatgpt.md) — supported-version installation, connection troubleshooting and scope.

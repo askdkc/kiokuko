@@ -1,10 +1,11 @@
+import semver from 'semver';
 import { readEntry } from './entries.js';
 import { syncInteractionFingerprint } from './interaction-fingerprint.js';
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
 import { canonicalTagOrder, compareCanonicalStrings, type JsonObject } from '../serialization/validate.js';
 import { normalizeSearchSignal } from './retrieval-query.js';
-import { findSecret } from './secrets.js';
+import { findSecret, findSecretInValue } from './secrets.js';
 
 export const MEMORY_CLASSES = [
   'implementation-pattern', 'troubleshooting', 'tool-usage', 'extension-usage',
@@ -16,6 +17,11 @@ export const RETRIEVAL_SCOPES = ['project-only', 'ecosystem', 'global'] as const
 export type RetrievalScope = (typeof RETRIEVAL_SCOPES)[number];
 
 export interface Applicability {
+  ownerIds?: string[];
+  repositoryIds?: string[];
+  workspaces?: string[];
+  branches?: string[];
+  environment?: Record<string, string>;
   languages?: string[];
   frameworks?: Array<{ name: string; version?: string }>;
   databases?: string[];
@@ -57,9 +63,9 @@ export function hasExplicitApplicability(scope: Record<string, unknown>): boolea
   const applicability = scope.applicability;
   if (typeof applicability !== 'object' || applicability === null || Array.isArray(applicability)) return false;
   const values = Object.entries(applicability as Record<string, unknown>);
-  const dimensions = new Set(['languages', 'frameworks', 'databases', 'runtimes', 'tools', 'platforms']);
-  if (values.some(([key, value]) => !dimensions.has(key) || !Array.isArray(value))) return false;
-  return values.some(([, value]) => (value as unknown[]).length > 0);
+  const dimensions = new Set(['languages', 'frameworks', 'databases', 'runtimes', 'tools', 'platforms', 'ownerIds', 'repositoryIds', 'workspaces', 'branches', 'environment']);
+  if (values.some(([key, value]) => !dimensions.has(key) || (key === 'environment' ? typeof value !== 'object' || value === null || Array.isArray(value) : !Array.isArray(value)))) return false;
+  return values.some(([, value]) => typeof value === 'object' && value !== null && Object.keys(value).length > 0);
 }
 
 const SIGNAL_TYPES = {
@@ -93,9 +99,10 @@ function validateRelativePath(value: string): string {
 }
 
 export function validateApplicability(value: unknown): Applicability {
+  if (findSecretInValue(value)) throw new KiokukoError('SECURITY_REJECTION', 'Applicability resembles a secret and was not stored');
   if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid();
   const input = value as Record<string, unknown>;
-  const allowed = new Set(['languages', 'frameworks', 'databases', 'runtimes', 'tools', 'platforms']);
+  const allowed = new Set(['languages', 'frameworks', 'databases', 'runtimes', 'tools', 'platforms', 'ownerIds', 'repositoryIds', 'workspaces', 'branches', 'environment']);
   if (Object.keys(input).some((key) => !allowed.has(key))) invalid();
   const frameworks = input.frameworks === undefined
     ? undefined
@@ -114,6 +121,21 @@ export function validateApplicability(value: unknown): Applicability {
         .sort((left, right) => compareCanonicalStrings(`${left.name}\u0000${left.version ?? ''}`, `${right.name}\u0000${right.version ?? ''}`));
     })();
   const result: Applicability = {};
+  for (const key of ['ownerIds', 'repositoryIds', 'workspaces', 'branches'] as const) {
+    const raw = input[key];
+    if (raw === undefined) continue;
+    if (!Array.isArray(raw) || raw.length > 100 || raw.some(item => typeof item !== 'string' || !item || item.length > 256 || /[\u0000-\u0020\u007f]/u.test(item))) invalid();
+    result[key] = [...new Set(raw as string[])].sort(compareCanonicalStrings);
+  }
+  if (input.environment !== undefined) {
+    const raw = input.environment;
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw) || Object.keys(raw).length > 32) invalid();
+    const entries = Object.entries(raw as Record<string, unknown>);
+    if (entries.some(([key, value]) => !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(key) || typeof value !== 'string' || !value || value.length > 256 || /[\u0000-\u001f\u007f]/u.test(value))) invalid();
+    result.environment = Object.fromEntries(entries) as Record<string, string>;
+    if (result.environment.node !== undefined && semver.validRange(result.environment.node) === null) invalid();
+  }
+
   const languages = optionalStringList(input.languages);
   const databases = optionalStringList(input.databases);
   const runtimes = optionalStringList(input.runtimes);
@@ -149,7 +171,7 @@ export function buildStructuredScope(options: StructuredMemoryOptions): JsonObje
   if (options.visibility === 'global' && options.retrievalScope !== undefined && options.retrievalScope !== 'global') invalid();
   if (options.visibility === 'project' && options.retrievalScope === 'global') invalid();
   const validatedApplicability = options.applicability === undefined ? undefined : validateApplicability(options.applicability);
-  const hasApplicability = validatedApplicability !== undefined && Object.values(validatedApplicability).some((value) => Array.isArray(value) && value.length > 0);
+  const hasApplicability = validatedApplicability !== undefined && hasExplicitApplicability({ applicability: validatedApplicability });
   if (options.visibility === 'project' && options.retrievalScope === 'ecosystem' && !hasApplicability) invalid();
   if (options.visibility === 'global' && !hasApplicability && options.portableReason === undefined) invalid();
   if (options.visibility === 'global' && options.portableReason !== undefined) cleanString(options.portableReason, 2_000);

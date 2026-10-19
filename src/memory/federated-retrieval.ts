@@ -1,3 +1,4 @@
+import {currentMemoryApplicability,matchesMemoryApplicability} from './applicability-context.js';
 import { attachRelationDelivery } from './relation-delivery.js';
 import { DEFAULT_CONTEXT_CHARACTERS } from './context-budget.js';
 import { GENERAL_COMMUNICATION_TAG, isGeneralCommunicationPreference, matchesInteractionSubject } from './interaction-subjects.js';
@@ -374,6 +375,7 @@ function ecosystemEntries(
     if (!isFederatedEcosystemCandidate(database, entry, {
       requireApplicability: policy.ecosystem.requireApplicability,
     })) { excludedCount += 1; continue; }
+    if (!matchesMemoryApplicability(entry,runtime.applicabilityContext??currentMemoryApplicability(database,project.workspace,project.repositoryRoot))) continue;
     const compatibility = applicabilityCompatibility(entry, fingerprint);
     if (compatibility.incompatible) { excludedCount += 1; continue; }
     const lexical = lexicalScore(entry, query);
@@ -397,6 +399,7 @@ function ecosystemEntries(
       if (!isFederatedEcosystemCandidate(database, entry, {
         requireApplicability: policy.ecosystem.requireApplicability,
       })) continue;
+      if (!matchesMemoryApplicability(entry,runtime.applicabilityContext??currentMemoryApplicability(database,project.workspace,project.repositoryRoot))) continue;
       const compatibility = applicabilityCompatibility(entry, fingerprint);
       if (compatibility.incompatible) { excludedCount += 1; continue; }
       const lexical = lexicalScore(entry, query);
@@ -573,6 +576,7 @@ export async function retrieveFederatedMemory(
     ? undefined
     : input.project ?? await (readOnly ? resolveProjectWorkspaceReadOnly(database, input.cwd) : resolveProjectWorkspace(database, input.cwd));
   if ((scope === 'project' || scope === 'ecosystem') && project === undefined) throw new KiokukoError('NOT_FOUND', 'No Git repository or binding was found for the requested memory scope');
+  if (project) runtime = {...runtime,applicabilityContext:currentMemoryApplicability(database,project.workspace,input.cwd??project.repositoryRoot)};
   if (input.fingerprint !== undefined
     && (project === undefined || input.fingerprint.repositoryId !== project.repositoryId)) {
     throw new KiokukoError('VALIDATION_ERROR', 'Project fingerprint does not match the requested repository');
@@ -780,6 +784,7 @@ export async function federatedEntries(
   input: { project: ResolvedProjectWorkspace; query: string; limit: number; fingerprint?: ProjectFingerprint; temporal?: TemporalConstraint; relatedMode?: 'off' | 'observe' | 'active'; relatedSeedLimit?: number; relatedCandidateLimit?: number; observe?: (diagnostics: RetrievalDiagnostics) => void },
   runtime: HybridSearchRuntime = {},
 ): Promise<FederatedEntry[]> {
+  runtime={...runtime,applicabilityContext:currentMemoryApplicability(database,input.project.workspace,input.project.repositoryRoot)};
   const features: Pick<HybridSearchInput, 'temporal' | 'relatedMode' | 'relatedSeedLimit' | 'relatedCandidateLimit'> = {
     ...(input.temporal === undefined ? {} : { temporal: input.temporal }),
     ...(input.relatedMode === undefined ? {} : { relatedMode: input.relatedMode }),

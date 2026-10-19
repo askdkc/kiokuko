@@ -17,6 +17,12 @@ const memoryClass = z.enum([
   'configuration', 'workflow', 'gotcha', 'reference', 'preference',
 ]);
 const applicability = z.object({
+  ownerIds: z.array(z.string().min(1).max(256).regex(/^[^\s\u0000-\u001f\u007f]+$/u)).max(100).optional(),
+  repositoryIds: z.array(z.string().min(1).max(256).regex(/^[^\s\u0000-\u001f\u007f]+$/u)).max(100).optional(),
+  workspaces: z.array(z.string().min(1).max(256).regex(/^[^\s\u0000-\u001f\u007f]+$/u)).max(100).optional(),
+  branches: z.array(z.string().min(1).max(256).regex(/^[^\s\u0000-\u001f\u007f]+$/u)).max(100).optional(),
+  environment: z.record(z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u), z.string().min(1).max(256)).refine(value => Object.keys(value).length <= 32).optional(),
+
   languages: z.array(z.string().trim().min(1).max(500)).max(100).optional(),
   frameworks: z.array(z.object({
     name: z.string().trim().min(1).max(500),

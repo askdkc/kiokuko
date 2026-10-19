@@ -5,6 +5,8 @@
 - [導入ガイド](getting-started.ja.md) — インストール、Codex/OpenCode/Claude/Hermes設定、再起動、Web UI。
 - [npmの通知とセットアップエラー](../README.ja.md#setup-messages) — スクリプトの許可を確認し、埋め込み依存関係のエラーと区別する。
 - [基本概念](concepts.ja.md) — RAG、記憶のライフサイクル、Project/Ecosystem/Global、Akinator。
+- [文脈と関連の配送（英語）](context-delivery.md) — Unicode単位の本文予算、型付き関連の別枠上限、省略状態。
+- [履歴とコードの証拠（英語）](history-evidence.md) — scope付きの祖先、失敗版の不変な保存、環境条件の検査と応答全体の上限。
 - [Semantic retrieval](semantic-retrieval.ja.md) — embedding runtime、運用、offline、fallback。
 - [ChatGPTの記憶連携](chatgpt.ja.md) — 対応版の導入、接続トラブル、利用範囲。
 - [Akinator のプロフィール補助](akinator-memory.md) — 候補提示、限定的な対象補完、索引の再構築。

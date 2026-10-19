@@ -166,3 +166,16 @@ declines. EOF/cancellation and non-TTY streams do not authorize section updates.
 Both planned files and the original binding are checked for concurrent changes
 before writes. User text and other products' sections are preserved. Missing bindings are reported for verified
 backup recovery without minting a replacement repository identity.
+
+
+## Project history and raw code versions
+
+`recall --history --cwd <registered-root>` is an explicit project-only compact JSON
+view. `--max-output-chars` sets the hard bound on its complete serialized response,
+including the CLI envelope, metadata and newline. Legacy recall retains its shape
+without the new options. `code-version record --input-json <file> --cwd <root>`
+retains operational evidence, not approved reusable memory; `code-version show
+<version-id> --cwd <root>` reads an owned scoped version, including an unattached
+raw artifact. No supplied approval text grants authority. See [the complete
+history contract](history-evidence.md) for native identity, environment requirements,
+secret rejection, immutable storage, bounds, omission states and MCP consumers.

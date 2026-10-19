@@ -1,143 +1,39 @@
 # Kiokuko (記憶庫)
 
-1.0에서는 기존 DB를 지원하지 않습니다. 새 DB를 사용하세요. [주요 변경 사항과 이전 설정 제거](docs/breaking-changes-1.0.md)를 확인하세요。
-
 [English](README.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | 한국어
 
-**MCP로 연결하고, 필요한 기억을 검색하고, 작업 후 지식을 축적합니다.**
+AI 에이전트를 위한 로컬 메모리입니다. 선호 사항, 결정, 수정 내용을 SQLite에
+저장하고 MCP를 통해 관련 문맥을 검색합니다.
 
-Kiokuko는 AI 코딩 에이전트를 위한 로컬 외부 메모리입니다. 지식을 SQLite에 저장하고 다음 작업에 관련된 문맥을 검색하며,
-재사용 가능한 결과를 기록합니다.
+**Codex, OpenCode, Claude Code, Hermes Agent**를 지원합니다.
+[ChatGPT 연결은 미리 보기 버전입니다](docs/setup-notes.ko.md#chatgpt).
 
-```text
-요청 → MCP 연결 → 관련 기억 검색 → 작업 수행
-                             ↓
-                         재사용 지식 저장
-```
+## 설치
 
-기억은 Project·Ecosystem·Global로 분리되고 현재 코드, 설정, 실행 결과가 과거 기억보다 우선합니다.
-
-## 빠른 시작
-
-Node.js 24.16.0 이상이 필요합니다（Node.js 26.1.0 이상도 지원）.
+Node.js **24.16.0 이상**이 필요합니다.
 
 ```bash
 npm install --global kiokuko
 kiokuko setup
 ```
 
-`setup`은 데이터베이스, 표준 Skill, MCP 연결과 로컬 semantic 검색을 설정합니다.
-처음 실행할 때 임베딩 런타임과 모델을 설치합니다. 이미 실행 중인 클라이언트는
-설정 후 재시작하십시오. 정확한 규칙은 [영문 Getting started](docs/getting-started.md)를 참조하십시오.
+클라이언트를 재시작한 뒤 평소대로 사용하세요. MCP, 표준 Skill, 로컬 semantic
+검색이 설정됩니다. 임베딩 다운로드를 건너뛰려면
+`kiokuko setup --no-embeddings`를 사용하세요.
 
-임베딩 런타임과 모델을 설치하지 않고 클라이언트만 설정하려면:
+1.0 이전 버전에서 업데이트하려면 새 데이터베이스가 필요합니다.
+[마이그레이션 및 이전 설정 정리](docs/breaking-changes-1.0.md).
 
-```bash
-kiokuko setup --no-embeddings
-```
-
-임베딩 설정 단계를 건너뛰며 기존 임베딩 설정은 변경하지 않습니다.
+## 문서
 
 <a id="setup-messages"></a>
 
-### npm 알림과 설정 오류
+- [시작하기 (영문)](docs/getting-started.md)
+- [설정, 문제 해결 및 제거](docs/setup-notes.ko.md)
+- [메모리와 검색 (영문)](docs/concepts.md)
+- [이력과 코드 증거 (영문)](docs/history-evidence.md)
+- [전체 문서 (영문)](docs/README.md)
 
-`install scripts not yet covered by allowScripts`는 해당 의존성 스크립트의 실행 승인이 npm에 기록되지 않았다는 뜻입니다.
-`esbuild`는 빌드 도구이고, `fsevents`는 macOS 파일 감시에 사용됩니다. 이 알림만으로 설정이 실패했다고 볼 수는 없습니다.
-
-알림이 발생한 패키지 디렉터리에서 확인하세요.
-
-```bash
-npm install-scripts ls
-```
-
-`esbuild`와 `fsevents`가 표시되고, 스크립트를 검토한 뒤 실행을 허용하려면 다음 명령으로 승인을 기록하세요.
-
-```bash
-npm install-scripts approve esbuild fsevents
-```
-
-승인은 해당 디렉터리의 `package.json`에 저장됩니다. macOS에 Kiokuko를 전역 설치했다면 오류에 표시된 Kiokuko 설치 디렉터리에서 실행하세요.
-다른 프로젝트에서 실행하면 그 프로젝트의 승인 설정을 조회하고 변경합니다.
-자세한 내용은 [npm 스크립트 승인 안내](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/)를 참조하세요.
-
-설정이 `Local semantic retrieval dependencies remain unavailable`과 `Cannot find package ... @huggingface/hub/index.js`로 끝나면,
-임베딩 런타임을 불러오지 못해 semantic 검색 설정이 완료되지 않은 상태입니다. 스크립트 승인으로 이 불러오기 오류가 해결되는지는 확인되지 않았습니다.
-도움을 요청할 때는 전체 오류와 `kiokuko --version`, `node --version`, `npm --version`의 출력을 첨부하세요.
-
-## 제거
-
-Kiokuko를 사용하는 클라이언트와 `kiokuko serve`를 먼저 종료하세요.
-
-```bash
-kiokuko uninstall --dry-run
-kiokuko uninstall
-# 모든 에이전트를 선택하고 정리가 완료되면 표시된 명령을 실행합니다:
-npm uninstall --global kiokuko
-```
-
-↑↓로 이동하고 Space로 선택을 전환하며 Enter로 확정하고 Esc로 취소합니다. 처음에는 모두 선택 해제되어 있습니다.
-선택한 에이전트의 관리 설정과 Skill을 제거합니다. **4개 에이전트를 모두 선택하면 기억 DB, 임베딩 모델, 프로젝트 연결도 삭제**하고 npm 제거 명령을 표시합니다. 일부만 선택하면 공유 데이터와 npm 패키지를 유지합니다. 사용자 내용은 보존합니다.
-스크립트에서는 `kiokuko uninstall --clients opencode,claude`, 완전 제거에는 `kiokuko uninstall --all`을 사용하세요. 사용자 지정 경로는 setup과 같은 환경 변수로 실행하세요.
-[삭제 범위](docs/cli-contract.md#uninstall)를 참고하세요.
-
-## 주요 기능
-
-- RAG 기억（lexical 검색과 `setup`으로 구성하는 로컬 semantic 검색）
-- 모호한 요청을 구체화하는 Akinator
-- 기억을 검토하는 로컬 Web UI
-- 자동 실행하지 않는 검증된 참조 전용 External Skill
-
-`kiokuko embeddings setup`은 `kiokuko setup`과 동일한 처리를 하는 호환 명령으로 유지됩니다.
-
-managed MCP block과 프로젝트 instructions를 갱신합니다. unmanaged identity 교체는 대화형 확인 후에만 수행되며,
-비대화형 또는 `--dry-run --json` 실행은 변경 없이 fail closed합니다. 자세한 내용은 [영문 semantic retrieval](docs/semantic-retrieval.md)을 보십시오.
-
-## 지원 클라이언트
-
-Codex, OpenCode, Claude Code, Hermes Agent.
-
-## ChatGPT에서 사용하기(미리 보기)
-
-Developer mode에서 개인용 플러그인으로 연결해 기억을 저장하고 검색합니다. 스토어 배포 버전은 없습니다.
-
-1. **Kiokuko를 준비합니다.** `kiokuko mcp --help`에 `--profile`과 `--access`가 있는 버전을 사용합니다. 없다면 [소스에서 설치](docs/chatgpt.md)합니다. DB가 없으면 `kiokuko init`을 실행합니다.
-2. **Tunnel 클라이언트를 설치합니다.** macOS에서는 [공식 Homebrew 설치 방법](https://github.com/openai/tunnel-client#install-with-homebrew)을 사용합니다.
-
-   ```bash
-   brew install openai/tools/tunnel-client
-   tunnel-client --version
-   ```
-
-   다른 OS는 [공식 배포 페이지](https://github.com/openai/tunnel-client/releases/latest)를 참고합니다. [Tunnel 설정](https://platform.openai.com/settings/organization/tunnels)에서 ChatGPT workspace에 연결된 Tunnel ID와 Tunnels Read + Use 권한이 있는 [실행용 API 키](https://platform.openai.com/settings/organization/api-keys)를 준비합니다.
-
-3. **컴퓨터에서 연결을 시작합니다.** `<tunnel_id>`와 `<runtime_api_key>`를 발급받은 값으로 바꿉니다.
-
-   ```bash
-   export CONTROL_PLANE_API_KEY="<runtime_api_key>"
-   tunnel-client init \
-     --sample sample_mcp_stdio_local \
-     --profile kiokuko-chatgpt \
-     --tunnel-id "<tunnel_id>" \
-     --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
-   tunnel-client doctor --profile kiokuko-chatgpt --explain
-   kiokuko chatgpt run --profile kiokuko-chatgpt
-   ```
-
-   사용하는 동안 계속 실행해 둡니다. 새 터미널에서는 API 키를 다시 설정한 뒤 마지막 `run` 명령을 실행합니다.
-
-4. **ChatGPT에 등록합니다.** **Settings → Security and login → Developer mode**를 켭니다. **Plugins → ＋**에서 이름을 `Kiokuko`, 설명을 “기억 저장 및 검색”으로 입력하고 **Connection → Tunnel**에 같은 ID를 지정합니다. 새 대화의 도구 메뉴에서 Kiokuko를 선택합니다. [공식 화면 안내](https://developers.openai.com/plugins/deploy/connect-chatgpt)
-
-사용 예: “이 내용을 Kiokuko에 저장해 줘” 또는 “Kiokuko에서 [주제]에 관한 기억을 찾아 줘”. 쓰기 확인이 나오면 내용을 확인하고 승인합니다.
-
-검색만 사용하려면 실행 명령의 `read-write`를 `read`로 바꿉니다. ChatGPT 기본 메모리의 저장소는 바뀌지 않습니다. **ChatGPT 실제 연결 시험은 아직 하지 않았습니다.** [문제 해결](docs/chatgpt.md)
-
-## 안전성과 제한
-
-전체 대화를 저장하지 않으며 비밀번호, API key, token, private key처럼 보이는 내용은 거부합니다. 기억은 참고 정보이므로 현재 코드와 실행 결과를 확인하십시오.
-
-MCP 호출 여부는 클라이언트와 모델이 결정하므로 **모든 턴에서 Kiokuko가 호출된다는 보장은 없습니다**. 자세한 신뢰 경계는 [영문 Security and trust](docs/security-and-trust.md)를 참조하십시오.
-
-## 자세한 문서
-
-[영문 문서 목차](docs/README.md)에서 Getting started, Concepts, Semantic retrieval, Security and trust와 구현자용 문서로 이동할 수 있습니다.
+저장된 기억은 틀릴 수 있습니다. 비밀 정보로 보이는 내용은 거부하고 전체 대화는
+저장하지 않습니다. MCP 호출은 클라이언트와 모델의 판단에 달려 있습니다.
+[보안과 신뢰 (영문)](docs/security-and-trust.md).

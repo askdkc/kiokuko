@@ -1,3 +1,5 @@
+import {currentMemoryApplicability,matchesMemoryApplicability,assertMemoryApplicabilityUnchanged,type MemoryApplicabilityContext} from './applicability-context.js';
+import {resolveCurrentSuccessor,MAX_HISTORY_NODES,type HistoryOmission} from './entry-history.js';
 import { indexMode, isIndexArtifact, indexArtifact } from './index-state.js';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import type { PreparedSemanticQuery, VectorSearchBackend } from '../embedding/types.js';
@@ -20,6 +22,8 @@ export interface RelatedSearchObservation {
 }
 
 export interface HybridSearchRuntime {
+  readonly onHistoryOmission?: (value:HistoryOmission)=>void;
+  readonly applicabilityContext?: MemoryApplicabilityContext;
   readonly semantic?: {
     readonly query: PreparedSemanticQuery;
     readonly backend: VectorSearchBackend;
@@ -33,6 +37,7 @@ export interface HybridSearchInput {
   /** Internal baseline pass protects the original candidate pool. */
   indexOriginalsOnly?:boolean;
   workspace: string;
+  cwd?: string;
   query: string;
   limit: number;
   kind?: EntryKind;
@@ -130,6 +135,11 @@ export function retrievableWorkspaceEntryCount(database: SqliteDatabase, workspa
         JOIN entry_revisions AS r
           ON r.entry_id = e.id AND r.revision = e.current_revision
        WHERE e.workspace = ? AND e.status <> 'superseded'
+         AND CASE WHEN json_valid(r.scope_json)
+           AND json_extract(r.scope_json,'$.schemaVersion')=3
+           AND json_type(r.scope_json,'$.applicability.ownerIds')='array'
+           AND json_array_length(r.scope_json,'$.applicability.ownerIds')>0
+         THEN EXISTS(SELECT 1 FROM json_each(r.scope_json,'$.applicability.ownerIds') WHERE value=?) ELSE 1 END
     )
     SELECT COUNT(*) AS count
       FROM current_entries AS e
@@ -154,7 +164,7 @@ export function retrievableWorkspaceEntryCount(database: SqliteDatabase, workspa
             AND m.active = 1
        )
      )
-  `).get<{ count: unknown }>(workspace)?.count;
+  `).get<{ count: unknown }>(workspace,process.getuid?`local:${process.getuid()}`:null)?.count;
   if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Stored entry count is invalid');
   }
@@ -532,6 +542,8 @@ export function hybridSearch(
     relatedSeedLimit,
     relatedCandidateLimit,
   };
+  const context=runtime.applicabilityContext??currentMemoryApplicability(database,input.workspace,input.cwd);
+  const successorExpansion=relatedMode==='active'&&!input.includeSuperseded;
   const parsed = parseRetrievalQuery(input.query);
   if (parsed.normalized.length === 0) return [];
   // Treat SQL/FTS-looking operator soup as data, not as a broad OR query. A
@@ -539,14 +551,20 @@ export function hybridSearch(
   const lexicalAllowed = !/(?:--|\/\*|\*\/|["']\s*(?:OR|AND)\b|\b(?:OR|AND)\s+\d+\s*[=<>])/iu.test(parsed.normalized)
     || parsed.exactSignals.length > 0;
   const merged = new Map<string, RetrievalCandidate>();
-  for (const [lane, rows] of laneRows(database, normalizedInput, parsed, runtime, lexicalAllowed)) {
+  for (const [lane, rows] of laneRows(database, successorExpansion ? {...normalizedInput,includeSuperseded:true} : normalizedInput, parsed, runtime, lexicalAllowed)) {
     const seen = new Set<string>();
     let rank = 0;
     for (const row of rows) {
-      if (seen.has(row.id)) continue;
-      seen.add(row.id);
+      const original=readRetrievalEntry(database,input.workspace,row.id);
+      if(!original||!matchesMemoryApplicability(original,context))continue;
+      const resolved=successorExpansion&&original.status==='superseded'?resolveCurrentSuccessor(database,original,context,MAX_HISTORY_NODES,runtime.onHistoryOmission):original;
+      if(!resolved||!matchesMemoryApplicability(resolved,context))continue;
+      const candidateId=resolved.id;
+
+      if (seen.has(candidateId)) continue;
+      seen.add(candidateId);
       rank += 1;
-      const existing = merged.get(row.id) ?? { entryId: row.id, fusedScore: 0, laneRanks: {}, matchedSignals: [], reasons: [] };
+      const existing = merged.get(candidateId) ?? { entryId: candidateId, fusedScore: 0, laneRanks: {}, matchedSignals: [], reasons: [] };
       existing.fusedScore += LANE_WEIGHTS[lane] / (RRF_K + rank);
       existing.laneRanks[lane] = Math.min(existing.laneRanks[lane] ?? rank, rank);
       if (lane === 'exact-signal') existing.reasons.push('exact_signal_match');
@@ -558,8 +576,9 @@ export function hybridSearch(
       if (lane === 'like') existing.reasons.push('literal_fallback_match');
       if (lane === 'tag') existing.reasons.push('tag_match');
       if (lane === 'semantic') existing.reasons.push('semantic_match');
+      if(candidateId!==row.id)existing.reasons.push('current_successor');
       existing.matchedSignals.push(...parsed.exactSignals.map((signal) => signal.value));
-      merged.set(row.id, existing);
+      merged.set(candidateId, existing);
       if (merged.size >= MAX_MERGED_CANDIDATES) break;
     }
   }
@@ -570,11 +589,11 @@ export function hybridSearch(
       .filter((candidate) => {
         const entry = readRetrievalEntry(database,input.workspace,candidate.entryId);
         if(!entry)return false;
-        return isRetrievableEntry(database, entry, input.indexEvaluation) && (temporal?.mode !== 'restrict'
+        return matchesMemoryApplicability(entry,context) && isRetrievableEntry(database, entry, input.indexEvaluation) && (temporal?.mode !== 'restrict'
           || matchesTemporalConstraint(database, entry, temporal));
       })
       .map((candidate) => candidate.entryId);
-    const related = relatedLane(database, input.workspace, seeds, relatedCandidateLimit);
+    const related = relatedLane(database, input.workspace, seeds, relatedCandidateLimit).filter(row=>{const entry=readRetrievalEntry(database,input.workspace,row.id);return entry!==undefined&&matchesMemoryApplicability(entry,context);});
     if (relatedMode === 'observe') {
       runtime.onRelatedDiagnostics?.({ seedCount: seeds.length, candidateCount: related.length, deliveredCandidateCount: 0 });
     } else {
@@ -602,7 +621,7 @@ export function hybridSearch(
     const entry = readRetrievalEntry(database,input.workspace,candidate.entryId);
         if(!entry)return false;
     if (input.indexOriginalsOnly && isIndexArtifact(entry))return false;
-    if (!isRetrievableEntry(database, entry, input.indexEvaluation)) return false;
+    if (!matchesMemoryApplicability(entry,context) || !isRetrievableEntry(database, entry, input.indexEvaluation)) return false;
     if (temporal !== undefined) {
       const matches = matchesTemporalConstraint(database, entry, temporal);
       if (temporal.mode === 'restrict' && !matches) return false;
@@ -626,5 +645,6 @@ export function hybridSearch(
     const generated=eligibleCandidates.filter(hit=>generatedIds.has(hit.entryId)).slice(0,Math.max(1,Math.floor(input.limit/2)));
     return [...originals,...generated].sort((left,right)=>Number(right.reasons.includes('repeated_lesson'))-Number(left.reasons.includes('repeated_lesson')) || right.fusedScore-left.fusedScore || compareCanonicalStrings(left.entryId,right.entryId));
   }
+  assertMemoryApplicabilityUnchanged(database,context,context.repositoryRoot);
   return eligibleCandidates;
 }

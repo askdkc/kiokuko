@@ -1,0 +1,122 @@
+# 設定とトラブルシューティング
+
+<a id="setup-messages"></a>
+
+### npmの通知とセットアップエラー
+
+`install scripts not yet covered by allowScripts`は、依存パッケージのスクリプトに実行許可が記録されていないという通知です。
+`esbuild`はビルドツール、`fsevents`はmacOSのファイル監視用です。この通知だけではセットアップの失敗とは限りません。
+
+通知が出たパッケージのディレクトリで確認します。
+
+```bash
+npm install-scripts ls
+```
+
+`esbuild`と`fsevents`が表示され、スクリプトを確認したうえで実行を許可する場合は、次のコマンドで記録します。
+
+```bash
+npm install-scripts approve esbuild fsevents
+```
+
+許可はそのディレクトリの`package.json`に保存されます。macOSでKiokukoをグローバルインストールした場合は、エラーに表示されたKiokukoのインストール先で実行してください。
+別のプロジェクトで実行すると、そのプロジェクトの許可設定を確認・変更します。
+詳しくは[npmのスクリプト許可ガイド](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/)を参照してください。
+
+最後に`Local semantic retrieval dependencies remain unavailable`と`Cannot find package ... @huggingface/hub/index.js`が出た場合は、
+埋め込みランタイムを読み込めず、semantic検索の設定が完了していません。スクリプトの許可でこの読み込みエラーが直るとは確認できていません。
+問い合わせる際は、エラー全文と`kiokuko --version`、`node --version`、`npm --version`の結果を添えてください。
+
+### Codex用の保存済み実行版
+
+npmの導入先が置き換わってもCodexのMCPとライフサイクルhookを同じ版で動かすには、ユーザー専用のアプリケーションデータ領域に実行版を用意します。進行中の作業を終え、Codexを停止してから設定を切り替えてください。
+
+```bash
+kiokuko runtime-prepare --runtime-root "$HOME/Library/Application Support/Kiokuko/runtimes" --json
+kiokuko setup --clients codex --no-embeddings --no-standard-skills --runtime-manifest /absolute/path/to/runtime/manifest.json --client-stopped
+kiokuko runtime-diagnose --manifest /absolute/path/to/runtime/manifest.json --json
+```
+
+Linuxでは実行版の保存先に`${XDG_DATA_HOME:-$HOME/.local/share}/kiokuko/runtimes`を使います。2行目と3行目のmanifestは、1行目が返す`manifestPath`に置き換えます。現在のNodeがバイナリ外の共有ライブラリに依存する場合、準備は失敗します。その場合は`--node /absolute/path/to/node`で単独起動できるNodeを指定してください。準備だけではクライアント設定は変わりません。`setup`は保存したファイルを検証し、管理対象のMCPと全hookを同じ版へ更新します。途中で失敗した設定ファイルは元に戻します。診断結果が`readyForRestart: true`になってからCodexを再起動してください。独自のMCP起動コマンドは保持され、別途移行が必要です。
+
+npmを更新しただけでは使用版は切り替わりません。更新時は作業を終えてCodexを停止し、新版を準備して、そのmanifestで`setup`を実行してから再起動します。旧実行版は自動削除しません。新版がメモリDBをmigrationした後に旧版へ戻す場合は、先にDB互換性を確認してください。保存容量はNodeと導入済みの任意依存によって変わりますが、1版につき数百MBを見込み、複数版を残す前に実際の容量を確認してください。
+
+### リポジトリの指示ファイル
+
+`kiokuko use`はリポジトリの`AGENTS.md`（または設定した指示ファイル）に短い参照を置き、
+生成した指示を`.kiokuko/AGENTS.md`に保存します。テンプレートやリポジトリ識別情報の更新は
+生成ファイルへ反映し、旧形式のバージョン付きブロックは次のuse/setup更新で参照へ移行します。
+独自の指示はKiokukoの管理マーカー外に置いてください。ユーザーの記述と他製品の部分は保持します。
+
+通常のsetupは欠落したルート指示ファイルを再作成せずスキップします。
+通常の`kiokuko doctor`は、登録済みのルート指示・生成指示ファイルの欠落を
+対話・非対話の両方で、確認待ちや追加の修復フラグなしに作成します。
+登録ID・workspace・binding・正規パスの一致が条件です。作成するのは欠落ファイルだけで、
+既存の独自記述を保持し、削除済みの独自指示は復元できません。権限不足・危険なシンボリックリンク・
+同時変更は対象ごとに報告し、ほかの対象の処理を続けます。欠落・矛盾するbindingは推測で置き換えず診断します。
+
+```bash
+kiokuko doctor
+kiokuko doctor --json
+kiokuko doctor --fix --repair-root /absolute/path/to/project
+```
+
+`kiokuko doctor --json`は欠落した指示を作成せず診断します。`--fix`は登録済みbindingを修復する明示的なモードで、
+`--repair-root`には`--fix`が必要です。`--fix --json`でもbindingの修復は実行されます。
+既存の管理部分の更新は別途対話確認を行い、非対話実行では承認扱いにしません。
+欠落した生成指示はuse/setupでも復元できます。アンインストールでは両ファイルのKiokuko管理部分だけを除去します。
+詳しくは[CLI契約（英語）](cli-contract.md)を参照してください。
+
+## アンインストール
+
+Kiokukoを使うクライアントと`kiokuko serve`を終了してから実行します。
+
+```bash
+kiokuko uninstall --dry-run
+kiokuko uninstall
+# 全エージェントを選択して正常終了後、最後に表示されたコマンドを実行
+npm uninstall --global kiokuko
+```
+
+↑↓で移動、Spaceで選択を切り替え、Enterで確定、Escで中止します。初期状態は未選択です。
+選択したエージェントの管理設定・Skillだけを削除します。**全4エージェントを選ぶと記憶DB・埋め込みモデル・登録済みプロジェクトの管理部分も削除**し、最後にnpmの削除コマンドを表示します。一部だけを選んだ場合は共有データとnpmパッケージを残します。ユーザーが書いた内容は保持します。
+スクリプトでは `kiokuko uninstall --clients opencode,claude`、完全削除には `kiokuko uninstall --all` を使います。
+独自の配置先を指定していた場合は、セットアップ時と同じ環境変数で実行してください。[削除範囲と失敗時の扱い](cli-contract.md#uninstall)
+
+<a id="chatgpt"></a>
+
+## ChatGPTで使う（プレビュー）
+
+Developer modeで自分用プラグインとして接続し、記憶を保存・検索します。ストア配布版はありません。
+
+1. **Kiokukoを準備する。** `kiokuko mcp --help`に`--profile`と`--access`がある版を使います。なければ[ソース版を導入](chatgpt.ja.md)。DBが未作成なら`kiokuko init`を実行します。
+2. **Tunnelクライアントを入れる。** macOSでは[公式Homebrew手順](https://github.com/openai/tunnel-client#install-with-homebrew)でインストールします。
+
+   ```bash
+   brew install openai/tools/tunnel-client
+   tunnel-client --version
+   ```
+
+   他のOSは[公式配布先](https://github.com/openai/tunnel-client/releases/latest)を参照。[Tunnel設定](https://platform.openai.com/settings/organization/tunnels)で利用するChatGPT workspaceに関連付けたTunnel IDと、Tunnels Read + Use権限の[実行用APIキー](https://platform.openai.com/settings/organization/api-keys)を用意します。
+
+3. **手元のPCで接続を起動する。** `<tunnel_id>`と`<runtime_api_key>`を取得した値に置き換えます。
+
+   ```bash
+   export CONTROL_PLANE_API_KEY="<runtime_api_key>"
+   tunnel-client init \
+     --sample sample_mcp_stdio_local \
+     --profile kiokuko-chatgpt \
+     --tunnel-id "<tunnel_id>" \
+     --mcp-command "kiokuko mcp --profile chatgpt-memory --access read-write"
+   tunnel-client doctor --profile kiokuko-chatgpt --explain
+   kiokuko chatgpt run --profile kiokuko-chatgpt
+   ```
+
+   利用中は起動したままにします。別の端末で起動する場合はAPIキーを再設定し、最後の`run`を実行します。
+
+4. **ChatGPTに登録する。** 設定 → **Security and login → Developer mode**を有効化。**Plugins → ＋**で名前を`Kiokuko`、説明を「記憶の保存と検索」にし、**Connection → Tunnel**で同じIDを指定します。新しい会話のツールメニューからKiokukoを選びます。[公式の画面手順](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+
+使い方: 「この内容をKiokukoに保存して」「Kiokukoから○○についての記憶を探して」。書き込み確認が出たら内容を確認して承認します。
+
+検索だけなら起動コマンドの`read-write`を`read`に変更します。ChatGPT標準メモリの保存先は変わりません。**ChatGPT実機での接続確認は未実施**です。[困ったとき](chatgpt.ja.md)
+

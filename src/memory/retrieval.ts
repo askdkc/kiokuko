@@ -1,3 +1,5 @@
+import type {HistoryOmission} from './entry-history.js';
+import {finalizeHistoryRecall,type HistoryDelivery,type OutputDelivery} from './history-delivery.js';
 import { attachRelationDelivery, type RelationDelivery } from './relation-delivery.js';
 import { DEFAULT_CONTEXT_CHARACTERS } from './context-budget.js';
 import type { SqliteDatabase } from '../db/adapter.js';
@@ -15,6 +17,7 @@ import { effectiveRelatedSearchMode } from './search-extension-config.js';
 
 export interface SearchEntriesInput {
   workspace: string;
+  cwd?: string;
   query: string;
   limit?: number;
   kind?: EntryKind;
@@ -29,6 +32,7 @@ export interface SearchEntriesInput {
 }
 
 export interface SearchResult {
+  historySelectionOmissions?: HistoryOmission[];
   items: EntryRecord[];
   count: number;
   truncated: boolean;
@@ -36,6 +40,9 @@ export interface SearchResult {
 }
 
 export interface RecallEntriesInput extends SearchEntriesInput {
+  includeHistory?: boolean;
+  maxOutputChars?: number;
+  cwd?: string;
   maxChars?: number;
 }
 
@@ -58,6 +65,9 @@ export interface RecallItem {
 }
 
 export interface RecallResult {
+  historySelectionOmissions?: HistoryOmission[];
+  historyDelivery?: HistoryDelivery;
+  outputDelivery?: OutputDelivery;
   relationDelivery?: RelationDelivery;
   items: RecallItem[];
   count: number;
@@ -75,6 +85,7 @@ export interface RankedRecallHit {
 }
 
 export interface RankedRecallResult {
+  historyOmissions?: HistoryOmission[];
   hits: RankedRecallHit[];
   truncated: boolean;
 }
@@ -119,7 +130,8 @@ export function rankedEntryHits(
   const normalizedInput = { ...input, workspace };
   if (normalizedInput.query.trim().length === 0) return { hits: [], truncated: false };
 
-  const candidates = hybridSearch(database, { ...normalizedInput, limit }, runtime);
+  const omissions:HistoryOmission[]=[];
+  const candidates = hybridSearch(database, { ...normalizedInput, limit }, {...runtime,onHistoryOmission(value){omissions.push(value);runtime.onHistoryOmission?.(value);}});
   return {
     hits: candidates.slice(0, limit).map((candidate, index) => ({
       entryId: candidate.entryId,
@@ -128,6 +140,7 @@ export function rankedEntryHits(
       reasons: [...candidate.reasons],
     })),
     truncated: candidates.length > limit,
+    ...(omissions.length?{historyOmissions:[...new Map(omissions.map(o=>[JSON.stringify(o),o])).values()]}:{}),
   };
 }
 
@@ -139,7 +152,7 @@ export function searchEntries(
   const limit = normalizedLimit(input.limit, DEFAULT_SEARCH_LIMIT);
   const selected = rankedEntryHits(database, { ...input, limit }, runtime);
   const items = selected.hits.map((hit) => readEntry(database, { workspace: input.workspace, entryId: hit.entryId }));
-  return { items, count: items.length, truncated: selected.truncated };
+  return { items, count: items.length, truncated: selected.truncated, ...(selected.historyOmissions?{historySelectionOmissions:selected.historyOmissions}:{}) };
 }
 
 function candidateSnapshotHash(items: readonly EntryRecord[]): string {
@@ -198,10 +211,11 @@ export function recallEntries(
   }
   const reasons = new Map<string, string[]>();
   for (const id of retained) reasons.set(id, ['duplicate_source_suppressed']);
-  return {
+  return finalizeHistoryRecall(database,{
     ...packRecallEntries(database, input, deduplicated.entries, selected.truncated || suppressed.size > 0, maxChars, sourceNotes, reasons),
     lessonDeduplicationDiagnostics: deduplicated.diagnostics,
-  };
+    ...(selected.historyOmissions?{historySelectionOmissions:selected.historyOmissions}:{}),
+  },input);
 }
 
 function packRecallEntries(
@@ -291,9 +305,10 @@ export async function recallEntriesWithReranker(
     throw new KiokukoError('CONFLICT', 'Recall selection changed during reranker inference');
   }
   const result = packRecallEntries(database, input, reranked.candidates.map(({ entry }) => entry), baseline.truncated || suppressed.size > 0, maxChars, sourceNotes, reasons);
-  return {
+  return finalizeHistoryRecall(database,{
     ...result,
+    ...(baseline.historySelectionOmissions?{historySelectionOmissions:baseline.historySelectionOmissions}:{}),
     lessonDeduplicationDiagnostics: deduplicated.diagnostics,
     ...(reranked.diagnostics === undefined ? {} : { rerankerDiagnostics: reranked.diagnostics }),
-  };
+  },input);
 }

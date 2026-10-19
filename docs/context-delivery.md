@@ -60,3 +60,10 @@ When answering an existing task, omission reuses its saved body budget; an expli
 value must match. Reviewed replay previews distinguish `proposalId`/`proposalRevision`
 from the stored `entryId`/`revision` used by relation endpoints. Approval does not
 prove task verification.
+
+
+Project history is an explicit additional view: `recall --history` and
+`task_history_recall` enforce a separate final-serialization bound, including
+consumer envelopes, and return non-authoritative ancestry/code evidence with
+omission dispositions. See [history and code evidence](history-evidence.md).
+The normal body/relation budgets described above are retained.

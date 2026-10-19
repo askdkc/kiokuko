@@ -3,6 +3,7 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { KiokukoError } from '../errors.js';
 import { readEntry, type EntryRecord } from './entries.js';
+import { canonicalJson } from '../serialization/validate.js';
 import { recordAuditEvent } from './audit.js';
 
 export interface PromoteInput {
@@ -67,8 +68,24 @@ export function supersedeEntryInTransaction(database: SqliteDatabase, input: Sup
   const managedExternal = database.prepare('SELECT 1 AS present FROM external_skill_entries WHERE entry_id IN (?, ?) LIMIT 1').get<{ present: number }>(input.oldEntryId, input.replacementEntryId);
   if (managedExternal) throw new KiokukoError('CONFLICT', 'Managed external Skill entries cannot be superseded');
   if (oldEntry.revision !== input.expectedRevision) throw new KiokukoError('CONFLICT', 'Entry revision is stale');
-  if (oldEntry.status === 'superseded') throw new KiokukoError('CONFLICT', 'Entry is already superseded');
+  if (oldEntry.status === 'superseded') {
+    if (oldEntry.supersededBy === replacement.id) return oldEntry;
+    throw new KiokukoError('CONFLICT', 'Entry is already superseded');
+  }
   if (replacement.status === 'superseded') throw new KiokukoError('CONFLICT', 'A superseded entry cannot be a replacement');
+  const identity = (entry: EntryRecord) => {
+    if (entry.scope.schemaVersion !== 3) return {};
+    const applicability = entry.scope.applicability;
+    const value = typeof applicability === 'object' && applicability !== null && !Array.isArray(applicability) ? applicability : {};
+    return Object.fromEntries(['ownerIds', 'repositoryIds', 'workspaces', 'branches'].flatMap(key => value[key] === undefined ? [] : [[key, value[key]]]));
+  };
+  if (canonicalJson(identity(oldEntry)) !== canonicalJson(identity(replacement))
+    || oldEntry.scope.schemaVersion === 3 && replacement.scope.schemaVersion === 3
+      && oldEntry.scope.repositoryId !== undefined && replacement.scope.repositoryId !== undefined
+      && oldEntry.scope.repositoryId !== replacement.scope.repositoryId) {
+    throw new KiokukoError('CONFLICT', 'Replacement crosses an explicit memory identity or branch scope');
+  }
+
   database.prepare("UPDATE entries SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ? AND workspace = ? AND current_revision = ?")
     .run(input.replacementEntryId, now, input.oldEntryId, input.workspace, input.expectedRevision);
   recordAuditEvent(database, { entryId: input.oldEntryId, workspace: input.workspace, operation: 'supersede', actor, details: { replacementEntryId: input.replacementEntryId, expectedRevision: input.expectedRevision }, createdAt: now });
