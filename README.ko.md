@@ -13,7 +13,7 @@ AI 에이전트를 위한 로컬 메모리입니다. 선호 사항, 결정, 수�
 Node.js **24.16.0 이상**이 필요합니다.
 
 ```bash
-npm install --global kiokuko
+npm i -g kiokuko
 kiokuko setup
 ```
 

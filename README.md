@@ -13,7 +13,7 @@ Works with **Codex, OpenCode, Claude Code, and Hermes Agent**.
 Requires Node.js **24.16.0 or newer**.
 
 ```bash
-npm install --global kiokuko
+npm i -g kiokuko
 kiokuko setup
 ```
 

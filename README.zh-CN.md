@@ -13,7 +13,7 @@ AI 代理的本地记忆。将偏好、决策和纠正保存在 SQLite 中，
 需要 Node.js **24.16.0 或更高版本**。
 
 ```bash
-npm install --global kiokuko
+npm i -g kiokuko
 kiokuko setup
 ```
 

@@ -13,7 +13,7 @@ AIエージェント用のローカルメモリです。好み・判断・訂正
 Node.js **24.16.0以上**が必要です。
 
 ```bash
-npm install --global kiokuko
+npm i -g kiokuko
 kiokuko setup
 ```
 
