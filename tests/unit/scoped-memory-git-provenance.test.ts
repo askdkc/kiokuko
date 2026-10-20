@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { resolveCheckpointSourceCommit } from '../../src/memory/scoped-memory.js';
+import { resolveCheckpointSourceCommit } from '../../src/memory/git-provenance.js';
 
 function processFailure(overrides: Record<string, unknown> = {}): Error {
   return Object.assign(new Error('raw process failure'), {
@@ -68,10 +68,13 @@ test('returns null only for explicit non-Git and unborn-HEAD states', async (t) 
   assert.equal(resolveCheckpointSourceCommit(await repository(t, true)), null);
 });
 
-test('returns a strict immutable commit and applies bounded deterministic Git options', () => {
+test('returns a strict immutable commit and applies bounded deterministic Git options', async (t) => {
+  const root = await repository(t);
   let observed: { executable: string; args: string[]; timeout: number; maxBuffer: number; locale: string | undefined } | undefined;
   const commit = 'a'.repeat(40);
-  const result = resolveCheckpointSourceCommit('/repository', (executable, args, options) => {
+  const result = resolveCheckpointSourceCommit(root, (executable, args, options) => {
+    if (args.includes('--is-bare-repository')) return 'false';
+    if (args.includes('--show-toplevel')) return root;
     observed = {
       executable,
       args,
@@ -90,13 +93,13 @@ test('returns a strict immutable commit and applies bounded deterministic Git op
     maxBuffer: 64 * 1024,
     locale: 'C',
   });
-  assert.equal(resolveCheckpointSourceCommit('/repository', () => 'b'.repeat(64)), 'b'.repeat(64));
+  assert.equal(resolveCheckpointSourceCommit(root, (_executable, args) => args.includes('--is-bare-repository') ? 'false' : args.includes('--show-toplevel') ? root : 'b'.repeat(64)), 'b'.repeat(64));
 });
 
 test('rejects malformed successful Git output as an integrity failure', () => {
   for (const output of ['', 'deadbee\n', `${'A'.repeat(40)}\n`, `${'a'.repeat(40)}\nsecond-line\n`, `${'a'.repeat(40)} `]) {
     assert.throws(
-      () => resolveCheckpointSourceCommit('/unused', () => output),
+      () => resolveCheckpointSourceCommit(process.cwd(), () => output),
       (error: unknown) => (error as { code?: string; message?: string }).code === 'INTEGRITY_ERROR'
         && (error as { message?: string }).message === 'Git checkpoint provenance is invalid',
     );
@@ -120,7 +123,7 @@ test('propagates timeout, permission, and unexpected Git failures as typed failu
   ];
   for (const failure of failures) {
     assert.throws(
-      () => resolveCheckpointSourceCommit('/unused', throwing(failure)),
+      () => resolveCheckpointSourceCommit(process.cwd(), throwing(failure)),
       (error: unknown) => (error as { code?: string; message?: string }).code === 'SERVICE_UNAVAILABLE'
         && (error as { message?: string }).message === 'Git checkpoint provenance could not be resolved'
         && !(error as { message?: string }).message?.includes('sentinel'),
@@ -138,6 +141,8 @@ test('shares the time budget across probes and refuses noisy missing-ref results
       throw processFailure({ status: 128, stderr: 'fatal: Needed a single revision\n' });
     }
     if (args.includes('--absolute-git-dir')) return `${root}/.git\n`;
+    if (args.includes('--is-bare-repository')) return 'false';
+    if (args.includes('--show-toplevel')) return root;
     if (args[0] === 'symbolic-ref') return 'refs/heads/main\n';
     if (args[0] === 'check-ref-format') return '';
     throw processFailure({ status: 1, stderr: 'unexpected diagnostic\n' });
@@ -160,7 +165,7 @@ test('valid real commits and linked worktree unborn refs keep Git storage semant
   assert.throws(() => resolveCheckpointSourceCommit(linked), { code: 'SERVICE_UNAVAILABLE' });
 });
 
-test('an explicit unusable GIT_DIR is not interpreted as an ordinary non-repository', async (t) => {
+test('an inherited unusable GIT_DIR cannot override the registered unborn repository', async (t) => {
   const root = await repository(t);
   const source = `import { resolveCheckpointSourceCommit } from './src/memory/scoped-memory.ts';
     try { console.log(JSON.stringify({ commit: resolveCheckpointSourceCommit(process.argv[1]) })); }
@@ -168,10 +173,10 @@ test('an explicit unusable GIT_DIR is not interpreted as an ordinary non-reposit
   const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source, root], {
     encoding: 'utf8', env: { ...process.env, GIT_DIR: path.join(root, 'missing-git-dir') },
   });
-  assert.deepEqual(JSON.parse(output), { code: 'SERVICE_UNAVAILABLE' });
+  assert.deepEqual(JSON.parse(output), { commit: null });
 });
 
-test('non-repository marker checks respect a realpath-normalized Git discovery ceiling', async (t) => {
+test('non-repository discovery is bounded to the registered root, not an inherited ceiling', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'kiokuko-git-ceiling-'));
   const link = root + '-link';
   t.after(() => rm(link, { force: true }));

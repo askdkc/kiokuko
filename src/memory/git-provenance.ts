@@ -82,6 +82,14 @@ function singleLine(output: string): string {
   return line;
 }
 
+/** The registered root, not a discovered parent or configured work tree, owns provenance. */
+function assertRepositoryRoot(cwd: string, run: (args: string[]) => string): void {
+  const bare = singleLine(run(['rev-parse', '--is-bare-repository']));
+  if (bare !== 'true' && bare !== 'false') throw unavailable();
+  const observed = singleLine(run(['rev-parse', bare === 'true' ? '--absolute-git-dir' : '--show-toplevel']));
+  if (!path.isAbsolute(observed) || realpathSync(observed) !== realpathSync(cwd)) throw unavailable();
+}
+
 function confirmAbsentCommit(
   error: unknown,
   cwd: string,
@@ -100,6 +108,7 @@ function confirmAbsentCommit(
     return;
   }
   if (!unborn) throw unavailable(); // Repository changed during the probes.
+  assertRepositoryRoot(cwd, run);
   const ref = singleLine(run(['symbolic-ref', '--quiet', 'HEAD']));
   if (!ref.startsWith('refs/heads/')) throw unavailable();
   run(['check-ref-format', ref]);
@@ -118,7 +127,12 @@ function confirmAbsentCommit(
 /** Resolve immutable provenance; only observed non-repository/unborn states have no commit. */
 export function resolveCheckpointSourceCommit(repositoryRoot: string, execute: GitProvenanceExecutor = executeGit): string | null {
   const deadline = performance.now() + 5_000;
-  const env = { ...process.env, LC_ALL: 'C', LANG: 'C' };
+  const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: 'C', LANG: 'C' };
+  // Match applicability-context: host Git overrides must not rebind a registered checkout.
+  for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
+  // Never discover a parent checkout when the registered directory is not itself a repository.
+  try { env.GIT_CEILING_DIRECTORIES = path.dirname(realpathSync(repositoryRoot)); }
+  catch { throw unavailable(); }
   const remaining = () => {
     const budget = Math.ceil(deadline - performance.now());
     if (budget <= 0) throw unavailable();
@@ -140,5 +154,7 @@ export function resolveCheckpointSourceCommit(repositoryRoot: string, execute: G
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(commit)) {
     throw new KiokukoError('INTEGRITY_ERROR', 'Git checkpoint provenance is invalid');
   }
+  try { assertRepositoryRoot(repositoryRoot, run); remaining(); }
+  catch { throw unavailable(); }
   return commit;
 }

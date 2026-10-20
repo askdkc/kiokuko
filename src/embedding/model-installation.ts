@@ -22,6 +22,10 @@ export interface InstallModelOptions extends PathEnvironment {
   readonly family?: 'embeddings' | 'rerankers';
 }
 
+function aborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new KiokukoError('SERVICE_UNAVAILABLE', 'Embedding model download was interrupted');
+}
+
 function relativeModelPath(preset: ModelArtifactPreset, family: 'embeddings' | 'rerankers'): string {
   return path.posix.join('models', family, preset.id, preset.revision);
 }
@@ -42,6 +46,7 @@ export async function installLocalModel(
   preset: ModelArtifactPreset,
   options: InstallModelOptions = {},
 ): Promise<InstalledModel> {
+  aborted(options.signal);
   const downloader = options.downloader ?? createHuggingFaceModelDownloader();
   const family = options.family ?? 'embeddings';
   const finalDirectory = family === 'rerankers'
@@ -51,6 +56,7 @@ export async function installLocalModel(
   if (await existingDirectory(finalDirectory)) {
     const manifest = await verifyModelDirectory(finalDirectory, preset);
     await assertNoUnexpectedModelFiles(finalDirectory, preset);
+    aborted(options.signal);
     return { installation: 'reused', directory: finalDirectory, relativePath, totalBytes: manifest.totalBytes, manifestHash: manifest.artifactManifestHash };
   }
 
@@ -62,6 +68,7 @@ export async function installLocalModel(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
     });
+    aborted(options.signal);
     const manifest = await verifyModelDirectory(downloaded.directory, preset);
     await assertNoUnexpectedModelFiles(downloaded.directory, preset);
     await writeFile(path.join(downloaded.directory, MODEL_MANIFEST_FILENAME), serializeModelManifest(manifest), { mode: 0o600, flag: 'wx' });
@@ -70,15 +77,19 @@ export async function installLocalModel(
     if (await existingDirectory(finalDirectory)) {
       const existing = await verifyModelDirectory(finalDirectory, preset);
       if (existing.artifactManifestHash !== manifest.artifactManifestHash) throw new KiokukoError('CONFLICT', 'A different model installation already exists for this preset revision');
+      aborted(options.signal);
       return { installation: 'reused', directory: finalDirectory, relativePath, totalBytes: existing.totalBytes, manifestHash: existing.artifactManifestHash };
     }
     try {
+      // Publication linearizes at rename: never remove a published model on a later abort.
+      aborted(options.signal);
       await rename(downloaded.directory, finalDirectory);
       return { installation: 'installed', directory: finalDirectory, relativePath, totalBytes: manifest.totalBytes, manifestHash: manifest.artifactManifestHash };
     } catch (error) {
       if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOTEMPTY'
         && await existingDirectory(finalDirectory)) {
         const existing = await verifyModelDirectory(finalDirectory, preset);
+        aborted(options.signal);
         return { installation: 'reused', directory: finalDirectory, relativePath, totalBytes: existing.totalBytes, manifestHash: existing.artifactManifestHash };
       }
       throw error;

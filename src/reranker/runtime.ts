@@ -30,11 +30,17 @@ interface PendingJob {
   settled: boolean;
 }
 
-interface WorkerMessage {
-  readonly id?: number;
-  readonly type?: 'ready' | 'scores' | 'error' | 'shutdown';
-  readonly scores?: unknown;
-  readonly message?: string;
+interface WorkerSession {
+  readonly child: ChildProcessWithoutNullStreams;
+  readonly reader: ReadlineInterface;
+  readonly ready: Promise<void>;
+  readonly resolveReady: () => void;
+  readonly rejectReady: (error: unknown) => void;
+  readonly exited: Promise<void>;
+  initialized: boolean;
+  retiring: boolean;
+  stopped: boolean;
+  killTimer?: NodeJS.Timeout;
 }
 
 const MAX_PAIRS = 32;
@@ -101,11 +107,10 @@ export interface LocalRerankerRuntimeOptions {
 export class LocalRerankerRuntime implements RerankerWorkerClient {
   readonly #options: LocalRerankerRuntimeOptions;
   readonly #queue: PendingJob[] = [];
-  #child: ChildProcessWithoutNullStreams | undefined;
-  #reader: ReadlineInterface | undefined;
-  #ready: Promise<void> | undefined;
+  #worker: WorkerSession | undefined;
+  readonly #children = new Set<WorkerSession>();
+  #closing: Promise<void> | undefined;
   #running: PendingJob | undefined;
-  #stderr = '';
   #closed = false;
   #sequence = 0;
 
@@ -136,90 +141,92 @@ export class LocalRerankerRuntime implements RerankerWorkerClient {
     });
   }
 
-  async #ensureWorker(): Promise<void> {
-    if (this.#child !== undefined && this.#ready !== undefined) return this.#ready;
-    if (this.#ready !== undefined) return this.#ready;
+  #ensureWorker(): WorkerSession {
+    if (this.#worker !== undefined) return this.#worker;
     const spawn = this.#options.spawn ?? spawnProcess;
     const workerPath = this.#options.workerPath ?? fileURLToPath(new URL('./worker.js', import.meta.url));
     const child = spawn(this.#options.executable ?? process.execPath, [workerPath, this.#options.modelDirectory,
       String(this.#options.maxInputBytes ?? MAX_INPUT_BYTES), String(MAX_RERANKER_BATCH_BYTES)],
     { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-    this.#child = child;
-    this.#stderr = '';
-    this.#reader = createInterface({ input: child.stdout });
-    this.#reader.on('line', (line) => this.#receive(line));
-    child.stderr.on('data', (chunk: Buffer) => {
-      this.#stderr = (this.#stderr + chunk.toString('utf8')).slice(-8_192);
+    let resolveReady!: () => void;
+    let rejectReady!: (error: unknown) => void;
+    const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    let resolveExited!: () => void;
+    const exited = new Promise<void>((resolve) => { resolveExited = resolve; });
+    const worker: WorkerSession = {
+      child, reader: createInterface({ input: child.stdout }), ready,
+      resolveReady, rejectReady, exited,
+      initialized: false, retiring: false, stopped: false,
+    };
+    this.#worker = worker;
+    this.#children.add(worker);
+    // Drain stderr without retaining model or input data.
+    child.stderr.resume();
+    worker.reader.on('line', (line) => this.#receive(worker, line));
+    child.stdin.on('error', () => {
+      this.#failWorker(worker, new KiokukoError('SERVICE_UNAVAILABLE', 'Could not write to local reranker worker'));
     });
+    const stopped = () => {
+      if (worker.stopped) return;
+      worker.stopped = true;
+      clearTimeout(worker.killTimer);
+      worker.reader.close();
+      this.#children.delete(worker);
+      resolveExited();
+    };
     child.on('error', (error) => {
-      if (this.#child !== child) return;
-      this.#failRunning(new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker worker failed', { cause: error.message }));
-      this.#forgetWorker();
-      this.#pump();
+      this.#failWorker(worker, new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker worker failed', { cause: error.message }));
+      // A failed spawn has no process and will not emit exit.
+      if (child.pid === undefined) stopped();
     });
-    child.on('exit', (code, signal) => {
-      if (this.#child !== child) return;
-      this.#failRunning(new KiokukoError('SERVICE_UNAVAILABLE', `Local reranker worker exited (${signal ?? code ?? 'unknown'})`));
-      this.#forgetWorker();
-      this.#pump();
+    child.once('exit', (code, signal) => {
+      stopped();
+      this.#failWorker(worker, new KiokukoError('SERVICE_UNAVAILABLE', `Local reranker worker exited (${signal ?? code ?? 'unknown'})`));
     });
-    this.#ready = new Promise<void>((resolve, reject) => {
-      const childError = (error: Error) => reject(new KiokukoError('SERVICE_UNAVAILABLE', 'Could not start local reranker worker', { cause: error.message }));
-      const onExit = (code: number | null, signal: NodeJS.Signals | null) => reject(new KiokukoError('SERVICE_UNAVAILABLE', `Local reranker worker exited before initialization (${signal ?? code ?? 'unknown'})`));
-      const onReady = () => {
-        child.off('error', childError);
-        child.off('exit', onExit);
-        resolve();
-      };
-      const onMessage = (line: string) => {
-        let message: WorkerMessage;
-        try { message = JSON.parse(line) as WorkerMessage; } catch { return; }
-        if (message.type !== 'ready') return;
-        this.#reader?.off('line', onMessage);
-        onReady();
-      };
-      this.#reader?.on('line', onMessage);
-      child.once('error', childError);
-      child.once('exit', onExit);
-    }).catch((error: unknown) => {
-      if (this.#child === child) this.#forgetWorker();
-      throw error;
-    });
-    return this.#ready;
+    return worker;
   }
 
-  #receive(line: string): void {
-    if (line.length > MAX_OUTPUT_LINE_CHARS) {
-      this.#failRunning(new KiokukoError('INTEGRITY_ERROR', 'Local reranker worker response exceeded its protocol limit'));
-      this.#terminateWorker();
-      return;
-    }
-    let message: WorkerMessage;
-    try { message = JSON.parse(line) as WorkerMessage; } catch {
-      this.#failRunning(new KiokukoError('INTEGRITY_ERROR', 'Local reranker worker returned invalid JSON'));
-      this.#terminateWorker();
-      return;
-    }
-    if (message.type === 'ready' || message.type === 'shutdown') return;
-    const job = this.#running;
-    if (job === undefined || message.id !== job.id) {
-      this.#failRunning(new KiokukoError('INTEGRITY_ERROR', 'Local reranker worker response does not match the active request'));
-      this.#terminateWorker();
-      this.#pump();
-      return;
-    }
-    if (message.type === 'error') {
-      this.#settle(job, new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker inference failed'));
-      this.#terminateWorker();
-    } else if (message.type === 'scores') {
-      try { this.#settle(job, undefined, parseScores(message.scores, job.pairs.length)); }
-      catch (error) { this.#settle(job, error); this.#terminateWorker(); }
-    } else {
-      this.#settle(job, new KiokukoError('INTEGRITY_ERROR', 'Local reranker worker returned an unknown response'));
-      this.#terminateWorker();
-    }
-    this.#running = undefined;
+  #failWorker(worker: WorkerSession, error: unknown): void {
+    worker.rejectReady(error);
+    if (this.#worker !== worker) return;
+    this.#failRunning(error);
+    this.#terminateWorker();
     this.#pump();
+  }
+
+  #receive(worker: WorkerSession, line: string): void {
+    if (this.#worker !== worker || worker.retiring) return;
+    try {
+      if (line.length > MAX_OUTPUT_LINE_CHARS) throw new Error('response exceeded its protocol limit');
+      const value: unknown = JSON.parse(line);
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('invalid envelope');
+      const message = value as Record<string, unknown>;
+      if (!worker.initialized) {
+        if (message.type === 'error' && message.id === undefined && typeof message.message === 'string') {
+          this.#failWorker(worker, new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker initialization failed'));
+          return;
+        }
+        if (message.type !== 'ready' || message.id !== undefined || message.scores !== undefined) throw new Error('invalid initialization response');
+        worker.initialized = true;
+        worker.resolveReady();
+        return;
+      }
+      const job = this.#running;
+      if ((message.type !== 'scores' && message.type !== 'error')
+        || !Number.isSafeInteger(message.id) || (message.id as number) < 1
+        || job === undefined || message.id !== job.id) throw new Error('response does not match the active request');
+      if (message.type === 'error') {
+        if (typeof message.message !== 'string') throw new Error('invalid error response');
+        this.#failWorker(worker, new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker inference failed'));
+        return;
+      }
+      const scores = parseScores(message.scores, job.pairs.length);
+      this.#settle(job, undefined, scores);
+      this.#running = undefined;
+      this.#pump();
+    } catch (error) {
+      this.#failWorker(worker, new KiokukoError('INTEGRITY_ERROR', 'Local reranker returned an invalid protocol response'));
+    }
   }
 
   #pump(): void {
@@ -239,9 +246,18 @@ export class LocalRerankerRuntime implements RerankerWorkerClient {
       this.#pump();
       return;
     }
-    void this.#ensureWorker().then(() => {
+    let worker: WorkerSession;
+    try { worker = this.#ensureWorker(); } catch (error) {
+      this.#settle(job, error);
+      this.#running = undefined;
+      this.#pump();
+      return;
+    }
+    void worker.ready.then(() => {
       if (job.settled || this.#running !== job || job.signal?.aborted) return;
-      this.#child?.stdin.write(`${request}\n`, (error) => {
+      if (this.#worker !== worker || worker.retiring) return;
+      worker.child.stdin.write(`${request}\n`, (error) => {
+        if (this.#worker !== worker || this.#running !== job || job.settled) return;
         if (error !== null && error !== undefined) {
           this.#settle(job, new KiokukoError('SERVICE_UNAVAILABLE', 'Could not write to local reranker worker'));
           this.#running = undefined;
@@ -297,39 +313,32 @@ export class LocalRerankerRuntime implements RerankerWorkerClient {
     this.#running = undefined;
   }
 
-  #forgetWorker(): void {
-    this.#reader?.close();
-    this.#reader = undefined;
-    this.#child = undefined;
-    this.#ready = undefined;
-    this.#stderr = '';
-  }
-
   #terminateWorker(): void {
-    const child = this.#child;
-    if (child === undefined) return;
-    this.#forgetWorker();
-    child.kill('SIGTERM');
+    const worker = this.#worker;
+    if (worker === undefined) return;
+    this.#worker = undefined;
+    worker.retiring = true;
+    worker.reader.close();
+    worker.rejectReady(new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker worker stopped'));
+    if (worker.stopped) return;
+    // Keep ownership until exit, including after timeout/abort and replacement.
+    worker.killTimer = setTimeout(() => {
+      if (!worker.stopped) worker.child.kill('SIGKILL');
+    }, 2_000);
+    worker.child.kill('SIGTERM');
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closing !== undefined) return this.#closing;
     this.#closed = true;
-    for (const job of this.#queue.splice(0)) this.#settle(job, new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker runtime is shutting down'));
-    if (this.#running !== undefined) this.#settle(this.#running, new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker runtime is shutting down'));
-    this.#running = undefined;
-    const child = this.#child;
-    this.#forgetWorker();
-    if (child !== undefined && child.exitCode === null && child.signalCode === null) {
-      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-      child.kill('SIGTERM');
-      const stopped = await Promise.race([exited.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2_000))]);
-      if (!stopped) {
-        child.kill('SIGKILL');
-        await exited;
-      }
-    }
+    const error = new KiokukoError('SERVICE_UNAVAILABLE', 'Local reranker runtime is shutting down');
+    for (const job of this.#queue.splice(0)) this.#settle(job, error);
+    this.#failRunning(error);
+    this.#terminateWorker();
+    this.#closing = Promise.all([...this.#children].map((worker) => worker.exited)).then(() => undefined);
+    return this.#closing;
   }
+
 }
 
 export function createLocalRerankerRuntime(modelDirectory: string, options: Omit<LocalRerankerRuntimeOptions, 'modelDirectory'> = {}): LocalRerankerRuntime {
