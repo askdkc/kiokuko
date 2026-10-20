@@ -50,14 +50,22 @@ semantic result. Dry-run reads an existing database without initializing or upgr
 
 ## ChatGPT conversation MCP profile
 
-`kiokuko mcp --profile chatgpt-memory --access read` exposes only `memory_policy`
-and Global `memory_recall`. Access defaults to `read`; unsupported profile/access
+`kiokuko mcp --profile chatgpt-memory --access read` exposes `memory_policy`,
+`memory_recall` and read-only `memory_correction_check`. Access defaults to `read`; unsupported profile/access
 values and `--access` without this profile fail before opening the database.
 `--access read-write` additionally exposes Global `memory_capture` for explicit saves and corrections. Plain `kiokuko mcp` retains the local contract.
 This profile requires a current existing database, uses lexical search, and never
 initializes, migrates or starts an embedding worker. ChatGPT registration is a
 manual connection step, not a setup target. See the [connection guide](chatgpt.md)
 and [validation status](chatgpt-validation.md).
+
+Recall returns a connection-local correction receipt with source IDs, revisions,
+source hashes and an item digest. The check binds a structured judgment and target
+to that receipt, without reading a target file, saving memory, granting permission
+or proving model delivery. MCP errors use `isError` and a JSON text content block
+containing `code` and `message`; they do not use a successful tool's structured schema.
+An omitted recall receipt returns `binding: missing`; the last observed retrieval
+state is retained, but none of its sources are borrowed for the judgment.
 
 ## Uninstall
 

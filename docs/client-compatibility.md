@@ -12,7 +12,7 @@ Status: global MCP integration for Codex, OpenCode, Claude Code, and profile-sco
 
 ChatGPT has a separate conversation memory preview:
 `kiokuko mcp --profile chatgpt-memory --access read`. It exposes only
-`memory_policy` and Global `memory_recall`, with an exact bundled-policy
+`memory_policy`, `memory_recall` and read-only `memory_correction_check`, with an exact bundled-policy
 version/digest attestation instead of local Skill declarations. It is not a
 `setup` target. [Tunnel setup](chatgpt.md) and [live validation status](chatgpt-validation.md)
 are separate from local MCP test results. `--access read-write` adds Global capture and correction. Plugin distribution and

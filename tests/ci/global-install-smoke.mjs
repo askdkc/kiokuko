@@ -535,7 +535,7 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
     args: ['mcp', '--profile', 'chatgpt-memory', '--access', 'read'], env: environment, stderr: 'pipe' });
   try {
     await client.connect(transport);
-    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_policy', 'memory_recall']);
+    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_correction_check', 'memory_policy', 'memory_recall']);
     const policy = (await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
     assert.equal(policy.policyVersion, 'chatgpt-memory/3');
     assert.match(policy.policyDigest, /^[a-f0-9]{64}$/u);
@@ -550,7 +550,7 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
   try {
     await writer.connect(new StdioClientTransport({ command: cliPath,
       args: ['mcp', '--profile', 'chatgpt-memory', '--access', 'read-write'], env: environment, stderr: 'pipe' }));
-    assert.deepEqual((await writer.listTools()).tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_policy', 'memory_recall']);
+    assert.deepEqual((await writer.listTools()).tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_correction_check', 'memory_policy', 'memory_recall']);
     const p = (await writer.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
     assert.equal(p.access, 'read-write');
     const policy = { version: p.policyVersion, digest: p.policyDigest, read: true };

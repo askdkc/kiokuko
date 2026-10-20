@@ -21,7 +21,7 @@ const memory = { kind: 'preference', title: 'Japanese grammar', body: 'Show exam
   subjects: ['Japanese grammar'], basis: 'user_statement', portableReason: 'Applies to language explanations across projects.' };
 
 function errorCode(result: Record<string, unknown>) {
-  return (result.structuredContent as Record<string, unknown> | undefined)?.code;
+  return JSON.parse((result.content as Array<{text:string}>)[0]!.text).code;
 }
 
 async function fixture(t: TestContext) {
@@ -53,7 +53,7 @@ test('opt-in capture publishes a strict write contract and saves global candidat
   const { db, makeOwner } = await fixture(t);
   const a = await connect(t, makeOwner());
   const tools = (await a.client.listTools()).tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_policy', 'memory_recall']);
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_correction_check', 'memory_policy', 'memory_recall']);
   const tool = tools.find(tool => tool.name === 'memory_capture')!;
   assert.deepEqual(tool.annotations, { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
   assert.equal(tool.inputSchema.additionalProperties, false);

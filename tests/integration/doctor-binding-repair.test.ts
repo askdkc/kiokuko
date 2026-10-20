@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, access, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -10,7 +10,7 @@ import { registerRepositoryAndLocation } from '../../src/repository/binding.js';
 import { parseProjectConfigText } from '../../src/config/project-config.js';
 
 async function fixture(t: test.TestContext) {
-  const directory = await mkdtemp(path.join(tmpdir(), 'kiokuko-binding-repair-'));
+  const directory = await realpath(await mkdtemp(path.join(tmpdir(), 'kiokuko-binding-repair-')));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = path.join(directory, 'project'); await mkdir(root);
   const databasePath = path.join(directory, 'memory.sqlite3');

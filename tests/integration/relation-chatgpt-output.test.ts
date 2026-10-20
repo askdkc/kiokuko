@@ -41,7 +41,7 @@ test('ChatGPT recall exposes 16k Unicode body and typed links in the final model
     assert.notEqual(bounded.isError, true); assert.ok(Number((bounded.structuredContent as { characterCount: number }).characterCount) <= 500);
     process.env.KIOKUKO_RELATION_CHARACTER_BUDGET = '1';
     const failed = await client.callTool({ name: 'memory_recall', arguments: args });
-    assert.equal(failed.isError, true); assert.equal((failed.structuredContent as { code: string })?.code, 'VALIDATION_ERROR');
+    assert.equal(failed.isError, true); assert.equal(JSON.parse((failed.content as Array<{text:string}>)[0]!.text).code, 'VALIDATION_ERROR');
   } finally {
     if (old === undefined) delete process.env.KIOKUKO_RELATION_CHARACTER_BUDGET; else process.env.KIOKUKO_RELATION_CHARACTER_BUDGET = old;
     await client.close(); await server.close(); await owner.close(); database.close(); await rm(root,{recursive:true,force:true});

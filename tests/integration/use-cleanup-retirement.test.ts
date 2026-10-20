@@ -13,7 +13,7 @@ import { openConnection } from '../../src/db/connection.js';
 type Route = 'agent-write' | 'binding-retry';
 type Completion = 'intended' | 'foreign' | 'missing';
 async function exercise(route: Route, completion: Completion) {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'use-cleanup-retirement-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'use-cleanup-retirement-')));
   execFileSync('git', ['init', '-q', root]);
   const agentPath = path.join(root, 'AGENTS.md'), databasePath = path.join(root, 'memory.sqlite3');
   await fs.writeFile(agentPath, 'human header\n');

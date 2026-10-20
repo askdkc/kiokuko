@@ -16,6 +16,18 @@ kiokuko mcp --help
 
 Run `kiokuko init` only if no database exists. ChatGPT does not require `kiokuko setup`.
 
+`memory_recall.corrections` distinguishes an empty correction selection from a
+missing recall call. Pass its `recallId` to `memory_correction_check` to compare a
+concrete compiler or completion judgment with the same current entry revisions.
+The service reports model delivery and application as unobserved/unverified.
+Without a `recallId`, `binding: missing` reports only the connection's last
+observed retrieval state and supplies no sources. Omitting a receipt cannot erase
+a successful or failed recall, or bind an earlier search to a new judgment.
+Neither a receipt nor a model-supplied capability claim proves understanding or
+test success. Ordinary work remains independent of optional memory. DSH can
+separately observe its actual provider input and its approved native verifiers.
+This does not merge the two products' databases or force ChatGPT to call a tool.
+
 ## Troubleshooting
 
 | Symptom | Action |

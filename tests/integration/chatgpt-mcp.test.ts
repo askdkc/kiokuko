@@ -61,7 +61,7 @@ test('remote tools are an explicit read-only allowlist with strict published sch
   const { owner } = await fixture(t);
   const client = await connect(t, owner);
   const list = (await client.listTools()).tools;
-  assert.deepEqual(list.map(tool => tool.name).sort(), ['memory_policy', 'memory_recall']);
+  assert.deepEqual(list.map(tool => tool.name).sort(), ['memory_correction_check', 'memory_policy', 'memory_recall']);
   for (const tool of list) {
     assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     assert.equal(tool.inputSchema.additionalProperties, false);
@@ -96,10 +96,10 @@ test('policy works without DB access and rejected inputs never return memories o
   ] as const) {
     const failure = await client.callTool({ name: 'memory_recall', arguments: { query: 'memory', ...input } });
     assert.equal(failure.isError, true);
-    assert.equal((failure.structuredContent as Record<string, unknown>)?.code, code);
+    assert.equal(JSON.parse((failure.content as Array<{text:string}>)[0]!.text).code, code);
     assert.ok(!JSON.stringify(failure).includes('sentinel'));
     assert.ok(!JSON.stringify(failure).includes(root));
-    assert.deepEqual(JSON.parse((failure.content as Array<{ text: string }>)[0]!.text), failure.structuredContent);
+    assert.equal(failure.structuredContent,undefined,'standard MCP errors are not validated as successful recall outputs');
   }
   assert.deepEqual(await readdir(root), []);
 });
@@ -175,7 +175,7 @@ test('real stdio CLI defaults to read, returns Global memory and leaves WAL data
   const client = new Client({ name: 'forged-local-admin', version: '1' });
   t.after(async () => client.close());
   await client.connect(transport);
-  assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_policy', 'memory_recall']);
+  assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_correction_check', 'memory_policy', 'memory_recall']);
   const remotePolicy = chatgptPolicyOutputSchema.parse((await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent);
   const found = await client.callTool({ name: 'memory_recall', arguments: { query: '日本語',
     policy: { version: remotePolicy.policyVersion, digest: remotePolicy.policyDigest, read: true } } });
@@ -242,6 +242,6 @@ test('operator project allowlist is read-only, policy-bound and isolated from gl
     assert.ok(!JSON.stringify(result).includes(root));
   }
   const stale = await client.callTool({ name: 'memory_recall', arguments: { project: ids[0], query: 'memory', policy } });
-  assert.equal((stale.structuredContent as any).code, 'POLICY_VERSION_MISMATCH');
+  assert.equal(JSON.parse((stale.content as Array<{text:string}>)[0]!.text).code, 'POLICY_VERSION_MISMATCH');
   assert.deepEqual(snapshot(db), before);
 });
