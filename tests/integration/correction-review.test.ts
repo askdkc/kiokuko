@@ -1,3 +1,7 @@
+import {captureInteractionMemory} from '../../src/memory/interaction-capture.js'
+import {readEntry} from '../../src/memory/entries.js'
+import {createCorrectionEnrichment,type CorrectionBackend} from '../../src/memory/correction-classification.js'
+import {canonicalContentHash} from '../../src/serialization/validate.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {mkdtemp,rm} from 'node:fs/promises'
@@ -8,20 +12,20 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js'
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js'
 import {initializeDatabase} from '../../src/commands/init.js'
 import {openConnection} from '../../src/db/connection.js'
-import {recordEntry,updateCandidateEntry} from '../../src/memory/entries.js'
-import {buildStructuredScope} from '../../src/memory/structured-memory.js'
+import {updateCandidateEntry} from '../../src/memory/entries.js'
 import {ChatgptRuntimeOwner} from '../../src/mcp/chatgpt-runtime.js'
 import {CorrectionRecallBook} from '../../src/mcp/correction-review.js'
 import {chatgptPolicyOutputSchema} from '../../src/mcp/chatgpt-contract.js'
 const subject=await import(process.env.KIOKUKO_CORRECTION_SERVER?pathToFileURL(process.env.KIOKUKO_CORRECTION_SERVER).href:'../../src/mcp/chatgpt-server.js')
 
-test('real remote MCP binds returned corrections without claiming model delivery or application',async t=>{
+for(const configured of [false,true])test(`real remote MCP binds corrections with ${configured?'injected semantic provider':'no semantic provider'} without claiming model delivery or application`,async t=>{
   const root=await mkdtemp(join(tmpdir(),'correction-mcp-')),databasePath=join(root,'test.sqlite3')
   await initializeDatabase({databasePath});const db=openConnection(databasePath)
-  const correction=recordEntry(db,{workspace:'global',kind:'lesson',title:'Rust compiler compatibility',body:'Do not reject Rust compiler compatibility only because versions differ. Verify actual compiler capabilities.',
-    summary:'Verify compiler capabilities instead of arbitrary version-only rejection.',tags:['subject:rust'],scope:buildStructuredScope({visibility:'global',retrievalScope:'global',portableReason:'Compiler capability checks apply across projects.'}),
-    provenance:{type:'interaction_capture',reference:'user_correction'},createdBy:'fixture'})
-  const owner=new ChatgptRuntimeOwner(databasePath),server=subject.createChatgptMemoryServer(owner),client=new Client({name:'correction-fixture',version:'1'})
+  const captured=await captureInteractionMemory(db,{operationId:'mcp-correction-capture',memories:[{kind:'lesson',scope:'global',title:'Rust compiler compatibility',body:'Do not reject Rust compiler compatibility only because versions differ. Verify actual compiler capabilities.',summary:'Verify compiler capabilities instead of arbitrary version-only rejection.',subjects:['rust'],basis:'user_correction',portableReason:'Compiler capability checks apply across projects.'}]},{cwd:root,clientKind:'chatgpt-memory',enabled:true})
+  const correction=readEntry(db,{workspace:'global',entryId:captured.items[0]!.entryId})
+  const backend:CorrectionBackend={configurationDigest:canonicalContentHash('mcp-classifier-fixture'),async evaluate(){return {status:'completed',attested:true,result:{provider:'fixture',requestedModel:'independent-fixture',policyVersion:'fixture-v1',answers:[{id:'correction-rule',status:'selected',choiceId:'capability_compatibility'}]}}}}
+  const classifier=createCorrectionEnrichment({withDatabase:async fn=>fn(db)},backend,'auto')
+  const owner=new ChatgptRuntimeOwner(databasePath),server=subject.createChatgptMemoryServer(owner,configured?{correctionClassifier:classifier}:{}),client=new Client({name:'correction-fixture',version:'1'})
   const [c,s]=InMemoryTransport.createLinkedPair();await server.connect(s);await client.connect(c)
   t.after(async()=>{await client.close();await server.close();await owner.close();db.close();await rm(root,{recursive:true,force:true})})
   await client.listTools()
@@ -39,7 +43,7 @@ test('real remote MCP binds returned corrections without claiming model delivery
   assert.equal(unbound.binding,'missing');assert.equal(unbound.reason,'recall_receipt_not_bound');assert.deepEqual(unbound.sources,[])
   const conflict=await call('memory_correction_check',{recallId,decision})
   assert.equal(conflict.binding,'bound')
-  assert.equal(conflict.state,'contradiction');assert.equal(conflict.modelInput,'unobserved');assert.equal(conflict.verification,'unverified');assert.equal(conflict.authorizationGranted,false)
+  assert.equal(conflict.state,configured?'contradiction':'unverified');assert.equal(recalled.corrections.sources[0].rule,configured?'capability_compatibility':'uncertain');assert.equal(conflict.modelInput,'unobserved');assert.equal(conflict.verification,'unverified');assert.equal(conflict.authorizationGranted,false)
   assert.equal(conflict.target,decision.target);assert.match(conflict.decisionDigest,/^[a-f0-9]{64}$/)
   for(const basis of ['capability','reproducibility'])assert.equal((await call('memory_correction_check',{recallId,decision:{...decision,basis}})).state,'unverified')
   const completion=await call('memory_correction_check',{recallId,decision:{kind:'completion',target:'scripts/check.mjs',complete:false,basis:'version_only'}})
@@ -84,4 +88,26 @@ test('a failed actual recall remains unavailable when the caller omits its recei
   assert.equal(failed.isError,true);assert.equal(JSON.parse((failed.content as Array<{text:string}>)[0]!.text).code,'SERVICE_UNAVAILABLE')
   const checked=await client.callTool({name:'memory_correction_check',arguments:{policy,decision:{kind:'completion',target:'check.mjs',complete:false,basis:'unverified'}}})
   assert.notEqual(checked.isError,true);assert.equal((checked.structuredContent as any).retrieval,'unavailable');assert.equal((checked.structuredContent as any).binding,'missing');assert.equal((checked.structuredContent as any).verification,'unverified')
+})
+
+
+test('identical legacy recapture enriches one existing correction without competing memories or caller provenance metadata',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'correction-duplicate-')),databasePath=join(root,'test.sqlite3')
+  await initializeDatabase({databasePath});const db=openConnection(databasePath)
+  try{
+    const memory={kind:'lesson',title:'Compiler compatibility',body:'Do not reject a compiler merely for a different version; verify actual capabilities.',scope:'global',subjects:['compiler'],basis:'user_correction',portableReason:'Synthetic cross-project compatibility advice'}
+    const options={cwd:root,clientKind:'chatgpt-memory',enabled:true}
+    const first=await captureInteractionMemory(db,{operationId:'legacy-first',memories:[memory]},options)
+    const duplicate=await captureInteractionMemory(db,{operationId:'legacy-duplicate',memories:[memory]},options)
+    assert.equal(duplicate.items[0]!.entryId,first.items[0]!.entryId);assert.equal(duplicate.items[0]!.outcome,'duplicate')
+    const entry=readEntry(db,{workspace:'global',entryId:first.items[0]!.entryId});let calls=0
+    const backend:CorrectionBackend={configurationDigest:canonicalContentHash('legacy-fixture'),async evaluate(){calls++;return {status:'completed',attested:true,result:{provider:'fixture',requestedModel:'independent-fixture',policyVersion:'fixture-v1',answers:[{id:'correction-rule',status:'selected',choiceId:'capability_compatibility'}]}}}}
+    const classifier=createCorrectionEnrichment({withDatabase:async fn=>fn(db)},backend,'auto'),book=new CorrectionRecallBook()
+    const items=[{workspace:'global',entryId:entry.id}],recall=await book.rememberWithClassification(db,{query:'compiler'},items,classifier)
+    assert.equal(recall.sources[0]!.rule,'capability_compatibility')
+    await book.rememberWithClassification(db,{query:'compiler again'},items,classifier);assert.equal(calls,1)
+    assert.equal(db.prepare('SELECT count(*) AS n FROM entries').get()?.n,1)
+    assert.deepEqual(readEntry(db,{workspace:'global',entryId:entry.id}).provenance,entry.provenance)
+    assert.equal(readEntry(db,{workspace:'global',entryId:entry.id}).revision,entry.revision)
+  }finally{db.close();await rm(root,{recursive:true,force:true})}
 })
