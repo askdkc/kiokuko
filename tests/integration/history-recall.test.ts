@@ -5,7 +5,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { openConnection } from '../../src/db/connection.js';
-import { migrateDatabase } from '../../src/db/migrate.js';
+import { loadMigrationSnapshot, migrateDatabase } from '../../src/db/migrate.js';
 import { useRepository } from '../../src/commands/use.js';
 import { recordEntry, readEntry } from '../../src/memory/entries.js';
 import { supersedeEntry } from '../../src/memory/lifecycle.js';
@@ -19,7 +19,7 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, readdir } from 'node:fs/promises';
+import { copyFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { retrievableWorkspaceEntryCount } from '../../src/memory/hybrid-retrieval.js';
 async function fixture(t: TestContext) {
@@ -224,20 +224,38 @@ test('migration upgrades prior storage atomically and repeated initialization pr
     t.after(async () => { await rm(root, { recursive: true, force: true }); });
     const previous = path.join(root, 'previous');
     await mkdir(previous);
-    const migrations = fileURLToPath(new URL('../../migrations/', import.meta.url)), names = (await readdir(migrations)).filter(name => name.endsWith('.sql')).sort();
-    for (const name of names.slice(0, -1))
-        await copyFile(path.join(migrations, name), path.join(previous, name));
+    const migrations = fileURLToPath(new URL('../../migrations/', import.meta.url));
+    const snapshot = loadMigrationSnapshot(migrations);
+    const targets = snapshot.migrations.filter(migration => migration.name.slice(migration.name.indexOf('_') + 1, -'.sql'.length) === 'code_version_evidence');
+    assert.equal(targets.length, 1, 'Expected exactly one code_version_evidence migration');
+    const target = targets[0]!, targetIndex = snapshot.migrations.indexOf(target);
+    assert.ok(targetIndex > 0, 'Code history migration needs a preceding storage schema');
+    for (const migration of snapshot.migrations.slice(0, targetIndex))
+        await copyFile(path.join(migrations, migration.name), path.join(previous, migration.name));
     const db = openConnection(path.join(root, 'db.sqlite3'));
     t.after(() => db.close());
     migrateDatabase(db, previous);
     const entry = recordEntry(db, { workspace: 'project:upgrade-history', kind: 'fact', title: 'Existing fact', body: 'Preserve this.' });
-    assert.throws(() => migrateDatabase(db, migrations, { beforeMarkApplied(_db, migration) {
-            if (migration.name === names.at(-1))
-                throw new Error('migration interruption');
-        } }));
+    const historyBefore = db.prepare('SELECT version,name,checksum FROM schema_migrations ORDER BY version').all();
     assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name='code_version_evidence'").get(), undefined);
-    migrateDatabase(db, migrations);
-    assert.equal(readEntry(db, { workspace: entry.workspace, entryId: entry.id }).body, 'Preserve this.');
+    const interruption = new Error('code history migration interrupted');
+    assert.throws(() => migrateDatabase(db, migrations, { beforeMarkApplied(database, migration) {
+            if (migration.name === target.name) {
+                const columns = database.prepare('PRAGMA table_info(code_version_evidence)').all<{ name: string; pk: number }>();
+                assert.ok(columns.some(column => column.name === 'version_id' && column.pk === 1));
+                assert.ok(columns.some(column => column.name === 'evidence_id'));
+                assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='code_version_recall'").get());
+                assert.ok(database.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='code_version_immutable'").get());
+                assert.equal(database.prepare('SELECT version FROM schema_migrations WHERE name=?').get(target.name), undefined);
+                throw interruption;
+            }
+        } }), error => error === interruption);
+    assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name='code_version_evidence'").get(), undefined);
+    assert.deepEqual(db.prepare('SELECT version,name,checksum FROM schema_migrations ORDER BY version').all(), historyBefore);
+    assert.deepEqual(readEntry(db, { workspace: entry.workspace, entryId: entry.id }), entry);
+    assert.deepEqual(migrateDatabase(db, migrations).applied, snapshot.migrations.slice(targetIndex).map(migration => migration.version));
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='code_version_evidence'").get());
+    assert.deepEqual(readEntry(db, { workspace: entry.workspace, entryId: entry.id }), entry);
     assert.deepEqual(migrateDatabase(db, migrations).applied, []);
 });
 test('owner scope is enforced before rank, related expansion and searched-count diagnostics', async (t) => {
