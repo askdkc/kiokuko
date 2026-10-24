@@ -160,3 +160,18 @@ test('uninstall removes generated ownership while preserving custom and foreign 
   assert.equal(await readFile(generated, 'utf8'), before + after);
   await assert.rejects(readFile(path.join(root, 'AGENTS.md')), { code: 'ENOENT' });
 });
+
+test('use deploys the requested layout guidance once and upgrades existing generated instructions', async t => {
+  const { root, options } = await fixture(t);
+  const sentence = 'Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.';
+  await useRepository(options);
+  const generated = path.join(root, GENERATED_AGENT_FILE);
+  const first = await readFile(generated, 'utf8');
+  assert.equal(first.split(sentence).length - 1, 1);
+  const rootBefore = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
+  await writeFile(generated, first.replace(sentence + '\n', ''));
+  assert.equal((await useRepository(options)).agentFileAction, 'updated');
+  assert.equal(await readFile(generated, 'utf8'), first);
+  assert.equal(await readFile(path.join(root, 'AGENTS.md'), 'utf8'), rootBefore);
+  assert.equal((await useRepository(options)).agentFileAction, 'unchanged');
+});
