@@ -161,17 +161,29 @@ test('uninstall removes generated ownership while preserving custom and foreign 
   await assert.rejects(readFile(path.join(root, 'AGENTS.md')), { code: 'ENOENT' });
 });
 
-test('use deploys the requested layout guidance once and upgrades existing generated instructions', async t => {
+test('use deploys engineering and UI guidance once and upgrades existing generated instructions', async t => {
   const { root, options } = await fixture(t);
-  const sentence = 'Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.';
+  const sentences = [
+    'For generated artifacts, update the owning schema, template or generator, then use the repository\'s documented regeneration path and inspect the resulting diff; do not patch only the output.',
+    'Choose design tokens by semantic role, not by current appearance. If a role is missing, extend the design system instead of repurposing an unrelated token; when changing theme contracts, verify supported light, dark and custom-theme fallback behavior.',
+    'Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.',
+  ];
   await useRepository(options);
   const generated = path.join(root, GENERATED_AGENT_FILE);
   const first = await readFile(generated, 'utf8');
-  assert.equal(first.split(sentence).length - 1, 1);
+  for (const sentence of sentences) assert.equal(first.split(sentence).length - 1, 1);
   const rootBefore = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
-  await writeFile(generated, first.replace(sentence + '\n', ''));
+  const before = '\ufeffUser notes before\r\n<!-- OTHER PRODUCT -->\r\n';
+  const after = '\r\nUser notes after  \r\n';
+  let legacy = first;
+  for (const sentence of sentences) legacy = legacy.replace(sentence + '\n', '');
+  await writeFile(generated, before + legacy.replaceAll('\n', '\r\n') + after);
   assert.equal((await useRepository(options)).agentFileAction, 'updated');
-  assert.equal(await readFile(generated, 'utf8'), first);
+  const upgraded = await readFile(generated, 'utf8');
+  assert.ok(upgraded.startsWith(before));
+  assert.ok(upgraded.endsWith(after));
+  for (const sentence of sentences) assert.equal(upgraded.split(sentence).length - 1, 1);
   assert.equal(await readFile(path.join(root, 'AGENTS.md'), 'utf8'), rootBefore);
   assert.equal((await useRepository(options)).agentFileAction, 'unchanged');
+  assert.equal(await readFile(generated, 'utf8'), upgraded);
 });

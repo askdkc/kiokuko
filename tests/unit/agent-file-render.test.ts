@@ -190,3 +190,14 @@ test('response-only work needs no run or memory recall; bounded missing facts us
     assert.match(text, /No minimum reasoning duration/u);
   }
 });
+
+test('product guidance owns generated changes and semantic theme contracts without upstream repo rules', () => {
+  const rendered = renderManagedBlock({ repositoryId: 'repo-fixture', workspace: 'project:fixture', cliCommand: 'kiokuko' });
+  assert.match(rendered, /update the owning schema, template or generator/u);
+  assert.match(rendered, /repository's documented regeneration path/u);
+  assert.match(rendered, /inspect the resulting diff/u);
+  assert.match(rendered, /Choose design tokens by semantic role/u);
+  assert.match(rendered, /extend the design system instead of repurposing an unrelated token/u);
+  assert.match(rendered, /supported light, dark and custom-theme fallback behavior/u);
+  assert.doesNotMatch(rendered, /bun run|Bun\.file|packages\/client|typecheck:tsc|Drizzle|Never alias imports|Avoid `else`/u);
+});
