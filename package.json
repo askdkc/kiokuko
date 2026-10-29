@@ -18,6 +18,7 @@
     "skills/",
     "docs/",
     "templates/",
+    "vendor/agenticreplay-0.1.11.tgz",
     "README.md",
     "README.ja.md",
     "README.zh-CN.md",
@@ -61,7 +62,7 @@
     "jsonc-parser": "^3.3.1",
     "semver": "^7.8.5",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "overrides": {
     "adm-zip": "0.6.1",
@@ -95,9 +96,12 @@
     "@huggingface/transformers": ">=4.3.1",
     "@types/node": "^24.0.0",
     "@types/semver": "^7.8.0",
-    "agenticreplay": ">=0.1.6",
+    "agenticreplay": "file:vendor/agenticreplay-0.1.11.tgz",
     "sqlite-vec": "0.1.9",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2"
+  },
+  "config": {
+    "agenticreplayCompatibility": ">=0.1.6"
   }
 }

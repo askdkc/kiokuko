@@ -54,6 +54,23 @@ CI targets macOS and Linux. The Windows matrix was removed by explicit user
 request; it is outside the CI verification scope. Windows compatibility code is
 retained without a Windows CI claim.
 
+For local full verification, prepare the same official tunnel regression fixture
+used by CI. Saved-runtime tests also need a standalone Node executable: a
+Homebrew Node linked to `@rpath/libnode` cannot be copied and launched independently.
+Use a checksum-verified official Node distribution matching the CI version
+(`24.16.0`) and set its absolute path:
+
+```sh
+node scripts/install-tunnel-fixture.mjs /tmp/kiokuko-tunnel-fixture
+KIOKUKO_TUNNEL_CLIENT=/tmp/kiokuko-tunnel-fixture/tunnel-client \
+KIOKUKO_TEST_STANDALONE_NODE=/absolute/path/to/official-node/bin/node \
+npm run verify
+```
+
+These are test prerequisites, not client configuration changes. The existing
+runtime checks still require independent startup with the source installation
+removed and an empty PATH; supplying a dynamically linked Node does not waive them.
+
 The optional-runtime first setup installs packages within the declared peer ranges and asserts
 the installed native bundled CPU backend. `ONNXRUNTIME_NODE_INSTALL=skip`
 suppresses only unbundled accelerator downloads in this CPU verification lane;
