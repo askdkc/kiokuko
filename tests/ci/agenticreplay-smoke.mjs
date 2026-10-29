@@ -70,8 +70,7 @@ async function payload(runDir, event) {
 try {
   await mkdir(env.TMPDIR);
   const version = await command(['--version']);
-  const { managedAgenticReplay } = await import('../../scripts/agenticreplay-dependency.mjs');
-  const declaredRange = managedAgenticReplay(root).range;
+  const declaredRange = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).devDependencies?.agenticreplay;
   assert.ok(typeof declaredRange === 'string' && semver.validRange(declaredRange), 'AgenticReplay compatibility range is missing');
   assert.ok(semver.satisfies(version, declaredRange), `AgenticReplay ${version} does not satisfy ${declaredRange}`);
   await new Promise((resolve, reject) => {

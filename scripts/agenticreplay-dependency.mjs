@@ -10,17 +10,14 @@ const readJson = file => JSON.parse(readFileSync(file, 'utf8'));
 // particular test run, without imposing a second version policy.
 export function managedAgenticReplay(root = repositoryRoot) {
   const manifest = readJson(path.join(root, 'package.json'));
-  const specification = manifest.devDependencies?.agenticreplay;
-  const vendored = typeof specification === 'string' && /^file:vendor\/agenticreplay-\d+\.\d+\.\d+\.tgz$/u.test(specification);
-  const range = vendored ? manifest.config?.agenticreplayCompatibility : specification;
+  const range = manifest.devDependencies?.agenticreplay;
   if (typeof range !== 'string' || !semver.validRange(range) || semver.valid(range)) {
-    throw new Error('Declare an AgenticReplay compatibility range in devDependencies or config.agenticreplayCompatibility for a vendored recorder');
+    throw new Error('Declare an AgenticReplay compatibility range in devDependencies');
   }
   const lock = readJson(path.join(root, 'package-lock.json'));
   const lockRange = lock.packages?.['']?.devDependencies?.agenticreplay;
   const lockedVersion = lock.packages?.['node_modules/agenticreplay']?.version;
-  if (lockRange !== specification || (vendored && lock.packages['node_modules/agenticreplay'].resolved !== specification)
-    || !semver.valid(lockedVersion) || !semver.satisfies(lockedVersion, range)) {
+  if (lockRange !== range || !semver.valid(lockedVersion) || !semver.satisfies(lockedVersion, range)) {
     throw new Error('AgenticReplay lockfile does not resolve the declared compatibility range');
   }
   const installed = readJson(path.join(root, 'node_modules/agenticreplay/package.json'));

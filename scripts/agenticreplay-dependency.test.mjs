@@ -37,24 +37,3 @@ test('an exact version declaration does not replace a compatibility range', t =>
   assert.throws(() => managedAgenticReplay(fixture(t, { range: '0.1.6', locked: '0.1.6' })));
 });
 
-test('a vendored recorder retains its explicit compatibility range', t => {
-  const root = fixture(t, { locked: '0.1.11' });
-  const spec = 'file:vendor/agenticreplay-0.1.11.tgz';
-  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ devDependencies: { agenticreplay: spec }, config: { agenticreplayCompatibility: '>=0.1.6' } }));
-  writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({ packages: {
-    '': { devDependencies: { agenticreplay: spec } },
-    'node_modules/agenticreplay': { version: '0.1.11', resolved: spec },
-  } }));
-  const resolved = managedAgenticReplay(root);
-  assert.equal(resolved.range, '>=0.1.6');
-  assert.equal(resolved.version, '0.1.11');
-
-  writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({ packages: {
-    '': { devDependencies: { agenticreplay: spec } },
-    'node_modules/agenticreplay': { version: '0.1.11', resolved: 'file:vendor/different.tgz' },
-  } }));
-  assert.throws(() => managedAgenticReplay(root), /lockfile/u);
-  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ devDependencies: { agenticreplay: spec } }));
-  assert.throws(() => managedAgenticReplay(root), /compatibility range/u);
-});
-
