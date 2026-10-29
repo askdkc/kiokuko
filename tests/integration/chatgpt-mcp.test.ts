@@ -84,6 +84,8 @@ test('policy works without DB access and rejected inputs never return memories o
   t.after(async () => { owner.close(); await rm(root, { recursive: true, force: true }); });
   const client = await connect(t, owner);
   const result = await client.callTool({ name: 'memory_policy', arguments: {} });
+  assert.match(client.getInstructions()!, /MCP server[^.]*missing/u);
+  assert.match(client.getInstructions()!, /continue the user.s task/u);
   assert.deepEqual(result.structuredContent, CHATGPT_MEMORY_POLICY);
   for (const [input, code] of [
     [{}, 'POLICY_REQUIRED'], [{ policy: { ...policy, read: false } }, 'POLICY_REQUIRED'],
@@ -100,6 +102,12 @@ test('policy works without DB access and rejected inputs never return memories o
     assert.ok(!JSON.stringify(failure).includes('sentinel'));
     assert.ok(!JSON.stringify(failure).includes(root));
     assert.equal(failure.structuredContent,undefined,'standard MCP errors are not validated as successful recall outputs');
+    const fields = JSON.parse((failure.content as Array<{text:string}>)[0]!.text);
+    if (['POLICY_REQUIRED','POLICY_VERSION_MISMATCH','SERVICE_UNAVAILABLE'].includes(code)) {
+      assert.equal(fields.workMayContinue, true);
+      assert.match(fields.message, /continue the user.s task/u);
+      assert.match(fields.message, /does not confirm a memory recall or save/u);
+    } else assert.equal(fields.workMayContinue, undefined);
   }
   assert.deepEqual(await readdir(root), []);
 });

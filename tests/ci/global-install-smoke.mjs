@@ -537,7 +537,9 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
     await client.connect(transport);
     assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_correction_check', 'memory_policy', 'memory_recall']);
     const policy = (await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
-    assert.equal(policy.policyVersion, 'chatgpt-memory/3');
+    assert.equal(policy.policyVersion, 'chatgpt-memory/4');
+    assert.match(policy.instructions, /MCP server[^.]*missing/u);
+    assert.match(policy.instructions, /continue the user.s task/u);
     assert.match(policy.policyDigest, /^[a-f0-9]{64}$/u);
     assert.ok(policy.instructions.length > 0);
     const result = await client.callTool({ name: 'memory_recall', arguments: { query: 'package smoke',

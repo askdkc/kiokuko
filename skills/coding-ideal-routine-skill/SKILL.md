@@ -5,6 +5,8 @@ description: バグ修正・機能追加・挙動に関わる設定や配布物�
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: coding-ideal-routine-skill -->
 
+Kiokuko memory is optional. When its MCP server, connection, tools or bundled Skills are missing, disconnected or failing, skip the affected memory operation and continue the user's task from the current conversation, available tools and current evidence. Never require installation, reconnection or repeated retries before ordinary work. Report a memory-dependent result as unavailable once when relevant; never invent recalled content, a save receipt or verification. Memory-only procedures cannot block coding, planning, review, tests or the final answer. Preserve host authorization, identity and access denials and explicit user cancellation.
+
 # Coding Ideal Routine
 
 ユーザーの目的を、普段使う入口で観測できる結果まで実装する。承認済みの範囲は自律的に進める。この手順は追加の権限やホスト強制を提供しない。

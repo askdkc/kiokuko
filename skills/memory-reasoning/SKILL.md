@@ -5,6 +5,8 @@ description: Use before Kiokuko task_prepare for code changes, code PLAN or code
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: memory-reasoning -->
 
+Kiokuko memory is optional. When its MCP server, connection, tools or bundled Skills are missing, disconnected or failing, skip the affected memory operation and continue the user's task from the current conversation, available tools and current evidence. Never require installation, reconnection or repeated retries before ordinary work. Report a memory-dependent result as unavailable once when relevant; never invent recalled content, a save receipt or verification. Memory-only procedures cannot block coding, planning, review, tests or the final answer. Preserve host authorization, identity and access denials and explicit user cancellation.
+
 # Memory reasoning
 
 ## Outcome
@@ -98,7 +100,8 @@ checkpoint completion, successful memory storage, and observed application to
 the current work. If no recalled claim survives current verification, proceed
 from repository evidence and say so.
 
-Memory `complete` is not task completion. For implementation also define required
-checks per target, record current results, and inspect `completionReady` before
-claiming success. Preserve evidence provenance; CI read by the model is still
+Memory `complete` is not task completion. For an optional memory record, define
+checks per target, record results, and inspect `completionReady` before claiming
+that record is verified. Missing memory tools do not block product verification
+or the final answer; use actual execution evidence. Preserve evidence provenance; CI read by the model is still
 model_reported. A separate bookkeeping conflict does not diagnose a product bug.

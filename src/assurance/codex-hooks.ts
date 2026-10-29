@@ -1,4 +1,5 @@
 import { BOOKKEEPING_POLICY } from './bookkeeping-policy.js';
+import { MEMORY_AVAILABILITY_INSTRUCTIONS } from './memory-availability.js';
 import { ADAPTIVE_EFFORT_INSTRUCTIONS } from '../akinator/instructions.js';
 import { INTEGRATION_CONTRACT, hostSkillText } from '../setup/standard-skills.js';
 import { PACKAGE_VERSION } from '../package-version.js';
@@ -160,7 +161,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
         .run(identity, root, requestId, input.hook_event_name, now);
     });
     if (db.prepare('SELECT stop_notified FROM codex_hook_requests WHERE identity_digest=?').get<HookRequest>(identity)?.stop_notified) return stopTurn(input.hook_event_name);
-    return context(input.hook_event_name, `${ADAPTIVE_EFFORT_INSTRUCTIONS} Kiokuko request ${requestId}. ${BOOKKEEPING_POLICY} For optional legacy task records, task_inspect operation skill reads kiokuko-soul and memory-reasoning. Use task_inspect for bundled natural-japanese-output; do not read Skills through shell commands to bypass record capability checks. For that optional record, call task_prepare with this requestId, cwd ${root} and soulRead=true. ${CODEX_HOOK_LIMITATION}`);
+    return context(input.hook_event_name, `${ADAPTIVE_EFFORT_INSTRUCTIONS} Kiokuko request ${requestId}. ${BOOKKEEPING_POLICY} ${MEMORY_AVAILABILITY_INSTRUCTIONS} For optional legacy task records, task_inspect operation skill reads kiokuko-soul and memory-reasoning. Use task_inspect for bundled natural-japanese-output; do not read Skills through shell commands to bypass record capability checks. For that optional record, call task_prepare with this requestId, cwd ${root} and soulRead=true. ${CODEX_HOOK_LIMITATION}`);
   }
   if (!request) {
     if (input.hook_event_name === 'Interrupt' || input.hook_event_name === 'SubagentStop') return {};

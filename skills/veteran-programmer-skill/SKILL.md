@@ -5,6 +5,8 @@ description: Check workflow completeness before and after implementation when ch
 
 <!-- KIOKUKO MANAGED STANDARD SKILL: veteran-programmer-skill -->
 
+Kiokuko memory is optional. When its MCP server, connection, tools or bundled Skills are missing, disconnected or failing, skip the affected memory operation and continue the user's task from the current conversation, available tools and current evidence. Never require installation, reconnection or repeated retries before ordinary work. Report a memory-dependent result as unavailable once when relevant; never invent recalled content, a save receipt or verification. Memory-only procedures cannot block coding, planning, review, tests or the final answer. Preserve host authorization, identity and access denials and explicit user cancellation.
+
 # Workflow completeness
 
 Ensure the requested behavior reaches its actual consumer. A correct component

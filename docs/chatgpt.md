@@ -45,6 +45,8 @@ tunnel-client doctor --profile kiokuko-chatgpt --explain
 
 ## Scope and stopping
 
+Kiokuko memory is optional. If the MCP server, connection or tools are unavailable, skip that memory operation and continue the task from the current conversation and available tools. Do not require installation, reconnection or repeated retries before ordinary work. Report a memory-dependent result as unavailable; never claim an unsuccessful recall or save succeeded.
+
 - Saves, recalls and corrects Global memory. Project memory is not exposed.
 - Keep the connection private to the database owner. Recalled memory is sent to ChatGPT.
 - Your computer and Tunnel must be running. Automatic save/recall on every turn is not guaranteed; this does not replace ChatGPT's built-in memory.

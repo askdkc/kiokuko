@@ -130,3 +130,26 @@ test('passing product checks can complete while optional delivered memory is sti
   const report=taskAssuranceReport(f.db,runId);assert.ok(report.pending.length>0);assert.equal(report.complete,false);assert.equal(report.verification.ready,true);assert.equal(report.completionReady,true);assert.doesNotThrow(()=>assertAssuranceCompletion(f.db,runId,'completed'));
  }finally{f.close();}
 });
+
+test('ordinary execution and completion need no running MCP server or task record', () => {
+ const base=mkdtempSync(path.join(tmpdir(),'kiokuko-no-mcp-lifecycle-'));
+ const root=path.join(base,'repo');mkdirSync(root);execFileSync('git',['init','-q',root]);
+ const db=openConnection(path.join(base,'memory.sqlite3'));migrateDatabase(db);
+ const common={cwd:root,session_id:'missing-mcp',turn_id:'ordinary-work'};
+ try {
+  const prompt=handleCodexHook(db,{...common,hook_event_name:'UserPromptSubmit'}) as any;
+  assert.match(prompt.hookSpecificOutput.additionalContext,/MCP server[^.]*missing/u);
+  const script='process.stdout.write("task-completed")';
+  const tool={...common,tool_name:'Bash',tool_use_id:'run',tool_input:{command:`node -e '${script}'`}};
+  const before=handleCodexHook(db,{...tool,hook_event_name:'PreToolUse'}) as any;
+  assert.notEqual(before.hookSpecificOutput?.permissionDecision,'deny');assert.notEqual(before.continue,false);
+  const output=execFileSync(process.execPath,['--eval',script],{cwd:root,encoding:'utf8'});
+  assert.equal(output,'task-completed');
+  const after=handleCodexHook(db,{...tool,hook_event_name:'PostToolUse',tool_response:{exit_code:0,output}}) as any;
+  assert.notEqual(after.continue,false);
+  const stop=handleCodexHook(db,{...common,hook_event_name:'Stop'}) as any;
+  assert.notEqual(stop.continue,false);assert.notEqual(stop.hookSpecificOutput?.decision,'block');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM ledger_runs').get<{n:number}>()?.n,0);
+  assert.equal(db.prepare('SELECT stop_notified FROM codex_hook_requests').get<{stop_notified:number}>()?.stop_notified,0);
+ } finally {db.close();rmSync(base,{recursive:true,force:true});}
+});

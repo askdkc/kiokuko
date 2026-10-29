@@ -2002,3 +2002,30 @@ test('setup migrates legacy global rules and adds a plugin-only section beside a
   assert.equal(await readFile(globalPath, 'utf8'), global);
   assert.equal(await readFile(used.agentFile!, 'utf8'), project);
 });
+
+test('setup upgrades existing MCP-required instructions without a running MCP server', async () => {
+  const temporary = await temporaryEnvironment('optional-memory-upgrade');
+  const options = {clients:['codex','opencode','claude'] as Array<'codex'|'opencode'|'claude'>,
+    platform:'linux' as const,env:temporary.env,databasePath:temporary.databasePath};
+  await setupGlobalClients(options);
+  const paths = [path.join(temporary.home,'.codex','AGENTS.md'),
+    path.join(temporary.config,'opencode','AGENTS.md'),path.join(temporary.home,'.claude','CLAUDE.md')];
+  for (const file of paths) {
+    assert.match(await readFile(file,'utf8'), /MCP server[^.]*missing/u);
+    await writeFile(file,'Human rules remain.\n<!-- BEGIN KIOKUKO GLOBAL MEMORY -->\nStop if MCP is missing.\n<!-- END KIOKUKO GLOBAL MEMORY -->\n');
+  }
+  const bundled = (await loadBundledStandardSkillFiles()).find(file=>file.skillName==='one-shot-software-completion'&&file.relativePath==='SKILL.md')!;
+  const skillPath = path.join(temporary.home,'.agents','skills','kiokuko-codex-one-shot-software-completion','SKILL.md');
+  const old = hostSkillFile({...bundled,content:bundled.content.replace(/Kiokuko memory is optional\.[^\n]+/u,'Stop if MCP is missing.')},'codex');
+  await writeFile(skillPath,old.content);
+  const updated = await setupGlobalClients(options);
+  assert.equal(updated.files.find(file=>file.path===skillPath)?.action,'updated');
+  for (const file of [...paths,skillPath]) {
+    const installed=await readFile(file,'utf8');
+    assert.match(installed,/MCP server[^.]*missing/u);
+    assert.match(installed,/Never require installation, reconnection or repeated retries/u);
+    assert.doesNotMatch(installed,/Stop if MCP is missing/u);
+  }
+  for (const file of paths) assert.match(await readFile(file,'utf8'),/^Human rules remain\./u);
+  assert.ok((await setupGlobalClients(options)).files.every(file=>file.action==='unchanged'));
+});

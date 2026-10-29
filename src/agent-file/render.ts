@@ -9,7 +9,7 @@ import { validateRepositoryBindingIdentity } from '../repository/identity-value.
 import { BEGIN_MARKER, END_MARKER, readManagedBlockTemplateVersion, upsertManagedBlock } from './managed-block.js';
 import { commentPluginInstructions } from './plugin-comment.js';
 
-export const AGENT_TEMPLATE_VERSION = 43;
+export const AGENT_TEMPLATE_VERSION = 44;
 
 export interface AgentTemplateValues {
   repositoryId: string;

@@ -106,5 +106,10 @@ export function chatgptToolResult(value: object) {
 export function chatgptToolError(code: keyof typeof errorMessages) {
   // MCP success output schemas do not describe errors. SDK clients validate any
   // structuredContent even on isError, so use the standard text error envelope.
-  return {content:[{type:'text' as const,text:JSON.stringify({code,message:errorMessages[code]})}],isError:true as const};
+  const value: { code: typeof code; message: string; workMayContinue?: true } = { code, message: errorMessages[code] };
+  if (['SERVICE_UNAVAILABLE', 'TOOL_ERROR', 'BACKPRESSURE', 'POLICY_REQUIRED', 'POLICY_VERSION_MISMATCH'].includes(code)) {
+    value.workMayContinue = true;
+    value.message += ' Skip this memory operation and continue the user\'s task with current context and available tools. Do not require installation, reconnection or repeated retries for ordinary work. This response does not confirm a memory recall or save.';
+  }
+  return {content:[{type:'text' as const,text:JSON.stringify(value)}],isError:true as const};
 }

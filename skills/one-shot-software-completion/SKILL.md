@@ -6,6 +6,8 @@ description: Required before planning or implementing any code change, including
 <!-- KIOKUKO MANAGED STANDARD SKILL: one-shot-software-completion -->
 
 <!-- kiokuko:runtime contract -->
+
+Kiokuko memory is optional. When its MCP server, connection, tools or bundled Skills are missing, disconnected or failing, skip the affected memory operation and continue the user's task from the current conversation, available tools and current evidence. Never require installation, reconnection or repeated retries before ordinary work. Report a memory-dependent result as unavailable once when relevant; never invent recalled content, a save receipt or verification. Memory-only procedures cannot block coding, planning, review, tests or the final answer. Preserve host authorization, identity and access denials and explicit user cancellation.
 # One-Shot Software Completion
 
 Deliver the user's observable result, not an isolated patch. One-shot is a
@@ -60,10 +62,12 @@ because the phase changed. Select repository excerpts by relevant symbols/ranges
 Never retry an unchanged failed operation. A typed recoverable task-state
 conflict permits at most one status read and new request with the current
 revision, preserving run and capabilities; review the new delivery first.
-Never recover after an authorization or identity denial; preparation and review gates permit same-turn repair. Define required target checks with
-task_verification_define and record evidence with task_verification_record.
-Only completionReady=true supports a verified completion claim; memory complete
-alone does not. Unknown exit status cannot establish success or a timeout cause.
+Never recover after an authorization or identity denial; preparation and review gates permit same-turn repair.
+For an optional memory record, define target checks with task_verification_define
+and record evidence with task_verification_record when available.
+Only completionReady=true supports verified memory-record completion; product
+completion depends on actual product evidence. Missing memory verification tools do not block coding, tests or the final answer.
+Unknown exit status cannot establish success or a timeout cause.
 Reference deferral does not waive the core obligations.
 
 ## Repository verification entry
