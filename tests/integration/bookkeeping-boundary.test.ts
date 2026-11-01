@@ -89,6 +89,7 @@ test('classification never treats identity/ownership/access/host authorization o
  for(const reason of ['run_binding_mismatch','repository_binding_mismatch','identity_violation','request_id_reused','ownership_mismatch','access_denied','host_authorization_denied','request_interrupted']){assert.equal(isBookkeepingFailure({code:'CONFLICT',reason}),false);assert.equal(isBookkeepingFailure({code:'DATABASE_ERROR',reason}),false);}
  for(const code of ['AUTHENTICATION_ERROR','SECURITY_REJECTION','MCP_REQUEST_CANCELLED'])assert.equal(isBookkeepingFailure({code}),false);
  assert.equal(isBookkeepingFailure({reason:'run_terminal',runStatus:'interrupted'}),false);
+ assert.equal(isBookkeepingFailure({code:'NOT_FOUND'}),true);
  assert.equal(isBookkeepingFailure({reason:'assurance_incomplete',nextAction:'read_task_memory_status'}),true);
 });
 test('managed template migration preserves user text, scopes procedure stops to records, and keeps identity denial',()=>{

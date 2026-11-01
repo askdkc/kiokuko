@@ -131,10 +131,14 @@ Correcting preparation does not require a new user request or a “retry impleme
 A typed `recoverable: true` task-state conflict permits one recovery before any
 authorization or identity denial: read `task_memory_status`, preserve the run and its exact
 capability catalog, then submit a new requestId with the current revision.
-`retryable: false` forbids repeating the unchanged request. Review a new delivery
-before continuing. A second conflict, binding mismatch, terminal run or unknown
-failure is not automatically recoverable. An authorization or identity denial ends the
-turn. A recoverable preparation or review denial permits repair within the same turn.
+`retryable: false` forbids repeating that failed Kiokuko call with unchanged arguments;
+it does not prohibit a separately authorized task operation. Evaluate inspection,
+edits, execution, and destructive effects independently under current user and host
+authorization: a Kiokuko resource or service failure grants no permission. Review a
+new delivery before reusing its memory. A second conflict, binding mismatch, terminal
+run or unknown failure is not automatically recoverable. An authorization or identity
+denial ends the turn. A recoverable preparation or review denial permits repair within
+the same turn.
 
 For optional memory tracking, define required checks per target with
 `task_verification_define` and record their results with

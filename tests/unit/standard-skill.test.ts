@@ -130,6 +130,9 @@ test('bundles every managed standard skill from a fixed manifest', async () => {
   assert.match(soulSkill, /Akinator manages optional Kiokuko records after this SOUL read/);
   assert.match(soulSkill, /Ordinary authorized project work requires no Skill read or memory run/u);
   assert.match(soulSkill, /A refusal\s+rejects that memory call only and does not stop ordinary authorized work/u);
+  assert.match(soulSkill, /`retryable: false` forbids repeating that failed Kiokuko call with unchanged arguments/u);
+  assert.match(soulSkill, /does not prohibit a separately authorized task operation/u);
+  assert.match(soulSkill, /a Kiokuko resource or service failure grants no permission/u);
   assert.match(soulSkill, /Obtain at most one successful preparation through `task_prepare`.*complete capability catalog available in the current client/su);
   assert.match(soulSkill, /`needs_answer`.*Akinator controls only that record.*Do not complete that memory record while unresolved/su);
   assert.match(soulSkill, /Repeat the same capability catalog and context budget.*continue until `ready` or `exhausted`/su);

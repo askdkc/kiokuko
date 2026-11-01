@@ -9,7 +9,11 @@ import { validateRepositoryBindingIdentity } from '../repository/identity-value.
 import { BEGIN_MARKER, END_MARKER, readManagedBlockTemplateVersion, upsertManagedBlock } from './managed-block.js';
 import { commentPluginInstructions } from './plugin-comment.js';
 
+<<<<<<< HEAD
 export const AGENT_TEMPLATE_VERSION = 44;
+=======
+export const AGENT_TEMPLATE_VERSION = 45;
+>>>>>>> 0f2a1c3 (fix(soul): scope non-retryable failures to optional Kiokuko operations)
 
 export interface AgentTemplateValues {
   repositoryId: string;

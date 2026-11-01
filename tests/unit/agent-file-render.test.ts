@@ -84,6 +84,9 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /Akinator is the intake state machine for an optional Kiokuko task record/u);
   assert.match(rendered, /do not complete that memory record while `intake\.status=needs_answer`/u);
   assert.match(rendered, /For the optional record, route after intake reaches `ready` or `exhausted` and top-level `nextAction` permits progress/u);
+  assert.match(rendered, /retryable=false forbids unchanged replay of that Kiokuko call/u);
+  assert.match(rendered, /does not prohibit a separately authorized task operation/u);
+  assert.match(rendered, /a Kiokuko resource or service failure grants no permission/u);
   assert.match(rendered, /optional bundled guidance.*`kiokuko-simple-work`.*`kiokuko-single-purpose-functions`.*`kiokuko-ui-design-soul`/u);
   assert.match(rendered, /simple-work route minimizes the solution but never replaces the code contract/u);
   assert.match(rendered, /Never substitute, install, or execute fetched external Skill content/u);

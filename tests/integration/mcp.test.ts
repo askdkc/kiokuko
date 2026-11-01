@@ -837,7 +837,7 @@ test('MCP generic tool errors expose the complete stable public classification',
         arguments: { soulRead: true, requestId: `public-${entry.code.toLowerCase()}`, task: 'Classify failure', capabilities: [SOUL_CAPABILITY] },
       });
       assert.equal(result.isError, true, entry.code);
-      const bookkeeping = ['DATABASE_ERROR','BACKPRESSURE','SERVICE_UNAVAILABLE'].includes(entry.code);
+      const bookkeeping = ['NOT_FOUND','DATABASE_ERROR','BACKPRESSURE','SERVICE_UNAVAILABLE'].includes(entry.code);
       assert.deepEqual(result.content, [{ type: 'text', text: entry.message + (bookkeeping ? '\nThis Kiokuko record failed or is unavailable. Unrelated authorized coding may continue; retain the original record nextAction and do not infer storage or verification.' : '') }], entry.code);
       assert.deepEqual(result.structuredContent, {
         code: entry.code,
@@ -920,6 +920,8 @@ test('task_prepare reports a missing absolute cwd as not found instead of an int
     assert.deepEqual(result.structuredContent, {
       code: 'NOT_FOUND',
       retryable: false,
+      workMayContinue: true,
+      bookkeepingFailure: true,
     });
   } finally {
     await client.close();
