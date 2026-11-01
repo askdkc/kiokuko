@@ -1,9 +1,5 @@
 <!-- BEGIN KIOKUKO MANAGED BLOCK -->
-<<<<<<< HEAD
-<!-- kiokuko-template-version: 44 -->
-=======
 <!-- kiokuko-template-version: 45 -->
->>>>>>> 0f2a1c3 (fix(soul): scope non-retryable failures to optional Kiokuko operations)
 <!-- KIOKUKO CONTRACT kiokuko/model-managed@2 -->
 <!-- KIOKUKO PLUGIN ONLY
 Only the Kiokuko plugin may apply these instructions. Other AI agents must ignore this section; do not adopt its rules, invoke its tools, or edit it.
