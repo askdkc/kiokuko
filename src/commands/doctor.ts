@@ -114,6 +114,7 @@ export interface DoctorAgentFileRepair {
 
 interface AgentFileRepairOptions extends DoctorPromptOptions {
   missingOnly?: boolean;
+  requireConfirmation?: boolean;
   validate?: (bindingContent: string) => Promise<void>;
   beforeWrite?: (repositoryRoot: string) => void | Promise<void>;
 }
@@ -154,15 +155,24 @@ export async function promptRepairAgentFiles(
   findings: readonly DoctorAgentFileFinding[],
   options: DoctorPromptOptions = {},
 ): Promise<number> {
+  return repairAgentFiles(findings, { ...options, requireConfirmation: true });
+}
+
+/** Repair every safely renderable section without reading interactive input. */
+export async function repairAgentFilesAutomatically(
+  findings: readonly DoctorAgentFileFinding[],
+  options: DoctorPromptOptions & { beforeWrite?: (repositoryRoot: string) => void | Promise<void> } = {},
+): Promise<number> {
   return repairAgentFiles(findings, options);
 }
 
-/** One conditional publication/rollback owner for automatic creation and approved section updates. */
+/** One conditional publication/rollback owner for automatic creation and bounded section updates. */
 async function repairAgentFiles(findings: readonly DoctorAgentFileFinding[], options: AgentFileRepairOptions): Promise<number> {
   const input = options.input ?? stdin;
   const output = options.output ?? stdout;
   let created = 0;
-  if (!options.missingOnly && ((input as { isTTY?: boolean }).isTTY !== true || (output as { isTTY?: boolean }).isTTY !== true)) return created;
+  if (options.requireConfirmation === true
+    && ((input as { isTTY?: boolean }).isTTY !== true || (output as { isTTY?: boolean }).isTTY !== true)) return created;
   for (const finding of findings) {
     if (!['missing_agent_file', 'missing_managed_block', 'outdated_managed_block', 'missing_generated_file', 'outdated_generated_file'].includes(finding.reason)
       || finding.agentFile === null) continue;
@@ -208,22 +218,24 @@ async function repairAgentFiles(findings: readonly DoctorAgentFileFinding[], opt
       output.write(missing
         ? 'This creates Kiokuko instructions only; deleted custom instructions cannot be restored.\n'
         : 'This updates only the Kiokuko pointer and .kiokuko/AGENTS.md managed section; user instructions and other products are preserved.\n');
-      const prompt = createInterface({ input, output });
-      let closed = false;
-      const cancelled = new Promise<string>((resolve) => {
-        prompt.once('close', () => { closed = true; resolve(''); });
-      });
-      let answer: string;
-      try {
-        answer = (await Promise.race([
-          prompt.question(missing ? 'Create this missing agent file? [y/N] ' : 'Repair this Kiokuko section? [Y/n] '),
-          cancelled,
-        ])).trim();
-        if (closed) return created;
-      } finally {
-        prompt.close();
+      if (options.requireConfirmation === true) {
+        const prompt = createInterface({ input, output });
+        let closed = false;
+        const cancelled = new Promise<string>((resolve) => {
+          prompt.once('close', () => { closed = true; resolve(''); });
+        });
+        let answer: string;
+        try {
+          answer = (await Promise.race([
+            prompt.question(missing ? 'Create this missing agent file? [y/N] ' : 'Repair this Kiokuko section? [Y/n] '),
+            cancelled,
+          ])).trim();
+          if (closed) return created;
+        } finally {
+          prompt.close();
+        }
+        if (!(answer === '' && !missing) && !/^(?:y|yes|はい)$/iu.test(answer)) continue;
       }
-      if (!(answer === '' && !missing) && !/^(?:y|yes|はい)$/iu.test(answer)) continue;
     }
     await options.beforeWrite?.(root);
     await options.validate?.(binding.content);

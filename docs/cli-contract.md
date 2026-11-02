@@ -168,11 +168,10 @@ Deleted custom instructions cannot be recovered. Per-target failures are reporte
 and do not stop recovery of other registered targets. Existing files are preserved.
 `--json` remains diagnostic-only; `--fix` remains the explicit binding repair path.
 
-Interactive repair of an existing Kiokuko section defaults to Yes (`[Y/n]`).
-Enter accepts only the bounded Kiokuko pointer/generated-section repair; `n`
-declines. EOF/cancellation and non-TTY streams do not authorize section updates.
-Both planned files and the original binding are checked for concurrent changes
-before writes. User text and other products' sections are preserved. Missing bindings are reported for verified
+Ordinary human-output doctor repairs an existing Kiokuko section without reading
+input, for both TTY and non-TTY streams. Both planned files and the original
+binding are checked for concurrent changes before writes. User text and other
+products' sections are preserved. JSON doctor remains diagnostic-only. Missing bindings are reported for verified
 backup recovery without minting a replacement repository identity.
 
 

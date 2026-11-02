@@ -5,7 +5,7 @@ import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { buildCli } from '../../src/cli.js';
-import { recoverMissingAgentFiles, promptRepairAgentFiles, runDoctor } from '../../src/commands/doctor.js';
+import { recoverMissingAgentFiles, promptRepairAgentFiles, repairAgentFilesAutomatically, runDoctor } from '../../src/commands/doctor.js';
 import { useRepository } from '../../src/commands/use.js';
 import { GENERATED_AGENT_FILE, renderManagedBlock } from '../../src/agent-file/render.js';
 import { openConnection, SqliteVecLoadError } from '../../src/db/connection.js';
@@ -139,17 +139,30 @@ test('doctor adds its missing plugin section without treating foreign ownership 
   const findings = (diagnostic.response?.data.checks as { agentFiles: { findings: Array<{ reason: string }> } }).agentFiles.findings;
   assert.equal(findings[0]?.reason, 'missing_managed_block');
   assert.equal(await readFile(value.project.agentFile!, 'utf8'), foreign);
-  const declined = await invokeDoctor(value.databasePath, 'n\n');
-  assert.equal(await readFile(value.project.agentFile!, 'utf8'), foreign);
-  assert.equal(declined.exitCode, 8);
-  const repaired = await invokeDoctor(value.databasePath, 'y\n');
-  assert.match(repaired.prompt, /Repair this Kiokuko section\? \[Y\/n\]/u);
+  const repaired = await invokeDoctor(value.databasePath, 'n\n');
+  assert.doesNotMatch(repaired.prompt, /\? \[/u);
   assert.equal(repaired.exitCode, undefined);
   const content = await readFile(value.project.agentFile!, 'utf8');
   assert.ok(content.startsWith(foreign));
   assert.match(content, /Only the Kiokuko plugin may apply/u);
   assert.equal((await invokeDoctor(value.databasePath, 'y\n')).prompt, '');
 });
+
+for (const interactive of [true, false]) {
+  test(`ordinary doctor repairs a bounded existing section without prompting (TTY=${interactive})`, async () => {
+    const value = await deletedAgentProject(`automatic-section-${interactive}`);
+    const human = 'Keep these user rules.\n';
+    await writeFile(value.project.agentFile!, human);
+
+    const result = await invokeDoctor(value.databasePath, 'n\n', false, interactive);
+
+    assert.equal(result.exitCode, undefined);
+    assert.doesNotMatch(result.prompt, /\? \[/u);
+    const repaired = await readFile(value.project.agentFile!, 'utf8');
+    assert.ok(repaired.startsWith(human));
+    assert.match(repaired, /Only the Kiokuko plugin may apply/u);
+  });
+}
 
 for (const [name, foreign] of [
   ['legacy', 'Human rules\r\n<!-- BEGIN KIOKUKO MANAGED BLOCK -->\r\n<!-- kiokuko-dsh-template-version: 1 -->\r\nDSH instructions\r\n<!-- END KIOKUKO MANAGED BLOCK -->\r\nFooter\r\n'],
@@ -188,8 +201,8 @@ test('doctor repairs its own section beside DSH without changing DSH bytes', asy
   const foreign = '<!-- BEGIN KIOKUKO MANAGED BLOCK -->\n<!-- kiokuko-dsh-template-version: 1 -->\nDSH instructions\n<!-- END KIOKUKO MANAGED BLOCK -->\n';
   const own = renderManagedBlock({ repositoryId: value.project.repositoryId, workspace: value.project.workspace, cliCommand: 'kiokuko', templateVersion: 36 });
   await writeFile(value.project.agentFile!, foreign + own);
-  const result = await invokeDoctor(value.databasePath, 'y\n');
-  assert.match(result.prompt, /Repair this Kiokuko section/u);
+  const result = await invokeDoctor(value.databasePath, 'n\n');
+  assert.doesNotMatch(result.prompt, /\? \[/u);
   assert.match(result.stdout, /Kiokuko doctor: OK/u);
   assert.ok((await readFile(value.project.agentFile!, 'utf8')).startsWith(foreign));
   assert.equal((await invokeDoctor(value.databasePath, '')).prompt, '');
@@ -217,8 +230,10 @@ test('doctor offers legacy section migration and rejects concurrent repair chang
   assert.ok(content.startsWith('before\n') && content.endsWith('\nafter'));
   assert.match(content, /Only the Kiokuko plugin may apply/u);
   await writeFile(value.project.agentFile!, legacy);
-  await assert.rejects(invokeDoctor(value.databasePath, 'y\n', false, true, async () => {
-    await writeFile(value.project.agentFile!, 'concurrent user rules\n');
+  const diagnosis = await runDoctor({ databasePath: value.databasePath });
+  await assert.rejects(repairAgentFilesAutomatically(diagnosis.checks.agentFiles.findings, {
+    output: new PassThrough(),
+    beforeWrite: async () => { await writeFile(value.project.agentFile!, 'concurrent user rules\n'); },
   }), { code: 'CONFLICT' });
   assert.equal(await readFile(value.project.agentFile!, 'utf8'), 'concurrent user rules\n');
 });
@@ -694,36 +709,17 @@ test('doctor accepts the canonical Codex Kiokuko MCP identity', async () => {
   });
 });
 
-for (const answer of ['\n', 'y\n', 'yes\n']) {
-  test(`bounded section repair defaults to Yes (${JSON.stringify(answer)}) and remains idempotent`, async () => {
-    const value = await deletedAgentProject('default-yes-section');
-    const human = 'Keep these user rules.\r\n';
-    await writeFile(value.project.agentFile!, human);
-    const binding = await readFile(value.project.bindingFile, 'utf8');
-    const result = await invokeDoctor(value.databasePath, answer);
-    assert.match(result.prompt, /Repair this Kiokuko section\? \[Y\/n\]/u);
-    assert.equal(result.exitCode, undefined);
-    const repaired = await readFile(value.project.agentFile!, 'utf8');
-    assert.ok(repaired.startsWith(human));
-    assert.equal(await readFile(value.project.bindingFile, 'utf8'), binding);
-    assert.equal((await invokeDoctor(value.databasePath, '\n')).prompt, '');
-    assert.equal(await readFile(value.project.agentFile!, 'utf8'), repaired);
-  });
-}
-
-for (const mode of ['no', 'eof', 'non-tty', 'json'] as const) {
-  test(`bounded section repair does not write after ${mode}`, async () => {
-    const value = await deletedAgentProject(`section-${mode}`);
-    const human = 'Only my instructions.\n';
-    await writeFile(value.project.agentFile!, human);
-    const generatedPath = path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE);
-    const generated = await readFile(generatedPath, 'utf8');
-    const result = await invokeDoctor(value.databasePath, mode === 'no' ? 'n\n' : '\n', mode === 'json', mode !== 'non-tty', undefined, mode === 'eof');
-    assert.equal(await readFile(value.project.agentFile!, 'utf8'), human);
-    assert.equal(await readFile(generatedPath, 'utf8'), generated);
-    assert.equal(result.exitCode, 8);
-  });
-}
+test('JSON doctor reports a bounded section repair without writing it', async () => {
+  const value = await deletedAgentProject('section-json');
+  const human = 'Only my instructions.\n';
+  await writeFile(value.project.agentFile!, human);
+  const generatedPath = path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE);
+  const generated = await readFile(generatedPath, 'utf8');
+  const result = await invokeDoctor(value.databasePath, '', true);
+  assert.equal(await readFile(value.project.agentFile!, 'utf8'), human);
+  assert.equal(await readFile(generatedPath, 'utf8'), generated);
+  assert.equal(result.exitCode, 8);
+});
 
 test('doctor repairs a missing generated body without changing the root pointer', async () => {
   const value = await deletedAgentProject('generated-missing');
@@ -743,8 +739,10 @@ test('doctor preserves concurrent generated edits during a root-section repair',
   const value = await deletedAgentProject('generated-race');
   await writeFile(value.project.agentFile!, 'Human rules\n');
   const generatedPath = path.join(value.project.repositoryRoot, GENERATED_AGENT_FILE);
-  await assert.rejects(invokeDoctor(value.databasePath, '\n', false, true, async () => {
-    await writeFile(generatedPath, 'Concurrent generated-file edit\n');
+  const diagnosis = await runDoctor({ databasePath: value.databasePath });
+  await assert.rejects(repairAgentFilesAutomatically(diagnosis.checks.agentFiles.findings, {
+    output: new PassThrough(),
+    beforeWrite: async () => { await writeFile(generatedPath, 'Concurrent generated-file edit\n'); },
   }), { code: 'CONFLICT' });
   assert.equal(await readFile(value.project.agentFile!, 'utf8'), 'Human rules\n');
   assert.equal(await readFile(generatedPath, 'utf8'), 'Concurrent generated-file edit\n');

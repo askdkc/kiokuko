@@ -28,11 +28,11 @@ and are not repaired automatically. Symlinks are rejected.
 
 Doctor distinguishes a missing file (`missing_agent_file`), an existing file
 without Kiokuko's section (`missing_managed_block`), and a legacy or stale
-section (`outdated_managed_block`). Interactive `kiokuko doctor` asks before
-creating or repairing each section; Enter declines. It preserves file mode,
-surrounding user text and foreign sections, and rejects concurrent changes.
-`doctor --json` and noninteractive doctor only report findings. Ambiguous or
-malformed markers and unsupported newer templates are reported as
+section (`outdated_managed_block`). Ordinary human-output `kiokuko doctor`
+creates or repairs every safely renderable section without prompting. It
+preserves file mode, surrounding user text and foreign sections, and rejects
+concurrent changes. `doctor --json` only reports findings. Ambiguous or malformed
+markers and unsupported newer templates are reported as
 `invalid_managed_block` and left untouched.
 
 Repeated `setup` or `use` with unchanged content does not rewrite its target
