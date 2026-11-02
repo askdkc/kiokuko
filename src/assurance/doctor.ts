@@ -3,6 +3,7 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { codexAssuranceConfigured } from '../setup/codex-hooks.js';
 import { taskAssuranceReport } from './service.js';
 import { diagnosticError } from '../diagnostics/error.js';
+import { DEEP_REPOSITORY_SNAPSHOT_MAX_BYTES } from './snapshot.js';
 
 export interface AssuranceDoctorFinding {
   reason: 'task_inspection_failed';
@@ -32,7 +33,7 @@ export function assuranceDoctor(db: SqliteDatabase, hooksPath?: string, verifyRe
   for (const row of active.slice(0, 20)) {
     if (!verifyRepositories) continue;
     try {
-      const report = taskAssuranceReport(db, row.run_id);
+      const report = taskAssuranceReport(db, row.run_id, true, { maxBytes: DEEP_REPOSITORY_SNAPSHOT_MAX_BYTES });
       pending += report.pending.length; stale += report.stale.length; verification += report.missingVerification.length;
       retrieval[report.retrieval] = (retrieval[report.retrieval] ?? 0) + 1;
     } catch (error) {
@@ -42,7 +43,7 @@ export function assuranceDoctor(db: SqliteDatabase, hooksPath?: string, verifyRe
         ...diagnostic,
         verification: 'unverified',
         action: diagnostic.code === 'VALIDATION_ERROR' && diagnostic.message === 'Repository snapshot exceeds its byte budget'
-          ? 'Live repository verification is unavailable because the 64 MiB inspection budget was exceeded. This does not establish memory corruption or invalidate stored task records. Keep repository files, task records and memory intact; no archive cleanup or identity reset is required to preserve them.'
+          ? 'Live repository verification is unavailable because the 256 MiB explicit inspection budget was exceeded. This does not establish memory corruption or invalidate stored task records. Keep repository files, task records and memory intact; no archive cleanup or identity reset is required to preserve them.'
           : 'Check this task\'s repository files and access, correct the reported inspection error, then rerun kiokuko doctor. Keep task records and memory intact.',
       });
     }

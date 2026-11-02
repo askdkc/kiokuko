@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import type { SqliteDatabase, SqliteRow } from '../db/adapter.js';
 import { readContextBrokerRunState } from '../context/broker.js';
-import { repositoryStateDigest } from './snapshot.js';
+import { repositoryStateDigest, type RepositorySnapshotOptions } from './snapshot.js';
 import type { VerificationSource } from './verification-contracts.js';
 
 export interface VerificationCheckRow extends SqliteRow {
@@ -33,7 +33,7 @@ export function matchesCiCommit(root: string, commit: string): boolean {
   return head.status === 0 && status.status === 0 && head.stdout.trim() === commit && status.stdout.trim() === '';
 }
 
-export function taskVerificationReport(db: SqliteDatabase, runId: string, verifyState: boolean): TaskVerificationReport {
+export function taskVerificationReport(db: SqliteDatabase, runId: string, verifyState: boolean, snapshotOptions: RepositorySnapshotOptions = {}): TaskVerificationReport {
   const state = db.prepare('SELECT verification_version, repository_root, observed_changes FROM task_assurance WHERE run_id=?')
     .get<{ verification_version: number; repository_root: string | null; observed_changes: number }>(runId);
   const empty = { contractVersion: null, checks: [] };
@@ -56,7 +56,7 @@ export function taskVerificationReport(db: SqliteDatabase, runId: string, verify
     if (result) {
       stale = result.definition_hash !== check.definition_hash || !state.repository_root;
       if (!stale && verifyState && state.repository_root) {
-        digest ??= repositoryStateDigest(state.repository_root);
+        digest ??= repositoryStateDigest(state.repository_root, snapshotOptions);
         const source = JSON.parse(result.source_json) as VerificationSource;
         stale = result.state_digest !== digest || (source.kind === 'ci' && !matchesCiCommit(state.repository_root, source.commit));
       }

@@ -42,7 +42,7 @@ Retries use the same `requestId`, complete input and `expectedRevision`. A chang
 request under the same ID or a stale revision conflicts. Review and evidence
 records are durable. The repository state hash covers Git-visible tracked and
 unignored files plus conventional local environment and Codex/Kiokuko config
-files; edits invalidate prior results. Other ignored files are outside that snapshot. Symlinks, non-regular files, more than 20,000 files or 64 MiB of content
+files; edits invalidate prior results. Other ignored files are outside that snapshot. Routine task and hook snapshots retain a 64 MiB content limit; explicit `kiokuko doctor --verify-repositories` inspection uses a bounded 256 MiB limit. Symlinks, non-regular files, more than 20,000 files, or content beyond the applicable limit
 make snapshot verification unavailable rather than silently incomplete.
 
 ## Decision and observation storage

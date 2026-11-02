@@ -15,7 +15,7 @@ import { hasActionableMemorySelection, memoryReasoningRequired } from '../akinat
 import { canonicalContentHash } from '../serialization/validate.js';
 import { sanitizeJson } from '../security/sanitize.js';
 import { memoryReviewSchema, executionEvidenceSchema, parseAssurance } from './contracts.js';
-import { repositoryStateDigest } from './snapshot.js';
+import { repositoryStateDigest, type RepositorySnapshotOptions } from './snapshot.js';
 
 export interface AssuranceState extends SqliteRow {
   run_id: string; revision: number; delivery_id: string | null; repository_root: string | null; retrieval_status: string; observed_changes: number;
@@ -148,7 +148,7 @@ export function memoryReviewNextAction(report: MemoryAssuranceReport): 'refresh_
   if (report.stale.length) return 'refresh_memory';
   return report.pending.length ? 'review_memory_application' : 'proceed';
 }
-function memoryAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true): MemoryAssuranceReport {
+function memoryAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true, snapshotOptions: RepositorySnapshotOptions = {}): MemoryAssuranceReport {
   const state = assuranceState(db, runId);
   const report: MemoryAssuranceReport = { mode: state ? 'tracked' : 'legacy_unobserved', revision: state?.revision ?? null,
     contract: INTEGRATION_CONTRACT, observationSequence: Number(state?.observation_sequence ?? 0), retrieval: state?.retrieval_status ?? 'unobserved', pending: [], stale: [], missingVerification: [], observed: false, complete: true };
@@ -171,7 +171,7 @@ function memoryAssuranceReport(db: SqliteDatabase, runId: string, verifyState = 
     if (!actionable && !explicitlyReviewed) continue;
     const current = db.prepare('SELECT current_revision FROM entries WHERE id = ?').get<{ current_revision: number }>(item.entry_id);
     if (!current || current.current_revision !== item.entry_revision) { report.stale.push(item.entry_id); continue; }
-    if (state.repository_root && !digest) digest = repositoryStateDigest(state.repository_root);
+    if (state.repository_root && !digest) digest = repositoryStateDigest(state.repository_root, snapshotOptions);
     const independent = state.repository_root ? currentDecision(db,runId,state.delivery_id,item.entry_id,item.entry_revision,state.repository_root,digest ?? undefined) : null;
     const review = independent ? { decision: independent.review.decision, evidence_ids_json: JSON.stringify(independent.review.evidenceIds) } : undefined;
     if (independent) (report.decisions ??= []).push({entryId:item.entry_id,decisionId:independent.record.decision_id,sourceDeliveryId:independent.record.source_delivery_id});
@@ -179,7 +179,7 @@ function memoryAssuranceReport(db: SqliteDatabase, runId: string, verifyState = 
     if (review.decision !== 'adopted' || !codeChange || JSON.parse(item.selection_reason_json).includes('general_communication_preference')) continue;
     adoptedCount += 1;
     if (!verifyState) continue;
-    if (!digest && state.repository_root) digest = repositoryStateDigest(state.repository_root);
+    if (!digest && state.repository_root) digest = repositoryStateDigest(state.repository_root, snapshotOptions);
     const ids = JSON.parse(review.evidence_ids_json) as string[];
     const evidence = ids.map(id => db.prepare('SELECT * FROM task_execution_evidence WHERE evidence_id = ?').get<SqliteRow>(id));
     const valid = evidence.length > 0 && independent?.review.verificationDefinitionHash === verificationDefinitionHash(db, runId) && evidence.every(e => e && e.run_id === runId && (e.delivery_id === state.delivery_id || independent?.review.evidenceIds.includes(String(e.evidence_id)))
@@ -210,9 +210,9 @@ export function taskMemoryStatus(db: SqliteDatabase, runId: string, cwd: string,
   });
 }
 /** complete remains memory-only; callers must use completionReady for the task. */
-export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true): AssuranceReport {
-  const memory = memoryAssuranceReport(db, runId, verifyState);
-  const verification = taskVerificationReport(db, runId, verifyState);
+export function taskAssuranceReport(db: SqliteDatabase, runId: string, verifyState = true, snapshotOptions: RepositorySnapshotOptions = {}): AssuranceReport {
+  const memory = memoryAssuranceReport(db, runId, verifyState, snapshotOptions);
+  const verification = taskVerificationReport(db, runId, verifyState, snapshotOptions);
   const counters = db.prepare('SELECT * FROM task_execution_observations WHERE run_id=?').get<{ unknown_exit_calls: number; running_calls: number; structured_exit_calls: number; last_exit_metadata: 'available' | 'unavailable' | 'unobserved' }>(runId);
   const hooksObserved = !!db.prepare('SELECT 1 FROM codex_hook_requests WHERE run_id=? LIMIT 1').get(runId);
   const executionObservation = { unknownExitCalls: counters?.unknown_exit_calls ?? 0, runningCalls: counters?.running_calls ?? 0,

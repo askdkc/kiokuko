@@ -57,8 +57,10 @@ binding path, registered repository ID, and restoration guidance. Invalid bindin
 include the validation error; doctor does not recreate either kind automatically.
 Failed active-task inspections appear under `data.checks.memoryAssurance.findings`
 with the task ID, repository root, exception code and bounded message, and recovery
-guidance. Human output shows the same findings. A snapshot byte-budget error means
-the inspected Git-tracked, unignored and configuration files exceed 64 MiB; review
+guidance. Human output shows the same findings. Routine task and hook snapshots use a
+64 MiB content limit, while explicit repository verification uses a bounded 256 MiB
+limit. A snapshot byte-budget error from explicit verification means the inspected
+Git-tracked, unignored and configuration files exceed that deeper limit; review
 large artifacts without deleting task records or memory. Pending reviews and
 missing verification counts alone do not make the assurance health check fail.
 

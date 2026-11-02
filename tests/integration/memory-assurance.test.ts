@@ -16,7 +16,7 @@ import { inspectTask } from '../../src/assurance/inspect.js';
 import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 import { recordEntry, updateCandidateEntry } from '../../src/memory/entries.js';
 import { assuranceState, reviewTaskMemory, recordTaskEvidence, taskAssuranceReport, taskMemoryStatus, assertAssuranceCompletion, memoryReviewNextAction } from '../../src/assurance/service.js';
-import { repositoryStateDigest } from '../../src/assurance/snapshot.js';
+import { DEEP_REPOSITORY_SNAPSHOT_MAX_BYTES, repositoryStateDigest } from '../../src/assurance/snapshot.js';
 import { codexHookCorrelationId, codexHookFailureCode, handleCodexHook, observedExitCode } from '../../src/assurance/codex-hooks.js';
 import { codexHookDiagnostics } from '../../src/assurance/hook-diagnostics.js';
 import { KiokukoError } from '../../src/errors.js';
@@ -197,22 +197,42 @@ test('doctor names failed task inspections and their actual exception in JSON an
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 
-test('doctor explains the snapshot byte budget without deleting or completing the failed task', async () => {
+test('explicit doctor verifies repositories above the ordinary snapshot byte budget without changing task state', async () => {
   const f = await fixture();
   try {
     const large = path.join(f.root, 'archive.bin');
     writeFileSync(large, '');
-    truncateSync(large, 64 * 1024 * 1024);
+    truncateSync(large, 65 * 1024 * 1024);
+    assert.throws(() => repositoryStateDigest(f.root), /Repository snapshot exceeds its byte budget/u);
+    const before = f.db.prepare('SELECT * FROM task_assurance WHERE run_id=?').get(f.prepared.run.runId);
+    const result = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
+    const check = result.checks.memoryAssurance as any;
+    assert.equal(check.ok, true);
+    assert.equal(check.status, 'ok');
+    assert.deepEqual(check.findings, []);
+    assert.deepEqual(f.db.prepare('SELECT * FROM task_assurance WHERE run_id=?').get(f.prepared.run.runId), before);
+    assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('explicit doctor keeps its deeper repository snapshot budget finite without changing task state', async () => {
+  const f = await fixture();
+  try {
+    const large = path.join(f.root, 'archive.bin');
+    writeFileSync(large, '');
+    truncateSync(large, DEEP_REPOSITORY_SNAPSHOT_MAX_BYTES);
+    const before = f.db.prepare('SELECT * FROM task_assurance WHERE run_id=?').get(f.prepared.run.runId);
     const result = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
     const check = result.checks.memoryAssurance as any;
     assert.equal(check.ok, false);
+    assert.equal(check.status, 'attention');
     assert.equal(check.findings[0].runId, f.prepared.run.runId);
     assert.equal(check.findings[0].message, 'Repository snapshot exceeds its byte budget');
-    assert.equal(check.status, 'attention');
     assert.equal(check.findings[0].verification, 'unverified');
-    assert.match(check.findings[0].action, /64 MiB inspection budget/u);
+    assert.match(check.findings[0].action, /256 MiB explicit inspection budget/u);
     assert.match(check.findings[0].action, /does not establish memory corruption/u);
     assert.match(check.findings[0].action, /Keep repository files, task records and memory intact/u);
+    assert.deepEqual(f.db.prepare('SELECT * FROM task_assurance WHERE run_id=?').get(f.prepared.run.runId), before);
     assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
@@ -1597,8 +1617,9 @@ test('default doctor leaves unrelated oversized active repositories unverified w
     assert.deepEqual(f.db.prepare('SELECT * FROM task_assurance WHERE run_id=?').get(f.prepared.run.runId), before);
     assert.equal(f.db.prepare('SELECT status FROM ledger_runs WHERE run_id=?').get<{status:string}>(f.prepared.run.runId)!.status, 'active');
     const deep = await runDoctor({ databasePath: f.databasePath, verifyRepositories: true });
-    assert.equal(deep.checks.memoryAssurance.findings[0]?.message, 'Repository snapshot exceeds its byte budget');
-    assert.equal(deep.checks.memoryAssurance.status, 'attention');
+    assert.equal(deep.checks.memoryAssurance.status, 'ok');
+    assert.equal(deep.checks.memoryAssurance.ok, true);
+    assert.deepEqual(deep.checks.memoryAssurance.findings, []);
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
 
