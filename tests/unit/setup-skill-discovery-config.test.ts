@@ -130,6 +130,30 @@ test('README and documentation index links resolve inside the repository', () =>
   }
 });
 
+test('Codex setup preserves tool approval settings inside and outside its managed block', () => {
+  const canonical = renderCodexMcpConfig('model = "keep"\n').content;
+  const tools = '\n# My tool approval\n[mcp_servers.kiokuko.tools.task_memory_status]\napproval_mode = "approve"\n';
+  for (const newline of ['\n', '\r\n']) {
+    for (const input of [canonical.replace('# END KIOKUKO MCP', `${tools}# END KIOKUKO MCP`), canonical + tools]) {
+      const existing = input.replaceAll('\n', newline);
+      assert.equal(renderCodexMcpConfig(existing).content, existing);
+      const updated = renderCodexMcpConfig(existing, '/new/kiokuko', 'off');
+      assert.equal(updated.content, existing.replace('command = "kiokuko"', 'command = "/new/kiokuko"')
+        .replace('KIOKUKO_SKILL_DISCOVERY = "official"', 'KIOKUKO_SKILL_DISCOVERY = "off"'));
+      assert.equal(renderCodexMcpConfig(updated.content).action, 'unchanged');
+    }
+  }
+});
+
+test('Codex setup rejects foreign or launch settings hidden after its managed fields', () => {
+  const canonical = renderCodexMcpConfig().content;
+  for (const extra of ['url = "https://example.test"\n', '[mcp_servers.other]\ncommand = "other"\n',
+    '[mcp_servers.kiokuko.env]\nPATH = "/custom"\n',
+    '[mcp_servers.kiokuko.tools.status]\napproval_mode = "approve"\napproval_mode = "prompt"\n']) {
+    assert.throws(() => renderCodexMcpConfig(canonical.replace('# END KIOKUKO MCP', `${extra}# END KIOKUKO MCP`)));
+  }
+});
+
 test('Codex setup rejects non-canonical marked blocks instead of migrating them', () => {
   const canonical = renderCodexMcpConfig('model = "keep"\n').content;
   const managedBlock = canonical.slice(canonical.indexOf('# BEGIN KIOKUKO MCP'));

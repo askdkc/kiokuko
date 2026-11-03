@@ -1178,6 +1178,12 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     const failureNotice = data.ok
       ? ''
       : ` ${data.status === 'attention' ? 'Checks needing attention' : 'Failed checks'}: ${Object.entries(data.checks).filter(([, check]) => !check.ok).map(([name]) => name).join(', ')}.\nrun kiokuko doctor --json for detailed output`;
+    const codexMcpNotice = data.checks.codexMcp.ok ? ''
+      : data.checks.codexMcp.detail === 'config=conflict'
+        ? '\n  Codex MCP: conflicting Kiokuko configuration in Codex config.toml; preserved to avoid overwriting custom launch or connection settings. Run kiokuko setup --clients codex to review replacement.'
+        : data.checks.codexMcp.detail === 'config=unavailable'
+          ? '\n  Codex MCP: Codex config.toml could not be read safely. Check its file type and permissions.'
+          : '\n  Codex MCP: Codex config.toml is invalid. Correct its TOML syntax before running doctor again.';
     const agentFileNotice = data.checks.agentFiles.findings
       .map((finding) => `\n  ${finding.bindingFile ?? finding.agentFile ?? finding.repositoryRoot}: ${finding.reason}`
         + (finding.detail ? ` — ${finding.detail}` : '')
@@ -1189,7 +1195,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       .join('');
     const assuranceScopeNotice = options.verifyRepositories ? ''
       : '\n  Live repository verification was not requested. Use kiokuko doctor --verify-repositories to inspect up to 20 active tasks.';
-    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${repairNotice}${agentRepairNotice}${failureNotice}${agentFileNotice}${assuranceNotice}${assuranceScopeNotice}`);
+    humanOrJson(options.json, 'doctor', data, `${data.ok ? 'Kiokuko doctor: OK' : data.status === 'attention' ? 'Kiokuko doctor: ATTENTION (verification incomplete)' : 'Kiokuko doctor: FAILED'}${cleanupNotice}${repairNotice}${agentRepairNotice}${failureNotice}${codexMcpNotice}${agentFileNotice}${assuranceNotice}${assuranceScopeNotice}`);
     if (!data.ok) process.exitCode = 8;
   });
 

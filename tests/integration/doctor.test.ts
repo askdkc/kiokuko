@@ -63,7 +63,7 @@ function ttyOutput(onWrite?: (text: string) => void): Writable & { isTTY?: boole
 }
 
 async function invokeDoctor(
-  databasePath: string,
+  databasePath: string | undefined,
   answer: string,
   json = false,
   interactive = true,
@@ -93,7 +93,7 @@ async function invokeDoctor(
   }) as typeof process.stdout.write;
   try {
     await buildCli({
-      doctorDatabasePath: databasePath,
+      ...(databasePath === undefined ? {} : { doctorDatabasePath: databasePath }),
       doctorInput: input,
       doctorOutput: output,
     }).parseAsync(['node', 'kiokuko', 'doctor', ...(json ? ['--json'] : [])]);
@@ -677,6 +677,10 @@ test('doctor reports an unmanaged Codex Kiokuko MCP identity', async () => {
     count: 1,
     detail: 'config=conflict',
   });
+  const human = await withDoctorEnvironment(value.directory, codexHome, () => invokeDoctor(undefined, '', false, false));
+  assert.match(human.stdout, /Codex MCP:.*conflicting Kiokuko configuration/u);
+  assert.match(human.stdout, /preserved.*kiokuko setup --clients codex/u);
+  assert.equal(await readFile(path.join(codexHome, 'config.toml'), 'utf8'), '[mcp_servers.kiokuko]\ncommand = "custom"\n');
 });
 
 test('doctor accepts the canonical Codex Kiokuko MCP identity', async () => {
@@ -706,6 +710,31 @@ test('doctor accepts the canonical Codex Kiokuko MCP identity', async () => {
     ok: true,
     count: 0,
     detail: 'config=canonical-or-not-configured',
+  });
+});
+
+test('ordinary and JSON doctor accept Codex tool approval settings without changing them', async () => {
+  const value = await temporaryDatabase('codex-tool-approval');
+  value.database.close();
+  const codexHome = path.join(value.directory, 'codex-home');
+  await mkdir(codexHome);
+  const configPath = path.join(codexHome, 'config.toml');
+  const config = [
+    '# BEGIN KIOKUKO MCP', '# Managed by `kiokuko setup`.', '[mcp_servers.kiokuko]',
+    'command = "kiokuko"', 'args = ["mcp"]', 'enabled = true', 'required = true',
+    'env = { KIOKUKO_SKILL_DISCOVERY = "official" }', '',
+    '[mcp_servers.kiokuko.tools.task_memory_status]', 'approval_mode = "approve"',
+    '# END KIOKUKO MCP', '',
+  ].join('\n');
+  await writeFile(configPath, config);
+  await withDoctorEnvironment(value.directory, codexHome, async () => {
+    for (const json of [false, true]) {
+      const result = await invokeDoctor(undefined, '', json, false);
+      assert.equal(result.exitCode, undefined, result.stdout);
+      if (!json) assert.match(result.stdout, /Kiokuko doctor: OK/u);
+      else assert.equal(result.response?.data.ok, true);
+      assert.equal(await readFile(configPath, 'utf8'), config);
+    }
   });
 });
 

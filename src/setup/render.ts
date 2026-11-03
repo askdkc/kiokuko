@@ -250,7 +250,7 @@ function removeUnmanagedCodexMcpIdentity(existing: string): string {
 }
 
 export interface CodexMcpLaunch { command: string; args: string[]; }
-interface CanonicalCodexBlock extends CodexMcpLaunch { skillDiscoveryMode: SkillDiscoveryMode; }
+interface CanonicalCodexBlock extends CodexMcpLaunch { skillDiscoveryMode: SkillDiscoveryMode; toolSettings: string[]; }
 const absoluteLaunchPath = (value: string) => path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
 
 function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undefined {
@@ -277,16 +277,25 @@ function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undef
   const managedBlock = existing.slice(begin, endExclusive).replaceAll('\r\n', '\n');
   const lines = managedBlock.split('\n');
   const environmentIndex = 7;
-  const endIndex = 8;
   if (
-    lines.length !== 9
+    lines.length < 9
     || lines[0] !== CODEX_MCP_BEGIN
     || lines[1] !== '# Managed by `kiokuko setup`.'
     || lines[2] !== '[mcp_servers.kiokuko]'
     || lines[5] !== 'enabled = true'
     || lines[6] !== 'required = true'
-    || lines[endIndex] !== CODEX_MCP_END
+    || lines.at(-1) !== CODEX_MCP_END
   ) codexConflict();
+
+  // Codex can append per-tool approval settings inside the managed markers.
+  // Preserve those settings, but never treat extra launch fields or foreign
+  // tables as owned content that setup may overwrite.
+  const toolSettings = lines.slice(8, -1);
+  const toolPath = ['mcp_servers', 'kiokuko', 'tools'];
+  const extraDefinitions = parseStrictTomlDefinitions(
+    ['[mcp_servers.kiokuko]', ...toolSettings].join('\n'),
+  ).slice(1);
+  if (extraDefinitions.some(definition => !startsWithPath(definition.path, toolPath))) codexConflict();
 
   const commandMatch = /^command = ("(?:[^"\\]|\\.)*")$/u.exec(lines[3]!);
   const argsMatch = /^args = (\[.*\])$/u.exec(lines[4]!);
@@ -316,10 +325,13 @@ function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undef
   const kiokukoDefinitions = parseStrictTomlDefinitions(existing).filter((definition) => (
     definition.path[0] === 'mcp_servers' && definition.path[1] === 'kiokuko'
   ));
-  if (kiokukoDefinitions.some((definition) => definition.offset < begin || definition.offset >= endExclusive)) {
+  if (kiokukoDefinitions.some((definition) => (
+    (definition.offset < begin || definition.offset >= endExclusive)
+    && !startsWithPath(definition.path, toolPath)
+  ))) {
     codexConflict();
   }
-  return { command, args: args as string[], skillDiscoveryMode: modeMatch[1] as SkillDiscoveryMode };
+  return { command, args: args as string[], skillDiscoveryMode: modeMatch[1] as SkillDiscoveryMode, toolSettings };
 }
 
 /** Remove only the marked MCP table, including blocks from older setup versions. */
@@ -399,6 +411,7 @@ export function renderCodexMcpConfig(
     'enabled = true',
     'required = true',
     `env = { ${SKILL_DISCOVERY_ENV} = ${JSON.stringify(effectiveSkillDiscoveryMode)} }`,
+    ...(current?.toolSettings ?? []),
     CODEX_MCP_END,
   ].join('\n');
   return { ...upsertDelimitedBlock(renderTarget, block, CODEX_MCP_BEGIN, CODEX_MCP_END, 'Codex config.toml'), launch };
