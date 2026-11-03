@@ -47,10 +47,8 @@ export async function reviewCompletedReplay(deps: {
   }
   let approvedKey: string | undefined;
   try {
-    const organize: ReviewQuestion = { id: randomUUID(), phase: 'organize', text: `${deps.taskOutcome === 'failed' ? 'The task has ended with a failed outcome.' : 'The task is complete.'} May I organize its recorded experience into proposed memories? Nothing is saved until you review and approve it.` };
     if (!active()) return receipt('declined');
-    const permission = await wait(deps.ask(organize));
-    if (permission.questionId !== organize.id || permission.choice !== 'organize' || !active()) return receipt('declined');
+    // Organization is ephemeral. Human approval is required only for persistence.
     let proposal = structuredClone(await wait(deps.extract()));
     if (proposal.schemaVersion !== 1 || proposal.source.workspace !== deps.workspace || proposal.source.taskId !== deps.taskId || proposal.source.sessionId !== deps.sessionId) throw new Error('proposal_binding_mismatch');
     proposal.proposalId = randomUUID(); proposal.revision = 1;

@@ -527,7 +527,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     }
     return toolResult({...result,memoryReview:{status:'not_started',workMayContinue:true}});
   };
-  server.registerTool('memory_review_completed',{title:'Review completed task experience',description:'Requires a settled completed or failed run and native client elicitation. Asks the human permission to organize, then exact-proposal approval. No approval flags are accepted from the model.',inputSchema:z.object({runId:z.string().min(1).max(256),cwd:absoluteCwdSchema,traceDirectory:absoluteCwdSchema}).strict()},async(input,extra)=>toolResult(await replayReview.review(input,extra.signal)));
+  server.registerTool('memory_review_completed',{title:'Review completed task experience',description:'Requires a settled completed or failed run and native client elicitation. Proactively organizes an ephemeral proposal, then asks only for exact-proposal save approval. No approval flags are accepted from the model.',inputSchema:z.object({runId:z.string().min(1).max(256),cwd:absoluteCwdSchema,traceDirectory:absoluteCwdSchema}).strict()},async(input,extra)=>toolResult(await replayReview.review(input,extra.signal)));
   const deadlinePolicy = createMcpDeadlinePolicy(dependencies.deadlinePolicy);
   const cancellations = new McpCancellationJournal();
   enablePublicToolInputErrors(server);

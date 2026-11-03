@@ -1243,7 +1243,8 @@ test('natural response-only requests and bounded staged inspection finish withou
     for (const [index, prompt] of requests.entries()) {
       const common = { session_id: 'responses', turn_id: String(index), cwd: root };
       const result = handleCodexHook(db, { ...common, hook_event_name: 'UserPromptSubmit', prompt }) as any;
-      assert.match(result.hookSpecificOutput.additionalContext, /zero preparation, memory, or verification calls/u);
+      assert.match(result.hookSpecificOutput.additionalContext, /zero preparation, recall, or verification calls/u);
+      assert.match(result.hookSpecificOutput.additionalContext, /Still check the current conversation for useful memories/u);
       assert.deepEqual(handleCodexHook(db, { ...common, hook_event_name: 'Stop' }), {});
     }
     const common = { session_id: 'responses', turn_id: 'staged', cwd: root };

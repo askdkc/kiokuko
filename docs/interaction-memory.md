@@ -1,5 +1,9 @@
 # Memory from normal interaction
 
+Every session checks the current conversation for useful durable memories before the final response, including conversations without a project or task run. The assistant proactively recommends concrete memories without asking permission to check or organize them. Approval is required only before saving the exact displayed proposal. When nothing useful is found, it skips the save prompt. Already saved or declined proposals are not repeated. Read-only or unavailable memory still permits an unsaved recommendation in the response.
+
+Codex setup installs reminders at SessionStart, UserPromptSubmit and after compaction. SessionStart and compaction reminders work without a memory database. Other clients receive the same policy through MCP instructions and bundled guidance. These reminders instruct the model; they cannot prove that every host or model followed the check. Existing installations need updated setup artifacts and a reloaded connection.
+
 Kiokuko can save durable preferences, facts, decisions, and corrections from normal
 conversation. After the task is complete, the current client's model organizes a
 concise proposal and calls `memory_capture`; no separate model service or credentials

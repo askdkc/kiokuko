@@ -39,9 +39,9 @@ export function registerReplayReviewCommand(cli: Command): void {
           extract: () => extractReplayProposal({cwd:options.cwd,traceDirectory:options.trace,taskId:options.task,sessionId:options.session,workspace:binding.workspace}),
           ask: async q => {
             process.stdout.write(q.text + '\n');
-            const response = await terminal.question(q.phase === 'organize' ? 'organize / decline: ' : 'approve / decline / comment: ');
+            const response = await terminal.question('approve / decline / comment: ');
             const value = response.trim();
-            return {questionId:q.id, choice:value === 'organize' && q.phase === 'organize' ? 'organize' : value === 'approve' && q.phase === 'review' ? 'approve' : value === 'decline' || !value ? 'decline' : 'revise', ...(value !== 'approve' && value !== 'decline' && value !== 'organize' ? {comment:value} : {})};
+            return {questionId:q.id, choice:value === 'approve' ? 'approve' : value === 'decline' || !value ? 'decline' : 'revise', ...(value !== 'approve' && value !== 'decline' ? {comment:value} : {})};
           },
           save: async (proposal, key) => {
             await initializeDatabase({databasePath}); const db = openConnection(databasePath);

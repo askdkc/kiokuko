@@ -11,7 +11,7 @@ existing atomic capture, while decline saves nothing. There is no approval flag 
 tool arguments, and unsupported elicitation cannot save.
 
 The separate AgenticReplay maintenance flow is: actual task completion → native
-human organization permission → ephemeral replay extraction → display exact
+ephemeral replay extraction without a permission question → display exact
 revision/digest → human approve/revise/decline → atomic approved save. Read
 [the replay review contract](replay-memory-review.md).
 

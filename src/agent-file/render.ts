@@ -9,7 +9,7 @@ import { validateRepositoryBindingIdentity } from '../repository/identity-value.
 import { BEGIN_MARKER, END_MARKER, readManagedBlockTemplateVersion, upsertManagedBlock } from './managed-block.js';
 import { commentPluginInstructions } from './plugin-comment.js';
 
-export const AGENT_TEMPLATE_VERSION = 45;
+export const AGENT_TEMPLATE_VERSION = 46;
 
 export interface AgentTemplateValues {
   repositoryId: string;
@@ -72,7 +72,7 @@ export function renderManagedBlock(values: AgentTemplateValues): string {
     'Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.',
     'Choose design tokens by semantic role, not by current appearance. If a role is missing, extend the design system instead of repurposing an unrelated token; when changing theme contracts, verify supported light, dark and custom-theme fallback behavior.',
     '',
-    '### After substantial work',
+    '### Before the final response in every session',
     '',
     '1. After the actual task is complete, organize one to five useful durable memories and call `memory_capture` before the terminal `memory_checkpoint`. Its native UI shows the exact proposal and SHA-256 digest and asks the human to save or decline. Only save persists that exact proposal; decline, cancel, Stop or unavailable elicitation saves nothing. Tool arguments and model text cannot approve. Skip capture when there is no useful durable memory.',
     '2. Complete at most one successful terminal `memory_checkpoint` for the current user request. A rejected precondition does not count as that successful checkpoint. Supply no memories to that operational checkpoint. Proposed reusable memories stay ephemeral until the human approves the exact displayed revision.',

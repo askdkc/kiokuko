@@ -7,6 +7,7 @@ import { initializeDatabase } from './init.js';
 import { codexHookCorrelationId, codexHookFailureCode, handleCodexHook, parseCodexHookInput } from '../assurance/codex-hooks.js';
 import { codexHookDiagnostics } from '../assurance/hook-diagnostics.js';
 import { KiokukoError } from '../errors.js';
+import { MEMORY_RECOMMENDATION_INSTRUCTIONS } from '../memory/recommendation-instructions.js';
 
 /** Upgrade only an existing database; current-schema hooks avoid a full integrity scan. */
 async function openHookDatabase(databasePath: string) {
@@ -42,8 +43,14 @@ export function registerCodexHookCommand(cli: Command): void {
         }
         event = JSON.parse(raw);
         const input = parseCodexHookInput(event);
+        if (input.hook_event_name === 'SessionStart' || input.hook_event_name === 'PostCompact') {
+          process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+            hookEventName: input.hook_event_name, additionalContext: MEMORY_RECOMMENDATION_INSTRUCTIONS,
+          } }) + '\n');
+          return; // Session reminders need neither a checkout nor an available memory database.
+        }
         dispatchHookObservation(input, options.database);
-        if (input.hook_event_name === 'PreCompact' || input.hook_event_name === 'PostCompact') {
+        if (input.hook_event_name === 'PreCompact') {
           process.stdout.write('{}\n');
           return; // New compaction observation never waits for a memory DB.
         }

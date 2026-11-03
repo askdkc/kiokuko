@@ -12,6 +12,15 @@ const candidate = (): ReplayMemoryProposal => ({schemaVersion:1,proposalId:'gene
 function fixture() {const root=mkdtempSync(path.join(tmpdir(),'replay-review-'));const db=openConnection(path.join(root,'memory.sqlite3'));return {root,db,close(){db.close();rmSync(root,{recursive:true,force:true});}};}
 const count = (db:ReturnType<typeof openConnection>) => db.prepare("SELECT 1 FROM sqlite_master WHERE name='replay_memories'").get() ? db.prepare('SELECT COUNT(*) AS n FROM replay_memories').get<{n:number}>()!.n : 0;
 
+test('proactively extracts and shows the proposal; the only question approves saving', async () => {
+ let extracted = false, questions = 0, saves = 0;
+ const result = await reviewCompletedReplay({ completed:true, workspace:'repo', taskId:'task', sessionId:'session',
+  extract:async()=>{extracted=true;return candidate();},
+  ask:async q=>{questions++;assert.equal(extracted,true);assert.equal(q.phase,'review');assert.match(q.text,/Check SQLite migration version/);assert.equal(saves,0);return {questionId:q.id,choice:'approve'};},
+  save:async()=>{saves++;} });
+ assert.equal(result.status,'saved');assert.equal(questions,1);assert.equal(saves,1);
+});
+
 test('no writes at organize/extract/review/revise; exact current approval stores once and survives restart', async()=>{
  const f=fixture();try {
   const store=createApprovedReplayMemoryStore(f.db,'repo');let seen=0;let saved:ReplayMemoryProposal|undefined;let key='';
@@ -82,4 +91,4 @@ test('replay proposal accepts a compatible newer trace schema and rejects missin
 
  test('failed COMMIT and ROLLBACK cannot report the writer own uncommitted receipt as saved',()=>{const f=fixture();try{const adapter={filePath:f.db.filePath,close:()=>f.db.close(),prepare:f.db.prepare.bind(f.db),exec(sql:string){if(sql==='COMMIT'||sql==='ROLLBACK')throw new Error('before SQL execution');f.db.exec(sql);}};assert.throws(()=>createApprovedReplayMemoryStore(adapter,'repo').save(candidate(),'e'.repeat(64)),/uncertain/);assert.equal(count(f.db),1);const other=openConnection(f.db.filePath,{readOnly:true});try{assert.equal(count(other),0);}finally{other.close();}f.db.exec('ROLLBACK');assert.equal(count(f.db),0);}finally{f.close();}});
 
-test('unresolved approved save retains exact identity for read-only reconciliation without asking or writing again',async()=>{const f=fixture();try{let retained:{p:ReplayMemoryProposal;k:string}|undefined;let asks=0;const result=await reviewCompletedReplay({completed:true,workspace:'repo',taskId:'task',sessionId:'session',extract:async()=>candidate(),ask:async q=>{asks++;return {questionId:q.id,choice:q.phase==='organize'?'organize':'approve'};},onApproved:(p,k)=>{retained={p,k};},save:async()=>{throw new Error('uncertain unavailable');}});assert.equal(result.status,'unavailable');assert.ok(retained);assert.equal(result.approvalKey,retained.k);const store=createApprovedReplayMemoryStore(f.db,'repo');assert.equal(store.reconcile(retained.p,retained.k),'unavailable');assert.equal(count(f.db),0);store.save(retained.p,retained.k);assert.equal(store.reconcile(retained.p,retained.k),'saved');assert.equal(store.reconcile({...retained.p,revision:2},retained.k),'unavailable');assert.equal(asks,2);assert.equal(count(f.db),1);}finally{f.close();}});
+test('unresolved approved save retains exact identity for read-only reconciliation without asking or writing again',async()=>{const f=fixture();try{let retained:{p:ReplayMemoryProposal;k:string}|undefined;let asks=0;const result=await reviewCompletedReplay({completed:true,workspace:'repo',taskId:'task',sessionId:'session',extract:async()=>candidate(),ask:async q=>{asks++;return {questionId:q.id,choice:q.phase==='organize'?'organize':'approve'};},onApproved:(p,k)=>{retained={p,k};},save:async()=>{throw new Error('uncertain unavailable');}});assert.equal(result.status,'unavailable');assert.ok(retained);assert.equal(result.approvalKey,retained.k);const store=createApprovedReplayMemoryStore(f.db,'repo');assert.equal(store.reconcile(retained.p,retained.k),'unavailable');assert.equal(count(f.db),0);store.save(retained.p,retained.k);assert.equal(store.reconcile(retained.p,retained.k),'saved');assert.equal(store.reconcile({...retained.p,revision:2},retained.k),'unavailable');assert.equal(asks,1);assert.equal(count(f.db),1);}finally{f.close();}});

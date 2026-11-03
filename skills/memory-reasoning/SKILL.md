@@ -70,6 +70,8 @@ uncertainty and correction attribution; optional memory cannot block normal work
 
 ## General conversation
 
+In every session, including ordinary conversation without a project or task run, check the current conversation for useful durable memories before the final response. Proactively recommend one to five concrete memories when useful: durable user preferences, corrections, settled decisions, or verified reusable results. Do not wait for a request to remember, and do not ask permission to check, organize, or recommend; approval is required only before saving the exact displayed proposal. Use current conversation evidence; this check does not require recall, intake, a checkpoint, or a database write. Exclude routine progress, temporary requests, duplicates already saved or declined in this session, unsupported conclusions, secrets, sensitive personal profiling, transcripts, and hidden reasoning. If there is nothing useful, skip the save prompt rather than inventing a memory. If saving is disabled, read-only, unavailable, or requires a separately requested tool call, still show useful recommendations in the response and leave them unsaved. Respect an explicit request not to suggest memories and user cancellation. Never restart or block completed work for memory review.
+
 Read this Skill before advertising it to `memory_recall`. Use retrieved
 preferences only for the matching subject. Prefer query-only recall and do not
 guess exact subject filters. The exception is explicitly general

@@ -187,7 +187,8 @@ test('response-only work needs no run or memory recall; bounded missing facts us
   const global = renderGlobalInstructions('Custom instruction.\n').content;
   for (const text of [project, global]) {
     assert.match(text, /uncertainty, consequences of error, reversibility, and evidence already available/u);
-    assert.match(text, /zero preparation, memory, or verification calls/u);
+    assert.match(text, /zero preparation, recall, or verification calls/u);
+    assert.match(text, /Still check the current conversation for useful memories/u);
     assert.match(text, /scope.*auto.*staged.*working-tree/u);
     assert.match(text, /Repository mentions alone do not require preparation/u);
     assert.match(text, /No minimum reasoning duration/u);

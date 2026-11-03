@@ -34,7 +34,6 @@ with tempfile.TemporaryDirectory(prefix='kiokuko-review-terminal-') as tmp:
             assert not db.exists(), 'Database created before human approval'
         try:
             until('Type completed'); os.write(master,b'completed\n')
-            until('organize / decline:'); os.write(master,b'organize\n')
             until('approve / decline / comment:'); os.write(master,(decision+'\n').encode())
             deadline=time.monotonic()+30
             while proc.poll() is None and time.monotonic()<deadline:

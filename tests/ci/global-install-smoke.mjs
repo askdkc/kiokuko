@@ -204,13 +204,25 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   await verifyInstalledAgentComments(cliPath, fixtureRoot, environment);
   const installedHooks = JSON.parse(await readFile(hookPath, 'utf8')).hooks;
   assert.deepEqual(installedHooks.Stop[0], userHook);
-  for (const event of ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop']) {
+  for (const event of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop', 'PostCompact']) {
     assert.ok(installedHooks[event].some(group => group.hooks.some(hook => hook.command.includes(' codex-hook --database '))), `Installed hook missing: ${event}`);
   }
   if (process.platform !== 'win32') {
     const pinnedEnvironment = { ...environment, CODEX_HOME: path.join(fixtureRoot, 'pinned-codex') };
     await run(process.execPath, [path.join(installedRoot, 'dist/bin/kiokuko.js'), 'setup', '--clients', 'codex', '--no-standard-skills', '--no-embeddings', '--json'], fixtureRoot, pinnedEnvironment);
     const pinned = JSON.parse(await readFile(path.join(pinnedEnvironment.CODEX_HOME, 'hooks.json'), 'utf8'));
+    for (const event of ['SessionStart', 'PostCompact']) {
+      const reminder = spawnSync('/bin/sh', ['-c', pinned.hooks[event][0].hooks[0].command], {
+        cwd: fixtureRoot, env: { ...pinnedEnvironment, PATH: '/usr/bin:/bin' }, encoding: 'utf8',
+        input: JSON.stringify({ hook_event_name: event, session_id: 'package-reminder', cwd: fixtureRoot,
+          ...(event === 'SessionStart' ? {} : { turn_id: 'resumed' }) }),
+      });
+      assert.equal(reminder.status, 0, reminder.stderr);
+      const output = JSON.parse(reminder.stdout);
+      assert.equal(output.hookSpecificOutput.hookEventName, event);
+      assert.match(output.hookSpecificOutput.additionalContext, /In every session/);
+      assert.match(output.hookSpecificOutput.additionalContext, /approval is required only before saving/);
+    }
     const command = pinned.hooks.UserPromptSubmit[0].hooks[0].command;
     const result = spawnSync('/bin/sh', ['-c', command], {
       cwd: repositoryRoot, env: { ...pinnedEnvironment, PATH: '/usr/bin:/bin' }, encoding: 'utf8',
@@ -218,6 +230,7 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(typeof JSON.parse(result.stdout).hookSpecificOutput.additionalContext, 'string');
+    assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /Proactively recommend/);
     const mcpConfig = await readFile(path.join(pinnedEnvironment.CODEX_HOME, 'config.toml'), 'utf8');
     const mcpCommand = JSON.parse(/^command = (.+)$/mu.exec(mcpConfig)[1]);
     const mcpArgs = JSON.parse(/^args = (.+)$/mu.exec(mcpConfig)[1]);
@@ -227,6 +240,8 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     try {
       await mcpClient.connect(new StdioClientTransport({ command: mcpCommand, args: mcpArgs,
         cwd: fixtureRoot, env: { ...pinnedEnvironment, PATH: '/usr/bin:/bin' }, stderr: 'pipe' }));
+      assert.match(mcpClient.getInstructions(), /In every session/);
+      assert.match(mcpClient.getInstructions(), /approval is required only before saving/);
       assert.ok((await mcpClient.listTools()).tools.some(tool => tool.name === 'task_prepare'));
     } finally { await mcpClient.close(); }
   }
@@ -538,7 +553,9 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
     await client.connect(transport);
     assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_correction_check', 'memory_policy', 'memory_recall']);
     const policy = (await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
-    assert.equal(policy.policyVersion, 'chatgpt-memory/5');
+    assert.equal(policy.policyVersion, 'chatgpt-memory/6');
+    assert.match(policy.instructions, /In every session/);
+    assert.match(policy.instructions, /approval is required only before saving/);
     assert.match(policy.instructions, /MCP server[^.]*missing/u);
     assert.match(policy.instructions, /continue the user.s task/u);
     assert.match(policy.policyDigest, /^[a-f0-9]{64}$/u);

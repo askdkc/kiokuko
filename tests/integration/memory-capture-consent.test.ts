@@ -51,6 +51,9 @@ test('Codex memory_capture asks native save or decline and persists only the exa
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport); await client.connect(clientTransport);
   t.after(async () => { await client.close(); await server.close(); });
+  assert.match(client.getInstructions() ?? '', /In every session/);
+  assert.match(client.getInstructions() ?? '', /approval is required only before saving/);
+  assert.doesNotMatch(client.getInstructions() ?? '', /propose reusable memory only with the user/);
 
   const input = { operationId: 'codex-approved-memory', memories: [proposedMemory] };
   const saved = await client.callTool({ name: 'memory_capture', arguments: input });
@@ -90,6 +93,8 @@ test('ChatGPT memory_capture uses the same native yes/no review before its exist
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport); await client.connect(clientTransport);
   t.after(async () => { await client.close(); await server.close(); await owner.close(); });
+  assert.match(client.getInstructions() ?? '', /In every session/);
+  assert.match(client.getInstructions() ?? '', /approval is required only before saving/);
 
   const policyResult = await client.callTool({ name: 'memory_policy', arguments: {} });
   const policyValue = policyResult.structuredContent as { policyVersion: string; policyDigest: string };

@@ -1,5 +1,6 @@
 import { BOOKKEEPING_POLICY } from './bookkeeping-policy.js';
 import { MEMORY_AVAILABILITY_INSTRUCTIONS } from './memory-availability.js';
+import { MEMORY_RECOMMENDATION_INSTRUCTIONS } from '../memory/recommendation-instructions.js';
 import { ADAPTIVE_EFFORT_INSTRUCTIONS } from '../akinator/instructions.js';
 import { INTEGRATION_CONTRACT, hostSkillText } from '../setup/standard-skills.js';
 import { PACKAGE_VERSION } from '../package-version.js';
@@ -20,12 +21,16 @@ import { readCodexCommandReceipt } from './codex-command-receipt.js';
 
 export const CODEX_HOOK_LIMITATION = 'Hooks cover supported client paths only. They do not isolate execution, control an already running process or retract an emitted response. Configuration is not proof of active runtime enforcement.';
 const bounded = z.string().min(1).max(500);
-const hookSchema = z.object({
+const turnHookSchema = z.object({
   hook_event_name: z.enum(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact']),
   session_id: bounded, turn_id: bounded, cwd: bounded, agent_id: bounded.optional(),
   tool_name: bounded.optional(), tool_use_id: bounded.optional(), tool_input: z.unknown().optional(), tool_response: z.unknown().optional(),
   stop_hook_active: z.boolean().optional(),
 }).passthrough();
+const hookSchema = z.union([
+  turnHookSchema.extend({ hook_event_name: z.literal('SessionStart'), turn_id: bounded.optional() }),
+  turnHookSchema,
+]);
 interface HookRequest extends SqliteRow { identity_digest: string; repository_root: string; run_id: string | null; request_id: string; state: string; stop_notified: number; }
 interface HookCall extends SqliteRow { call_id: string; run_id: string; delivery_id: string | null; input_digest: string; state_digest: string; evidence_id: string | null; post_state_digest: string | null; completion_state: string; }
 export function parseCodexHookInput(raw: unknown): z.infer<typeof hookSchema> {
@@ -94,7 +99,7 @@ function kiokukoTool(name: string): string | null {
 /** No project is invented for ordinary conversation outside a checkout. */
 function checkoutFreeHook(input: z.infer<typeof hookSchema>): object {
   if (input.hook_event_name === 'UserPromptSubmit') return context('UserPromptSubmit',
-    `${ADAPTIVE_EFFORT_INSTRUCTIONS} No Git checkout is available. When past context is needed for ordinary conversation, read kiokuko-soul and memory-reasoning with task_inspect operation skill, then use memory_recall with soulRead=true and the complete capability catalog. No project run or implementation checks are required. Project operations require an existing checkout; do not invent one.`);
+    `${ADAPTIVE_EFFORT_INSTRUCTIONS} ${MEMORY_RECOMMENDATION_INSTRUCTIONS} No Git checkout is available. When past context is needed for ordinary conversation, read kiokuko-soul and memory-reasoning with task_inspect operation skill, then use memory_recall with soulRead=true and the complete capability catalog. No project run or implementation checks are required. Project operations require an existing checkout; do not invent one.`);
   if (input.hook_event_name !== 'PreToolUse') return {};
   const operation = kiokukoTool(input.tool_name ?? '');
   const args = record(input.tool_input);
@@ -107,6 +112,7 @@ function checkoutFreeHook(input: z.infer<typeof hookSchema>): object {
 /** stdin must come from the installed client hook. Session IDs supplied to model-facing APIs grant no authority. */
 function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requestId: string) => void, onExitSource: (source: string, exitCode: number) => void): object {
   const input = parseCodexHookInput(raw);
+  if (input.hook_event_name === 'SessionStart') return context('SessionStart', MEMORY_RECOMMENDATION_INSTRUCTIONS);
   const cwd = realpathSync(input.cwd);
   let root: string;
   try {
@@ -161,7 +167,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
         .run(identity, root, requestId, input.hook_event_name, now);
     });
     if (db.prepare('SELECT stop_notified FROM codex_hook_requests WHERE identity_digest=?').get<HookRequest>(identity)?.stop_notified) return stopTurn(input.hook_event_name);
-    return context(input.hook_event_name, `${ADAPTIVE_EFFORT_INSTRUCTIONS} Kiokuko request ${requestId}. ${BOOKKEEPING_POLICY} ${MEMORY_AVAILABILITY_INSTRUCTIONS} For optional legacy task records, task_inspect operation skill reads kiokuko-soul and memory-reasoning. Use task_inspect for bundled natural-japanese-output; do not read Skills through shell commands to bypass record capability checks. For that optional record, call task_prepare with this requestId, cwd ${root} and soulRead=true. ${CODEX_HOOK_LIMITATION}`);
+    return context(input.hook_event_name, `${ADAPTIVE_EFFORT_INSTRUCTIONS} ${MEMORY_RECOMMENDATION_INSTRUCTIONS} Kiokuko request ${requestId}. ${BOOKKEEPING_POLICY} ${MEMORY_AVAILABILITY_INSTRUCTIONS} For optional legacy task records, task_inspect operation skill reads kiokuko-soul and memory-reasoning. Use task_inspect for bundled natural-japanese-output; do not read Skills through shell commands to bypass record capability checks. For that optional record, call task_prepare with this requestId, cwd ${root} and soulRead=true. ${CODEX_HOOK_LIMITATION}`);
   }
   if (!request) {
     if (input.hook_event_name === 'Interrupt' || input.hook_event_name === 'SubagentStop') return {};
