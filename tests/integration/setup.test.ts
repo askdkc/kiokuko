@@ -433,9 +433,9 @@ test('setup safely merges Codex, OpenCode, and Claude Code global configuration 
     assert.match(instructions, /Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict/);
     assert.match(instructions, /task_answer/);
     assert.match(instructions, /memory_checkpoint/);
-    assert.match(instructions, /Do not save derived memory through model capture, checkpoint, index or globalize calls/u);
+    assert.match(instructions, /call memory_capture before the terminal operational checkpoint/u);
     assert.match(instructions, /current instructions and evidence take precedence/u);
-    assert.match(instructions, /human `memory_review_completed` elicitation flow for post-task saves/u);
+    assert.match(instructions, /`memory_capture` for post-task proposed-memory review/u);
     assert.doesNotMatch(instructions, /Apply explicit corrections only to a known entry ID and revision/u);
 
     assert.match(instructions, /Optional external skill discovery is feature-flagged and reference-only/);

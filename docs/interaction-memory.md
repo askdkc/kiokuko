@@ -1,11 +1,14 @@
 # Memory from normal interaction
 
 Kiokuko can save durable preferences, facts, decisions, and corrections from normal
-conversation. The current client's model extracts concise memories and calls
-`memory_capture`; no separate model service or credentials are needed. Each memory
-is a revisioned SQLite entry. Automatic saves are **candidate / untrusted**, and
-can immediately be recalled as advisory context. A stated evidence basis is not
-proof of truth. Curator's reviewed global promotion remains a separate operation.
+conversation. After the task is complete, the current client's model organizes a
+concise proposal and calls `memory_capture`; no separate model service or credentials
+are needed. Kiokuko displays the exact proposal and SHA-256 digest through the MCP
+client's native question UI. Only the human's **save** choice writes it; decline,
+cancel, or unavailable elicitation writes nothing. Each saved memory is a revisioned
+SQLite entry. Approved saves remain **candidate / untrusted** and can immediately be
+recalled as advisory context. A stated evidence basis is not proof of truth.
+Curator's reviewed global promotion remains a separate operation.
 
 After updating Kiokuko, run `kiokuko setup` for your selected clients and restart
 them so the new tools and bundled instructions load. Existing project work still
@@ -14,7 +17,7 @@ without a repository, task run, or artificial intake answers.
 
 ## What is saved
 
-The model is instructed to capture explicit durable preferences and corrections,
+The model is instructed to propose explicit durable preferences and corrections,
 settled decisions, verified results, and reusable troubleshooting lessons—even
 without “remember this.” It skips routine progress, temporary requests, repetition,
 unsupported assistant conclusions, sensitive personal profiling, and transcripts.
@@ -45,6 +48,14 @@ their subjects. Memories never authorize actions or override current instruction
   changing its content, including when the new observation uses different wording.
   Cannot be combined with `replaces`.
 
+The tool input contains no approval field. Before any write it presents the exact
+`operationId` and memory array plus their SHA-256 digest in native MCP elicitation,
+with **save** and **decline** choices. Save writes that exact proposal atomically.
+Decline, client cancellation, a missing elicitation capability, or a disabled capture
+setting returns a no-write review result. An exact retry reuses the prior in-process
+decision and the capture operation's idempotent receipt rather than prompting or
+creating another write; a changed payload under the same operation ID conflicts.
+
 For example, a model can extract this from “When explaining Japanese grammar,
 I prefer examples before terminology”:
 
@@ -63,7 +74,8 @@ I prefer examples before terminology”:
 }
 ```
 
-Responses contain entry IDs, revisions, workspace, created/duplicate/corrected
+Responses contain the review status and proposal digest plus entry IDs, revisions,
+workspace, created/duplicate/corrected
 outcomes (also `reinforced` for an explicit reference), and
 current/changed/superseded/unavailable availability. Reuse an
 operation ID only for an exact retry; a different payload conflicts. Exact
@@ -96,9 +108,9 @@ Returned records include IDs, revisions, subjects, status/trust labels, and conc
 content. The character budget includes the serialized memory items, not protocol
 or capability metadata.
 
-Apply current corrections to the work immediately. Save reusable corrections
-promptly and confirm the capture response before reporting storage; batch other
-captures before the final answer. Review each delivered memory against the
+Apply current corrections to the work immediately. Propose reusable corrections
+promptly and report storage only after the native save decision and successful
+capture response; batch other proposals before the final answer. Review each delivered memory against the
 current task and record why it applies, conflicts, or is irrelevant.
 Do not resubmit captured memories in `memory_checkpoint`, which remains terminal.
 
@@ -151,7 +163,8 @@ KIOKUKO_INTERACTION_MEMORY=off kiokuko mcp
 
 In a client's MCP configuration, put `KIOKUKO_INTERACTION_MEMORY = "off"` in its
 server environment rather than starting a second server manually. Recall and
-existing explicit checkpoints remain available. No new management UI is needed:
+existing explicit checkpoints remain available. `memory_capture` returns an
+unavailable/no-write review without opening a question. No new management UI is needed:
 use the existing Web/CLI review, history, and deletion controls.
 
 ## Storage and limits

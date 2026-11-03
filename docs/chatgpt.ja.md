@@ -16,6 +16,16 @@ kiokuko mcp --help
 
 DBが未作成の場合だけ`kiokuko init`を実行する。ChatGPT用に`kiokuko setup`は不要。
 
+## タスク完了時の記憶レビュー
+
+`--access read-write`では、配信されるメモリーポリシーに従い、ChatGPTが
+タスクまたは会話の完了後に有用で長期的な記憶を1〜5件に整理して
+`memory_capture`を呼ぶ。ネイティブの確認画面には、保存候補の全文と
+SHA-256ダイジェストが表示される。**Save**なら表示した候補だけを保存し、
+**Decline**、キャンセル、またはMCP form elicitation非対応なら何も保存しない。
+ツール引数にモデルが操作できる承認フラグはない。ツールを呼ぶかどうかは
+モデル側のbest-effort判断なので、すべての会話で候補が出る保証はない。
+
 ## 困ったとき
 
 | 症状 | 対処 |
@@ -24,7 +34,7 @@ DBが未作成の場合だけ`kiokuko init`を実行する。ChatGPT用に`kioku
 | Tunnelを作れない・ChatGPTで選べない | [公式手順](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)で権限と対象ChatGPT workspaceへの関連付けを確認する。 |
 | 接続できない | 下のdoctorを実行する。`kiokuko`が見つからなければ、Tunnel設定の起動コマンドを`command -v kiokuko`で確認したパスに直す。 |
 | DBがない・互換性がない | 未作成なら`kiokuko init`。互換性エラーならDBを保全し、そのDBに対応するKiokuko版で扱う。 |
-| 保存できない | 起動引数が`--access read-write`か、`KIOKUKO_INTERACTION_MEMORY=off`を設定していないか確認する。 |
+| 保存確認が出ない | 起動引数が`--access read-write`か、`KIOKUKO_INTERACTION_MEMORY=off`を設定していないか、クライアントがMCP form elicitationに対応しているかを確認する。 |
 | 設定変更が反映されない | Tunnelを再起動し、ChatGPTのPluginsで接続をRefreshして、新しい会話を始める。 |
 
 ```bash

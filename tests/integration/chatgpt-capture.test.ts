@@ -6,6 +6,7 @@ import test, { type TestContext } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { purgeEntry } from '../../src/commands/purge.js';
 import { openConnection } from '../../src/db/connection.js';
@@ -37,7 +38,8 @@ async function fixture(t: TestContext) {
 
 async function connect(t: TestContext, owner: ChatgptRuntimeOwner) {
   const server = createChatgptMemoryServer(owner);
-  const client = new Client({ name: 'untrusted-client', version: '1' });
+  const client = new Client({ name: 'untrusted-client', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { choice: 'save' } }));
   const [c, s] = InMemoryTransport.createLinkedPair();
   await server.connect(s); await client.connect(c);
   t.after(async () => { await client.close(); await server.close(); });
@@ -186,7 +188,8 @@ test('real CLI read-write saves and a fresh read-only CLI recalls the same memor
   const { root } = await fixture(t);
   let entryId: string | undefined;
   for (const access of ['read-write', 'read']) {
-    const client = new Client({ name: 'chatgpt-fixture', version: '1' });
+    const client = new Client({ name: 'chatgpt-fixture', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+    client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { choice: 'save' } }));
     const transport = new StdioClientTransport({ command: process.execPath,
       args: ['--import', 'tsx', 'src/bin/kiokuko.ts', 'mcp', '--profile', 'chatgpt-memory', '--access', access],
       env: { PATH: process.env.PATH ?? '', KIOKUKO_DATA_DIR: root }, stderr: 'pipe' });

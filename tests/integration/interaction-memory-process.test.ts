@@ -12,7 +12,7 @@ const capabilities = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', 
 const preference = { kind: 'preference', title: 'Japanese grammar', body: 'Japanese grammar: two train examples before terminology.',
   scope: 'global', subjects: ['Japanese grammar'], portableReason: 'Applies to grammar explanations across projects.', basis: 'user_statement' };
 
-test('fresh stdio processes refuse model capture, correction and replay without native human approval', { timeout: 45_000 }, async (t) => {
+test('fresh stdio processes refuse capture without native human approval', { timeout: 45_000 }, async (t) => {
   const data = await mkdtemp(path.join(tmpdir(), 'kiokuko-process-correction-'));
   t.after(() => rm(data, { recursive: true, force: true }));
   const env = { PATH: process.env.PATH ?? '', KIOKUKO_DATA_DIR: data, KIOKUKO_EMBEDDINGS: 'off', KIOKUKO_SKILL_DISCOVERY: 'off' };
@@ -27,13 +27,15 @@ test('fresh stdio processes refuse model capture, correction and replay without 
   }
   const capture = (operationId: string, memories: unknown[]) => call('memory_capture', { operationId, memories });
   // User-reviewed contract: model claims of user_statement/user_correction and retry IDs are not consent.
-  // Real native approval and purge/revision positives live in replay-write-boundary/replay-review tests.
+  // Real native approval is covered by memory-capture-consent tests.
   for(const [id,memory] of [['A',preference],['B',{...preference,basis:'user_correction'}],['A',preference]] as const){
     const result=await capture(id,[memory]);assert.notEqual(result.isError,true);
-    assert.deepEqual(result.structuredContent,{accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
+    assert.equal((result.structuredContent as any).review.status,'unavailable');
+    assert.deepEqual((result.structuredContent as any).items,[]);
   }
   const disabled=await call('memory_capture',{operationId:'disabled',memories:[preference]},{KIOKUKO_INTERACTION_MEMORY:'off'});
-  assert.equal((disabled.structuredContent as {recorded:boolean}).recorded,false);
+  assert.equal((disabled.structuredContent as any).enabled,false);
+  assert.equal((disabled.structuredContent as any).review.status,'unavailable');
   const recall=await call('memory_recall',{soulRead:true,capabilities,query:'Japanese grammar'});
   assert.notEqual(recall.isError,true);assert.deepEqual((recall.structuredContent as {items:unknown[]}).items,[]);
   const database=openConnection(getGlobalDatabasePath({env}),{readOnly:true});

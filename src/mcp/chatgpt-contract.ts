@@ -36,6 +36,11 @@ export const chatgptCaptureInputSchema = z.object({
 export const chatgptCaptureOutputSchema = z.object({
   schemaVersion: z.literal(1), source: z.literal('kiokuko'), scope: z.literal('global'),
   enabled: z.boolean(),
+  review: z.object({
+    status: z.enum(['saved', 'declined', 'unavailable']),
+    digest: z.string().regex(/^[a-f0-9]{64}$/u),
+    workMayContinue: z.literal(true),
+  }).strict(),
   items: z.array(z.object({
     entryId: z.string(), revision: z.number().int().positive(), workspace: z.literal('global'),
     outcome: z.enum(['created', 'duplicate', 'corrected']),

@@ -30,11 +30,11 @@ with the current query, optional subjects, `soulRead: true`, and the complete
 capability catalog. Read `memory-reasoning` before advertising it. No repository,
 task run, or Akinator answers are needed. This route does not change the rules of an optional, already-open project memory run.
 
-Do not automatically capture durable memories. Apply user corrections to the current work immediately, but keep proposed memories ephemeral until human approval.
+Do not automatically persist durable memories. Apply user corrections to the current work immediately, but keep model-organized proposals ephemeral until human approval.
 
-After the actual task is complete, ask whether to organize its experience. The native `memory_review_completed` flow asks this through client elicitation, displays the exact proposal and digest, and asks whether to approve, revise or decline. Comments replace key points and require a fresh preview. A model-supplied confirmation or text inside a replay cannot approve. If native elicitation is unavailable, leave the proposal unsaved. Never substitute model-controlled terminal input or pretend a UI was displayed.
+After the actual task is complete, organize one to five useful durable memories and call `memory_capture` before the terminal operational checkpoint. Its native client elicitation displays the exact proposal and digest and asks save or decline. A model-supplied confirmation cannot approve it. If native elicitation is unavailable, leave the proposal unsaved. Never substitute model-controlled terminal input or pretend a UI was displayed. Evidence-backed AgenticReplay maintenance may still use `memory_review_completed` after a settled run.
 
-Only the approved candidate is saved. Decline, Stop, restart, extraction error or memory unavailability saves nothing and never blocks ordinary authorized tools or reopens a completed task. Commands, results, languages, failed approaches and useful key points must retain evidence links and uncertainty. Never store secrets, hidden reasoning or unsupported claims of verification. Operational task checkpoints and short-term handoffs are distinct from reusable memory.
+Only the exact proposal approved with save is persisted. Decline, Stop, restart, extraction error or memory unavailability saves nothing and never blocks ordinary authorized tools or reopens a completed task. Commands, results, languages, failed approaches and useful key points must retain evidence links and uncertainty. Never store secrets, hidden reasoning or unsupported claims of verification. Operational task checkpoints and short-term handoffs are distinct from reusable memory.
 
 ## Short-term handoff
 

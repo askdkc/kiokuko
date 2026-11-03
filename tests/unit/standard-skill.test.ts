@@ -289,11 +289,11 @@ test('the packaged skill sources remain readable at their repository locations',
   assert.match(simpleSkill, /^---\nname: kiokuko-simple-work\n/);
   assert.match(functionSkill, /^---\nname: kiokuko-single-purpose-functions\n/);
   assert.match(memorySkill, /^---\nname: memory-reasoning\n/);
-  assert.match(memorySkill, /obtain approval through native human elicitation before saving/u);
+  assert.match(memorySkill, /displays the exact proposal\s+and digest through native human elicitation and asks save or decline/u);
   assert.match(memorySkill, /Do not overwrite an ambiguous target or write without native review approval/u);
   assert.doesNotMatch(memorySkill, /Save a correction through existing `memory_capture` with its exact entry ID and/u);
   assert.match(soulSkill, /^---\nname: kiokuko-soul\n/);
-  assert.match(soulSkill, /Only the approved candidate is saved/u);
+  assert.match(soulSkill, /Only the exact proposal approved with save is persisted/u);
   assert.doesNotMatch(soulSkill, /Correct\nonly a known entry ID and expected revision/u);
   assert.equal(
     bundledFiles.find((file) => file.skillName === STANDARD_SIMPLE_SKILL_NAME && file.relativePath === 'SKILL.md')?.content,

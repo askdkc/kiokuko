@@ -9,12 +9,12 @@ import { createKiokukoMcpServer } from '../../src/mcp/server.js';
 import { openConnection } from '../../src/db/connection.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 
-test('legacy model capture/checkpoint cannot persist by asserting user basis or confirmation',async()=>{
+test('capture without native elicitation and checkpoint memories cannot persist',async()=>{
  const root=mkdtempSync(path.join(tmpdir(),'replay-boundary-'));const file=path.join(root,'db.sqlite3');const db=openConnection(file);migrateDatabase(db);
  const server=createKiokukoMcpServer({databasePath:file,cwd:()=>root});const client=new Client({name:'model',version:'1'});const [a,b]=InMemoryTransport.createLinkedPair();await server.connect(b);await client.connect(a);
  try {
   const calls=[{name:'memory_capture',arguments:{operationId:'model-claims-user',memories:[{kind:'preference',title:'Unapproved',body:'Unapproved',scope:'global',basis:'user_statement',generalCommunication:true}]}},{name:'memory_checkpoint',arguments:{memories:[{kind:'lesson',title:'Unapproved',body:'Unapproved',scope:'global'}]}}];
-  for(const call of calls){const result=await client.callTool(call);assert.equal(result.isError,undefined);assert.equal((result.structuredContent as Record<string,unknown>|undefined)?.recorded,false);assert.equal((result.structuredContent as Record<string,unknown>|undefined)?.workMayContinue,true);}
+  for(const call of calls){const result=await client.callTool(call);assert.equal(result.isError,undefined);const output=result.structuredContent as any;if(call.name==='memory_capture'){assert.equal(output.review.status,'unavailable');assert.deepEqual(output.items,[]);}else{assert.equal(output.recorded,false);assert.equal(output.workMayContinue,true);}}
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,0);
  }finally{await client.close();await server.close();db.close();rmSync(root,{recursive:true,force:true});}
 });

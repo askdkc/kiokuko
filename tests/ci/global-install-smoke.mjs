@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -537,7 +538,7 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
     await client.connect(transport);
     assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_correction_check', 'memory_policy', 'memory_recall']);
     const policy = (await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
-    assert.equal(policy.policyVersion, 'chatgpt-memory/4');
+    assert.equal(policy.policyVersion, 'chatgpt-memory/5');
     assert.match(policy.instructions, /MCP server[^.]*missing/u);
     assert.match(policy.instructions, /continue the user.s task/u);
     assert.match(policy.policyDigest, /^[a-f0-9]{64}$/u);
@@ -548,7 +549,11 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
     assert.deepEqual(result.structuredContent.items, []);
     assert.equal((await client.callTool({ name: 'memory_capture', arguments: {} })).isError, true);
   } finally { await client.close(); }
-  const writer = new Client({ name: 'chatgpt-package-smoke', version: '1' });
+  const writer = new Client({ name: 'chatgpt-package-smoke', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+  writer.setRequestHandler(ElicitRequestSchema, async request => {
+    assert.match(request.params.message, /SHA-256 [a-f0-9]{64}/u);
+    return { action: 'accept', content: { choice: 'save' } };
+  });
   try {
     await writer.connect(new StdioClientTransport({ command: cliPath,
       args: ['mcp', '--profile', 'chatgpt-memory', '--access', 'read-write'], env: environment, stderr: 'pipe' }));

@@ -59,11 +59,12 @@ delivery changes. Use `task_memory_refresh` for newly discovered paths/errors
 within the existing run and its capability/scope binding.
 
 Apply the current user's correction to the work immediately. After the actual task
-is complete, ask permission to organize its recorded experience. Display the exact
-proposal and obtain approval through native human elicitation before saving.
-Comments revise the proposal and require a fresh preview. Do not use model
-`memory_capture`, checkpoint, index or globalize calls to store derived memories.
-Unavailable elicitation, decline, Stop or restart saves nothing. Never substitute
+is complete, organize one to five useful durable memories and call `memory_capture`
+before the terminal operational checkpoint. The tool displays the exact proposal
+and digest through native human elicitation and asks save or decline. Save writes
+only the displayed proposal; decline or unavailable elicitation writes nothing.
+Tool arguments and model text never count as approval. Skip capture when there is
+no useful durable memory. Stop or restart saves nothing. Never substitute
 model-controlled terminal input for human consent. Preserve source references,
 uncertainty and correction attribution; optional memory cannot block normal work.
 

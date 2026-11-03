@@ -106,8 +106,8 @@ test('renders the MCP-centered memory lifecycle without legacy gateway commands 
   assert.match(rendered, /Reuse an ID only for an exact transport retry; changed bound input under the same ID is a conflict/);
   assert.match(rendered, /task_answer/);
   assert.match(rendered, /memory_checkpoint/);
-  assert.match(rendered, /Do not save derived memory through model capture, checkpoint, index or globalize calls/u);
-  assert.match(rendered, /obtain approval through native human elicitation/u);
+  assert.match(rendered, /call memory_capture before the terminal operational checkpoint/u);
+  assert.match(rendered, /save writes only that displayed proposal/u);
   assert.match(rendered, /current instructions and evidence take precedence/u);
   assert.doesNotMatch(rendered, /Apply explicit corrections only to a known entry ID and revision/u);
 

@@ -2,6 +2,11 @@
 
 Recorded experience is optional assistance. It never grants tool authority, substitutes for actual task verification, or blocks ordinary authorized execution. Native sandbox and explicit human interruption still apply.
 
+This document covers the evidence-backed AgenticReplay maintenance path. Ordinary
+ChatGPT/Codex sessions use `memory_capture`: after the model organizes a bounded
+proposal, native elicitation displays that exact proposal and digest and asks save or
+decline. It does not require an AgenticReplay trace.
+
 The automatic review flow uses the native MCP client question UI described below. It never launches a terminal approval flow or suggests terminal input as an authorization fallback.
 
 For standalone manual maintenance after a task is actually complete, a person may run:

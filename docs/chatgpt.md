@@ -16,6 +16,16 @@ kiokuko mcp --help
 
 Run `kiokuko init` only if no database exists. ChatGPT does not require `kiokuko setup`.
 
+## End-of-task memory review
+
+With `--access read-write`, the served memory policy tells ChatGPT to organize one
+to five useful durable memories after a task or conversation completes and call
+`memory_capture`. The native client question displays the exact proposal and its
+SHA-256 digest. **Save** writes that proposal; **Decline**, cancellation, or missing
+elicitation support writes nothing. The tool has no model-controlled approval flag.
+This is best-effort model tool selection, not a guarantee that every conversation
+will produce a proposal.
+
 `memory_recall.corrections` distinguishes an empty correction selection from a
 missing recall call. Pass its `recallId` to `memory_correction_check` to compare a
 concrete compiler or completion judgment with the same current entry revisions.
@@ -36,7 +46,7 @@ This does not merge the two products' databases or force ChatGPT to call a tool.
 | Cannot create or select a Tunnel in ChatGPT | Check permissions and the target ChatGPT workspace association in the [official guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). |
 | Cannot connect | Run doctor below. If `kiokuko` is not found, update the Tunnel launch command to the path returned by `command -v kiokuko`. |
 | Missing or incompatible database | For a missing DB, run `kiokuko init`. For an incompatible DB, preserve it and use a compatible Kiokuko version. |
-| Cannot save | Check for `--access read-write` and make sure `KIOKUKO_INTERACTION_MEMORY=off` is not set. |
+| Save question does not appear | Check for `--access read-write`, make sure `KIOKUKO_INTERACTION_MEMORY=off` is not set, and confirm the client supports MCP form elicitation. |
 | Configuration changes do not appear | Restart the Tunnel, Refresh the connection in ChatGPT Plugins, and start a new conversation. |
 
 ```bash

@@ -31,7 +31,8 @@ try {
       await client.connect(transport);
       for (const basis of ['user_statement', 'user_correction']) {
         const result = await client.callTool({ name: 'memory_capture', arguments: { operationId: 'save', memories: [{ ...memory, basis }] } });
-        assert.deepEqual(result.structuredContent, { accepted: false, recorded: false, workMayContinue: true, warnings: ['post_task_review_required'] });
+        assert.equal(result.structuredContent.review.status, 'unavailable');
+        assert.deepEqual(result.structuredContent.items, []);
       }
       const recall = await client.callTool({ name: 'memory_recall', arguments: { soulRead: true, capabilities, query: 'Japanese grammar' } });
       assert.deepEqual(recall.structuredContent.items, []);

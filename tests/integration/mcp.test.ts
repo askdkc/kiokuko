@@ -98,7 +98,7 @@ test('MCP preserves task contracts while model memory writes require exact nativ
     const deriveLessonTool = tools.tools.find((tool) => tool.name === 'memory_derive_lesson');
     assert.equal(deriveLessonTool?.annotations?.idempotentHint, undefined);
     assert.equal(deriveLessonTool?.annotations?.openWorldHint, undefined);
-    assert.match(deriveLessonTool?.description ?? '', /Does not save.*human memory-review interface/);
+    assert.match(deriveLessonTool?.description ?? '', /Does not save.*memory_capture/u);
     const taskPrepareTool = tools.tools.find((tool) => tool.name === 'task_prepare');
     const taskAnswerTool = tools.tools.find((tool) => tool.name === 'task_answer');
     assert.match(taskPrepareTool?.description ?? '', /once for one logical user request/);

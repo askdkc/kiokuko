@@ -180,14 +180,16 @@ test('MCP refuses model reinforcement, recalls existing lessons across restart, 
           runId: prepared.run.runId, operationId: 'stale-target',
           memories: [{ ...lesson, reinforces: { entryId: entryId!, expectedRevision: 2 } }],
         } });
-        assert.deepEqual(rejected.structuredContent,{accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
+        assert.equal((rejected.structuredContent as any).review.status, 'unavailable');
+        assert.deepEqual((rejected.structuredContent as any).items, []);
       }
       const capture = await first.client.callTool({ name: 'memory_capture', arguments: {
         runId: prepared.run.runId, operationId: id, memories: [lesson],
       } });
       assert.notEqual(capture.isError, true);
-      assert.deepEqual(capture.structuredContent,{accepted:false,recorded:false,workMayContinue:true,warnings:['post_task_review_required']});
-      // Legacy fixture data tests retrieval and verification; native approval is covered separately.
+      assert.equal((capture.structuredContent as any).review.status, 'unavailable');
+      assert.deepEqual((capture.structuredContent as any).items, []);
+      // Fixture data tests retrieval and verification; native approval is covered separately.
       entryId=(await captureInteractionMemory(f.db,{runId:prepared.run.runId,operationId:id,memories:[lesson]},{cwd:f.root,clientKind:'reinforcement-test'})).items[0]!.entryId;
     }
   } finally { await first.close(); }
