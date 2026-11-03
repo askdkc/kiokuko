@@ -60,8 +60,7 @@ within the existing run and its capability/scope binding.
 
 Apply the current user's correction to the work immediately. After the actual task
 is complete, organize one to five useful durable memories and call `memory_capture`
-before the terminal operational checkpoint. The tool displays the exact proposal
-and digest through native human elicitation and asks save or decline. Save writes
+before the terminal operational checkpoint. The tool displays the exact memory content in a compact, labeled review through native human elicitation and asks save or decline. Save writes
 only the displayed proposal; decline or unavailable elicitation writes nothing.
 Tool arguments and model text never count as approval. Skip capture when there is
 no useful durable memory. Stop or restart saves nothing. Never substitute

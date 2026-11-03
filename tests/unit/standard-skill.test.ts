@@ -289,7 +289,7 @@ test('the packaged skill sources remain readable at their repository locations',
   assert.match(simpleSkill, /^---\nname: kiokuko-simple-work\n/);
   assert.match(functionSkill, /^---\nname: kiokuko-single-purpose-functions\n/);
   assert.match(memorySkill, /^---\nname: memory-reasoning\n/);
-  assert.match(memorySkill, /displays the exact proposal\s+and digest through native human elicitation and asks save or decline/u);
+  assert.match(memorySkill, /displays the exact memory content in a compact, labeled review through native human elicitation and asks save or decline/u);
   assert.match(memorySkill, /Do not overwrite an ambiguous target or write without native review approval/u);
   assert.doesNotMatch(memorySkill, /Save a correction through existing `memory_capture` with its exact entry ID and/u);
   assert.match(soulSkill, /^---\nname: kiokuko-soul\n/);

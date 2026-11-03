@@ -74,7 +74,7 @@ export function renderManagedBlock(values: AgentTemplateValues): string {
     '',
     '### Before the final response in every session',
     '',
-    '1. After the actual task is complete, organize one to five useful durable memories and call `memory_capture` before the terminal `memory_checkpoint`. Its native UI shows the exact proposal and SHA-256 digest and asks the human to save or decline. Only save persists that exact proposal; decline, cancel, Stop or unavailable elicitation saves nothing. Tool arguments and model text cannot approve. Skip capture when there is no useful durable memory.',
+    '1. After the actual task is complete, organize one to five useful durable memories and call `memory_capture` before the terminal `memory_checkpoint`. Its native UI shows the exact memory content in a compact, labeled review and asks the human to save or decline. Only save persists that exact proposal; decline, cancel, Stop or unavailable elicitation saves nothing. Tool arguments and model text cannot approve. Skip capture when there is no useful durable memory.',
     '2. Complete at most one successful terminal `memory_checkpoint` for the current user request. A rejected precondition does not count as that successful checkpoint. Supply no memories to that operational checkpoint. Proposed reusable memories stay ephemeral until the human approves the exact displayed revision.',
     '3. Treat a completed `memory_checkpoint` as terminal for that memory run only. Unrelated authorized tools may continue; return the final response when the requested work is complete.',
     `4. ${TASK_RECOVERY_INSTRUCTIONS}`,

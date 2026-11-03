@@ -20,8 +20,10 @@ Run `kiokuko init` only if no database exists. ChatGPT does not require `kiokuko
 
 With `--access read-write`, the served memory policy tells ChatGPT to organize one
 to five useful durable memories after a task or conversation completes and call
-`memory_capture`. The native client question displays the exact proposal and its
-SHA-256 digest. **Save** writes that proposal; **Decline**, cancellation, or missing
+`memory_capture`. The native client question displays the exact memory content with readable
+labels, scope and evidence basis. The digest stays in the tool receipt. Oversized
+reviews return `proposal_too_large` without opening a dialog or saving anything;
+the model must shorten the proposal, preserving necessary qualifications. **Save** writes that proposal; **Decline**, cancellation, or missing
 elicitation support writes nothing. The tool has no model-controlled approval flag.
 This is best-effort model tool selection, not a guarantee that every conversation
 will produce a proposal.

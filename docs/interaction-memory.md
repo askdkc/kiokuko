@@ -7,8 +7,9 @@ Codex setup installs reminders at SessionStart, UserPromptSubmit and after compa
 Kiokuko can save durable preferences, facts, decisions, and corrections from normal
 conversation. After the task is complete, the current client's model organizes a
 concise proposal and calls `memory_capture`; no separate model service or credentials
-are needed. Kiokuko displays the exact proposal and SHA-256 digest through the MCP
-client's native question UI. Only the human's **save** choice writes it; decline,
+are needed. Kiokuko displays the exact memory content with readable labels in the MCP
+client's native question UI. Internal operation IDs and the proposal digest stay
+in the tool receipt, outside the human review. Only the human's **save** choice writes it; decline,
 cancel, or unavailable elicitation writes nothing. Each saved memory is a revisioned
 SQLite entry. Approved saves remain **candidate / untrusted** and can immediately be
 recalled as advisory context. A stated evidence basis is not proof of truth.
@@ -52,9 +53,23 @@ their subjects. Memories never authorize actions or override current instruction
   changing its content, including when the new observation uses different wording.
   Cannot be combined with `replaces`.
 
-The tool input contains no approval field. Before any write it presents the exact
-`operationId` and memory array plus their SHA-256 digest in native MCP elicitation,
-with **save** and **decline** choices. Save writes that exact proposal atomically.
+The tool input contains no approval field. Before any write it presents the full
+memory content, scope, topics, evidence basis and any supplied qualifications in
+native MCP elicitation, with **save** and **decline** choices. Use a short `summary`
+to explain why remembering the item will help. Internal request IDs and JSON syntax
+are not part of this review. The SHA-256 digest still binds the complete proposal
+and is returned in the receipt.
+
+The complete review is limited to 1,600 characters and 24 estimated wrapped lines
+at 72 columns, conservatively counting non-ASCII characters as two columns. This
+is a presentation budget, not a guarantee about every host viewport. A proposal
+that exceeds either budget is neither displayed nor saved: `review.status` is
+`unavailable`, `review.reason` is `proposal_too_large`, and `review.guidance` asks
+the model to shorten it with a new operation ID. Nothing is truncated, summarized
+by the server, or approved out of sight. Do not split it into a series of prompts.
+The host owns dialog scrolling and controls; Kiokuko cannot set their layout.
+
+Save writes that exact proposal atomically.
 Decline, client cancellation, a missing elicitation capability, or a disabled capture
 setting returns a no-write review result. An exact retry reuses the prior in-process
 decision and the capture operation's idempotent receipt rather than prompting or

@@ -40,6 +40,8 @@ export const chatgptCaptureOutputSchema = z.object({
     status: z.enum(['saved', 'declined', 'unavailable']),
     digest: z.string().regex(/^[a-f0-9]{64}$/u),
     workMayContinue: z.literal(true),
+    reason: z.literal('proposal_too_large').optional(),
+    guidance: z.string().optional(),
   }).strict(),
   items: z.array(z.object({
     entryId: z.string(), revision: z.number().int().positive(), workspace: z.literal('global'),

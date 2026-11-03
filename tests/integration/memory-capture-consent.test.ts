@@ -21,6 +21,7 @@ const proposedMemory = {
   portableReason: 'Applies to language explanations across projects.',
   subjects: ['Japanese grammar'],
   basis: 'user_statement',
+  summary: 'Make grammar explanations easier to follow.',
 };
 
 async function temporaryDatabase(t: TestContext, prefix: string) {
@@ -44,7 +45,11 @@ test('Codex memory_capture asks native save or decline and persists only the exa
     assert.match(request.params.message, answer === 'save'
       ? /Show examples before terminology\./u
       : /Do not store this proposal\./u);
-    assert.match(request.params.message, /SHA-256 [a-f0-9]{64}/u);
+    assert.match(request.params.message, /Remember:/u);
+    assert.match(request.params.message, /Why remember this: Make grammar explanations easier to follow\./u);
+    assert.match(request.params.message, /Use in: All projects and conversations/u);
+    assert.doesNotMatch(request.params.message, /operationId|generalCommunication|SHA-256|"memories"/u);
+    assert.ok(request.params.message.length <= 1600);
     assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, prompts === 1 ? 0 : 1);
     return { action: 'accept', content: { choice: answer } };
   });
@@ -66,6 +71,12 @@ test('Codex memory_capture asks native save or decline and persists only the exa
   assert.deepEqual(retry.structuredContent, saved.structuredContent);
   assert.equal(prompts, 1, 'an exact retry reuses the approved result without another prompt');
 
+  const conflict = await client.callTool({ name: 'memory_capture', arguments: {
+    ...input, memories: [{ ...proposedMemory, body: 'Changed after approval.' }],
+  } });
+  assert.equal(conflict.isError, true);
+  assert.equal(prompts, 1, 'changed content cannot reuse approval');
+
   answer = 'decline';
   const declined = await client.callTool({ name: 'memory_capture', arguments: {
     operationId: 'codex-declined-memory', memories: [{ ...proposedMemory, body: 'Do not store this proposal.' }],
@@ -73,6 +84,28 @@ test('Codex memory_capture asks native save or decline and persists only the exa
   assert.equal((declined.structuredContent as any).review.status, 'declined');
   assert.deepEqual((declined.structuredContent as any).items, []);
   assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 1);
+});
+
+test('cancelling native memory review does not save or ask again on exact retry', async t => {
+  const { root, databasePath, database } = await temporaryDatabase(t, 'kiokuko-review-cancel-');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'review-cancel-test', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+  let prompts = 0;
+  client.setRequestHandler(ElicitRequestSchema, async () => {
+    prompts++;
+    return { action: 'cancel' };
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport); await client.connect(clientTransport);
+  t.after(async () => { await client.close(); await server.close(); });
+  const input = { operationId: 'cancel-proposal', memories: [proposedMemory] };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await client.callTool({ name: 'memory_capture', arguments: input });
+    assert.equal((result.structuredContent as any).review.status, 'declined');
+    assert.deepEqual((result.structuredContent as any).items, []);
+  }
+  assert.equal(prompts, 1);
+  assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 0);
 });
 
 test('ChatGPT memory_capture uses the same native yes/no review before its existing atomic save', async t => {
@@ -87,7 +120,10 @@ test('ChatGPT memory_capture uses the same native yes/no review before its exist
     assert.match(request.params.message, answer === 'save'
       ? /Show examples before terminology\./u
       : /Do not store this proposal\./u);
-    assert.match(request.params.message, /SHA-256 [a-f0-9]{64}/u);
+    assert.match(request.params.message, /Remember:/u);
+    assert.match(request.params.message, /Use in: All projects and conversations/u);
+    assert.doesNotMatch(request.params.message, /operationId|generalCommunication|SHA-256|"memories"/u);
+    assert.ok(request.params.message.length <= 1600);
     return { action: 'accept', content: { choice: answer } };
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -115,6 +151,50 @@ test('ChatGPT memory_capture uses the same native yes/no review before its exist
   assert.deepEqual((declined.structuredContent as any).items, []);
   assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 1);
 });
+
+for (const profile of ['codex', 'chatgpt'] as const) {
+  test(`${profile} rejects an oversized review before elicitation and accepts a shorter new proposal`, async t => {
+    const { root, databasePath, database } = await temporaryDatabase(t, 'kiokuko-bounded-review-');
+    const owner = profile === 'chatgpt' ? new ChatgptRuntimeOwner(databasePath, 'read-write') : undefined;
+    const server = owner ? createChatgptMemoryServer(owner) : createKiokukoMcpServer({ databasePath, cwd: () => root });
+    const client = new Client({ name: 'bounded-review-test', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+    let prompts = 0;
+    client.setRequestHandler(ElicitRequestSchema, async request => {
+      prompts++;
+      assert.match(request.params.message, /Show examples before terminology\./u);
+      return { action: 'accept', content: { choice: 'save' } };
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport); await client.connect(clientTransport);
+    t.after(async () => { await client.close(); await server.close(); await owner?.close(); });
+    let policy;
+    if (owner) {
+      const result = (await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent as any;
+      policy = { version: result.policyVersion, digest: result.policyDigest, read: true };
+    }
+    const { scope, ...globalMemory } = proposedMemory;
+    const memory = owner ? globalMemory : proposedMemory;
+    for (const [index, body] of ['Long evidence. '.repeat(130), 'Detail\n'.repeat(60), '説明'.repeat(600)].entries()) {
+      const result = await client.callTool({ name: 'memory_capture', arguments: {
+        ...(policy ? { policy } : {}), operationId: `oversized-${index}`, memories: [{ ...memory, body }],
+      } });
+      assert.notEqual(result.isError, true);
+      const value = result.structuredContent as any;
+      assert.equal(value.review.status, 'unavailable');
+      assert.equal(value.review.reason, 'proposal_too_large');
+      assert.match(value.review.guidance, /shorten/iu);
+      assert.equal(prompts, 0, 'do not display a clipped or unscrollable consent prompt');
+      assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 0);
+    }
+    const saved = await client.callTool({ name: 'memory_capture', arguments: {
+      ...(policy ? { policy } : {}), operationId: 'shortened-proposal', memories: [memory],
+    } });
+    assert.equal((saved.structuredContent as any).review.status, 'saved');
+    assert.match((saved.structuredContent as any).review.digest, /^[a-f0-9]{64}$/u);
+    assert.equal(prompts, 1);
+    assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 1);
+  });
+}
 
 test('memory_capture reports unavailable and writes nothing when native elicitation is unsupported', async t => {
   const { root, databasePath, database } = await temporaryDatabase(t, 'kiokuko-consent-unavailable-');

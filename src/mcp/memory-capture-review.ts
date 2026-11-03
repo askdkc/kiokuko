@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { KiokukoError } from '../errors.js';
 import { findSecretInValue } from '../memory/secrets.js';
 import { canonicalJson } from '../serialization/validate.js';
+import { memoryCaptureReviewMessage, type MemoryCaptureProposal } from './memory-capture-presentation.js';
 
 export type MemoryCaptureReviewStatus = 'saved' | 'declined' | 'unavailable';
 
@@ -11,6 +12,8 @@ export interface MemoryCaptureReviewReceipt<T> {
     status: MemoryCaptureReviewStatus;
     digest: string;
     workMayContinue: true;
+    reason?: 'proposal_too_large';
+    guidance?: string;
   };
   value?: T;
 }
@@ -54,7 +57,7 @@ export function createMcpMemoryCaptureReview(server: McpServer) {
 
     async review<T>(input: {
       operationId: string;
-      proposal: unknown;
+      proposal: MemoryCaptureProposal;
       save: () => Promise<T>;
       signal?: AbortSignal;
     }): Promise<MemoryCaptureReviewReceipt<T>> {
@@ -74,6 +77,13 @@ export function createMcpMemoryCaptureReview(server: McpServer) {
         if (pending.digest !== digest) throw new KiokukoError('CONFLICT', 'Memory review operation conflicts with a different proposal');
         return structuredClone(await pending.promise) as MemoryCaptureReviewReceipt<T>;
       }
+      const message = memoryCaptureReviewMessage(input.proposal);
+      if (message === undefined) return {
+        review: {
+          status: 'unavailable', digest, workMayContinue: true, reason: 'proposal_too_large',
+          guidance: 'Nothing was saved or shown for approval. Shorten the proposal in plain language: what to remember, why it will help, and when it applies. Keep necessary caveats; remove logs and unnecessary metadata. Use fewer items and a new operationId for revised content. Do not split it into repeated approval prompts or block the completed task.',
+        },
+      };
       if (previouslyApproved === undefined && !server.server.getClientCapabilities()?.elicitation) return unavailable(digest);
 
       const work = (async (): Promise<MemoryCaptureReviewReceipt<T>> => {
@@ -85,10 +95,10 @@ export function createMcpMemoryCaptureReview(server: McpServer) {
         if (previouslyApproved === undefined) {
           const result = await server.server.elicitInput({
             mode: 'form',
-            message: `The task is complete. Save these organized memories to Kiokuko? Declining saves nothing.\nProposed memories, revision 1, SHA-256 ${digest}.\n${JSON.stringify(input.proposal, null, 2)}`,
+            message,
             requestedSchema: {
               type: 'object',
-              properties: { choice: { type: 'string', enum: ['save', 'decline'] } },
+              properties: { choice: { type: 'string', title: 'Save these memories?', enum: ['save', 'decline'] } },
               required: ['choice'],
             },
           }, { signal, timeout: 300_000 }).catch(() => undefined);

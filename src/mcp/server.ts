@@ -740,7 +740,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
 
   server.registerTool('memory_capture', {
     title: 'Review and save organized memories',
-    description: 'After the task is complete, submit 1–5 organized memories. The tool displays the exact proposal and SHA-256 digest through native human elicitation, asks save or decline, and writes only after save. Decline or unavailable elicitation writes nothing. Tool arguments never contain approval.',
+    description: 'After the task is complete, submit 1–5 organized memories. The tool displays the exact memory content in a compact, labeled review through native human elicitation, asks save or decline, and writes only after save. Decline or unavailable elicitation writes nothing. Tool arguments never contain approval.',
     inputSchema: memoryCaptureInputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (input, extra) => withPublicToolError(async () => {

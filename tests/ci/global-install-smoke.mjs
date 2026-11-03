@@ -568,7 +568,9 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
   } finally { await client.close(); }
   const writer = new Client({ name: 'chatgpt-package-smoke', version: '1' }, { capabilities: { elicitation: { form: {} } } });
   writer.setRequestHandler(ElicitRequestSchema, async request => {
-    assert.match(request.params.message, /SHA-256 [a-f0-9]{64}/u);
+    assert.match(request.params.message, /Remember: Use concise examples for package smoke explanations\./u);
+    assert.doesNotMatch(request.params.message, /operationId|SHA-256|"memories"/u);
+    assert.ok(request.params.message.length <= 1600);
     return { action: 'accept', content: { choice: 'save' } };
   });
   try {
