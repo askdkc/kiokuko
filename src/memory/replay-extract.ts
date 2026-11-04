@@ -46,16 +46,19 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
     const raw = object(JSON.parse(line));
     if (!compatibleReplayEvent(raw) || Number(raw.seq) <= sequence) throw new Error('replay_event_invalid');
     sequence = Number(raw.seq);
-    let payload = object(raw.payload), payloadHash = hash(JSON.stringify(payload));
-    if ('$blob' in payload) {
-      const match = typeof payload.$blob === 'string' && /^sha256:([a-f0-9]{64})$/u.exec(payload.$blob);
-      if (!match || !Number.isSafeInteger(payload.bytes) || Number(payload.bytes) < 0) throw new Error('replay_blob_invalid');
+    let payload = raw.payload;
+    const envelope = object(payload);
+    let payloadHash = hash(JSON.stringify(typeof payload === 'string' ? payload : envelope));
+    if ('$blob' in envelope) {
+      const match = typeof envelope.$blob === 'string' && /^sha256:([a-f0-9]{64})$/u.exec(envelope.$blob);
+      if (!match || !Number.isSafeInteger(envelope.bytes) || Number(envelope.bytes) < 0) throw new Error('replay_blob_invalid');
       const data = await bounded(path.join(directory, 'blobs', match[1]!.slice(0, 2), match[1]!), directory, 2 * 1024 * 1024);
       blobBytes += data.length;
-      if (blobBytes > 32 * 1024 * 1024 || data.length !== payload.bytes || hash(data) !== match[1]) throw new Error('replay_blob_integrity');
-      payloadHash = match[1]!; payload = object(JSON.parse(data.toString('utf8')));
+      if (blobBytes > 32 * 1024 * 1024 || data.length !== envelope.bytes || hash(data) !== match[1]) throw new Error('replay_blob_integrity');
+      payloadHash = match[1]!; payload = JSON.parse(data.toString('utf8'));
     }
-    events.push({ raw, payload, ref: `${manifest.run_id}:${sequence}`, payloadHash });
+    if (raw.type === 'model.request' && typeof payload === 'string') payload = JSON.parse(payload);
+    events.push({ raw, payload: object(payload), ref: `${manifest.run_id}:${sequence}`, payloadHash });
   }
   const requestTexts = new Map<string, string>();
   let omittedRequestMessages = 0, truncatedRequestText = false;
@@ -113,7 +116,8 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
     const outcome = denied ? 'unknown' : ra.signal || ra.cancelled === true ? 'cancelled' : exit !== undefined ? exit === 0 ? 'succeeded' : 'failed' : ra.is_error === true ? 'failed' : 'unknown';
     const limitations = [ ...(taskId === null ? ['unassigned session-trace evidence; not verified as belonging to the reviewed task'] : []), ...(result ? [] : [matches.length > 1 ? 'ambiguous results' : 'result missing']), ...(denied ? ['execution was denied; not an executed command failure'] : []), ...(exit === undefined ? ['structured exit metadata unavailable'] : []), 'tool outcome does not establish task success'];
     const content = typeof rp.output === 'string' ? rp.output : typeof rp.stdout === 'string' ? rp.stdout : Array.isArray(rp.content) ? rp.content.map(v => { const b = object(v); return b.type === 'text' ? b.text : ''; }).filter(v => typeof v === 'string').join('\n') : '';
-    let argumentsValue: unknown = call.payload.arguments ?? call.payload.input ?? call.payload;
+    let argumentsValue: unknown = call.raw.payload === undefined
+      ? attrs.input : call.payload.arguments ?? call.payload.input ?? call.payload;
     if (typeof argumentsValue === 'string' && argumentsValue.length <= 65536) { try { argumentsValue=JSON.parse(argumentsValue); } catch { argumentsValue={}; } }
     const argumentsObject=object(argumentsValue);
     const rawCommand=argumentsObject.command ?? argumentsObject.cmd;

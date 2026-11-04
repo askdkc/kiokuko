@@ -19,7 +19,7 @@ test('capture without native elicitation and checkpoint memories cannot persist'
  }finally{await client.close();await server.close();db.close();rmSync(root,{recursive:true,force:true});}
 });
 
-test('native MCP elicitation immediately shows the exact candidate; only host approval saves',async()=>{
+test('native MCP elicitation reviews a zero-based trace; only host approval makes it searchable',async()=>{
  const {ElicitRequestSchema}=await import('@modelcontextprotocol/sdk/types.js');
  const {LedgerStore}=await import('../../src/ledger/store.js');
  const {resolveProjectWorkspace}=await import('../../src/memory/workspaces.js');
@@ -27,7 +27,10 @@ test('native MCP elicitation immediately shows the exact candidate; only host ap
  const root=mkdtempSync(path.join(tmpdir(),'replay-elicitation-'));execFileSync('git',['init','-q',root]);const file=path.join(root,'db.sqlite3');const db=openConnection(file);migrateDatabase(db);
  const project=await resolveProjectWorkspace(db,root);assert.ok(project);const ledger=new LedgerStore(db);
  ledger.createRunInTransaction({runId:'completed-run',workspace:project.workspace,protocolVersion:'1',client:{kind:'codex',sessionId:'session'},captureProfile:'minimal',coverage:{run:'best_effort',tool:'declared',command:'declared',file:'declared',approval:'unavailable'},task:{title:'Check sqlite',query:'Check sqlite',profileHints:{taskType:null,target:null,expected:null,constraints:null}},metadata:{intakeRequired:false}});ledger.updateRunStatusInTransaction('completed-run','completed');
- const trace=path.join(root,'.agenticreplay','runs','run_abcdef');mkdirSync(trace,{recursive:true});const bytes=JSON.stringify({seq:1,type:'user.message',payload:{text:'Check sqlite'}})+'\n';writeFileSync(path.join(trace,'events.jsonl'),bytes);writeFileSync(path.join(trace,'manifest.json'),JSON.stringify({schema_version:'0.4.0',run_id:'run_abcdef',cwd:root,integrity:{events_sha256:createHash('sha256').update(bytes).digest('hex')}}));
+ const trace=path.join(root,'.agenticreplay','runs','run_abcdef');mkdirSync(trace,{recursive:true});
+ const events=[{seq:0,type:'run.start'},{seq:1,type:'user.message',payload:{text:'Check sqlite'}}];
+ const bytes=events.map(event=>JSON.stringify(event)).join('\n')+'\n';
+ writeFileSync(path.join(trace,'events.jsonl'),bytes);writeFileSync(path.join(trace,'manifest.json'),JSON.stringify({schema_version:'0.4.0',run_id:'run_abcdef',cwd:root,integrity:{events_sha256:createHash('sha256').update(bytes).digest('hex')}}));
  const server=createKiokukoMcpServer({databasePath:file,cwd:()=>root});const client=new Client({name:'human-ui-host',version:'1'},{capabilities:{elicitation:{form:{}}}});let prompts=0;
  client.setRequestHandler(ElicitRequestSchema,async request=>{prompts++;assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,0);assert.ok('requestedSchema' in request.params);const choice=request.params.requestedSchema.properties.choice;assert.ok(choice && 'enum' in choice);assert.deepEqual(choice.enum,['approve','revise','decline']);assert.ok(request.params.message.includes('SHA-256'));assert.ok(request.params.message.includes('Check sqlite'));return{action:'accept',content:{choice:'approve'}};});
  const [a,b]=InMemoryTransport.createLinkedPair();await server.connect(b);await client.connect(a);
@@ -41,6 +44,8 @@ test('native MCP elicitation immediately shows the exact candidate; only host ap
     assert.equal(completed.isError,undefined);assert.equal((completed.structuredContent as any).run.status,'completed');
     await offer;
     const ordinary=await client.callTool({name:'memory_context',arguments:{cwd:root,query:'sqlite'}});assert.equal(ordinary.isError,undefined);
+    const context=ordinary.structuredContent as {entries:{summary:string}[]};
+    assert.deepEqual(context.entries.map(entry=>entry.summary),['Check sqlite']);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,1,'optional question did not hold task completion or save new memory');
     dismiss({action:'decline'});await new Promise(r=>setTimeout(r,20));assert.equal(ledger.readRun('queued-run')?.status,'completed');
   }finally{if(oldTrace===undefined)delete process.env.AGENTICREPLAY_RUN_DIR;else process.env.AGENTICREPLAY_RUN_DIR=oldTrace;}

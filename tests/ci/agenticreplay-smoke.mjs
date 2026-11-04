@@ -1,4 +1,5 @@
 import { completeVerification } from '../../scripts/verification-completion.mjs';
+import { extractReplayProposal } from '../../dist/memory/replay-extract.js';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import semver from 'semver';
@@ -103,6 +104,15 @@ try {
   assert.equal(captured.length, 2);
   assert.deepEqual((await payload(runDir, captured[0])).tools, requests[0].tools);
   assert.deepEqual(JSON.parse((await payload(runDir, captured[1])).messages.at(-1).content), result);
+  const proposal = await extractReplayProposal({
+    cwd: fixture, traceDirectory: runDir, workspace: 'smoke', taskId: 'smoke', sessionId: 'smoke',
+  });
+  assert.equal(proposal.request.text, 'Read the Kiokuko SOUL skill.');
+  const modelRequests = events.filter(event => event.type === 'model.request');
+  assert.equal(modelRequests.length, 2);
+  assert.deepEqual(proposal.request.evidenceRefs, [`${recording.runId}:${modelRequests[1].seq}`]);
+  assert.equal(proposal.attempts[0]?.tool, 'task_inspect');
+  assert.ok(proposal.attempts[0]?.resultRef);
 
   // The recorded origin must be unavailable during exact replay.
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
