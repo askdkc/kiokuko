@@ -61,14 +61,14 @@ async function missingCapabilities(check) {
     let location=candidates.find(file=>{try{accessSync(file,constants.X_OK);return true;}catch{return false;}});
     if(!location){missing.push(capability);continue;}
     if(capability==='opencode'){try{const {resolveOpenCodeBinary}=await import('./run-opencode-host-e2e.mjs');location=await resolveOpenCodeBinary(location);}catch{missing.push(capability);continue;}}
-    let recorderCompatible;
+    let expectedVersion=declaration?.version;
     if(capability==='agenticreplay-managed')try{
       const dependency=await import('./agenticreplay-dependency.mjs');
       const recorder=dependency.managedAgenticReplay(root);
-      recorderCompatible=version=>dependency.isCompatibleRecorderVersion(version,recorder.range);
+      expectedVersion=recorder.version;
     }catch{missing.push(capability);continue;}
     const result=await command([location,'--version'],baseEnv,`capability-${check.id}-${capability}`);
-    if(result.exitCode!==0||recorderCompatible&&!recorderCompatible(result.stdout.trim())||declaration?.version&&result.stdout.trim()!==declaration.version||declaration?.versionPattern&&!new RegExp(declaration.versionPattern).test(result.stdout.trim())){missing.push(capability);continue;}
+    if(result.exitCode!==0||expectedVersion&&result.stdout.trim()!==expectedVersion||declaration?.versionPattern&&!new RegExp(declaration.versionPattern).test(result.stdout.trim())){missing.push(capability);continue;}
     if(declaration){baseEnv[declaration.environment]=realpathSync(location);if(capability==='agenticreplay-managed')baseEnv.AGENTICREPLAY_BIN=realpathSync(location);}
   }
   return missing;

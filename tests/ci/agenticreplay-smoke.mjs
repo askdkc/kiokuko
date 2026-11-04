@@ -2,6 +2,7 @@ import { completeVerification } from '../../scripts/verification-completion.mjs'
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import semver from 'semver';
+import { managedAgenticReplay } from '../../scripts/agenticreplay-dependency.mjs';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -12,8 +13,9 @@ import { fileURLToPath } from 'node:url';
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../../', import.meta.url));
+const installedRecorder = managedAgenticReplay(root);
+const recorder = process.env.AGENTICREPLAY_BIN ?? installedRecorder.binary;
 const fixture = await mkdtemp(path.join(tmpdir(), 'kiokuko-agenticreplay-'));
-const recorder = process.env.AGENTICREPLAY_BIN ?? 'agenticreplay';
 const requests = [];
 let replayServer;
 const server = createServer(async (request, response) => {
@@ -70,9 +72,7 @@ async function payload(runDir, event) {
 try {
   await mkdir(env.TMPDIR);
   const version = await command(['--version']);
-  const declaredRange = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).devDependencies?.agenticreplay;
-  assert.ok(typeof declaredRange === 'string' && semver.validRange(declaredRange), 'AgenticReplay compatibility range is missing');
-  assert.ok(semver.satisfies(version, declaredRange), `AgenticReplay ${version} does not satisfy ${declaredRange}`);
+  assert.ok(semver.valid(version), 'AgenticReplay executable must report a valid version');
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);

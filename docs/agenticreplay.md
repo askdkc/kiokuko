@@ -83,7 +83,10 @@ when the behavior still works; missing recording behavior is rejected.
 Trace readers likewise accept a new schema label only when the manifest scope,
 event fields, order and any declared digest satisfy their reading contract.
 Temporary recordings, configuration and memory data are removed afterward.
-Set `AGENTICREPLAY_BIN` to an executable path when the command is not on `PATH`.
+Installing Kiokuko with npm installs AgenticReplay from the npm `latest` tag.
+In the source checkout, `npm ci` uses the lockfile and the check uses that
+executable by default. To exercise another executable directly with `npm run test:agenticreplay`,
+set `AGENTICREPLAY_BIN` to its path.
 
 This check uses no credentials or paid model calls. It proves the model transport
 and real Kiokuko MCP boundary; it does not certify every client, streaming mode,
