@@ -37,28 +37,25 @@ test('native MCP elicitation reviews a zero-based trace; only host approval make
   prompts++;
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,0);
   assert.ok('requestedSchema' in request.params);
-  assert.deepEqual(Object.keys(request.params.requestedSchema.properties),['reviewAction','comment']);
+  assert.deepEqual(request.params.requestedSchema.properties,{});
   assert.ok(!request.params.requestedSchema.required?.length);
   assert.match(request.params.message,/Check sqlite/);
-  assert.match(request.params.message,/run_abcdef/);
-  assert.doesNotMatch(request.params.message,/"schemaVersion"|"payloadHashes"/);
-  if(prompts===1)return {action:'accept',content:{reviewAction:'revise',comment:'Check sqlite before migrating'}};
-  assert.match(request.params.message,/revision 2/);
-  assert.match(request.params.message,/Check sqlite before migrating/);
-  return {action:'accept',content:{reviewAction:'save',comment:'Check sqlite before migrating'}};
+  assert.match(request.params.message,/^今回の内容を記憶として保存しますか？/u);
+  assert.doesNotMatch(request.params.message,/run_abcdef|revision|session|SHA-256|"schemaVersion"|"payloadHashes"/);
+  return {action:'accept',content:{}};
  });
  const [a,b]=InMemoryTransport.createLinkedPair();await server.connect(b);await client.connect(a);
- try{const result=await client.callTool({name:'memory_review_completed',arguments:{runId:'completed-run',cwd:root,traceDirectory:trace}});assert.equal((result.structuredContent as Record<string,unknown>|undefined)?.status,'saved');assert.equal(prompts,2);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,1);assert.equal(ledger.readRun('completed-run')?.status,'completed');
-  ledger.createRunInTransaction({runId:'oversized-run',workspace:project.workspace,protocolVersion:'1',client:{kind:'codex',sessionId:'oversized-session'},captureProfile:'minimal',coverage:{run:'best_effort',tool:'declared',command:'declared',file:'declared',approval:'unavailable'},task:{title:'Check sqlite',query:'Check sqlite',profileHints:{taskType:null,target:null,expected:null,constraints:null}},metadata:{intakeRequired:false}});
-  ledger.updateRunStatusInTransaction('oversized-run','completed');
-  let oversizedPrompts=0;
+ try{const result=await client.callTool({name:'memory_review_completed',arguments:{runId:'completed-run',cwd:root,traceDirectory:trace}});assert.equal((result.structuredContent as Record<string,unknown>|undefined)?.status,'saved');assert.equal(prompts,1);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,1);assert.equal(ledger.readRun('completed-run')?.status,'completed');
+  ledger.createRunInTransaction({runId:'declined-run',workspace:project.workspace,protocolVersion:'1',client:{kind:'codex',sessionId:'declined-session'},captureProfile:'minimal',coverage:{run:'best_effort',tool:'declared',command:'declared',file:'declared',approval:'unavailable'},task:{title:'Check sqlite',query:'Check sqlite',profileHints:{taskType:null,target:null,expected:null,constraints:null}},metadata:{intakeRequired:false}});
+  ledger.updateRunStatusInTransaction('declined-run','completed');
+  let declinedPrompts=0;
   client.setRequestHandler(ElicitRequestSchema,async()=>{
-   oversizedPrompts++;
-   return {action:'accept',content:{reviewAction:'revise',comment:'Keep migrations transactional.\n'.repeat(25)}};
+   declinedPrompts++;
+   return {action:'decline'};
   });
-  const oversized=await client.callTool({name:'memory_review_completed',arguments:{runId:'oversized-run',cwd:root,traceDirectory:trace}});
-  assert.equal((oversized.structuredContent as {status?:string})?.status,'unavailable');
-  assert.equal(oversizedPrompts,1,'an oversized revision was never displayed');
+  const declined=await client.callTool({name:'memory_review_completed',arguments:{runId:'declined-run',cwd:root,traceDirectory:trace}});
+  assert.equal((declined.structuredContent as {status?:string})?.status,'declined');
+  assert.equal(declinedPrompts,1,'decline never reopens the confirmation');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,1);
   ledger.createRunInTransaction({runId:'queued-run',workspace:project.workspace,protocolVersion:'1',client:{kind:'codex',sessionId:'queued-session'},captureProfile:'minimal',coverage:{run:'best_effort',tool:'declared',command:'declared',file:'declared',approval:'unavailable'},task:{title:'Check sqlite again',query:'Check sqlite again',profileHints:{taskType:null,target:null,expected:null,constraints:null}},metadata:{intakeRequired:false}});ledger.updateRunStatusInTransaction('queued-run','active');
   let dismiss!:(value:{action:'decline'})=>void;let offered!:()=>void;const offer=new Promise<void>(r=>offered=r);
@@ -71,37 +68,36 @@ test('native MCP elicitation reviews a zero-based trace; only host approval make
     assert.equal(serviceLookups,0,'explicit attached recording takes precedence over service discovery');
     const ordinary=await client.callTool({name:'memory_context',arguments:{cwd:root,query:'sqlite'}});assert.equal(ordinary.isError,undefined);
     const context=ordinary.structuredContent as {entries:{summary:string}[]};
-    assert.deepEqual(context.entries.map(entry=>entry.summary),['Check sqlite before migrating']);
+    assert.deepEqual(context.entries.map(entry=>entry.summary),['Check sqlite']);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()?.n,1,'optional question did not hold task completion or save new memory');
     dismiss({action:'decline'});await new Promise(r=>setTimeout(r,20));assert.equal(ledger.readRun('queued-run')?.status,'completed');
   }finally{if(oldTrace===undefined)delete process.env.AGENTICREPLAY_RUN_DIR;else process.env.AGENTICREPLAY_RUN_DIR=oldTrace;}
 
   ledger.createRunInTransaction({
-    runId: 'commented-approval-run', workspace: project.workspace, protocolVersion: '1',
-    client: { kind: 'codex', sessionId: 'commented-session' }, captureProfile: 'minimal',
+    runId: 'legacy-answer-run', workspace: project.workspace, protocolVersion: '1',
+    client: { kind: 'codex', sessionId: 'legacy-answer-session' }, captureProfile: 'minimal',
     coverage: { run: 'best_effort', tool: 'declared', command: 'declared', file: 'declared', approval: 'unavailable' },
     task: { title: 'Check sqlite', query: 'Check sqlite', profileHints: { taskType: null, target: null, expected: null, constraints: null } },
     metadata: { intakeRequired: false },
   });
-  ledger.updateRunStatusInTransaction('commented-approval-run', 'completed');
-  let commentedPrompts = 0;
+  ledger.updateRunStatusInTransaction('legacy-answer-run', 'completed');
+  let unexpectedPrompts = 0;
   client.setRequestHandler(ElicitRequestSchema, async request => {
-    commentedPrompts++;
+    unexpectedPrompts++;
     assert.ok('requestedSchema' in request.params);
-    assert.equal(request.params.requestedSchema.properties.reviewAction?.default, 'save');
-    return commentedPrompts === 1
+    assert.deepEqual(request.params.requestedSchema.properties, {});
+    return unexpectedPrompts === 1
       ? { action: 'accept', content: { comment: 'test works' } }
       : { action: 'cancel' };
   });
-  const commented = await client.callTool({ name: 'memory_review_completed', arguments: {
-    runId: 'commented-approval-run', cwd: root, traceDirectory: trace,
+  const unexpected = await client.callTool({ name: 'memory_review_completed', arguments: {
+    runId: 'legacy-answer-run', cwd: root, traceDirectory: trace,
   } });
-  assert.equal((commented.structuredContent as { status?: string })?.status, 'saved');
-  assert.equal(commentedPrompts, 1, 'ordinary approval with a comment does not request another revision');
+  assert.equal((unexpected.structuredContent as { status?: string })?.status, 'declined');
+  assert.equal(unexpectedPrompts, 1, 'unexpected form values never cause another confirmation or a save');
   const stored = db.prepare('SELECT revision, proposal_json FROM replay_memories WHERE task_id = ?')
-    .get<{ revision: number; proposal_json: string }>('commented-approval-run');
-  assert.equal(stored?.revision, 1);
-  assert.deepEqual(JSON.parse(stored!.proposal_json).findings, [], 'approval saves only the displayed proposal');
+    .get<{ revision: number; proposal_json: string }>('legacy-answer-run');
+  assert.equal(stored, undefined, 'a legacy correction response cannot approve an undisplayed form action');
 
  }finally{await client.close();await server.close();db.close();rmSync(root,{recursive:true,force:true});}
 });

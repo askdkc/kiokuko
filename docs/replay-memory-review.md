@@ -32,17 +32,17 @@ These are source/diff findings, not proof that any historical incident had a sin
 
 A client advertising MCP elicitation can use `memory_review_completed` on an already completed, repository-bound run. The server organizes an ephemeral proposal and asks the client UI only for exact-candidate save approval. Tool arguments contain no approval boolean. When `AGENTICREPLAY_RUN_DIR` is explicitly configured, completed operational checkpoints queue this optional flow without awaiting human input in the task/database call. Client decline/cancel and unsupported elicitation cannot save. SDK protocol tests are distinct from verification in any particular desktop UI.
 
-The native dialog shows the recorded request, key points, search terms and
-AgenticReplay run reference in a bounded preview. The linked tool evidence is
-saved with the approved proposal. Use the client's Approve or Decline button.
-To change key points, select Preview correction and enter the corrected text.
-That produces a new preview and requires fresh approval. With Save displayed
-proposal selected (the default), Approve saves the displayed revision even if
-text remains in the correction field. Submitting the same correction again
-ends the review without creating another revision or saving it.
-If the preview cannot fit, native review is unavailable and saves nothing.
+The native replay dialog asks only whether to save this experience and shows a
+plain-language summary of at most six short lines. Internal session/run IDs,
+revision numbers, hashes, search terms, raw tool output and correction fields are
+not displayed. IDs embedded in extracted key points are omitted from the preview
+as well. Long summaries are shortened with an ellipsis; the original request,
+key points and linked tool evidence remain unchanged in the approved proposal.
+Use the client's Approve or Decline button. Decline or cancel saves nothing.
+Unexpected form values cannot approve or revise the proposal. The standalone CLI
+continues to support explicit corrections and fresh review.
 
-A genuinely settled failed task may also be reviewed; its dialog says it ended with a failed outcome and the proposal records that outcome. Interrupted/cancelled tasks and explicit Stop do not start review. Repeated exact source/content approvals deduplicate independently of presentation IDs. Approved mirror retrieval checks the indexed entry revision and status. Confirmed purge deletes the mirror and search terms and retires old approval receipts, so retry cannot resurrect purged material.
+A genuinely settled failed task may also be reviewed; its summary says the task failed and the proposal records that outcome. Interrupted/cancelled tasks and explicit Stop do not start review. Repeated exact source/content approvals deduplicate independently of presentation IDs. Approved mirror retrieval checks the indexed entry revision and status. Confirmed purge deletes the mirror and search terms and retires old approval receipts, so retry cannot resurrect purged material.
 
 After an approved save reports an uncertain result, the host retains that exact candidate and approval key in process and performs read-only reconciliation. Only an independently visible matching committed receipt can report saved. It does not generate a new approval key or blindly retry writes. Restart loses this ephemeral recovery context; an unverified prior save remains unknown rather than being claimed successful.
 
@@ -94,8 +94,8 @@ exited successfully is not treated as structured exit metadata.
 The public final answer supplies automatically extracted key points, explicitly
 labelled as unverified assistant claims. Reasoning, system prompts and commentary
 are excluded. Fields are checked for secrets before excerpts are taken. The native
-dialog shows the complete proposed key points and labelled request/result excerpts
-within its size limit. Source excerpts and source references accompany the approved
+dialog shows only the save confirmation and compact summary, without internal
+identifiers or raw request/result excerpts. Source excerpts and source references accompany the approved
 proposal; searches can match the captured results as well as the request and key
 points. Reprocessing an older request-only memory requires fresh approval for the
 enriched proposal; an earlier approval never authorizes extra content.

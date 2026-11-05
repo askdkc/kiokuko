@@ -150,7 +150,7 @@ for (const scenario of ['explicit', 'service', 'stopped', 'unavailable', 'unsafe
   client.setRequestHandler(ElicitRequestSchema, async request => {
     prompts++;
     assert.ok('requestedSchema' in request.params);
-    assert.deepEqual(Object.keys(request.params.requestedSchema.properties), ['reviewAction', 'comment']);
+    assert.deepEqual(request.params.requestedSchema.properties, {});
     showReview(request.params.message);
     await approve;
     return { action: 'accept', content: {} };
@@ -202,11 +202,10 @@ for (const scenario of ['explicit', 'service', 'stopped', 'unavailable', 'unsafe
     return;
   }
   const message = await Promise.race([review, setTimeout(15_000, undefined, { ref: false }).then(() => { throw new Error('No desktop review requested'); })]);
-  assert.match(message, /searchable desktopfixture from API/);
-  assert.ok(message.length < 1400);
+  assert.match(message, /^今回の内容を記憶として保存しますか？/u);
+  assert.ok(message.length < 600);
   assert.match(message, /Repository name is maple-ledger/);
-  assert.match(message, /Tool result excerpt/);
-  assert.match(message, /maple-ledger-tool-result/);
+  assert.doesNotMatch(message, /Tool result excerpt|maple-ledger-tool-result|run_abcdef|desktop-fixture-turn|desktop-fixture-chat|revision/);
   assert.doesNotMatch(message, /"schemaVersion"|"payloadHashes"/);
   assert.doesNotMatch(message, /historical API input|historical tool result|private reasoning|foreign fixture|late fixture|excluded output|echo desktopfixture/);
   assert.equal(sealRequests, 2);
@@ -234,9 +233,9 @@ for (const scenario of ['explicit', 'service', 'stopped', 'unavailable', 'unsafe
     let resumedPrompts = 0;
     resumedClient.setRequestHandler(ElicitRequestSchema, async request => {
       resumedPrompts++;
-      assert.match(request.params.message, /searchable desktopfixture from API/);
+      assert.match(request.params.message, /Repository name is maple-ledger/);
       assert.doesNotMatch(request.params.message, /historical API input|late fixture/);
-      return { action: 'accept', content: { comment: 'test works' } };
+      return { action: 'accept', content: {} };
     });
     const [resumedClientTransport, resumedServerTransport] = InMemoryTransport.createLinkedPair();
     await resumedServer.connect(resumedServerTransport);

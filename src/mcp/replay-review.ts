@@ -11,43 +11,45 @@ import { readCompletedDesktopTurn, type DesktopTurnIdentity } from '../assurance
 import { desktopReplayBinding, type DesktopReviewTurn } from './codex-desktop-review.js';
 import { fitsNativeReview } from './memory-capture-presentation.js';
 
+/** Human-facing summary only; original evidence and approval identity stay in the proposal. */
 export function nativeReplayReviewMessage(proposal: ReplayMemoryProposal): string | undefined {
-  const { source, request, findings, attempts, tags, keywords } = proposal;
-  if (source.turnId) {
-    const excerpt = (text: string, limit: number) => {
-      const flat = text.replace(/\s+/gu, ' ').trim();
-      return flat.length > limit ? flat.slice(0, limit) + ' […]' : flat;
-    };
-    const result = [...attempts].reverse().find(attempt => attempt.outputExcerpt);
-    // Source evidence may be large. Keep every approved key point intact; label source excerpts.
-    for (const limit of [120, 80, 40]) {
-      const message = [
-        `Save this experience to project memory? (revision ${proposal.revision})`,
-        `Recorded task: ${source.taskOutcome ?? 'completed'}. Claims and tool results are unverified.`,
-        `Request excerpt: ${excerpt(request.text, limit) || '(None captured)'}`,
-        'Key points',
-        ...(findings.length ? findings.map(finding => `• ${finding.text}`) : ['(None captured)']),
-        ...(result ? [`Tool result excerpt (${result.tool}): ${excerpt(result.outputExcerpt!, limit)}`] : []),
-        `AgenticReplay: ${source.traces.map(trace => trace.runId).join(', ')}; ${attempts.length} calls, ${attempts.filter(attempt => attempt.resultRef).length} results.`,
-        'Approve saves these key points with linked request/tool evidence. Preview correction changes key points.',
-      ].join('\n');
-      if (fitsNativeReview(message)) return message;
+  const ids = [proposal.proposalId, proposal.source.workspace, proposal.source.taskId, proposal.source.sessionId,
+    proposal.source.turnId, ...proposal.source.traces.flatMap(trace => [trace.runId, trace.eventsSha256]),
+    ...proposal.attempts.flatMap(attempt => [attempt.attemptId, attempt.callRef, attempt.resultRef, ...attempt.payloadHashes]),
+  ].filter((id): id is string => typeof id === 'string' && id.length >= 8);
+  const readable = (text: string): string[] => text
+    .replace(/^Recorded (?:final answer \(unverified\)|tool result \(task success unverified\)):\s*/u, '')
+    .split(/\r?\n|\s+[-•]\s+|(?<=[。！？!?])\s*|(?<=[.!?])\s+/u)
+    .map(part => part.replace(/^[\s#*•-]+/u, '').replace(/`/gu, '').replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim())
+    .filter(part => part && !ids.some(id => part.includes(id))
+      && !/\b(?:run_[a-f\d]{6,32}(?::\d+)?|call_[\w-]+|repo_[a-f\d]{6,32}|[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}|[a-f\d]{64})\b/iu.test(part)
+      && !/^(?:(?:Kiokuko\s+)?(?:run|session|turn|task|proposal)(?:[_ -]?id)?\s*[:=：は]|(?:セッション|ターン|タスク|実行|提案)(?:ID|番号)\s*[:=：は]|自動承認処理|このターン終了後|承認(?:画面|後)|Task-level effectiveness remains unverified[.])/iu.test(part));
+  const points = [...new Set(proposal.findings.flatMap(finding => readable(finding.text)))];
+  if (!points.length) points.push(...readable(proposal.request.text));
+  if (!points.length) return undefined;
+  if (proposal.source.taskOutcome === 'failed') points.unshift('作業は失敗しました。');
+  const width = (text: string) => Array.from(text).reduce((sum, character) => sum + (character.codePointAt(0)! > 0x7f ? 2 : 1), 0);
+  const lines: string[] = [];
+  for (const point of points) {
+    let line = '';
+    for (const character of point) {
+      if (width(line + character) > 72) {
+        const space = line.lastIndexOf(' ');
+        const split = space >= line.length / 2 ? space : line.length;
+        lines.push(line.slice(0, split).trim());
+        line = line.slice(split).trimStart();
+      }
+      line += character;
     }
-    return undefined;
+    if (line.trim()) lines.push(line.trim());
   }
-  const message = [
-    `Save this experience to project memory? (revision ${proposal.revision})`,
-    source.taskOutcome === 'failed' ? 'The recorded task ended in failure.' : 'The recorded task completed.',
-    'Approve saves the displayed proposal. To change it, select Preview correction and enter corrected key points.',
-    '',
-    'Recorded request (untrusted source text)',
-    request.text || '(No request captured)',
-    'Key points',
-    ...(findings.length ? findings.map(finding => `• ${finding.text}`) : ['(None captured)']),
-    ...((tags.length || keywords.length) ? [`Search terms: ${[...new Set([...tags, ...keywords])].join(', ')}`] : []),
-    `AgenticReplay: ${source.traces.map(trace => trace.runId).join(', ')}`,
-    `Saved with evidence from ${attempts.length} recorded tool calls, including captured commands and result excerpts when available.`,
-  ].join('\n');
+  if (lines.length > 6) {
+    lines.length = 6;
+    let last = lines[5]!;
+    while (width(last) > 70) last = Array.from(last).slice(0, -1).join('');
+    lines[5] = last.trimEnd() + '…';
+  }
+  const message = '今回の内容を記憶として保存しますか？\n\n' + lines.join('\n');
   return fitsNativeReview(message) ? message : undefined;
 }
 
@@ -95,23 +97,9 @@ export function createMcpReplayReview(server: McpServer, withDatabase: <T>(fn:(d
       ask:async question=>{
         const result = await server.server.elicitInput({
           mode: 'form', message: question.text,
-          requestedSchema: {
-            type: 'object',
-            properties: {
-              reviewAction: {
-                type: 'string', title: 'On approval', default: 'save',
-                oneOf: [
-                  { const: 'save', title: 'Save displayed proposal' },
-                  { const: 'revise', title: 'Preview correction' },
-                ],
-              },
-              comment: { type: 'string', title: 'Correction (used only with Preview correction)', maxLength: 2048 },
-            },
-          },
+          requestedSchema: { type: 'object', properties: {} },
         }, { signal: combined, timeout: 300_000 });
-        if (result.action !== 'accept') return { questionId: question.id, choice: 'decline' };
-        const comment = result.content?.comment;
-        if (result.content?.reviewAction === 'revise') return { questionId: question.id, choice: 'revise', ...(typeof comment === 'string' ? { comment } : {}) };
+        if (result.action !== 'accept' || Object.keys(result.content ?? {}).length) return { questionId: question.id, choice: 'decline' };
         return { questionId: question.id, choice: 'approve' };
       },
       onApproved:(proposal,key)=>{approved.set(input.runId,{proposal,key});},
