@@ -19,6 +19,7 @@ export const GLOBAL_INSTRUCTIONS_BEGIN = '<!-- BEGIN KIOKUKO GLOBAL MEMORY -->';
 export const GLOBAL_INSTRUCTIONS_END = '<!-- END KIOKUKO GLOBAL MEMORY -->';
 export const CODEX_MCP_BEGIN = '# BEGIN KIOKUKO MCP';
 export const CODEX_MCP_END = '# END KIOKUKO MCP';
+const CODEX_RECORDER_ENV = 'env_vars = ["AGENTICREPLAY_CODEX_REVIEW_SOCKET"]';
 
 export function renderGlobalInstructions(existing = '', host?: string): DelimitedBlockResult {
   const block = [
@@ -290,7 +291,7 @@ function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undef
   // Codex can append per-tool approval settings inside the managed markers.
   // Preserve those settings, but never treat extra launch fields or foreign
   // tables as owned content that setup may overwrite.
-  const toolSettings = lines.slice(8, -1);
+  const toolSettings = lines.slice(lines[8] === CODEX_RECORDER_ENV ? 9 : 8, -1);
   const toolPath = ['mcp_servers', 'kiokuko', 'tools'];
   const extraDefinitions = parseStrictTomlDefinitions(
     ['[mcp_servers.kiokuko]', ...toolSettings].join('\n'),
@@ -411,6 +412,7 @@ export function renderCodexMcpConfig(
     'enabled = true',
     'required = true',
     `env = { ${SKILL_DISCOVERY_ENV} = ${JSON.stringify(effectiveSkillDiscoveryMode)} }`,
+    CODEX_RECORDER_ENV,
     ...(current?.toolSettings ?? []),
     CODEX_MCP_END,
   ].join('\n');

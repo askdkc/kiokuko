@@ -3,6 +3,7 @@ import { parse } from 'jsonc-parser';
 import assert from 'node:assert/strict';
 import { access, chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import test from 'node:test';
 import {
@@ -86,6 +87,52 @@ async function temporaryEnvironment(prefix: string) {
     databasePath: path.join(data, 'kiokuko', 'kiokuko.sqlite3'),
   };
 }
+
+test('Dock recording is opt-in and registers the canonical worktree and selected Codex profile after setup', async () => {
+  const temporary = await temporaryEnvironment('dock');
+  const root = await realpath(temporary.root);
+  const repository = path.join(root, 'repo');
+  const subdirectory = path.join(repository, 'child');
+  const profile = path.join(root, 'custom codex');
+  execFileSync('git', ['init', '-q', repository]);
+  await mkdir(subdirectory);
+  const options = {
+    platform: 'darwin' as const, clients: ['codex' as const], cwd: subdirectory,
+    env: { ...temporary.env, CODEX_HOME: profile }, databasePath: temporary.databasePath, standardSkills: false,
+  };
+  const configPath = path.join(profile, 'config.toml');
+  let calls = 0;
+  const dependencies = { registerCodexDock: async (cwd: string, config: string) => {
+    calls++;
+    assert.equal(cwd, repository);
+    assert.equal(config, configPath);
+    assert.match(await readFile(config, 'utf8'), /mcp_servers\.kiokuko/);
+    await access(path.join(profile, 'hooks.json'));
+    await access(temporary.databasePath);
+  } };
+
+  try {
+    const plan = await setupGlobalClients({ ...options, codexDockRecord: true, dryRun: true }, dependencies);
+    assert.deepEqual(plan.codexDockRecording, { status: 'planned', worktree: repository, configPath });
+    await assert.rejects(access(configPath), { code: 'ENOENT' });
+    assert.equal((await setupGlobalClients(options, dependencies)).codexDockRecording, undefined);
+    assert.equal(calls, 0);
+    const result = await setupGlobalClients({ ...options, codexDockRecord: true }, dependencies);
+    assert.deepEqual(result.codexDockRecording, { status: 'running', worktree: repository, configPath });
+    assert.match(result.nextStep, /Dock/);
+    assert.equal(calls, 1);
+    await assert.rejects(setupGlobalClients({ ...options, codexDockRecord: true, cwd: root }, dependencies), /Git worktree/);
+    await assert.rejects(setupGlobalClients({ ...options, codexDockRecord: true, clients: [] }, dependencies), /Codex client/);
+    await assert.rejects(setupGlobalClients({ ...options, codexDockRecord: true, platform: 'linux' }, dependencies), /macOS/);
+    await assert.rejects(setupGlobalClients({ ...options, codexDockRecord: true }, {
+      registerCodexDock: async () => { throw new Error('Codex already has an openai_base_url'); },
+    }), /Kiokuko setup completed.*Codex already has an openai_base_url/);
+    assert.match(await readFile(configPath, 'utf8'), /mcp_servers\.kiokuko/);
+  } finally {
+    const { rm } = await import('node:fs/promises');
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 function openConnectionWithCloseFailure(closeFailure: unknown): typeof openConnection {
   return (filePath, options) => {

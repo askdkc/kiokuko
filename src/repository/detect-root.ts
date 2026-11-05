@@ -42,12 +42,13 @@ export function canonicalDirectory(directory: string): string {
   }
 }
 
-function gitRoot(cwd: string): string | undefined {
+export function detectGitWorktree(cwd: string): string | undefined {
   try {
     const output = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
     }).trim();
     return output ? canonicalDirectory(output) : undefined;
   } catch {
@@ -58,5 +59,5 @@ function gitRoot(cwd: string): string | undefined {
 export function detectRepositoryRoot(options: DetectRepositoryRootOptions = {}): DetectedRepositoryRoot {
   const cwd = canonicalDirectory(options.cwd ?? process.cwd());
   return resolveRepositoryRoot(cwd, options.root === undefined ? undefined : canonicalDirectory(options.root),
-    options.allowDirectory === true, { exists: existsSync, gitRoot });
+    options.allowDirectory === true, { exists: existsSync, gitRoot: detectGitWorktree });
 }

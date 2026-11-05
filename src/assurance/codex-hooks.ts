@@ -18,6 +18,7 @@ import { assuranceState, taskAssuranceReport, insertTaskEvidence, memoryReviewNe
 import { repositoryStateDigest } from './snapshot.js';
 import { parseAssurance } from './contracts.js';
 import { readCodexCommandReceipt } from './codex-command-receipt.js';
+import { readDesktopCheckpoint } from './codex-desktop-turn.js';
 
 export const CODEX_HOOK_LIMITATION = 'Hooks cover supported client paths only. They do not isolate execution, control an already running process or retract an emitted response. Configuration is not proof of active runtime enforcement.';
 const bounded = z.string().min(1).max(500);
@@ -202,6 +203,19 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
   if (request.state === 'cancelled') return input.hook_event_name === 'PreToolUse' ? denyTurn('Request was interrupted', 'request_interrupted') : {};
   if (request.stop_notified) return input.hook_event_name === 'PreToolUse' ? deny('This turn already had a policy denial.') : stopTurn(input.hook_event_name);
   if (input.hook_event_name === 'Stop' || input.hook_event_name === 'SubagentStop') {
+    if (input.hook_event_name === 'Stop' && !input.agent_id
+      && typeof input.transcript_path === 'string' && input.transcript_path.length <= 4096
+      && path.isAbsolute(input.transcript_path)) {
+      const binding = { sessionId: input.session_id, turnId: input.turn_id, transcriptPath: input.transcript_path };
+      const replayRunId = readDesktopCheckpoint(binding, root);
+      if (replayRunId && (!request.run_id || request.run_id === replayRunId)
+        && ['completed', 'failed'].includes(new LedgerStore(db).readRun(replayRunId)?.status ?? '')) {
+        db.prepare(`INSERT INTO codex_desktop_replay_bindings
+          (run_id, identity_digest, session_id, turn_id, transcript_path)
+          VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`)
+          .run(replayRunId, identity, binding.sessionId, binding.turnId, binding.transcriptPath);
+      }
+    }
     if (!request.run_id) return {}; // Ordinary conversation never required a run.
     const run = new LedgerStore(db).readRun(request.run_id);
     // Terminal completion was already gated transactionally by the domain service.

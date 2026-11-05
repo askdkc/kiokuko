@@ -4,8 +4,21 @@ import path from 'node:path';
 import { findSecret, findSecretInValue } from './secrets.js';
 import { compatibleReplayEvent, declaredReplaySchema } from './replay-contract.js';
 import type { ReplayMemoryProposal } from './replay-review.js';
+import { extractCodexWireExperience, type ReplaySourceEvent } from './replay-codex-wire.js';
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+function codexRequestMatches(headers: unknown, sessionId: string, turnId: string): boolean {
+  const fields = object(headers);
+  const value = fields['x-codex-turn-metadata'];
+  if (typeof value !== 'string' || value.length > 8192) return false;
+  try {
+    const metadata = object(JSON.parse(value));
+    return (metadata.thread_id ?? metadata.session_id) === sessionId && metadata.turn_id === turnId
+      && (fields['thread-id'] === undefined || fields['thread-id'] === sessionId);
+  } catch {
+    return false;
+  }
+}
 const safe = (v: unknown, n = 2048): string => {
   if (typeof v !== 'string') return '';
   // Redact the whole bounded field when a secret is present; truncation never hides a credential suffix.
@@ -22,7 +35,7 @@ async function bounded(file: string, root: string, max: number): Promise<Buffer>
   return bytes;
 }
 /** Read only explicit user messages and public call/result fields, never reasoning or system prompts. */
-export async function extractReplayProposal(input: { cwd: string; traceDirectory: string; taskId: string; sessionId: string; workspace: string }): Promise<ReplayMemoryProposal> {
+export async function extractReplayProposal(input: { cwd: string; traceDirectory: string; taskId: string; sessionId: string; workspace: string; desktopTurnId?: string; desktopUserTextDigests?: string[] }): Promise<ReplayMemoryProposal> {
   const root = await realpath(input.cwd), directory = await realpath(input.traceDirectory);
   const runs = await realpath(path.join(root, '.agenticreplay', 'runs'));
   if (!runs.startsWith(root + path.sep) || !directory.startsWith(runs + path.sep)) throw new Error('replay_scope_mismatch');
@@ -37,8 +50,10 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
   if (candidates.length !== 1) throw new Error('replay_event_file_ambiguous_or_missing');
   const bytes = candidates[0]!, digest = hash(bytes), integrity = object(manifest.integrity);
   if (integrity.events_sha256 !== undefined && integrity.events_sha256 !== digest) throw new Error('replay_integrity_mismatch');
-  const gaps: string[] = ['whole selected replay run; task/session labels supplied by the reviewer, not verified by the trace', ...(integrity.events_sha256 ? [] : ['unsealed trace; completeness is unknown'])];
-  const events: Array<{ raw: Record<string, unknown>; payload: Record<string, unknown>; ref: string; payloadHash: string }> = [];
+  const gaps: string[] = input.desktopTurnId === undefined
+    ? ['whole selected replay run; task/session labels supplied by the reviewer, not verified by the trace', ...(integrity.events_sha256 ? [] : ['unsealed trace; completeness is unknown'])]
+    : ['one verified Codex desktop turn from AgenticReplay API traffic'];
+  const events: ReplaySourceEvent[] = [];
   let sequence = -1, blobBytes = 0;
   for (const line of bytes.toString('utf8').split('\n')) {
     if (!line.trim()) continue;
@@ -58,7 +73,37 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
       payloadHash = match[1]!; payload = JSON.parse(data.toString('utf8'));
     }
     if (raw.type === 'model.request' && typeof payload === 'string') payload = JSON.parse(payload);
-    events.push({ raw, payload: object(payload), ref: `${manifest.run_id}:${sequence}`, payloadHash });
+    events.push({ raw, payload: object(payload), ...(raw.type === 'model.response' && typeof payload === 'string' ? { responseText: payload } : {}), ref: `${manifest.run_id}:${sequence}`, payloadHash });
+  }
+  if (input.desktopTurnId !== undefined) {
+    const start = events[0]?.raw;
+    const attrs = object(start?.attrs);
+    const requests = new Map<unknown, unknown>();
+    for (const { raw } of events.filter(event => event.raw.type === 'net.request')) {
+      const request = object(raw.attrs);
+      if (typeof request.request_id !== 'string' || requests.has(request.request_id)
+        || !codexRequestMatches(request.headers, input.sessionId, input.desktopTurnId)) {
+        throw new Error('replay_desktop_turn_mismatch');
+      }
+      requests.set(request.request_id, raw.seq);
+    }
+    const responses = events.filter(event => event.raw.type === 'net.response');
+    const models = events.filter(event => event.raw.type === 'model.request');
+    const coveredResponses = new Set(responses.flatMap(({ raw }) => {
+      const response = object(raw.attrs);
+      return response.response_complete === true && response.capture_incomplete === false
+        && Array.isArray(raw.causes) && requests.has(response.request_id)
+        && raw.causes.includes(requests.get(response.request_id)) ? [response.request_id] : [];
+    }));
+    if (object(manifest.adapter).id !== 'codex-desktop-api' || object(manifest.capture).status !== 'complete'
+      || integrity.events_sha256 !== digest
+      || start?.seq !== 0 || start.type !== 'run.start' || attrs.source !== 'codex-desktop-api'
+      || attrs.sessionId !== input.sessionId || attrs.turnId !== input.desktopTurnId
+      || events.at(-1)?.raw.type !== 'run.end'
+      || !requests.size || responses.length !== requests.size || coveredResponses.size !== requests.size
+      || !models.length || models.some(({ raw }) => !requests.has(object(raw.attrs).request_id))) {
+      throw new Error('replay_desktop_turn_mismatch');
+    }
   }
   const requestTexts = new Map<string, string>();
   let omittedRequestMessages = 0, truncatedRequestText = false;
@@ -82,6 +127,21 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
     }
   };
   for (const event of events) {
+    if (input.desktopTurnId !== undefined) {
+      // Responses requests can resend previous turns, even inside a correctly scoped API trace.
+      if (event.raw.type !== 'model.request' || !Array.isArray(event.payload.input)) continue;
+      for (const message of event.payload.input) {
+        const item = object(message);
+        if (item.role !== 'user' || !Array.isArray(item.content)) continue;
+        const content = item.content.map(part => object(part)).filter(part => part.type === 'input_text')
+          .map(part => typeof part.text === 'string' ? part.text : '').join('\n');
+        const attributedTurn = object(item.metadata).turn_id;
+        if (attributedTurn === input.desktopTurnId || (attributedTurn === undefined && input.desktopUserTextDigests?.includes(hash(content)))) {
+          rememberRequest(content, event.ref);
+        }
+      }
+      continue;
+    }
     if (event.raw.type === 'user.message') rememberRequest(event.payload.text, event.ref);
     if (event.raw.type !== 'model.request' || !Array.isArray(event.payload.messages)) continue;
     for (const message of event.payload.messages) {
@@ -92,16 +152,19 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
     }
   }
   const attempts: ReplayMemoryProposal['attempts'] = [];
+  const wire = input.desktopTurnId === undefined ? undefined : extractCodexWireExperience(events, input.taskId, safe);
+  if (wire) attempts.push(...wire.attempts);
   for (const call of events.filter(e => e.raw.type === 'tool.call' || e.raw.type === 'shell.call')) {
     if (attempts.length >= 100) { gaps.push('only first 100 calls represented'); break; }
-    const attrs = object(call.raw.attrs), identity = attrs.attemptId ?? attrs.callId;
+    const attrs = object(call.raw.attrs), identity = attrs.attemptId ?? attrs.callId ?? attrs.tool_use_id;
+    if (wire?.attempts.some(attempt => attempt.attemptId === identity)) continue;
     if (typeof attrs.taskId === 'string' && attrs.taskId !== input.taskId) continue;
-    const taskId = typeof attrs.taskId === 'string' ? attrs.taskId : null;
+    const taskId = input.desktopTurnId !== undefined ? input.taskId : typeof attrs.taskId === 'string' ? attrs.taskId : null;
     const calls = events.filter(e => e.raw.type === 'tool.call' || e.raw.type === 'shell.call');
-    const sameIdentity = calls.filter(e => {const a=object(e.raw.attrs);return identity!==undefined && (a.attemptId??a.callId)===identity;});
+    const sameIdentity = calls.filter(e => {const a=object(e.raw.attrs);return identity!==undefined && (a.attemptId??a.callId??a.tool_use_id)===identity;});
     const matches = events.filter(e => {
       if (!/^(tool|shell)\.result$/u.test(String(e.raw.type)) || Number(e.raw.seq)<=Number(call.raw.seq)) return false;
-      const resultAttrs=object(e.raw.attrs), resultIdentity=resultAttrs.attemptId??resultAttrs.callId;
+      const resultAttrs=object(e.raw.attrs), resultIdentity=resultAttrs.attemptId??resultAttrs.callId??resultAttrs.tool_use_id;
       const causes=Array.isArray(e.raw.causes)?e.raw.causes:[];
       const causedCalls=calls.filter(c=>causes.includes(c.raw.seq));
       if(causedCalls.length) return causedCalls.length===1 && causedCalls[0]===call && (identity===undefined||resultIdentity===undefined||identity===resultIdentity);
@@ -136,12 +199,14 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
   const text = requestExcerpt([...requestTexts.keys()].join('\n'), 4096);
   if (omittedRequestMessages) gaps.push('request messages omitted; only the latest 20 distinct excerpts are retained');
   if (truncatedRequestText) gaps.push('request text truncated; beginning and most recent portions are retained');
-  if (text) gaps.push('request text from recorded user-role messages; current human identity and exact task binding require review');
+  if (text && input.desktopTurnId === undefined) gaps.push('request text from recorded user-role messages; current human identity and exact task binding require review');
   if (!text) gaps.push('user request unavailable');
+  if (input.desktopTurnId !== undefined && !text && !attempts.length) throw new Error('replay_desktop_memory_empty');
   const findings: ReplayMemoryProposal['findings'] = attempts.filter(a => a.outcome === 'succeeded' || a.outcome === 'failed').map(a => ({ taskId: a.taskId ?? null, kind: a.outcome === 'succeeded' ? 'worked' : 'failed', text: `${a.tool}: ${a.command ?? 'recorded call'}; tool outcome ${a.outcome}. Task-level effectiveness remains unverified.`, basis: 'observed', evidenceRefs: [a.callRef, ...(a.resultRef ? [a.resultRef] : [])] }));
-  const proposal: ReplayMemoryProposal = { schemaVersion: 1, proposalId: '', revision: 1, source: { workspace: input.workspace, taskId: input.taskId, sessionId: input.sessionId,
+  findings.unshift(...(wire?.findings ?? []));
+  const proposal: ReplayMemoryProposal = { schemaVersion: 1, proposalId: '', revision: 1, source: { workspace: input.workspace, taskId: input.taskId, sessionId: input.sessionId, ...(input.desktopTurnId === undefined ? {} : { turnId: input.desktopTurnId }),
     traces: [{ runId: manifest.run_id, eventsSha256: digest, eventsRead: events.length, totalEvents: integrity.events_sha256 ? events.length : null, digestScope: 'complete', complete: gaps.length === 0, gaps }] }, request: { text, evidenceRefs: [...new Set(requestTexts.values())] }, languages, attempts, findings,
-    tags: ['agenticreplay', ...languages.map(l => l.name.toLowerCase())], keywords: [...new Set((text + ' ' + attempts.map(a => a.command ?? a.tool).join(' ')).toLowerCase().match(/[\p{L}\p{N}_.-]{2,64}/gu) ?? [])].slice(0, 64) };
+    tags: ['agenticreplay', ...languages.map(l => l.name.toLowerCase())], keywords: [...new Set((text + ' ' + findings.map(f => f.text).join(' ') + ' ' + attempts.map(a => `${a.command ?? a.tool} ${a.outputExcerpt ?? ''}`).join(' ')).toLowerCase().match(/[\p{L}\p{N}_.-]{2,64}/gu) ?? [])].slice(0, 64) };
   if (findSecretInValue(proposal)) throw new Error('unsafe_extraction');
   return proposal;
 }

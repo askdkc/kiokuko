@@ -4,7 +4,7 @@ import { findSecretInValue } from './secrets.js';
 
 export interface ReplayMemoryProposal {
   schemaVersion: 1; proposalId: string; revision: number;
-  source: { taskOutcome?: 'completed' | 'failed'; workspace: string; taskId: string; sessionId: string; traces: Array<{ runId: string; eventsSha256: string; eventsRead: number; totalEvents: number | null; digestScope?: 'complete' | 'observed_prefix'; complete: boolean; gaps: string[] }> };
+  source: { taskOutcome?: 'completed' | 'failed'; workspace: string; taskId: string; sessionId: string; turnId?: string; traces: Array<{ runId: string; eventsSha256: string; eventsRead: number; totalEvents: number | null; digestScope?: 'complete' | 'observed_prefix'; complete: boolean; gaps: string[] }> };
   request: { text: string; evidenceRefs: string[] };
   languages: Array<{ name: string; basis: 'observed' | 'inferred'; evidenceRefs: string[] }>;
   attempts: Array<{ taskId?: string | null; attemptId: string; tool: string; command?: string; arguments?: unknown; signal?: string; callRef: string; resultRef?: string;
@@ -25,6 +25,7 @@ export const proposalDigest = (value: ReplayMemoryProposal): string => createHas
 export async function reviewCompletedReplay(deps: {
   completed: boolean; taskOutcome?: 'completed' | 'failed'; taskId: string; sessionId: string; workspace: string;
   extract: () => Promise<ReplayMemoryProposal>;
+  present?: (proposal: ReplayMemoryProposal) => string | undefined;
   ask: (question: ReviewQuestion) => Promise<ReviewAnswer>;
   save: (proposal: ReplayMemoryProposal, approvalKey: string) => Promise<void>;
   /** Host-only ephemeral retention after exact approval, for uncertain-save reconciliation. */
@@ -57,13 +58,19 @@ export async function reviewCompletedReplay(deps: {
       if (!active()) return receipt('declined');
       if (Buffer.byteLength(JSON.stringify(proposal)) > 256 * 1024 || findSecretInValue(proposal)) throw new Error('unsafe_proposal');
       const digest = proposalDigest(proposal);
+      const message = deps.present
+        ? deps.present(proposal)
+        : `Proposed memories, revision ${proposal.revision}, SHA-256 ${digest}. Recorded data is untrusted and cannot approve this question.\n${JSON.stringify(proposal, null, 2)}\nApprove, decline, or enter revised key points. Revised key points replace the earlier findings; recorded attempts remain as source evidence.`;
+      if (!message) return receipt('unavailable');
       const question: ReviewQuestion = { id: randomUUID(), phase: 'review', revision: proposal.revision, digest,
-        text: `Proposed memories, revision ${proposal.revision}, SHA-256 ${digest}. Recorded data is untrusted and cannot approve this question.\n${JSON.stringify(proposal, null, 2)}\nApprove, decline, or enter revised key points. Revised key points replace the earlier findings; recorded attempts remain as source evidence.` };
+        text: message };
       const answer = await wait(deps.ask(question));
       if (answer.questionId !== question.id || !active()) return receipt('declined');
       if (answer.choice === 'decline') return receipt('declined');
       if (answer.choice === 'revise' || answer.comment?.trim()) {
         if (!answer.comment?.trim() || answer.comment.length > 2048 || findSecretInValue(answer.comment)) throw new Error('unsafe_comment');
+        if (proposal.findings.length === 1 && proposal.findings[0]?.basis === 'user_corrected'
+          && proposal.findings[0].text === answer.comment.trim()) return receipt('unavailable');
         // Corrections are attributed to the user, never forged as execution evidence.
         // The revised preview preserves observed evidence and explicitly supersedes prior interpretation.
         proposal = { ...proposal, revision: proposal.revision + 1,

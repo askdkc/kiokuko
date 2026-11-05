@@ -61,6 +61,8 @@ import {
 import { isSkillDiscoveryMode, normalizeSkillDiscoveryMode, SKILL_DISCOVERY_ENV } from '../skills/config.js';
 import type { SkillDiscoveryMode } from '../skills/types.js';
 import { initializeDatabase } from './init.js';
+import { detectGitWorktree } from '../repository/detect-root.js';
+import { registerCodexDock } from '../agenticreplay/codex-service.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
@@ -97,6 +99,8 @@ interface PlannedFile {
 
 export interface SetupOptions extends PathEnvironment {
   clients?: SetupClient[];
+  cwd?: string;
+  codexDockRecord?: boolean;
   command?: string;
   dryRun?: boolean;
   databasePath?: string;
@@ -109,6 +113,7 @@ export interface SetupOptions extends PathEnvironment {
 }
 
 export interface SetupCommandDependencies {
+  registerCodexDock?: typeof registerCodexDock;
   atomicWriteTextIfUnchanged?: typeof atomicWriteTextIfUnchanged;
   unlinkRegularFileIfUnchanged?: typeof unlinkRegularFileIfUnchanged;
   beforeCommit?: () => void | Promise<void>;
@@ -119,6 +124,7 @@ export interface SetupCommandDependencies {
 
 export interface SetupResult {
   clients: SetupClient[];
+  codexDockRecording?: { status: 'planned' | 'running'; worktree: string; configPath: string };
   databasePath: string;
   databaseAction: 'initialized' | 'planned' | 'unchanged';
   runtimeId?: string;
@@ -267,6 +273,7 @@ export async function promptReplaceConflictingMcp(
 export interface SetupFlowOptions {
   readonly environment?: PathEnvironment;
   readonly clients?: SetupClient[];
+  readonly codexDockRecord?: boolean;
   readonly command?: string;
   readonly runtimeManifest?: string;
   readonly clientStopped?: boolean;
@@ -318,6 +325,7 @@ export async function runSetupFlow<T extends { clients: SetupClient[]; projectAg
   const setupOptions: SetupOptions = {
     ...pathEnvironment,
     clients,
+    ...(options.codexDockRecord ? { codexDockRecord: true } : {}),
     ...(options.command === undefined ? {} : { command: options.command }),
     ...(options.runtimeManifest === undefined ? {} : { runtimeManifest: options.runtimeManifest }),
     ...(options.clientStopped === undefined ? {} : { clientStopped: options.clientStopped }),
@@ -736,6 +744,7 @@ export async function setupGlobalClients(
   dependencyOverrides: SetupCommandDependencies = {},
 ): Promise<SetupResult> {
   const dependencies: Required<SetupCommandDependencies> = {
+    registerCodexDock: dependencyOverrides.registerCodexDock ?? registerCodexDock,
     atomicWriteTextIfUnchanged: dependencyOverrides.atomicWriteTextIfUnchanged ?? atomicWriteTextIfUnchanged,
     unlinkRegularFileIfUnchanged: dependencyOverrides.unlinkRegularFileIfUnchanged ?? unlinkRegularFileIfUnchanged,
     beforeCommit: dependencyOverrides.beforeCommit ?? (() => undefined),
@@ -755,6 +764,19 @@ export async function setupGlobalClients(
   const clients = options.clients ?? await detectInstalledClients(pathEnvironment);
   if (!Array.isArray(clients) || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
     throw new KiokukoError('VALIDATION_ERROR', `clients must be a subset of: ${SETUP_CLIENTS.join(', ')}`);
+  }
+  let dockWorktree: string | undefined;
+  if (options.codexDockRecord) {
+    if ((options.platform ?? process.platform) !== 'darwin') {
+      throw new KiokukoError('VALIDATION_ERROR', 'Codex Dock recording requires macOS');
+    }
+    if (!clients.includes('codex')) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Select the Codex client to enable Dock recording');
+    }
+    dockWorktree = detectGitWorktree(options.cwd ?? process.cwd());
+    if (dockWorktree === undefined) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Run setup from the Git worktree to authorize for Codex Dock recording');
+    }
   }
   const pinned = options.runtimeManifest === undefined ? undefined : await verifyPreparedRuntime(options.runtimeManifest);
   if (pinned !== undefined) {
@@ -779,15 +801,16 @@ export async function setupGlobalClients(
   const skillDiscoveryMode = options.skillDiscoveryMode ?? environmentSkillDiscoveryMode;
   const files: PlannedFile[] = [];
   const planning: SetupPlanningContext = { directories: new Map() };
+  const codexConfigPath = clients.includes('codex') ? getCodexConfigPath(pathEnvironment) : undefined;
   const hermesProfile = clients.includes('hermes')
     ? await resolveHermesProfilePaths(pathEnvironment)
     : undefined;
 
-  if (clients.includes('codex')) {
+  if (codexConfigPath !== undefined) {
     let codexLaunch: CodexMcpLaunch | undefined;
     const mcpFile = await planFile(
       planning,
-      getCodexConfigPath(pathEnvironment),
+      codexConfigPath,
       'codex',
       'mcp-config',
       (existing) => {
@@ -806,7 +829,7 @@ export async function setupGlobalClients(
     const hookRuntime = launch.args.length === 2
       ? { node: launch.command, script: launch.args[0]! }
       : launch.command === 'kiokuko' ? defaultCodexHookRuntime() : undefined;
-    files.push(await planFile(planning, path.join(path.dirname(getCodexConfigPath(pathEnvironment)), 'hooks.json'), 'codex', 'hooks', existing => {
+    files.push(await planFile(planning, path.join(path.dirname(codexConfigPath), 'hooks.json'), 'codex', 'hooks', existing => {
       const content = renderCodexAssuranceHooks(existing ?? '', launch.command, databasePath, hookRuntime);
       return { content, action: content === existing ? 'unchanged' : existing === undefined ? 'created' : 'updated' };
     }));
@@ -899,6 +922,9 @@ export async function setupGlobalClients(
     dryRun: options.dryRun ?? false,
     nextStep: setupNextStep(clients, standardSkills),
   };
+  if (dockWorktree !== undefined && codexConfigPath !== undefined) {
+    result.codexDockRecording = { status: 'planned', worktree: dockWorktree, configPath: path.resolve(codexConfigPath) };
+  }
   if (options.dryRun) {
     const registeredProjectLocations = readDryRunProjectLocations(
       databasePath,
@@ -1036,5 +1062,18 @@ export async function setupGlobalClients(
         : { migrationsDirectory: options.migrationsDirectory }),
     },
   );
+  const dock = result.codexDockRecording;
+  if (dock) {
+    try {
+      await dependencies.registerCodexDock(dock.worktree, dock.configPath, options.env === undefined ? undefined : { ...process.env, ...options.env });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new KiokukoError('PARTIAL_FAILURE', `Kiokuko setup completed, but Codex Dock recording could not be enabled. ${reason}`, {
+        setupCompleted: true, worktree: dock.worktree, configPath: dock.configPath,
+      });
+    }
+    dock.status = 'running';
+    result.nextStep = `${result.nextStep} Quit Codex completely, then open it from the Dock to start recording.`;
+  }
   return result;
 }

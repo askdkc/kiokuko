@@ -21,6 +21,22 @@ test('proactively extracts and shows the proposal; the only question approves sa
  assert.equal(result.status,'saved');assert.equal(questions,1);assert.equal(saves,1);
 });
 
+test('repeating an identical correction ends review without another revision or save', async () => {
+ let questions = 0, saves = 0;
+ const result = await reviewCompletedReplay({ completed: true, workspace: 'repo', taskId: 'task', sessionId: 'session',
+  extract: async () => candidate(),
+  ask: async q => {
+   questions++;
+   assert.ok(questions <= 2, 'identical correction must not create revision 3');
+   return { questionId: q.id, choice: 'revise', comment: 'Keep migrations transactional' };
+  },
+  save: async () => { saves++; },
+ });
+ assert.equal(result.status, 'unavailable');
+ assert.equal(questions, 2);
+ assert.equal(saves, 0);
+});
+
 test('no writes at organize/extract/review/revise; exact current approval stores once and survives restart', async()=>{
  const f=fixture();try {
   const store=createApprovedReplayMemoryStore(f.db,'repo');let seen=0;let saved:ReplayMemoryProposal|undefined;let key='';

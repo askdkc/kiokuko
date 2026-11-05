@@ -63,10 +63,14 @@ export function memoryCaptureReviewMessage(proposal: MemoryCaptureProposal): str
     '',
     ...proposal.memories.map(memoryReviewText),
   ].join('\n');
+  return fitsNativeReview(message) ? message : undefined;
+}
+
+export function fitsNativeReview(message: string): boolean {
   // Count non-ASCII conservatively as two columns (including CJK and emoji).
   const lines = message.split(/\r\n|[\n\r\u2028\u2029]/u).reduce((count, line) => {
     const width = Array.from(line).reduce((total, character) => total + (character.codePointAt(0)! > 0x7f ? 2 : 1), 0);
     return count + Math.max(1, Math.ceil(width / REVIEW_COLUMNS));
   }, 0);
-  return message.length <= MAX_REVIEW_CHARACTERS && lines <= MAX_REVIEW_LINES ? message : undefined;
+  return message.length <= MAX_REVIEW_CHARACTERS && lines <= MAX_REVIEW_LINES;
 }

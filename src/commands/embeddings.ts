@@ -377,7 +377,10 @@ function setupResultMessage(data: ClientSetupResult, dryRun: boolean): string {
     ? ''
     : ` Registered project instructions: ${projectChanged} changed, ${projectUnchanged} unchanged, ${projectSkipped} skipped, ${projectFailed} failed.`;
   const clientLabel = data.clients.length === 0 ? 'no selected clients' : data.clients.join(', ');
-  if (dryRun) return `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.${projectSummary}`;
+  if (dryRun) {
+    const dock = data.codexDockRecording ? ` Would register Codex Dock recording for ${data.codexDockRecording.worktree}.` : '';
+    return `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.${projectSummary}${dock}`;
+  }
   if (data.clients.length === 0) return `Kiokuko database initialized; no clients selected.${projectSummary}`;
   return `Now you are ready to use Kiokuko! Kiokuko configured for ${clientLabel} (${changed} file${changed === 1 ? '' : 's'} changed).${projectSummary} ${data.nextStep ?? ''}`.trimEnd();
 }
@@ -390,6 +393,7 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
     .option('--no-embeddings', 'Skip embedding setup; keep existing embedding settings unchanged')
     .option('--preset <name>', 'Embedding preset', 'local-small')
     .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes')
+    .option('--codex-dock-record', 'Enable AgenticReplay API recording for this Git worktree when Codex starts from the Dock (macOS)')
     .option('--command <path>', 'Override the Kiokuko executable name or absolute path')
     .option('--runtime-manifest <path>', 'Switch Codex MCP and hooks to a prepared runtime')
     .option('--client-stopped', 'Confirm the target Codex client has been stopped before a runtime switch')
@@ -403,6 +407,7 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
       embeddings: boolean;
       preset: string;
       clients?: string;
+      codexDockRecord?: boolean;
       command?: string;
       runtimeManifest?: string;
       clientStopped?: boolean;
@@ -433,6 +438,7 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
       const setup = await runSetupFlow<ClientSetupResult>({
         ...(dependencies.pathEnvironment === undefined ? {} : { environment: dependencies.pathEnvironment }),
         ...(clients === undefined ? {} : { clients }),
+        ...(options.codexDockRecord ? { codexDockRecord: true } : {}),
         ...(options.command === undefined ? {} : { command: options.command }),
         ...(options.runtimeManifest === undefined ? {} : { runtimeManifest: options.runtimeManifest }),
         ...(options.clientStopped === undefined ? {} : { clientStopped: options.clientStopped }),

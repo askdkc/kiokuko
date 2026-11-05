@@ -32,6 +32,77 @@ These are source/diff findings, not proof that any historical incident had a sin
 
 A client advertising MCP elicitation can use `memory_review_completed` on an already completed, repository-bound run. The server organizes an ephemeral proposal and asks the client UI only for exact-candidate save approval. Tool arguments contain no approval boolean. When `AGENTICREPLAY_RUN_DIR` is explicitly configured, completed operational checkpoints queue this optional flow without awaiting human input in the task/database call. Client decline/cancel and unsupported elicitation cannot save. SDK protocol tests are distinct from verification in any particular desktop UI.
 
+The native dialog shows the recorded request, key points, search terms and
+AgenticReplay run reference in a bounded preview. The linked tool evidence is
+saved with the approved proposal. Use the client's Approve or Decline button.
+To change key points, select Preview correction and enter the corrected text.
+That produces a new preview and requires fresh approval. With Save displayed
+proposal selected (the default), Approve saves the displayed revision even if
+text remains in the correction field. Submitting the same correction again
+ends the review without creating another revision or saving it.
+If the preview cannot fit, native review is unavailable and saves nothing.
+
 A genuinely settled failed task may also be reviewed; its dialog says it ended with a failed outcome and the proposal records that outcome. Interrupted/cancelled tasks and explicit Stop do not start review. Repeated exact source/content approvals deduplicate independently of presentation IDs. Approved mirror retrieval checks the indexed entry revision and status. Confirmed purge deletes the mirror and search terms and retires old approval receipts, so retry cannot resurrect purged material.
 
 After an approved save reports an uncertain result, the host retains that exact candidate and approval key in process and performs read-only reconciliation. Only an independently visible matching committed receipt can report saved. It does not generate a new approval key or blindly retry writes. Restart loses this ephemeral recovery context; an unverified prior save remains unknown rather than being claimed successful.
+
+## Codex desktop turns
+
+On macOS, opt in from the Git worktree you want to record:
+
+    kiokuko setup --clients codex --codex-dock-record
+
+This requires an installed AgenticReplay version that supports `codex-service`.
+Setup registers the current worktree after configuring the selected Codex
+profile. Quit Codex completely and reopen it from the Dock once after
+registration. Repeat setup with the flag from another worktree to authorize it.
+Ordinary setup leaves recording registration alone. Add `--dry-run` to preview
+the worktree and config path without registering.
+
+Use `agenticreplay codex-service status --json` to inspect the recorder or
+`agenticreplay codex-service disable --json` to stop it and restore the original
+Codex endpoint. After disabling, quit and reopen Codex to reload the endpoint.
+Use a service-capable AgenticReplay CLI from the same installation when checking
+or disabling the recorder.
+
+For an explicit recording session, run `kiokuko setup`, then start the installed Codex app from the
+target Git worktree with AgenticReplay 0.1.14 or later:
+
+    agenticreplay record codex --desktop
+
+Quit an existing Codex desktop process before starting the recording. Open the
+same worktree in Codex. Kiokuko setup configures Codex to pass the recorder's
+private socket to the MCP server. AgenticReplay supplies the socket and scoped
+TLS configuration to the desktop process for this recording.
+
+For a task prepared and checkpointed through Kiokuko in the same turn, the
+Codex Stop hook binds the successful host-observed MCP calls to the chat,
+turn and worktree. This also covers Code Mode calls. Kiokuko waits up to two
+minutes for the binding and the exact root turn's completion, then asks
+AgenticReplay to seal that turn. Kiokuko checks the trace digest and matching
+request and response events. Only evidence attributable to the reviewed turn
+enters the proposal.
+
+Kiokuko reads completed Responses output from AgenticReplay's recorded API
+payloads, including blob-backed WebSocket/SSE responses. A tool result is included
+only when its call ID was generated in that same verified turn. Echoed results
+from previous turns are excluded, identical replays deduplicate, and conflicting
+results remain ambiguous. The saved evidence includes bounded tool arguments and
+result excerpts, source event references and payload hashes. Text saying a command
+exited successfully is not treated as structured exit metadata.
+
+The public final answer supplies automatically extracted key points, explicitly
+labelled as unverified assistant claims. Reasoning, system prompts and commentary
+are excluded. Fields are checked for secrets before excerpts are taken. The native
+dialog shows the complete proposed key points and labelled request/result excerpts
+within its size limit. Source excerpts and source references accompany the approved
+proposal; searches can match the captured results as well as the request and key
+points. Reprocessing an older request-only memory requires fresh approval for the
+enriched proposal; an earlier approval never authorizes extra content.
+
+The same MCP connection requests native approval. Closing the connection
+cancels an outstanding review. Approval is required before the entry becomes
+searchable in the project. An explicit desktop recorder socket takes precedence
+over `AGENTICREPLAY_RUN_DIR`. With neither set, Kiokuko checks for a running
+Dock recorder that allows the current worktree. This check runs after the
+checkpoint response.

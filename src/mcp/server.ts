@@ -6,6 +6,8 @@ import {assertAssuranceCwd} from '../assurance/service.js';
 import {LedgerStore} from '../ledger/store.js';
 import { DEFAULT_CONTEXT_CHARACTERS } from '../memory/context-budget.js';
 import { createMcpReplayReview } from './replay-review.js';
+import { desktopReplayBinding, prepareDesktopReview } from './codex-desktop-review.js';
+import { discoverCodexDockSocket } from '../agenticreplay/codex-service.js';
 import { createMcpMemoryCaptureReview, memoryProposalDigest } from './memory-capture-review.js';
 import { isBookkeepingFailure, BOOKKEEPING_POLICY } from '../assurance/bookkeeping-policy.js';
 import { observationSchema, memoryContextSchema, memoryImproveSchema } from '../memory/observation-contract.js';
@@ -77,6 +79,7 @@ import { realpathSync } from 'node:fs';
 import path from 'node:path';
 
 export interface McpServerDependencies {
+  discoverCodexDockSocket?: typeof discoverCodexDockSocket;
   databasePath?: string;
   migrationsDirectory?: string;
   cwd?: () => string;
@@ -515,13 +518,41 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   const replayReview=createMcpReplayReview(server, operation=>withDatabase(dependencies,operation));
   const captureReview=createMcpMemoryCaptureReview(server);
   const finishedReviews=new Set<string>();
+  const desktopReviews = new AbortController();
+  const discoverDockSocket = dependencies.discoverCodexDockSocket ?? discoverCodexDockSocket;
   const finishCheckpointReview=(result:Awaited<ReturnType<typeof checkpointScopedMemory>>)=>{
-    if(result.run && ['completed','failed'].includes(result.run.status) && result.project && !finishedReviews.has(result.run.runId)) {
-      const traceDirectory=process.env.AGENTICREPLAY_RUN_DIR;
-      if(traceDirectory && finishedReviews.size<256 && server.server.getClientCapabilities()?.elicitation){
-        finishedReviews.add(result.run.runId);
+    if (result.run && ['completed','failed'].includes(result.run.status) && result.project
+      && !finishedReviews.has(result.run.runId) && finishedReviews.size < 256
+      && server.server.getClientCapabilities()?.elicitation) {
+      const {runId} = result.run;
+      const cwd = result.project.repositoryRoot;
+      const socketPath = process.env.AGENTICREPLAY_CODEX_REVIEW_SOCKET;
+      const traceDirectory = process.env.AGENTICREPLAY_RUN_DIR;
+      const tryDesktop = socketPath ? path.isAbsolute(socketPath)
+        : !traceDirectory && (process.platform === 'darwin' || dependencies.discoverCodexDockSocket !== undefined);
+      if (tryDesktop) {
+        finishedReviews.add(runId);
+        const signal = desktopReviews.signal;
+        const resolveBinding = () => withDatabase(dependencies, db => desktopReplayBinding(db, runId, cwd));
+        setImmediate(async () => {
+          try {
+            signal.throwIfAborted();
+            const socket = socketPath || await discoverDockSocket(cwd, signal);
+            if (!socket) return;
+            const recording = await prepareDesktopReview(cwd, socket, resolveBinding, signal);
+            if (recording) {
+              await replayReview.review({runId, cwd, traceDirectory: recording.traceDirectory, desktopTurn: recording.turn}, signal);
+            }
+          } catch {
+            // The optional review ends on cancellation, discovery or transport failure.
+          }
+        });
+        return toolResult({...result,memoryReview:{status:'queued',workMayContinue:true}});
+      }
+      if (!socketPath && traceDirectory) {
+        finishedReviews.add(runId);
         // Do not hold the task/database call open while the human reviews optional memory.
-        setImmediate(()=>{void replayReview.review({runId:result.run!.runId,cwd:result.project!.repositoryRoot,traceDirectory}).catch(()=>{});});
+        setImmediate(()=>{void replayReview.review({runId,cwd,traceDirectory},desktopReviews.signal).catch(()=>{});});
         return toolResult({...result,memoryReview:{status:'queued',workMayContinue:true}});
       }
     }
@@ -533,7 +564,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   enablePublicToolInputErrors(server);
 
   const closeNormally = server.server.onclose;
-  server.server.onclose = () => { captureReview.close(); replayReview.close(); closeNormally?.(); };
+  server.server.onclose = () => { desktopReviews.abort(); captureReview.close(); replayReview.close(); closeNormally?.(); };
 
   for (const [name, schema, handler] of [
     ['memory_observe', observationSchema, observeMemory],

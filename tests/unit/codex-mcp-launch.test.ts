@@ -87,3 +87,12 @@ test('only canonical pinned arguments are accepted as managed launchers', () => 
     canonical.replace('required = true', 'required = false'),
   ]) assert.throws(() => renderCodexMcpConfig(changed), error => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
 });
+
+test('upgrades an existing Codex MCP launcher to inherit only the recorder socket', () => {
+  const current = renderCodexMcpConfig('', 'kiokuko').content;
+  const variable = 'env_vars = ["AGENTICREPLAY_CODEX_REVIEW_SOCKET"]';
+  const legacy = current.replace(variable + '\n', '');
+  assert.match(current, /^env_vars = \["AGENTICREPLAY_CODEX_REVIEW_SOCKET"\]$/mu);
+  assert.equal(renderCodexMcpConfig(legacy).content, current);
+  assert.equal(renderCodexMcpConfig(current).action, 'unchanged');
+});
