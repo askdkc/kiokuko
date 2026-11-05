@@ -17,7 +17,7 @@ npm i -g kiokuko
 kiokuko setup
 ```
 
-重启客户端。如需跳过嵌入模型下载，请使用 `kiokuko setup --no-embeddings`。
+重启客户端。仅在需要跳过嵌入模型设置时添加 `--no-embeddings`。
 
 从 1.0 之前的版本升级需要新数据库。
 [迁移与旧配置清理](docs/breaking-changes-1.0.md)。
@@ -27,7 +27,7 @@ kiokuko setup
 在 Codex 中添加项目，然后在任意目录运行：
 
 ```bash
-kiokuko setup --clients codex --no-embeddings --codex-dock-record
+kiokuko setup --clients codex --codex-dock-record
 ```
 
 完全退出 Codex，再从 Dock 启动。以后添加的项目会在首次使用时注册。

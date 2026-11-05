@@ -17,8 +17,8 @@ npm i -g kiokuko
 kiokuko setup
 ```
 
-クライアントを再起動してください。埋め込みモデルのダウンロードを省く場合は
-`kiokuko setup --no-embeddings`を使います。
+クライアントを再起動してください。埋め込みモデルのセットアップを省く場合だけ
+`--no-embeddings`を付けます。
 
 1.0未満からの更新には新規DBが必要です。
 [移行と旧設定の撤去](docs/breaking-changes-1.0.md)。
@@ -28,7 +28,7 @@ kiokuko setup
 Codexにプロジェクトを追加し、任意のディレクトリで実行します。
 
 ```bash
-kiokuko setup --clients codex --no-embeddings --codex-dock-record
+kiokuko setup --clients codex --codex-dock-record
 ```
 
 Codexを完全終了し、Dockから起動してください。後から追加したプロジェクトも

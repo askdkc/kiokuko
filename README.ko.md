@@ -17,8 +17,8 @@ npm i -g kiokuko
 kiokuko setup
 ```
 
-클라이언트를 재시작하세요. 임베딩 모델 다운로드를 건너뛰려면
-`kiokuko setup --no-embeddings`를 사용하세요.
+클라이언트를 재시작하세요. 임베딩 모델 설정을 건너뛸 때만
+`--no-embeddings`를 추가하세요.
 
 1.0 이전 버전에서 업데이트하려면 새 데이터베이스가 필요합니다.
 [마이그레이션 및 이전 설정 정리](docs/breaking-changes-1.0.md).
@@ -28,7 +28,7 @@ kiokuko setup
 Codex에 프로젝트를 추가한 뒤 어느 디렉터리에서든 실행하세요.
 
 ```bash
-kiokuko setup --clients codex --no-embeddings --codex-dock-record
+kiokuko setup --clients codex --codex-dock-record
 ```
 
 Codex를 완전히 종료하고 Dock에서 다시 실행하세요. 이후 추가한 프로젝트도

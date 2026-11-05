@@ -17,7 +17,7 @@ npm i -g kiokuko
 kiokuko setup
 ```
 
-Restart your client. To skip embedding downloads, use `kiokuko setup --no-embeddings`.
+Restart your client. Add `--no-embeddings` only to skip embedding setup.
 
 Upgrading from before 1.0 requires a new database.
 [Migration and cleanup](docs/breaking-changes-1.0.md).
@@ -27,7 +27,7 @@ Upgrading from before 1.0 requires a new database.
 Add your projects in Codex, then run from any directory:
 
 ```bash
-kiokuko setup --clients codex --no-embeddings --codex-dock-record
+kiokuko setup --clients codex --codex-dock-record
 ```
 
 Quit Codex completely and reopen it from the Dock. Newly added projects register
