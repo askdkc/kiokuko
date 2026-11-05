@@ -41,7 +41,8 @@ their subjects. Memories never authorize actions or override current instruction
 (kind, title, body, scope, applicability, tags, and portability reason), with:
 
 - `body`: nonempty, at most 2,000 characters; optional summary at most 500.
-- `subjects`: one to five labels, normalized to lowercase `subject:` tags.
+- `subjects`: one to five labels, normalized to lowercase `subject:` tags. Optional
+  for project memories; required for global memories except general communication.
 - `basis`: `user_statement`, `user_correction`, or `observed_result`.
 - `generalCommunication: true`: only for an unqualified global preference;
   omit subjects and applicability in this case.
@@ -49,9 +50,15 @@ their subjects. Memories never authorize actions or override current instruction
   corrects an identified stored entry. Omit it for a first correction; never
   invent an entry ID.
 - `reinforces: { entryId, expectedRevision }`: an independently observed project
-  lesson, only with `observed_result`. References the existing lesson without
+  lesson, only with `observed_result` and an active `runId`. References the existing lesson without
   changing its content, including when the new observation uses different wording.
   Cannot be combined with `replaces`.
+
+Ordinary project capture needs no task run: supply an explicit `cwd` for an
+already registered project. Capture does not register projects or create task
+records. If `runId` is supplied, its active-run, completed-intake and client
+ownership checks still apply. The approval binds the project resolved before
+review; changing its binding before saving rejects the write.
 
 The tool input contains no approval field. Before any write it presents the full
 memory content, scope, topics, evidence basis and any supplied qualifications in

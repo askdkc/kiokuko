@@ -12,19 +12,19 @@ const subjects = z.array(z.string().trim().min(1).max(80)).min(1).max(5)
 export const interactionMemorySchema = checkpointMemorySchema.omit({ confidence: true }).extend({
   body: z.string().trim().min(1).max(2_000).describe('Concise reusable content in the user’s language. Preserve caveats; omit task logs and unnecessary identifiers. The native review has a shared size budget, so prefer one short item.'),
   summary: z.string().trim().min(1).max(500).optional().describe('One short plain-language sentence explaining why remembering this will help the user and when it applies.'),
-  subjects: subjects.optional().describe('Concise topic labels, e.g. Japanese grammar, not Japanese grammar explanations. For recall, omit unless these exact stored labels are known; use query-only recall first.'),
+  subjects: subjects.optional().describe('Concise topic labels, e.g. Japanese grammar. Required for global memories except general communication preferences; optional for project memories.'),
   basis: z.enum(['user_statement', 'user_correction', 'observed_result'])
     .describe('Use user_correction for a durable explicit correction, including its first capture when no stored entry exists.'),
   generalCommunication: z.boolean().default(false),
   replaces: z.object({ entryId: identity, expectedRevision: z.number().int().positive() }).strict().optional()
     .describe('Only when correcting an identified stored entry: use its actual entry ID and revision. Omit for a correction not yet stored; never invent an ID. If the user asks to change a stored memory but lookup finds no target, clarify its identity instead of creating a competing memory.'),
   reinforces: z.object({ entryId: identity, expectedRevision: z.number().int().positive() }).strict().optional()
-    .describe('An existing project lesson independently observed again in this run. Keeps its content unchanged; use replaces for corrections.'),
+    .describe('An existing project lesson independently observed again in this run; requires runId. Keeps its content unchanged; use replaces for corrections.'),
 }).strict().superRefine((value, ctx) => {
   if (value.body.normalize('NFKC').length > 2_000 || (value.summary?.normalize('NFKC').length ?? 0) > 500) {
     ctx.addIssue({ code: 'custom', message: 'Normalized memory content exceeds its size limit' });
   }
-  if (!value.generalCommunication && value.subjects === undefined) ctx.addIssue({ code: 'custom', message: 'A subject is required' });
+  if (value.scope === 'global' && !value.generalCommunication && value.subjects === undefined) ctx.addIssue({ code: 'custom', message: 'A global subject is required' });
   if (value.generalCommunication && (value.scope !== 'global' || value.kind !== 'preference'
     || value.subjects !== undefined || value.applicability !== undefined)) {
     ctx.addIssue({ code: 'custom', message: 'General communication must be an unqualified global preference' });
@@ -40,12 +40,15 @@ export const interactionMemorySchema = checkpointMemorySchema.omit({ confidence:
 
 export const memoryCaptureInputSchema = z.object({
   operationId: identity.describe('New ID for a new capture; reuse only for an exact transport retry.'),
-  cwd: absoluteCwdSchema.optional(),
-  runId: identity.optional(),
+  cwd: absoluteCwdSchema.optional().describe('Existing registered project directory. Required for project memories when runId is omitted; capture never registers a project.'),
+  runId: identity.optional().describe('Optional active task run. Ordinary project memory capture needs only an explicit registered cwd and native human approval.'),
   memories: z.array(interactionMemorySchema).min(1).max(5),
 }).strict().superRefine((value, ctx) => {
-  if (value.runId === undefined && value.memories.some((memory) => memory.scope !== 'global')) {
-    ctx.addIssue({ code: 'custom', message: 'Project capture requires an active task run' });
+  if (value.runId === undefined && value.cwd === undefined && value.memories.some((memory) => memory.scope !== 'global')) {
+    ctx.addIssue({ code: 'custom', message: 'Project capture requires an explicit cwd or an active task run' });
+  }
+  if (value.runId === undefined && value.memories.some(memory => memory.reinforces !== undefined)) {
+    ctx.addIssue({ code: 'custom', message: 'Lesson reinforcement requires an active task run' });
   }
 });
 

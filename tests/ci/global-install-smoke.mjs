@@ -595,6 +595,47 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
   process.stdout.write('Installed ChatGPT profile verified policy asset, read-only allowlist, opt-in save, replay and recall.\n');
 }
 
+async function verifyInstalledProjectCapture(cliPath, fixtureRoot) {
+  await mkdir(fixtureRoot, { recursive: true });
+  const environment = { PATH: process.env.PATH ?? '', KIOKUKO_DATA_DIR: path.join(fixtureRoot, 'data'),
+    KIOKUKO_EMBEDDINGS: 'off', KIOKUKO_SKILL_DISCOVERY: 'off' };
+  await run('git', ['init', '-q', fixtureRoot], fixtureRoot, environment);
+  await run(cliPath, ['use', '--root', fixtureRoot, '--no-agent-file', '--json'], fixtureRoot, environment);
+  const input = { cwd: fixtureRoot, operationId: 'installed-project-capture', memories: [{ scope: 'project',
+    kind: 'decision', basis: 'user_correction', title: 'README standard setup',
+    body: 'Use the standard setup command; explain embedding opt-out separately.' }] };
+  let entryId;
+  for (let restart = 0; restart < 2; restart++) {
+    const client = new Client({ name: 'codex-project-package-smoke', version: '1' },
+      { capabilities: { elicitation: { form: {} } } });
+    let prompts = 0;
+    client.setRequestHandler(ElicitRequestSchema, async request => {
+      prompts++;
+      assert.equal(restart, 0, 'search after restart needs no approval');
+      assert.match(request.params.message, /Use the standard setup command/u);
+      assert.match(request.params.message, /This project/u);
+      return { action: 'accept', content: { choice: 'save' } };
+    });
+    try {
+      await client.connect(new StdioClientTransport({ command: cliPath, args: ['mcp'],
+        cwd: fixtureRoot, env: environment, stderr: 'pipe' }));
+      if (restart === 0) {
+        const saved = await client.callTool({ name: 'memory_capture', arguments: input });
+        assert.notEqual(saved.isError, true, JSON.stringify(saved));
+        assert.equal(saved.structuredContent.review.status, 'saved');
+        entryId = saved.structuredContent.items[0].entryId;
+        const retry = await client.callTool({ name: 'memory_capture', arguments: input });
+        assert.deepEqual(retry.structuredContent, saved.structuredContent);
+        assert.equal(prompts, 1);
+      }
+      const found = await client.callTool({ name: 'memory_context', arguments: {
+        cwd: fixtureRoot, query: 'README standard setup' } });
+      assert.ok(found.structuredContent.entries.some(entry => entry.entryId === entryId));
+    } finally { await client.close(); }
+  }
+  process.stdout.write('Installed project memory verified: no task run or subjects, native consent protocol, exact retry, restart and search.\n');
+}
+
 async function verifyInstalledTaskVerification(cliPath, fixtureRoot) {
   const cwd = path.join(fixtureRoot, 'repo');
   await mkdir(cwd, { recursive: true });
@@ -745,6 +786,7 @@ try {
   const managedStatus = await run(cliPath, ['chatgpt', 'status', '--profile', 'install-smoke-unused', '--json'], repositoryRoot);
   assert.equal(JSON.parse(managedStatus.stdout).schemaVersion, 1);
   await verifyInstalledChatgptProfile(cliPath, path.join(temporaryRoot, 'chatgpt-fixture'));
+  await verifyInstalledProjectCapture(cliPath, path.join(temporaryRoot, 'project-capture-fixture'));
   await verifyInstalledTaskVerification(cliPath, path.join(temporaryRoot, 'verification-fixture'));
   await verifyInstalledTaskHookRecovery(installedRoot, path.join(temporaryRoot, 'hook-recovery-fixture'));
   await verifyInstalledCodexProjects(installedRoot, path.join(temporaryRoot, 'codex-project-fixture'), run);

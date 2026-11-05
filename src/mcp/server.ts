@@ -26,7 +26,7 @@ import { inspectTask, inspectTaskSchema, TaskInspectionError } from '../assuranc
 import { memoryReviewSchema, executionEvidenceSchema, memoryRefreshSchema } from '../assurance/contracts.js';
 import { reviewTaskMemory, recordTaskEvidence, taskMemoryStatus } from '../assurance/service.js';
 import { refreshTaskMemory } from '../assurance/refresh.js';
-import { captureInteractionMemory } from '../memory/interaction-capture.js';
+import { captureInteractionMemory, resolveCaptureProject } from '../memory/interaction-capture.js';
 import { recallInteractionMemory } from '../memory/interaction-recall.js';
 import { deriveLessonCandidate } from '../memory/lesson-derivation.js';
 import { memoryCaptureInputSchema, memoryDeriveLessonInputSchema, memoryRecallInputSchema, INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
@@ -771,22 +771,31 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
 
   server.registerTool('memory_capture', {
     title: 'Review and save organized memories',
-    description: 'After the task is complete, submit 1–5 organized memories. The tool displays the exact memory content in a compact, labeled review through native human elicitation, asks save or decline, and writes only after save. Decline or unavailable elicitation writes nothing. Tool arguments never contain approval.',
+    description: 'Submit 1–5 useful durable memories, including during ordinary conversation without a task run. For project memories without runId, provide the existing registered project cwd; subjects are optional. The tool displays the exact memory content in a compact, labeled native review and writes only after human save. Decline or unavailable elicitation writes nothing. Tool arguments never contain approval.',
     inputSchema: memoryCaptureInputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (input, extra) => withPublicToolError(async () => {
-    const proposal = { operationId: input.operationId, memories: input.memories };
+    const content = { operationId: input.operationId, memories: input.memories };
     const captureEnabled = dependencies.interactionMemoryEnabled ?? process.env.KIOKUKO_INTERACTION_MEMORY !== 'off';
     if (!captureEnabled) return toolResult({ enabled: false, items: [], review: {
-      status: 'unavailable', digest: memoryProposalDigest(proposal), workMayContinue: true,
+      status: 'unavailable', digest: memoryProposalDigest(content), workMayContinue: true,
     } });
+    const cwd = input.cwd ?? dependencies.cwd?.() ?? process.cwd();
+    const clientKind = resolveTaskPrepareClient(undefined, server.server.getClientVersion())?.kind ?? 'mcp';
+    const project = await withDatabase(dependencies, database => resolveCaptureProject(database, input, cwd));
+    const proposal = { ...content, binding: { cwd, clientKind,
+      ...(input.runId === undefined ? {} : { runId: input.runId }),
+      ...(project === undefined ? {} : { project: {
+        repositoryRoot: project.repositoryRoot, repositoryId: project.repositoryId, workspace: project.workspace,
+      } }),
+    } };
     const reviewed = await captureReview.review({
       operationId: input.operationId,
       proposal,
       signal: extra.signal,
       save: () => withDatabase(dependencies, database => captureInteractionMemory(database, input, {
-        cwd: dependencies.cwd?.() ?? process.cwd(),
-        clientKind: resolveTaskPrepareClient(undefined, server.server.getClientVersion())?.kind ?? 'mcp',
+        cwd, clientKind,
+        ...(project === undefined ? {} : { expectedProject: project }),
         enabled: true,
         signal: extra.signal,
       })),

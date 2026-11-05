@@ -30,8 +30,10 @@ Add your projects in Codex, then run from any directory:
 kiokuko setup --clients codex --codex-dock-record
 ```
 
-Quit Codex completely and reopen it from the Dock. Newly added projects register
-when first used. Memories are saved only after approval.
+Recording covers Git projects added to Codex. If your project is missing from
+recording, add it in Codex and rerun the command above; an existing chat alone
+does not register it. Quit Codex completely and reopen it from the Dock.
+Newly added projects register when first used. Memories are saved only after approval.
 
 ## Docs
 

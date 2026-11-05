@@ -24,7 +24,21 @@ import type * as z from 'zod/v4';
 type Memory = z.output<typeof interactionMemorySchema>;
 type Receipt = { entryId: string; revision: number; workspace: string; outcome: 'created' | 'duplicate' | 'corrected' | 'reinforced';
   reinforcement?: LessonReinforcement & { promoted: boolean } };
-export interface CaptureOptions { cwd: string; clientKind: string; enabled?: boolean; signal?: AbortSignal; }
+export interface CaptureOptions {
+  cwd: string; clientKind: string; enabled?: boolean; signal?: AbortSignal;
+  /** Internal snapshot resolved before native approval; never supplied by the model. */
+  expectedProject?: ResolvedProjectWorkspace;
+}
+
+/** Resolve an existing project without registration or an artificial task run. */
+export async function resolveCaptureProject(database: SqliteDatabase,
+  input: z.output<typeof memoryCaptureInputSchema>, cwd: string): Promise<ResolvedProjectWorkspace | undefined> {
+  if (input.runId === undefined && input.memories.every(memory => memory.scope === 'global')) return undefined;
+  const project = await resolveProjectWorkspaceReadOnly(database, input.cwd ?? cwd);
+  if (project === undefined) throw new KiokukoError('NOT_FOUND', 'Capture requires its registered project');
+  assertCaptureProject(database, input.cwd ?? cwd, project);
+  return project;
+}
 
 /** Recheck the location and binding under the writer lock without registering anything. */
 function assertCaptureProject(database: SqliteDatabase, cwd: string, project: ResolvedProjectWorkspace): void {
@@ -112,8 +126,11 @@ export async function captureInteractionMemory(database: SqliteDatabase, raw: un
   if (options.signal?.aborted) throw options.signal.reason;
   const cwd = input.cwd ?? options.cwd;
   // Standalone global capture never inspects or registers a project.
-  const project = input.runId === undefined ? undefined : await resolveProjectWorkspaceReadOnly(database, cwd);
-  if (input.runId !== undefined && project === undefined) throw new KiokukoError('NOT_FOUND', 'Capture run requires its project');
+  const project = await resolveCaptureProject(database, input, cwd);
+  if (options.expectedProject !== undefined && (project?.repositoryRoot !== options.expectedProject.repositoryRoot
+    || project.repositoryId !== options.expectedProject.repositoryId || project.workspace !== options.expectedProject.workspace)) {
+    throw new KiokukoError('CONFLICT', 'Capture project changed after review');
+  }
   const now = new Date().toISOString();
   const records = input.memories.map((memory) => prepareMemory(memory, project, input.runId, options.clientKind, now));
   const scope = 'memory.capture';

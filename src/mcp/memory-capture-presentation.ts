@@ -5,6 +5,11 @@ type Memory = Omit<z.output<typeof interactionMemorySchema>, 'scope'> & { scope?
 export interface MemoryCaptureProposal {
   operationId: string;
   memories: Memory[];
+  /** Approval identity only; never rendered as technical metadata in the review. */
+  binding?: {
+    cwd: string; clientKind: string; runId?: string;
+    project?: { repositoryRoot: string; repositoryId: string; workspace: string };
+  };
 }
 
 // Native elicitation is rendered by the host. It offers no scroll/layout API.

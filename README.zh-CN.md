@@ -30,6 +30,8 @@ kiokuko setup
 kiokuko setup --clients codex --codex-dock-record
 ```
 
+仅记录已添加到 Codex 的 Git 项目。如果项目不在记录范围内，请先在 Codex 中添加，
+再重新运行上述命令；仅有现存聊天不会注册项目。
 完全退出 Codex，再从 Dock 启动。以后添加的项目会在首次使用时注册。
 记忆仅在批准后保存。
 
