@@ -778,7 +778,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     const content = { operationId: input.operationId, memories: input.memories };
     const captureEnabled = dependencies.interactionMemoryEnabled ?? process.env.KIOKUKO_INTERACTION_MEMORY !== 'off';
     if (!captureEnabled) return toolResult({ enabled: false, items: [], review: {
-      status: 'unavailable', digest: memoryProposalDigest(content), workMayContinue: true,
+      status: 'unavailable', reason: 'capture_disabled', digest: memoryProposalDigest(content), workMayContinue: true,
     } });
     const cwd = input.cwd ?? dependencies.cwd?.() ?? process.cwd();
     const clientKind = resolveTaskPrepareClient(undefined, server.server.getClientVersion())?.kind ?? 'mcp';

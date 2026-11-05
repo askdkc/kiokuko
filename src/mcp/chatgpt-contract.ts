@@ -1,6 +1,7 @@
 import {CorrectionSourceSchema} from '../memory/correction-contract.js';
 import { relationDeliverySchema } from '../memory/relation-delivery.js';
 import * as z from 'zod/v4';
+import { MEMORY_CAPTURE_UNAVAILABLE_REASONS, MEMORY_CAPTURE_DIAGNOSTIC_CATEGORIES } from './memory-capture-review.js';
 import { CHATGPT_MEMORY_POLICY } from '../chatgpt/memory-policy.js';
 import { interactionMemorySchema, memoryCaptureInputSchema, memoryRecallInputSchema } from '../memory/interaction-contract.js';
 
@@ -40,7 +41,9 @@ export const chatgptCaptureOutputSchema = z.object({
     status: z.enum(['saved', 'declined', 'unavailable']),
     digest: z.string().regex(/^[a-f0-9]{64}$/u),
     workMayContinue: z.literal(true),
-    reason: z.literal('proposal_too_large').optional(),
+    reason: z.enum(MEMORY_CAPTURE_UNAVAILABLE_REASONS).optional(),
+    diagnostic: z.object({ category: z.enum(MEMORY_CAPTURE_DIAGNOSTIC_CATEGORIES),
+      code: z.number().int().optional(), message: z.string().max(500) }).strict().optional(),
     guidance: z.string().optional(),
   }).strict(),
   items: z.array(z.object({

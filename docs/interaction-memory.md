@@ -82,6 +82,14 @@ setting returns a no-write review result. An exact retry reuses the prior in-pro
 decision and the capture operation's idempotent receipt rather than prompting or
 creating another write; a changed payload under the same operation ID conflicts.
 
+An unavailable review includes `review.reason`: capture disabled, missing native
+elicitation, missing form support, request failure, timeout, cancellation, or server
+shutdown are distinct. Request failures include a bounded `diagnostic` with the
+protocol code, category and a secret-checked message; error data and stacks are
+never returned. Fix that cause before retrying. `save_interrupted` means an approved
+write's outcome is uncertain: reconcile the exact operation instead of assuming
+nothing was saved. Terminal input or model text cannot replace native approval.
+
 For example, a model can extract this from “When explaining Japanese grammar,
 I prefer examples before terminology”:
 

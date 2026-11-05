@@ -83,7 +83,7 @@ export function createChatgptMemoryServer(owner: ChatgptRuntimeOwner, options:{c
     const proposal = { operationId: input.operationId, memories: input.memories };
     if (process.env.KIOKUKO_INTERACTION_MEMORY === 'off') return chatgptToolResult({
       schemaVersion: 1, source: 'kiokuko', scope: 'global', enabled: false, items: [],
-      review: { status: 'unavailable', digest: memoryProposalDigest(proposal), workMayContinue: true },
+      review: { status: 'unavailable', reason: 'capture_disabled', digest: memoryProposalDigest(proposal), workMayContinue: true },
     });
     try {
       const reviewed = await captureReview.review({

@@ -6,7 +6,7 @@ import path from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { ElicitRequestSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { initializeDatabase } from '../../src/commands/init.js';
 import { openConnection } from '../../src/db/connection.js';
 import { createChatgptMemoryServer } from '../../src/mcp/chatgpt-server.js';
@@ -208,6 +208,44 @@ test('memory_capture reports unavailable and writes nothing when native elicitat
     operationId: 'unsupported-review', memories: [proposedMemory],
   } });
   assert.equal((result.structuredContent as any).review.status, 'unavailable');
+  assert.equal((result.structuredContent as any).review.reason, 'elicitation_not_supported');
   assert.deepEqual((result.structuredContent as any).items, []);
+  assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 0);
+});
+
+test('native review reports a protocol error without leaking secret data or writing memory', async t => {
+  const { root, databasePath, database } = await temporaryDatabase(t, 'kiokuko-consent-error-');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'review-error-test', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+  client.setRequestHandler(ElicitRequestSchema, async () => {
+    throw new McpError(ErrorCode.InvalidParams, 'Unsupported requestedSchema; token=sk-1234567890abcdefghijkl',
+      { privatePayload: 'Do not expose request bodies or error data.' });
+  });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(b); await client.connect(a);
+  t.after(async () => { await client.close(); await server.close(); });
+  const result = await client.callTool({ name: 'memory_capture', arguments: {
+    operationId: 'protocol-error', memories: [proposedMemory],
+  } });
+  const value = result.structuredContent as any;
+  assert.equal(value.review.status, 'unavailable');
+  assert.equal(value.review.reason, 'elicitation_request_failed');
+  assert.equal(value.review.diagnostic.code, ErrorCode.InvalidParams);
+  assert.equal(value.review.diagnostic.category, 'invalid_params');
+  assert.doesNotMatch(JSON.stringify(value), /sk-1234567890|privatePayload|Do not expose/u);
+  assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 0);
+});
+
+test('a client with URL elicitation only receives an explicit form-unsupported result', async t => {
+  const { root, databasePath, database } = await temporaryDatabase(t, 'kiokuko-consent-url-only-');
+  const server = createKiokukoMcpServer({ databasePath, cwd: () => root });
+  const client = new Client({ name: 'url-only-review', version: '1' }, { capabilities: { elicitation: { url: {} } } });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(b); await client.connect(a);
+  t.after(async () => { await client.close(); await server.close(); });
+  const result = await client.callTool({ name: 'memory_capture', arguments: {
+    operationId: 'url-only', memories: [proposedMemory],
+  } });
+  assert.equal((result.structuredContent as any).review.reason, 'form_elicitation_not_supported');
   assert.equal(database.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 0);
 });
