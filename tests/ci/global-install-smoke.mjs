@@ -2,6 +2,7 @@ import { completeVerification } from '../../scripts/verification-completion.mjs'
 import { firstSetupEnvironment } from '../../scripts/lib/normal-workflow/package-smoke-environment.mjs';
 import { FIRST_SETUP_SCRIPT } from '../../scripts/lib/normal-workflow/package-evidence.mjs';
 import { verifyInstalledTaskHookRecovery } from './task-hook-recovery-smoke.mjs';
+import { verifyInstalledCodexProjects } from './codex-project-registration-smoke.mjs';
 import { sourceFingerprint } from '../../scripts/lib/normal-workflow/source-state.mjs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -746,6 +747,7 @@ try {
   await verifyInstalledChatgptProfile(cliPath, path.join(temporaryRoot, 'chatgpt-fixture'));
   await verifyInstalledTaskVerification(cliPath, path.join(temporaryRoot, 'verification-fixture'));
   await verifyInstalledTaskHookRecovery(installedRoot, path.join(temporaryRoot, 'hook-recovery-fixture'));
+  await verifyInstalledCodexProjects(installedRoot, path.join(temporaryRoot, 'codex-project-fixture'), run);
   await verifyInstalledSavedRuntime(installedRoot, prefixDirectory, path.join(temporaryRoot, 'saved-runtime-fixture'), packageJson.version);
   await verifyInstalledProfileRebuild(cliPath, path.join(temporaryRoot, 'profile-fixture'));
 

@@ -17,12 +17,22 @@ npm i -g kiokuko
 kiokuko setup
 ```
 
-クライアントを再起動すれば、あとは普段どおり使えます。MCP・標準Skill・
-ローカルsemantic検索を設定します。埋め込みモデルのダウンロードを省く場合は
-`kiokuko setup --no-embeddings`を使ってください。
+クライアントを再起動してください。埋め込みモデルのダウンロードを省く場合は
+`kiokuko setup --no-embeddings`を使います。
 
 1.0未満からの更新には新規DBが必要です。
 [移行と旧設定の撤去](docs/breaking-changes-1.0.md)。
+
+### Codexデスクトップの記録（macOS）
+
+Codexにプロジェクトを追加し、任意のディレクトリで実行します。
+
+```bash
+kiokuko setup --clients codex --no-embeddings --codex-dock-record
+```
+
+Codexを完全終了し、Dockから起動してください。後から追加したプロジェクトも
+初回利用時に登録されます。記憶は承認後に保存されます。
 
 ## ドキュメント
 

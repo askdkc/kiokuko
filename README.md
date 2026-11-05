@@ -17,12 +17,21 @@ npm i -g kiokuko
 kiokuko setup
 ```
 
-Restart your client, then use it normally. Setup configures MCP, bundled Skills,
-and local semantic search. To skip embedding downloads, use
-`kiokuko setup --no-embeddings`.
+Restart your client. To skip embedding downloads, use `kiokuko setup --no-embeddings`.
 
 Upgrading from before 1.0 requires a new database.
 [Migration and cleanup](docs/breaking-changes-1.0.md).
+
+### Codex desktop recording (macOS)
+
+Add your projects in Codex, then run from any directory:
+
+```bash
+kiokuko setup --clients codex --no-embeddings --codex-dock-record
+```
+
+Quit Codex completely and reopen it from the Dock. Newly added projects register
+when first used. Memories are saved only after approval.
 
 ## Docs
 

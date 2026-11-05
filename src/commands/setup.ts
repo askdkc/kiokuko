@@ -1,5 +1,5 @@
 import { hostSkillFile } from '../setup/standard-skills.js';
-import { codexAssuranceRuntimeMatches, defaultCodexHookRuntime, renderCodexAssuranceHooks } from '../setup/codex-hooks.js';
+import { codexAssuranceRuntimeMatches, codexDockRecordingConfigured, defaultCodexHookRuntime, renderCodexAssuranceHooks } from '../setup/codex-hooks.js';
 import { defaultCodexMcpRuntime } from '../setup/codex-mcp-launch.js';
 import { verifyPreparedRuntime } from '../runtime/prepare.js';
 import { mkdir, rmdir } from 'node:fs/promises';
@@ -63,6 +63,7 @@ import type { SkillDiscoveryMode } from '../skills/types.js';
 import { initializeDatabase } from './init.js';
 import { detectGitWorktree } from '../repository/detect-root.js';
 import { registerCodexDock } from '../agenticreplay/codex-service.js';
+import { codexProjectWorktrees, refreshCodexProject } from '../setup/codex-projects.js';
 
 export const SETUP_CLIENTS = ['codex', 'opencode', 'claude', 'hermes'] as const;
 export type SetupClient = (typeof SETUP_CLIENTS)[number];
@@ -124,7 +125,7 @@ export interface SetupCommandDependencies {
 
 export interface SetupResult {
   clients: SetupClient[];
-  codexDockRecording?: { status: 'planned' | 'running'; worktree: string; configPath: string };
+  codexDockRecording?: { status: 'planned' | 'running'; worktree: string; worktrees: string[]; configPath: string };
   databasePath: string;
   databaseAction: 'initialized' | 'planned' | 'unchanged';
   runtimeId?: string;
@@ -765,7 +766,7 @@ export async function setupGlobalClients(
   if (!Array.isArray(clients) || clients.some((client) => !SETUP_CLIENTS.includes(client))) {
     throw new KiokukoError('VALIDATION_ERROR', `clients must be a subset of: ${SETUP_CLIENTS.join(', ')}`);
   }
-  let dockWorktree: string | undefined;
+  let dockWorktrees: string[] = [];
   if (options.codexDockRecord) {
     if ((options.platform ?? process.platform) !== 'darwin') {
       throw new KiokukoError('VALIDATION_ERROR', 'Codex Dock recording requires macOS');
@@ -773,9 +774,14 @@ export async function setupGlobalClients(
     if (!clients.includes('codex')) {
       throw new KiokukoError('VALIDATION_ERROR', 'Select the Codex client to enable Dock recording');
     }
-    dockWorktree = detectGitWorktree(options.cwd ?? process.cwd());
-    if (dockWorktree === undefined) {
-      throw new KiokukoError('VALIDATION_ERROR', 'Run setup from the Git worktree to authorize for Codex Dock recording');
+    dockWorktrees = await codexProjectWorktrees(getCodexConfigPath(pathEnvironment));
+    // Keep explicit CLI/worktree setup working when the desktop has no saved projects yet.
+    if (!dockWorktrees.length) {
+      const worktree = detectGitWorktree(options.cwd ?? process.cwd());
+      if (worktree) dockWorktrees.push(worktree);
+    }
+    if (!dockWorktrees.length) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Add a Git worktree as a Codex project before enabling Dock recording');
     }
   }
   const pinned = options.runtimeManifest === undefined ? undefined : await verifyPreparedRuntime(options.runtimeManifest);
@@ -830,7 +836,8 @@ export async function setupGlobalClients(
       ? { node: launch.command, script: launch.args[0]! }
       : launch.command === 'kiokuko' ? defaultCodexHookRuntime() : undefined;
     files.push(await planFile(planning, path.join(path.dirname(codexConfigPath), 'hooks.json'), 'codex', 'hooks', existing => {
-      const content = renderCodexAssuranceHooks(existing ?? '', launch.command, databasePath, hookRuntime);
+      const dockConfig = options.codexDockRecord || codexDockRecordingConfigured(existing ?? '', path.resolve(codexConfigPath)) ? path.resolve(codexConfigPath) : undefined;
+      const content = renderCodexAssuranceHooks(existing ?? '', launch.command, databasePath, hookRuntime, dockConfig);
       return { content, action: content === existing ? 'unchanged' : existing === undefined ? 'created' : 'updated' };
     }));
     files.push(await planFile(planning, getCodexInstructionsPath(pathEnvironment), 'codex', 'instructions', (existing) => renderGlobalInstructions(existing ?? '', 'codex'), [], mcpFile.original?.content.includes('# BEGIN KIOKUKO MCP') === true));
@@ -922,8 +929,8 @@ export async function setupGlobalClients(
     dryRun: options.dryRun ?? false,
     nextStep: setupNextStep(clients, standardSkills),
   };
-  if (dockWorktree !== undefined && codexConfigPath !== undefined) {
-    result.codexDockRecording = { status: 'planned', worktree: dockWorktree, configPath: path.resolve(codexConfigPath) };
+  if (dockWorktrees.length && codexConfigPath !== undefined) {
+    result.codexDockRecording = { status: 'planned', worktree: dockWorktrees[0]!, worktrees: dockWorktrees, configPath: path.resolve(codexConfigPath) };
   }
   if (options.dryRun) {
     const registeredProjectLocations = readDryRunProjectLocations(
@@ -941,6 +948,12 @@ export async function setupGlobalClients(
           : { migrationsDirectory: options.migrationsDirectory }),
       },
     );
+    for (const root of dockWorktrees) {
+      if (!registeredProjectLocations.some(location => location.repositoryRoot === root)) {
+        const project = await refreshCodexProject(root, databasePath, true);
+        if (project) result.projectAgentFiles.push(project);
+      }
+    }
     return result;
   }
 
@@ -1065,7 +1078,13 @@ export async function setupGlobalClients(
   const dock = result.codexDockRecording;
   if (dock) {
     try {
-      await dependencies.registerCodexDock(dock.worktree, dock.configPath, options.env === undefined ? undefined : { ...process.env, ...options.env });
+      for (const worktree of dock.worktrees) {
+        if (!registeredProjectLocations.some(location => location.repositoryRoot === worktree)) {
+          const project = await refreshCodexProject(worktree, databasePath);
+          if (project) result.projectAgentFiles.push(project);
+        }
+        await dependencies.registerCodexDock(worktree, dock.configPath, options.env === undefined ? undefined : { ...process.env, ...options.env });
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new KiokukoError('PARTIAL_FAILURE', `Kiokuko setup completed, but Codex Dock recording could not be enabled. ${reason}`, {

@@ -48,16 +48,23 @@ After an approved save reports an uncertain result, the host retains that exact 
 
 ## Codex desktop turns
 
-On macOS, opt in from the Git worktree you want to record:
+On macOS, enable recording for Git projects added in Codex. Setup can run from
+any directory:
 
     kiokuko setup --clients codex --codex-dock-record
 
 This requires an installed AgenticReplay version that supports `codex-service`.
-Setup registers the current worktree after configuring the selected Codex
-profile. Quit Codex completely and reopen it from the Dock once after
-registration. Repeat setup with the flag from another worktree to authorize it.
-Ordinary setup leaves recording registration alone. Add `--dry-run` to preview
-the worktree and config path without registering.
+Setup reads the selected profile's added-project list, checks each live Git
+worktree through the existing `.kiokuko.json` and managed instruction flow, and
+registers those worktrees. Deleted projects and non-Git folders are ignored;
+duplicate paths resolve to one canonical worktree. When the profile has no saved
+projects, explicit setup from a Git worktree remains supported.
+Quit Codex completely and reopen it from the Dock once after registration.
+The existing SessionStart/UserPromptSubmit hooks register a newly added project
+when it is first used, while recording is enabled. They preserve deliberately
+removed instructions and do not re-enable an explicitly disabled recorder.
+Ordinary setup preserves these managed hooks. Add `--dry-run` to preview the
+projects and config path without registering or writing project files.
 
 Use `agenticreplay codex-service status --json` to inspect the recorder or
 `agenticreplay codex-service disable --json` to stop it and restore the original

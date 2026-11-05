@@ -88,6 +88,43 @@ async function temporaryEnvironment(prefix: string) {
   };
 }
 
+test('Dock recording registers Codex projects from outside any checkout and keeps their bindings current', async () => {
+  const temporary = await temporaryEnvironment('dock-projects');
+  const root = await realpath(temporary.root);
+  const profile = path.join(root, 'codex');
+  const projects = [path.join(root, 'first project'), path.join(root, 'second')];
+  for (const project of projects) execFileSync('git', ['init', '-q', project]);
+  await mkdir(profile);
+  await writeFile(path.join(profile, '.codex-global-state.json'), JSON.stringify({
+    'electron-saved-workspace-roots': [...projects, projects[0], path.join(root, 'deleted')],
+  }));
+  const calls: string[] = [];
+  const options = { platform: 'darwin' as const, clients: ['codex' as const], cwd: root,
+    codexDockRecord: true, env: { ...temporary.env, CODEX_HOME: profile },
+    databasePath: temporary.databasePath, standardSkills: false };
+  const dependencies = { registerCodexDock: async (cwd: string, config: string) => {
+    assert.equal(config, path.join(profile, 'config.toml'));
+    await access(path.join(cwd, '.kiokuko.json'));
+    await access(path.join(cwd, 'AGENTS.md'));
+    calls.push(cwd);
+  } };
+  try {
+    const plan = await setupGlobalClients({ ...options, dryRun: true }, dependencies);
+    assert.deepEqual(plan.codexDockRecording?.worktrees, projects);
+    assert.deepEqual(calls, []);
+    await assert.rejects(access(path.join(projects[0]!, '.kiokuko.json')), { code: 'ENOENT' });
+    const result = await setupGlobalClients(options, dependencies);
+    assert.equal(result.codexDockRecording?.status, 'running');
+    assert.deepEqual(calls, projects);
+    assert.equal(result.projectAgentFiles.filter(p => p.status === 'created').length, 2);
+    const hooks = await readFile(path.join(profile, 'hooks.json'), 'utf8');
+    assert.match(hooks, /--codex-dock-record/u);
+    assert.match(hooks, /--codex-config/u);
+    await setupGlobalClients({ ...options, codexDockRecord: false }, dependencies);
+    assert.match(await readFile(path.join(profile, 'hooks.json'), 'utf8'), /--codex-dock-record/u);
+  } finally { await (await import('node:fs/promises')).rm(root, { recursive: true, force: true }); }
+});
+
 test('Dock recording is opt-in and registers the canonical worktree and selected Codex profile after setup', async () => {
   const temporary = await temporaryEnvironment('dock');
   const root = await realpath(temporary.root);
@@ -113,12 +150,12 @@ test('Dock recording is opt-in and registers the canonical worktree and selected
 
   try {
     const plan = await setupGlobalClients({ ...options, codexDockRecord: true, dryRun: true }, dependencies);
-    assert.deepEqual(plan.codexDockRecording, { status: 'planned', worktree: repository, configPath });
+    assert.deepEqual(plan.codexDockRecording, { status: 'planned', worktree: repository, worktrees: [repository], configPath });
     await assert.rejects(access(configPath), { code: 'ENOENT' });
     assert.equal((await setupGlobalClients(options, dependencies)).codexDockRecording, undefined);
     assert.equal(calls, 0);
     const result = await setupGlobalClients({ ...options, codexDockRecord: true }, dependencies);
-    assert.deepEqual(result.codexDockRecording, { status: 'running', worktree: repository, configPath });
+    assert.deepEqual(result.codexDockRecording, { status: 'running', worktree: repository, worktrees: [repository], configPath });
     assert.match(result.nextStep, /Dock/);
     assert.equal(calls, 1);
     await assert.rejects(setupGlobalClients({ ...options, codexDockRecord: true, cwd: root }, dependencies), /Git worktree/);

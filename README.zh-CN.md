@@ -17,12 +17,21 @@ npm i -g kiokuko
 kiokuko setup
 ```
 
-重启客户端后照常使用即可。设置会配置 MCP、标准 Skill 和本地 semantic 检索。
-如需跳过嵌入下载，请使用
-`kiokuko setup --no-embeddings`。
+重启客户端。如需跳过嵌入模型下载，请使用 `kiokuko setup --no-embeddings`。
 
 从 1.0 之前的版本升级需要新数据库。
 [迁移与旧配置清理](docs/breaking-changes-1.0.md)。
+
+### Codex 桌面版录制（macOS）
+
+在 Codex 中添加项目，然后在任意目录运行：
+
+```bash
+kiokuko setup --clients codex --no-embeddings --codex-dock-record
+```
+
+完全退出 Codex，再从 Dock 启动。以后添加的项目会在首次使用时注册。
+记忆仅在批准后保存。
 
 ## 文档
 

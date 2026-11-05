@@ -8,6 +8,7 @@ import { codexHookCorrelationId, codexHookFailureCode, handleCodexHook, parseCod
 import { codexHookDiagnostics } from '../assurance/hook-diagnostics.js';
 import { KiokukoError } from '../errors.js';
 import { MEMORY_RECOMMENDATION_INSTRUCTIONS } from '../memory/recommendation-instructions.js';
+import { syncCodexDockProject } from '../agenticreplay/codex-service.js';
 
 /** Upgrade only an existing database; current-schema hooks avoid a full integrity scan. */
 async function openHookDatabase(databasePath: string) {
@@ -25,8 +26,10 @@ async function openHookDatabase(databasePath: string) {
 export function registerCodexHookCommand(cli: Command): void {
   cli.command('codex-hook').description('Handle a Codex lifecycle event from stdin')
     .requiredOption('--database <path>', 'Database used by the installed Kiokuko integration')
+    .option('--codex-dock-record', 'Sync newly added Codex projects with an enabled recorder')
+    .option('--codex-config <path>', 'Codex profile configured by setup')
     .option('--diagnose-call <id>', 'Read bounded hook metadata for a call or Codex request ID; no stdin or task data')
-    .action(async (options: { database: string; diagnoseCall?: string }) => {
+    .action(async (options: { database: string; diagnoseCall?: string; codexDockRecord?: boolean; codexConfig?: string }) => {
       let raw = '';
       let event: unknown;
       try {
@@ -43,6 +46,10 @@ export function registerCodexHookCommand(cli: Command): void {
         }
         event = JSON.parse(raw);
         const input = parseCodexHookInput(event);
+        if (options.codexDockRecord && options.codexConfig && (input.hook_event_name === 'SessionStart' || input.hook_event_name === 'UserPromptSubmit')) {
+          try { await syncCodexDockProject(input.cwd, options.codexConfig, options.database); }
+          catch { process.stderr.write('Optional Codex project recording registration failed. Existing settings and ordinary work remain available.\n'); }
+        }
         if (input.hook_event_name === 'SessionStart' || input.hook_event_name === 'PostCompact') {
           process.stdout.write(JSON.stringify({ hookSpecificOutput: {
             hookEventName: input.hook_event_name, additionalContext: MEMORY_RECOMMENDATION_INSTRUCTIONS,

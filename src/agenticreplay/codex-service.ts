@@ -3,6 +3,8 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod/v4';
+import { codexProjectWorktrees, refreshCodexProject } from '../setup/codex-projects.js';
+import { detectGitWorktree } from '../repository/detect-root.js';
 
 const runningService = z.object({
   status: z.literal('running'),
@@ -66,4 +68,14 @@ export async function discoverCodexDockSocket(cwd: string, signal: AbortSignal):
   } catch {
     return undefined;
   }
+}
+
+/** Existing Codex hooks extend an enabled recorder when a newly added project is used. */
+export async function syncCodexDockProject(cwd: string, configPath: string, databasePath: string): Promise<void> {
+  const root = detectGitWorktree(cwd);
+  if (!root || !(await codexProjectWorktrees(configPath)).includes(root)) return;
+  const result = runningService.safeParse(await runService(root, ['status'], 4000));
+  if (!result.success) return; // Explicit disable must remain disabled.
+  await refreshCodexProject(root, databasePath);
+  if (!result.data.worktrees.includes(root)) await registerCodexDock(root, configPath);
 }

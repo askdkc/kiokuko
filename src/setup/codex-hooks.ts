@@ -44,14 +44,23 @@ export interface CodexHookRuntime { readonly node: string; readonly script: stri
 export function defaultCodexHookRuntime(): CodexHookRuntime {
   return { node: process.execPath, script: fileURLToPath(new URL('../../dist/bin/kiokuko.js', import.meta.url)) };
 }
-export function renderCodexAssuranceHooks(source: string, executable: string, database: string, runtime?: CodexHookRuntime): string {
-  for (const value of [executable, database, ...(runtime ? [runtime.node, runtime.script] : [])]) {
+export function codexDockRecordingConfigured(source: string, configPath: string): boolean {
+  const hooks = object(configuration(source).hooks);
+  return Object.values(hooks).some(groups => Array.isArray(groups) && groups.some(raw => {
+    const group = object(raw);
+    return Array.isArray(group.hooks) && group.hooks.some(h => owned(h)
+      && (h as {command: string}).command.endsWith(` --codex-dock-record --codex-config ${shellQuote(configPath)}`));
+  }));
+}
+export function renderCodexAssuranceHooks(source: string, executable: string, database: string, runtime?: CodexHookRuntime, dockConfigPath?: string): string {
+  for (const value of [executable, database, ...(runtime ? [runtime.node, runtime.script] : []), ...(dockConfigPath ? [dockConfigPath] : [])]) {
     if (!value.trim() || value.includes('\0')) throw new KiokukoError('VALIDATION_ERROR', 'Codex hook launch paths must be non-empty and contain no NUL');
   }
   const config = configuration(removeCodexAssuranceHooks(source) ?? '');
   const hooks = object(config.hooks);
   const launcher = runtime ? `${shellQuote(runtime.node)} ${shellQuote(runtime.script)}` : shellQuote(executable);
-  const command = `${launcher} codex-hook --database ${shellQuote(database)}`;
+  const command = `${launcher} codex-hook --database ${shellQuote(database)}`
+    + (dockConfigPath ? ` --codex-dock-record --codex-config ${shellQuote(dockConfigPath)}` : '');
   for (const event of CODEX_ASSURANCE_EVENTS) {
     const groups = hooks[event] ?? [];
     if (!Array.isArray(groups)) throw new KiokukoError('VALIDATION_ERROR', 'Codex hook groups must be arrays');

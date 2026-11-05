@@ -378,7 +378,7 @@ function setupResultMessage(data: ClientSetupResult, dryRun: boolean): string {
     : ` Registered project instructions: ${projectChanged} changed, ${projectUnchanged} unchanged, ${projectSkipped} skipped, ${projectFailed} failed.`;
   const clientLabel = data.clients.length === 0 ? 'no selected clients' : data.clients.join(', ');
   if (dryRun) {
-    const dock = data.codexDockRecording ? ` Would register Codex Dock recording for ${data.codexDockRecording.worktree}.` : '';
+    const dock = data.codexDockRecording ? ` Would register Codex Dock recording for ${data.codexDockRecording.worktrees.length} Codex project(s).` : '';
     return `Kiokuko setup plan for ${clientLabel}: ${changed} file${changed === 1 ? '' : 's'} would change.${projectSummary}${dock}`;
   }
   if (data.clients.length === 0) return `Kiokuko database initialized; no clients selected.${projectSummary}`;
@@ -393,7 +393,7 @@ function registerSetupCommand(parent: Command, dependencies: EmbeddingsCommandDe
     .option('--no-embeddings', 'Skip embedding setup; keep existing embedding settings unchanged')
     .option('--preset <name>', 'Embedding preset', 'local-small')
     .option('--clients <clients>', 'Comma-separated clients: codex,opencode,claude,hermes')
-    .option('--codex-dock-record', 'Enable AgenticReplay API recording for this Git worktree when Codex starts from the Dock (macOS)')
+    .option('--codex-dock-record', 'Enable AgenticReplay API recording for projects added to Codex, including newly used projects (macOS)')
     .option('--command <path>', 'Override the Kiokuko executable name or absolute path')
     .option('--runtime-manifest <path>', 'Switch Codex MCP and hooks to a prepared runtime')
     .option('--client-stopped', 'Confirm the target Codex client has been stopped before a runtime switch')
