@@ -78,6 +78,18 @@ function invalid(): never {
   throw new KiokukoError('VALIDATION_ERROR', 'Structured memory metadata is invalid');
 }
 
+const scopeValidationMessages = {
+  incompatible_retrieval_scope: 'Global memories may only use global retrieval. Project memories may use project-only or ecosystem retrieval.',
+  ecosystem_applicability_required: 'Ecosystem retrieval requires nonempty applicability for a project memory.',
+  global_scope_qualification_required: 'A global memory needs a portableReason or nonempty applicability.',
+} as const;
+
+export class StructuredMemoryScopeError extends KiokukoError {
+  constructor(readonly reason: keyof typeof scopeValidationMessages) {
+    super('VALIDATION_ERROR', scopeValidationMessages[reason]);
+  }
+}
+
 function cleanString(value: unknown, max = 500): string {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > max || /[\u0000-\u001f\u007f]/u.test(value)) invalid();
   if (findSecret(value)) throw new KiokukoError('SECURITY_REJECTION', 'Structured memory metadata resembles a secret and was not stored');
@@ -168,12 +180,18 @@ export function validateSignals(value: unknown): MemorySignals {
 export function buildStructuredScope(options: StructuredMemoryOptions): JsonObject {
   if (options.visibility !== 'project' && options.visibility !== 'global') invalid();
   if (options.retrievalScope !== undefined && !RETRIEVAL_SCOPES.includes(options.retrievalScope)) invalid();
-  if (options.visibility === 'global' && options.retrievalScope !== undefined && options.retrievalScope !== 'global') invalid();
-  if (options.visibility === 'project' && options.retrievalScope === 'global') invalid();
+  if ((options.visibility === 'global' && options.retrievalScope !== undefined && options.retrievalScope !== 'global')
+    || (options.visibility === 'project' && options.retrievalScope === 'global')) {
+    throw new StructuredMemoryScopeError('incompatible_retrieval_scope');
+  }
   const validatedApplicability = options.applicability === undefined ? undefined : validateApplicability(options.applicability);
   const hasApplicability = validatedApplicability !== undefined && hasExplicitApplicability({ applicability: validatedApplicability });
-  if (options.visibility === 'project' && options.retrievalScope === 'ecosystem' && !hasApplicability) invalid();
-  if (options.visibility === 'global' && !hasApplicability && options.portableReason === undefined) invalid();
+  if (options.visibility === 'project' && options.retrievalScope === 'ecosystem' && !hasApplicability) {
+    throw new StructuredMemoryScopeError('ecosystem_applicability_required');
+  }
+  if (options.visibility === 'global' && !hasApplicability && options.portableReason === undefined) {
+    throw new StructuredMemoryScopeError('global_scope_qualification_required');
+  }
   if (options.visibility === 'global' && options.portableReason !== undefined) cleanString(options.portableReason, 2_000);
   if (options.memoryClass !== undefined && !MEMORY_CLASSES.includes(options.memoryClass)) invalid();
   const result: Record<string, unknown> = {

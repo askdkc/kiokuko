@@ -34,9 +34,9 @@ export interface CaptureOptions {
 export async function resolveCaptureProject(database: SqliteDatabase,
   input: z.output<typeof memoryCaptureInputSchema>, cwd: string): Promise<ResolvedProjectWorkspace | undefined> {
   if (input.runId === undefined && input.memories.every(memory => memory.scope === 'global')) return undefined;
-  const project = await resolveProjectWorkspaceReadOnly(database, input.cwd ?? cwd);
+  const project = await resolveProjectWorkspaceReadOnly(database, cwd);
   if (project === undefined) throw new KiokukoError('NOT_FOUND', 'Capture requires its registered project');
-  assertCaptureProject(database, input.cwd ?? cwd, project);
+  assertCaptureProject(database, cwd, project);
   return project;
 }
 
@@ -116,6 +116,12 @@ function reinforcementTarget(database: SqliteDatabase, memory: Memory, workspace
   return entry;
 }
 
+/** Prepare validated records without writing, both before review and at save time. */
+export function prepareCaptureRecords(input: z.output<typeof memoryCaptureInputSchema>,
+  project: ResolvedProjectWorkspace | undefined, clientKind: string, now: string) {
+  return input.memories.map(memory => prepareMemory(memory, project, input.runId, clientKind, now));
+}
+
 /** A non-terminal atomic capture. The caller's model supplies claims, never trust. */
 export async function captureInteractionMemory(database: SqliteDatabase, raw: unknown, options: CaptureOptions) {
   const parsed = memoryCaptureInputSchema.safeParse(raw);
@@ -132,7 +138,7 @@ export async function captureInteractionMemory(database: SqliteDatabase, raw: un
     throw new KiokukoError('CONFLICT', 'Capture project changed after review');
   }
   const now = new Date().toISOString();
-  const records = input.memories.map((memory) => prepareMemory(memory, project, input.runId, options.clientKind, now));
+  const records = prepareCaptureRecords(input, project, options.clientKind, now);
   const scope = 'memory.capture';
   return withImmediateTransaction(database, () => {
     if (options.signal?.aborted) throw options.signal.reason;

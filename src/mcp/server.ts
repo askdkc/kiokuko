@@ -26,7 +26,8 @@ import { inspectTask, inspectTaskSchema, TaskInspectionError } from '../assuranc
 import { memoryReviewSchema, executionEvidenceSchema, memoryRefreshSchema } from '../assurance/contracts.js';
 import { reviewTaskMemory, recordTaskEvidence, taskMemoryStatus } from '../assurance/service.js';
 import { refreshTaskMemory } from '../assurance/refresh.js';
-import { captureInteractionMemory, resolveCaptureProject } from '../memory/interaction-capture.js';
+import { captureInteractionMemory, prepareCaptureRecords, resolveCaptureProject } from '../memory/interaction-capture.js';
+import { StructuredMemoryScopeError } from '../memory/structured-memory.js';
 import { recallInteractionMemory } from '../memory/interaction-recall.js';
 import { deriveLessonCandidate } from '../memory/lesson-derivation.js';
 import { memoryCaptureInputSchema, memoryDeriveLessonInputSchema, memoryRecallInputSchema, INTERACTION_MEMORY_INSTRUCTIONS } from '../memory/interaction-contract.js';
@@ -183,6 +184,11 @@ type McpToolErrorResult = {
 
 function publicToolErrorResult(error: unknown): McpToolErrorResult {
   if (error instanceof HistoryOutputBudgetError) return {isError:true,content:[{type:'text',text:'The final output budget is too small for its explicit envelope and omission status.'}],structuredContent:{code:'VALIDATION_ERROR',reason:'output_budget_too_small',retryable:true,workMayContinue:true}};
+  if (error instanceof StructuredMemoryScopeError) return {
+    isError: true,
+    content: [{ type: 'text', text: error.message }],
+    structuredContent: { code: error.code, reason: error.reason, retryable: false },
+  };
   if (error instanceof TaskInspectionError) return {
     isError: true, content: [{ type: 'text', text: error.message }],
     structuredContent: { code: error.code, reason: error.reason, retryable: false, recoverable: true },
@@ -793,6 +799,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
       operationId: input.operationId,
       proposal,
       signal: extra.signal,
+      validateBeforePrompt: () => { prepareCaptureRecords(input, project, clientKind, new Date().toISOString()); },
       save: () => withDatabase(dependencies, database => captureInteractionMemory(database, input, {
         cwd, clientKind,
         ...(project === undefined ? {} : { expectedProject: project }),

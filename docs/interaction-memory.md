@@ -43,6 +43,10 @@ their subjects. Memories never authorize actions or override current instruction
 - `body`: nonempty, at most 2,000 characters; optional summary at most 500.
 - `subjects`: one to five labels, normalized to lowercase `subject:` tags. Optional
   for project memories; required for global memories except general communication.
+- Global memories require `portableReason` or nonempty `applicability`. Omit
+  `retrievalScope` for the default. Global memories use `global`; project
+  memories use `project-only` by default and may use `ecosystem` with nonempty
+  `applicability`.
 - `basis`: `user_statement`, `user_correction`, or `observed_result`.
 - `generalCommunication: true`: only for an unqualified global preference;
   omit subjects and applicability in this case.
@@ -60,7 +64,9 @@ records. If `runId` is supplied, its active-run, completed-intake and client
 ownership checks still apply. The approval binds the project resolved before
 review; changing its binding before saving rejects the write.
 
-The tool input contains no approval field. Before any write it presents the full
+The tool input contains no approval field. The local MCP server checks the proposed
+records before opening the review. A scope validation error identifies the reason
+without opening a prompt. Before any write it presents the full
 memory content, scope, topics, evidence basis and any supplied qualifications in
 native MCP elicitation, with **save** and **decline** choices. Use a short `summary`
 to explain why remembering the item will help. Internal request IDs and JSON syntax

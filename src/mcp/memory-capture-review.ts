@@ -97,6 +97,7 @@ export function createMcpMemoryCaptureReview(server: McpServer) {
     async review<T>(input: {
       operationId: string;
       proposal: MemoryCaptureProposal;
+      validateBeforePrompt?: () => void;
       save: () => Promise<T>;
       signal?: AbortSignal;
     }): Promise<MemoryCaptureReviewReceipt<T>> {
@@ -136,6 +137,7 @@ export function createMcpMemoryCaptureReview(server: McpServer) {
         if (signal.aborted) return unavailable(digest, cancellation());
 
         if (previouslyApproved === undefined) {
+          input.validateBeforePrompt?.();
           let result;
           try { result = await server.server.elicitInput({
             mode: 'form',

@@ -12,6 +12,8 @@ const subjects = z.array(z.string().trim().min(1).max(80)).min(1).max(5)
 export const interactionMemorySchema = checkpointMemorySchema.omit({ confidence: true }).extend({
   body: z.string().trim().min(1).max(2_000).describe('Concise reusable content in the user’s language. Preserve caveats; omit task logs and unnecessary identifiers. The native review has a shared size budget, so prefer one short item.'),
   summary: z.string().trim().min(1).max(500).optional().describe('One short plain-language sentence explaining why remembering this will help the user and when it applies.'),
+  retrievalScope: checkpointMemorySchema.shape.retrievalScope.describe('Omit to use the default for the memory scope. Global memories only accept global. For project memories, ecosystem requires nonempty applicability.'),
+  portableReason: checkpointMemorySchema.shape.portableReason.describe('Why the memory is useful outside its original context. Required for global memories without nonempty applicability.'),
   subjects: subjects.optional().describe('Concise topic labels, e.g. Japanese grammar. Required for global memories except general communication preferences; optional for project memories.'),
   basis: z.enum(['user_statement', 'user_correction', 'observed_result'])
     .describe('Use user_correction for a durable explicit correction, including its first capture when no stored entry exists.'),
