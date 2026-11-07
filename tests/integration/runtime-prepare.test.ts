@@ -38,6 +38,14 @@ test('runtime-prepare publishes a verified, independently launchable runtime', a
     const init = spawnSync(process.execPath, ['dist/bin/kiokuko.js', 'init', '--json'], { cwd: path.resolve('.'), env, encoding: 'utf8' });
     assert.equal(init.status, 0, init.stdout + init.stderr);
     const switchArgs = ['dist/bin/kiokuko.js', 'setup', '--clients', 'codex', '--no-embeddings', '--no-standard-skills', '--runtime-manifest', result.manifestPath];
+    const initialSetup = spawnSync(process.execPath, ['dist/bin/kiokuko.js', 'setup', '--clients', 'codex', '--no-embeddings', '--no-standard-skills', '--json'], { env, encoding: 'utf8' });
+    assert.equal(initialSetup.status, 0, initialSetup.stdout + initialSetup.stderr);
+    const existingHooksPath = path.join(root, 'codex', 'hooks.json');
+    const existingHooks = JSON.parse(await readFile(existingHooksPath, 'utf8'));
+    existingHooks.hooks.Interrupt[0].hooks[0].timeout = 30;
+    existingHooks.hooks.Stop[0].hooks[0].timeout = 49;
+    delete existingHooks.hooks.PreToolUse[0].hooks[0].timeout;
+    await writeFile(existingHooksPath, JSON.stringify(existingHooks));
     const notStopped = spawnSync(process.execPath, [...switchArgs, '--json'], { cwd: path.resolve('.'), env, encoding: 'utf8' });
     assert.notEqual(notStopped.status, 0);
     const setup = spawnSync(process.execPath, ['dist/bin/kiokuko.js', 'setup', '--clients', 'codex', '--no-embeddings', '--no-standard-skills', '--runtime-manifest', result.manifestPath, '--client-stopped', '--json'], {
@@ -46,6 +54,12 @@ test('runtime-prepare publishes a verified, independently launchable runtime', a
     assert.equal(setup.status, 0, setup.stdout + setup.stderr);
     const config = await readFile(path.join(root, 'codex', 'config.toml'), 'utf8');
     const hooks = JSON.parse(await readFile(path.join(root, 'codex', 'hooks.json'), 'utf8'));
+    assert.equal(hooks.hooks.Interrupt[0].hooks[0].timeout, 3);
+    assert.equal(hooks.hooks.Stop[0].hooks[0].timeout, 49);
+    assert.equal(Object.hasOwn(hooks.hooks.PreToolUse[0].hooks[0], 'timeout'), false);
+    const repeatedSwitch = spawnSync(process.execPath, [...switchArgs, '--client-stopped', '--json'], { env, encoding: 'utf8' });
+    assert.equal(repeatedSwitch.status, 0, repeatedSwitch.stdout + repeatedSwitch.stderr);
+    assert.deepEqual(JSON.parse(await readFile(existingHooksPath, 'utf8')), hooks);
     assert.ok(config.includes(JSON.stringify(result.nodePath)));
     assert.ok(config.includes(JSON.stringify([result.cliPath, 'mcp'])));
     for (const groups of Object.values(hooks.hooks) as Array<Array<{ hooks: Array<{ command: string }> }>>) {

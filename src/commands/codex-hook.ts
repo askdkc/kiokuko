@@ -12,6 +12,7 @@ import { codexHookDiagnostics } from '../assurance/hook-diagnostics.js';
 import { KiokukoError } from '../errors.js';
 import { MEMORY_RECOMMENDATION_INSTRUCTIONS } from '../memory/recommendation-instructions.js';
 import { syncCodexDockProject } from '../agenticreplay/codex-service.js';
+import { finishCodexRecording, spawnRecordingCompletion } from '../agenticreplay/codex-completion.js';
 
 /** Upgrade only an existing database; current-schema hooks avoid a full integrity scan. */
 async function openHookDatabase(databasePath: string) {
@@ -43,11 +44,12 @@ export function registerCodexHookCommand(cli: Command): void {
   cli.command('codex-hook').description('Handle a Codex lifecycle event from stdin')
     .requiredOption('--database <path>', 'Database used by the installed Kiokuko integration')
     .option('--codex-dock-record', 'Sync newly added Codex projects with an enabled recorder')
+    .option('--finish-recording', 'Complete the recorded host turn from stdin in a background worker')
     .option('--codex-config <path>', 'Codex profile configured by setup')
     .option('--diagnose-call <id>', 'Read bounded hook metadata for a call or Codex request ID; no stdin or task data')
     .option('--consider-candidates', 'Host-owned consideration of pending capture reservations for --root; no stdin')
     .option('--root <directory>', 'Repository root used by --consider-candidates', process.cwd())
-    .action(async (options: { database: string; diagnoseCall?: string; codexDockRecord?: boolean; codexConfig?: string; considerCandidates?: boolean; root?: string }) => {
+    .action(async (options: { database: string; diagnoseCall?: string; codexDockRecord?: boolean; codexConfig?: string; considerCandidates?: boolean; root?: string; finishRecording?: boolean }) => {
       let raw = '';
       let event: unknown;
       let eventName: ReturnType<typeof parseCodexHookInput>['hook_event_name'] | 'unknown' = 'unknown';
@@ -75,6 +77,12 @@ export function registerCodexHookCommand(cli: Command): void {
         event = JSON.parse(raw);
         const input = parseCodexHookInput(event);
         eventName = input.hook_event_name;
+        if (options.finishRecording) {
+          await finishCodexRecording(input);
+          return;
+        }
+        // Recording lifetime must not depend on memory DB availability or checkpoint review.
+        if (options.codexDockRecord) spawnRecordingCompletion(input, options.database);
         if (options.codexDockRecord && options.codexConfig && (input.hook_event_name === 'SessionStart' || input.hook_event_name === 'UserPromptSubmit')) {
           try { await syncCodexDockProject(input.cwd, options.codexConfig, options.database); }
           catch { process.stderr.write('Optional Codex project recording registration failed. Existing settings and ordinary work remain available.\n'); }

@@ -204,6 +204,67 @@ async function runCliJson(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, arg
   return JSON.parse(stdout) as { ok: boolean; data: Record<string, unknown> };
 }
 
+test('both setup CLI paths preserve hook timeouts through dry runs and repeated migration', async () => {
+  const temporary = await temporaryEnvironment('hook-timeouts');
+  const env = { ...temporary.env, CODEX_HOME: path.join(temporary.root, 'codex') };
+  const hookPath = path.join(env.CODEX_HOME, 'hooks.json');
+  const args = ['--clients', 'codex', '--no-embeddings', '--no-standard-skills', '--json'];
+  await runCliJson('linux', env, ['setup', ...args]);
+  const config = JSON.parse(await readFile(hookPath, 'utf8'));
+  assert.equal(config.hooks.Interrupt[0].hooks[0].timeout, 3);
+  config.hooks.Interrupt[0].hooks[0].timeout = 30;
+  config.hooks.Stop[0].hooks[0].timeout = 51;
+  delete config.hooks.PreToolUse[0].hooks[0].timeout;
+  const before = JSON.stringify(config);
+  await writeFile(hookPath, before);
+  for (const command of [['setup'], ['embeddings', 'setup']]) {
+    const snapshot = await readFile(hookPath, 'utf8');
+    await runCliJson('linux', env, [...command, ...args, '--dry-run']);
+    assert.equal(await readFile(hookPath, 'utf8'), snapshot);
+    assert.equal((await runCliJson('linux', env, [...command, ...args])).ok, true);
+    const migrated = await readFile(hookPath, 'utf8');
+    const result = JSON.parse(migrated);
+    assert.equal(result.hooks.Interrupt[0].hooks[0].timeout, 3);
+    assert.equal(result.hooks.Stop[0].hooks[0].timeout, 51);
+    assert.equal(Object.hasOwn(result.hooks.PreToolUse[0].hooks[0], 'timeout'), false);
+    await runCliJson('linux', env, [...command, ...args]);
+    assert.equal(await readFile(hookPath, 'utf8'), migrated);
+  }
+  const invalid = JSON.parse(await readFile(hookPath, 'utf8'));
+  invalid.hooks.Interrupt[0].hooks[0].timeout = '3';
+  await writeFile(hookPath, JSON.stringify(invalid));
+  const configPath = path.join(env.CODEX_HOME, 'config.toml');
+  const configBefore = await readFile(configPath, 'utf8');
+  await assert.rejects(setupGlobalClients({ clients: ['codex'], platform: 'linux', env,
+    command: '/changed/kiokuko', databasePath: temporary.databasePath, standardSkills: false }), /timeout/);
+  assert.equal(await readFile(hookPath, 'utf8'), JSON.stringify(invalid));
+  assert.equal(await readFile(configPath, 'utf8'), configBefore);
+});
+
+test('hook timeout migration preserves a concurrent edit and rolls back preceding writes', async () => {
+  const temporary = await temporaryEnvironment('hook-timeout-conflict');
+  const options = { clients: ['codex' as const], platform: 'linux' as const, env: temporary.env,
+    databasePath: temporary.databasePath, standardSkills: false };
+  await setupGlobalClients(options);
+  const hookPath = path.join(temporary.home, '.codex', 'hooks.json');
+  const configPath = path.join(temporary.home, '.codex', 'config.toml');
+  const configBefore = await readFile(configPath, 'utf8');
+  const hooks = JSON.parse(await readFile(hookPath, 'utf8'));
+  hooks.hooks.Interrupt[0].hooks[0].timeout = 30;
+  await writeFile(hookPath, JSON.stringify(hooks));
+  const concurrent = JSON.stringify({ ...hooks, description: 'concurrent edit' });
+  let injected = false;
+  await assert.rejects(setupGlobalClients({ ...options, command: '/changed/kiokuko' }, {
+    atomicWriteTextIfUnchanged: async (filePath, content, expectedContent, mode) => {
+      if (filePath === hookPath && !injected) { injected = true; await writeFile(hookPath, concurrent); }
+      return atomicWriteTextIfUnchanged(filePath, content, expectedContent, mode);
+    },
+  }), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+  assert.equal(injected, true);
+  assert.equal(await readFile(hookPath, 'utf8'), concurrent);
+  assert.equal(await readFile(configPath, 'utf8'), configBefore);
+});
+
 test('setup preserves both global-workspace initialization and database-close failures', async () => {
   const temporary = await temporaryEnvironment('workspace-dual-failure');
   const workspaceFailure = new Error('workspace-initialization-failure-sentinel');

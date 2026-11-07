@@ -52,11 +52,40 @@ export function codexDockRecordingConfigured(source: string, configPath: string)
       && (h as {command: string}).command.endsWith(` --codex-dock-record --codex-config ${shellQuote(configPath)}`));
   }));
 }
+/** Capture before removing managed hooks: absence is distinct from a new event. */
+function managedTimeouts(source: string): Map<string, number | undefined> {
+  const hooks = object(configuration(source).hooks);
+  const timeouts = new Map<string, number | undefined>();
+  for (const event of CODEX_ASSURANCE_EVENTS) {
+    const groups = hooks[event] ?? [];
+    if (!Array.isArray(groups)) throw new KiokukoError('VALIDATION_ERROR', 'Codex hook groups must be arrays');
+    for (const raw of groups) {
+      const group = object(raw);
+      if (!Array.isArray(group.hooks)) continue;
+      for (const hook of group.hooks.filter(owned)) {
+        const timeout: unknown = hook.timeout;
+        if (timeout !== undefined && (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout <= 0)) {
+          throw new KiokukoError('VALIDATION_ERROR', `Codex ${event} hook timeout must be a positive integer in seconds`);
+        }
+        if (timeouts.has(event) && timeouts.get(event) !== timeout) {
+          throw new KiokukoError('VALIDATION_ERROR', `Conflicting Codex ${event} hook timeouts`);
+        }
+        timeouts.set(event, timeout as number | undefined);
+      }
+    }
+  }
+  return timeouts;
+}
+function eventTimeout(event: string, existing: Map<string, number | undefined>): number | undefined {
+  if (event === 'Interrupt') return Math.min(existing.get(event) ?? 3, 3);
+  return existing.has(event) ? existing.get(event) : 30;
+}
 export function renderCodexAssuranceHooks(source: string, executable: string, database: string, runtime?: CodexHookRuntime, dockConfigPath?: string): string {
   for (const value of [executable, database, ...(runtime ? [runtime.node, runtime.script] : []), ...(dockConfigPath ? [dockConfigPath] : [])]) {
     if (!value.trim() || value.includes('\0')) throw new KiokukoError('VALIDATION_ERROR', 'Codex hook launch paths must be non-empty and contain no NUL');
   }
-  const config = configuration(removeCodexAssuranceHooks(source) ?? '');
+  const timeouts = managedTimeouts(source);
+  const config = configuration(source);
   const hooks = object(config.hooks);
   const launcher = runtime ? `${shellQuote(runtime.node)} ${shellQuote(runtime.script)}` : shellQuote(executable);
   const command = `${launcher} codex-hook --database ${shellQuote(database)}`
@@ -64,7 +93,21 @@ export function renderCodexAssuranceHooks(source: string, executable: string, da
   for (const event of CODEX_ASSURANCE_EVENTS) {
     const groups = hooks[event] ?? [];
     if (!Array.isArray(groups)) throw new KiokukoError('VALIDATION_ERROR', 'Codex hook groups must be arrays');
-    hooks[event] = [...groups, { hooks: [{ type: 'command', command, statusMessage: owner, timeout: 30 }] }];
+    const timeout = eventTimeout(event, timeouts);
+    const replacement = { type: 'command', command, statusMessage: owner, ...(timeout === undefined ? {} : { timeout }) };
+    let replaced = false;
+    hooks[event] = groups.flatMap(raw => {
+      const group = object(raw);
+      if (!Array.isArray(group.hooks) || !group.hooks.some(owned)) return [group];
+      const updated = group.hooks.flatMap(hook => {
+        if (!owned(hook)) return [hook];
+        if (replaced) return [];
+        replaced = true;
+        return [{ ...hook, ...replacement }];
+      });
+      return updated.length ? [{ ...group, hooks: updated }] : [];
+    });
+    if (!replaced) (hooks[event] as unknown[]).push({ hooks: [replacement] });
   }
   return JSON.stringify(config, null, 2) + '\n';
 }

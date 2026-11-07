@@ -12,7 +12,9 @@ export interface DesktopReplayBinding extends DesktopTurnIdentity {
   transcriptPath: string;
 }
 
-function readDesktopRollout(binding: DesktopReplayBinding, root: string) {
+const desktopOriginator = (value: unknown): boolean => value === 'codex_work_desktop' || value === 'Codex Desktop';
+
+function readDesktopRollout(binding: DesktopReplayBinding, root: string, lifecycleOnly = false) {
   let fd: number | undefined;
   try {
     const sessions = realpathSync(path.join(process.env.CODEX_HOME ?? path.join(homedir(), '.codex'), 'sessions'));
@@ -28,13 +30,15 @@ function readDesktopRollout(binding: DesktopReplayBinding, root: string) {
     const session = object(header?.payload);
     if (header?.type !== 'session_meta' || session?.id !== binding.sessionId || typeof session.cwd !== 'string'
       || realpathSync(session.cwd) !== root) return null;
+    if (!desktopOriginator(session.originator)) return null;
+    if (lifecycleOnly) return { session, entries: readLifecycleEntries(fd, stat.size, binding.turnId) };
     const offset = Math.max(0, stat.size - 8 * 1024 * 1024);
     const tail = Buffer.alloc(stat.size - offset);
     if (readSync(fd, tail, 0, tail.length, offset) !== tail.length || tail[tail.length - 1] !== 10) return null;
     const lines = tail.subarray(offset === 0 ? 0 : tail.indexOf(10) + 1, -1).toString('utf8').split('\n');
     if (lines.length > 16_384) return null;
     const entries: unknown[] = lines.map(line => JSON.parse(line));
-    if (session.originator !== 'codex_work_desktop') return null;
+    if (!desktopOriginator(session.originator)) return null;
     return { session, entries };
   } catch {
     return null;
@@ -129,12 +133,75 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/** Scan from the beginning with bounded memory, retaining only this turn's lifecycle. */
+function readLifecycleEntries(fd: number, size: number, turnId: string): unknown[] {
+  if (size > 512 * 1024 * 1024) throw new Error('transcript_read_bound');
+  const entries: unknown[] = [];
+  const buffer = Buffer.alloc(64 * 1024);
+  let parts: Buffer[] = [];
+  let length = 0;
+  for (let offset = 0; offset < size;) {
+    const count = readSync(fd, buffer, 0, Math.min(buffer.length, size - offset), offset);
+    if (!count) throw new Error('transcript_changed');
+    offset += count;
+    let from = 0;
+    for (let newline = buffer.subarray(0, count).indexOf(10, from); newline !== -1; newline = buffer.subarray(0, count).indexOf(10, from)) {
+      const segment = buffer.subarray(from, newline);
+      length += segment.length;
+      if (length > 16 * 1024 * 1024) throw new Error('transcript_line_bound');
+      const line = Buffer.concat([...parts, segment], length);
+      const row = object(JSON.parse(line.toString('utf8')));
+      const payload = object(row?.payload);
+      if (payload?.turn_id === turnId && (row?.type === 'turn_context'
+        || (row?.type === 'event_msg' && ['task_started', 'task_complete', 'turn_aborted'].includes(String(payload.type))))) {
+        if (entries.length >= 4096) throw new Error('lifecycle_entry_bound');
+        entries.push(row);
+      }
+      parts = []; length = 0; from = newline + 1;
+    }
+    if (from < count) { const rest = Buffer.from(buffer.subarray(from, count)); parts.push(rest); length += rest.length; }
+    if (length > 16 * 1024 * 1024) throw new Error('transcript_line_bound');
+  }
+  if (length) throw new Error('transcript_incomplete_line');
+  return entries;
+}
+
+/** Recording completion is independent of memory checkpoints and proposal extraction. */
+export function readDesktopTurnOutcome(binding: DesktopReplayBinding, root: string): 'completed' | 'interrupted' | null {
+  const rollout = readDesktopRollout(binding, root, true);
+  if (!rollout) return null;
+  let started = false;
+  let workspace = false;
+  let interrupted = false;
+  for (const entry of rollout.entries) {
+    const row = object(entry);
+    const event = object(row?.payload);
+    if (event?.turn_id !== binding.turnId) continue;
+    if (row?.type === 'event_msg' && event.type === 'task_started') {
+      if (started || event.root_turn_id !== binding.turnId
+        || !Number.isSafeInteger(event.started_at)) return null;
+      started = true;
+    }
+    if (!started) continue;
+    if (row?.type === 'turn_context') {
+      try {
+        if (typeof event.cwd !== 'string' || realpathSync(event.cwd) !== root) return null;
+      } catch { return null; }
+      workspace = true;
+    }
+    if (row?.type === 'event_msg' && event.type === 'turn_aborted') interrupted = true;
+  }
+  if (!started || !workspace) return null;
+  if (interrupted) return 'interrupted';
+  return completedDesktopTurn(rollout.session, rollout.entries, binding) ? 'completed' : null;
+}
+
 /** A Stop hook can continue the turn. Only the host's terminal event establishes completion. */
 export function completedDesktopTurn(
   session: unknown, entries: readonly unknown[], identity: DesktopTurnIdentity,
 ): CompletedDesktopTurn | null {
   const meta = object(session);
-  if (meta?.originator !== 'codex_work_desktop' || meta.id !== identity.sessionId) return null;
+  if (!desktopOriginator(meta?.originator) || meta?.id !== identity.sessionId) return null;
   let startedAt: number | undefined;
   let completedAt: number | undefined;
   for (const entry of entries) {

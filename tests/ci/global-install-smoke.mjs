@@ -204,9 +204,27 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
   const created = await setup();
   await verifyInstalledAgentComments(cliPath, fixtureRoot, environment);
   const installedHooks = JSON.parse(await readFile(hookPath, 'utf8')).hooks;
+  assert.equal(installedHooks.Interrupt[0].hooks[0].timeout, 3);
   assert.deepEqual(installedHooks.Stop[0], userHook);
   for (const event of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'Interrupt', 'SubagentStart', 'SubagentStop', 'PostCompact']) {
     assert.ok(installedHooks[event].some(group => group.hooks.some(hook => hook.command.includes(' codex-hook --database '))), `Installed hook missing: ${event}`);
+  }
+  const customized = JSON.parse(await readFile(hookPath, 'utf8'));
+  customized.hooks.Interrupt[0].hooks[0].timeout = 30;
+  customized.hooks.Stop[1].hooks[0].timeout = 53;
+  delete customized.hooks.PreToolUse[0].hooks[0].timeout;
+  await writeFile(hookPath, JSON.stringify(customized));
+  for (const prefix of [[], ['embeddings']]) {
+    const before = await readFile(hookPath, 'utf8');
+    await run(cliPath, [...prefix, ...args, '--dry-run'], fixtureRoot, environment);
+    assert.equal(await readFile(hookPath, 'utf8'), before);
+    await run(cliPath, [...prefix, ...args], fixtureRoot, environment);
+    const migrated = await readFile(hookPath, 'utf8');
+    const expectedHooks = structuredClone(customized);
+    expectedHooks.hooks.Interrupt[0].hooks[0].timeout = 3;
+    assert.deepEqual(JSON.parse(migrated), expectedHooks);
+    await run(cliPath, [...prefix, ...args], fixtureRoot, environment);
+    assert.equal(await readFile(hookPath, 'utf8'), migrated);
   }
   if (process.platform !== 'win32') {
     const pinnedEnvironment = { ...environment, CODEX_HOME: path.join(fixtureRoot, 'pinned-codex') };
@@ -287,7 +305,9 @@ async function verifyInstalledSkillSetup(cliPath, installedRoot, fixtureRoot, pa
     beforeRepeat.set(file, { ino: snapshot.ino, mtimeNs: snapshot.mtimeNs });
   }
   await verifyFiles(await setup(), new Map([...expected.keys()].map((file) => [file, 'unchanged'])));
-  assert.deepEqual(JSON.parse(await readFile(hookPath, 'utf8')).hooks, installedHooks);
+  const preservedHooks = structuredClone(customized.hooks);
+  preservedHooks.Interrupt[0].hooks[0].timeout = 3;
+  assert.deepEqual(JSON.parse(await readFile(hookPath, 'utf8')).hooks, preservedHooks);
   for (const [file, before] of beforeRepeat) {
     const after = await stat(file, { bigint: true });
     assert.deepEqual({ ino: after.ino, mtimeNs: after.mtimeNs }, before, file);

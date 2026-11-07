@@ -28,3 +28,9 @@ test('fails closed for partial, interrupted, duplicate, foreign and non-desktop 
   const child = event('task_complete', { turn_id: turnId, root_turn_id: 'parent-turn', completed_at: 11 });
   assert.equal(completedDesktopTurn(session, [start, child], identity), null);
 });
+
+test('accepts the current Codex Desktop originator from host session metadata', () => {
+  assert.deepEqual(completedDesktopTurn({ ...session, originator: 'Codex Desktop' }, [start, complete], identity), {
+    sessionId, turnId, startedAt: 10, completedAt: 11,
+  });
+});
