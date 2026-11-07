@@ -1,3 +1,5 @@
+import { types } from 'node:util';
+
 export type ErrorCode =
   | 'USAGE_ERROR'
   | 'VALIDATION_ERROR'
@@ -26,6 +28,17 @@ const EXIT_CODES: Record<ErrorCode, number> = {
   PARTIAL_FAILURE: 9,
   NOT_IMPLEMENTED: 2,
 };
+
+export function isErrorCode(value: unknown): value is ErrorCode {
+  return typeof value === 'string' && Object.hasOwn(EXIT_CODES, value);
+}
+
+/** Read only data properties of real errors, without invoking getters or Proxy traps. */
+export function nativeErrorData(error: unknown, key: 'code' | 'errcode' | 'message'): unknown {
+  if (types.isProxy(error) || !types.isNativeError(error)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(error, key);
+  return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+}
 
 export class KiokukoError extends Error {
   readonly exitCode: number;

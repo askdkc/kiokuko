@@ -1,5 +1,6 @@
 import type { SqliteDatabase } from '../db/adapter.js';
 import { KiokukoError } from '../errors.js';
+import { hookFailureSchema } from './hook-failure.js';
 
 /** Read only the bounded protocol metadata for an operator-provided call ID. */
 export function codexHookDiagnostics(db: SqliteDatabase, correlationId: string): object {
@@ -14,7 +15,9 @@ export function codexHookDiagnostics(db: SqliteDatabase, correlationId: string):
     retention: 'Last 1000 hook observations; at most 20 matching events. Absence is not proof an event never occurred.',
     events: rows.reverse().map(row => {
       const metadata = JSON.parse(row.response_shape) as Record<string, unknown>;
+      const failure = hookFailureSchema.safeParse(metadata.failure);
       return { event: row.event_name, tool: row.tool_name, correlationId: metadata.call ?? null, decision: row.decision, reason: row.reason, observedAt: row.observed_at,
+        ...(failure.success ? { failure: failure.data } : {}),
         execution: metadata.execution ?? { occurred: row.event_name === 'PostToolUse', completionRecorded: null, exitCode: null },
         recoverable: metadata.recoverable ?? null, nextAction: metadata.nextAction ?? null,
         contract: {id: metadata.contractId ?? null, version: metadata.contractVersion ?? null},

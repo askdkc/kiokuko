@@ -1,4 +1,4 @@
-import { KiokukoError } from '../errors.js';
+import { KiokukoError, nativeErrorData } from '../errors.js';
 
 const LOCK_ATTEMPT_LIMIT = 5;
 const SQLITE_BUSY = 5;
@@ -10,17 +10,9 @@ const SQLITE_CONSTRAINT_UNIQUE = 2067;
 const SQLITE_OPERATIONAL_CODES = new Set([SQLITE_BUSY, SQLITE_LOCKED, 8, 10, 13, 14]);
 
 function sqliteErrorCode(error: unknown): number | undefined {
-  if (!(error instanceof Error)) return undefined;
-  const sqliteError = error as Error & { code?: unknown; errcode?: unknown };
-  if (
-    sqliteError.code !== 'ERR_SQLITE_ERROR'
-    || typeof sqliteError.errcode !== 'number'
-    || !Number.isSafeInteger(sqliteError.errcode)
-    || sqliteError.errcode < 0
-  ) {
-    return undefined;
-  }
-  return sqliteError.errcode;
+  if (nativeErrorData(error, 'code') !== 'ERR_SQLITE_ERROR') return undefined;
+  const code = nativeErrorData(error, 'errcode');
+  return typeof code === 'number' && Number.isSafeInteger(code) && code >= 0 ? code : undefined;
 }
 
 /** Match only node:sqlite errors whose SQLite primary result code is BUSY or LOCKED. */

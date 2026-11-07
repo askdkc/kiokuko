@@ -648,6 +648,181 @@ test('hook diagnostics distinguish an unpaired completion without exposing its c
     assert.match(invalid.stderr, /validation_unavailable/u);
   } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
 });
+test('adapter errors record the failed stage without changing execution evidence', async () => {
+  const f = await boundHookFixture();
+  const secret = 'private-hook-payload\nforged log line';
+  const fault = (code: string) => Object.assign(new Error(secret), { name: secret, code, cause: { secret } });
+  try {
+    const cases = [
+      { stage: 'event_parse', error: fault('unrecognized-' + secret), errorClass: 'error', errorCode: 'unknown', requestDerived: false,
+        response: (error: unknown) => ({ get content() { throw error; } }) },
+      { stage: 'binding_resolve', error: fault('EACCES'), errorClass: 'system', errorCode: 'EACCES', requestDerived: true,
+        sql: 'SELECT * FROM codex_hook_requests', occurrence: 1 },
+      { stage: 'event_handle', error: fault('EPERM'), errorClass: 'system', errorCode: 'EPERM', requestDerived: true,
+        sql: 'UPDATE codex_hook_requests SET last_event', occurrence: 1 },
+      { stage: 'completion_prepare', error: fault('EROFS'), errorClass: 'system', errorCode: 'EROFS', requestDerived: true,
+        response: (error: unknown) => {
+          let reads = 0;
+          return { exit_code: 0, get content() { if (++reads > 1) throw error; return undefined; } };
+        } },
+      { stage: 'completion_binding', error: fault('ENOSPC'), errorClass: 'system', errorCode: 'ENOSPC', requestDerived: true,
+        sql: 'SELECT * FROM codex_hook_requests', occurrence: 2 },
+      { stage: 'receipt_save', error: fault('ENOSPC'), errorClass: 'system', errorCode: 'ENOSPC', requestDerived: true,
+        sql: 'INSERT INTO task_execution_evidence', occurrence: 1 },
+    ];
+    for (const { stage, error, errorClass, errorCode, requestDerived, response, sql, occurrence } of cases) {
+      const call = { ...f.event(stage), tool_name: 'Bash', tool_input: { cmd: secret } };
+      handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
+      let attempts = 0;
+      const faulty = new Proxy(f.db, { get(target, key) {
+        if (key === 'prepare') return (query: string) => {
+          if (sql && occurrence !== undefined && query.startsWith(sql) && ++attempts >= occurrence) throw error;
+          return target.prepare(query);
+        };
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      assert.throws(() => handleCodexHook(faulty, { ...call, hook_event_name: 'PostToolUse',
+        tool_response: response ? response(error) : { exit_code: 0, output: secret } }), caught => caught === error);
+      assert.equal(attempts, occurrence ?? 0, stage);
+      const row = f.db.prepare('SELECT response_shape FROM codex_hook_observations ORDER BY rowid DESC LIMIT 1').get<{ response_shape: string }>()!;
+      assert.doesNotMatch(row.response_shape, /private-hook-payload|forged log line/u);
+      const diagnostic = lastHookDiagnostic(f.db);
+      assert.equal(diagnostic.decision, 'adapter_error');
+      assert.equal(diagnostic.reason, 'adapter_error');
+      assert.deepEqual(diagnostic.failure, { stage, errorClass, errorCode });
+      assert.equal(typeof JSON.parse(row.response_shape).request === 'string', requestDerived, stage);
+      assert.equal(diagnostic.execution.occurred, true);
+      assert.equal(diagnostic.execution.completionRecorded, false);
+    }
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get()!.n, 0);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('receipt and diagnostic failures preserve the original thrown value and never retry completion', async () => {
+  const f = await boundHookFixture();
+  const privateText = 'private-error-code\nforged line';
+  const circular = { code: 'EACCES', privateText, cause: {} };
+  circular.cause = circular;
+  let traps = 0;
+  const trap = () => { traps += 1; throw new Error(privateText); };
+  const getter = Object.defineProperty(new Error(privateText), 'code', { get: trap });
+  const proxy = new Proxy(new Error(privateText), { get: trap, has: trap, getPrototypeOf: trap, getOwnPropertyDescriptor: trap });
+  const proxyPrototype = Object.setPrototypeOf(Object.assign(new Error(privateText), { code: 'CONFLICT' }), proxy);
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  try {
+    const cases = [
+      { error: circular, errorClass: 'unknown' },
+      { error: { code: 'ERR_SQLITE_ERROR', errcode: 5 }, errorClass: 'unknown' },
+      { error: privateText, errorClass: 'unknown' },
+      { error: getter, errorClass: 'error' },
+      { error: proxy, errorClass: 'unknown' },
+      { error: proxyPrototype, errorClass: 'error' },
+      { error: Object.assign(new Error(privateText), { code: proxy }), errorClass: 'error' },
+      { error: revoked.proxy, errorClass: 'unknown' },
+    ];
+    for (const [index, { error, errorClass }] of cases.entries()) {
+      const call = f.event(`receipt-fault-${index}`);
+      handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
+      let writes = 0;
+      let diagnosticWrites = 0;
+      const dropDiagnostic = index === cases.length - 1;
+      const faulty = new Proxy(f.db, { get(target, key) {
+        if (key === 'prepare') return (sql: string) => {
+          if (sql.startsWith('INSERT INTO task_execution_evidence')) {
+            writes += 1;
+            throw error;
+          }
+          if (sql.startsWith('INSERT INTO codex_hook_observations')) {
+            diagnosticWrites += 1;
+            if (dropDiagnostic) throw new Error(privateText);
+          }
+          return target.prepare(sql);
+        };
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      const before = f.db.prepare('SELECT COUNT(*) AS n FROM codex_hook_observations').get()!.n as number;
+      assert.throws(() => handleCodexHook(faulty, { ...call, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } }),
+        caught => caught === error);
+      assert.equal(writes, 1);
+      assert.equal(diagnosticWrites, 1);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM codex_hook_observations').get()!.n, before + Number(!dropDiagnostic));
+      if (!dropDiagnostic) {
+        const diagnostic = lastHookDiagnostic(f.db);
+        assert.deepEqual(diagnostic.failure, { stage: 'receipt_save', errorClass, errorCode: 'unknown' });
+        assert.equal(diagnostic.execution.completionRecorded, false);
+        assert.doesNotMatch(JSON.stringify(diagnostic), /private-error-code|forged line/u);
+      }
+    }
+    assert.equal(traps, 0);
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get()!.n, 0);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('the hook CLI reads legacy and new diagnostics without leaking invalid input', async () => {
+  const f = await boundHookFixture();
+  const privatePath = path.join(f.base, 'private-missing-directory');
+  const call = { ...f.event('cli-adapter-fault'), tool_name: 'Bash', hook_event_name: 'PostToolUse', cwd: privatePath };
+  const id = codexHookCorrelationId(call);
+  const cli = (args: string[], input?: string) => spawnSync(process.execPath,
+    ['--import', 'tsx', 'src/bin/kiokuko.ts', 'codex-hook', '--database', f.databasePath, ...args],
+    { cwd: process.cwd(), input, encoding: 'utf8' });
+  try {
+    f.db.prepare('INSERT INTO codex_hook_observations VALUES (?, ?, ?, ?, ?, ?)')
+      .run('legacy-adapter-fault', 'PostToolUse', 'Bash', JSON.stringify({ call: id, reason: 'adapter_error' }), 'adapter_error', new Date().toISOString());
+    const fault = cli([], JSON.stringify(call));
+    assert.equal(fault.status, 0);
+    assert.match(acceptCodexToolHook(fault.stdout, 'PostToolUse').systemMessage!, /reason=adapter_error.*do not rerun/u);
+    assert.doesNotMatch(fault.stdout + fault.stderr, /private-missing-directory/u);
+    const result = cli(['--diagnose-call', id]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), codexHookDiagnostics(f.db, id));
+    const [legacy, current] = JSON.parse(result.stdout).events;
+    assert.equal(legacy.failure, undefined);
+    assert.deepEqual(legacy.execution, { occurred: true, completionRecorded: null, exitCode: null });
+    assert.deepEqual(current.failure, { stage: 'binding_resolve', errorClass: 'system', errorCode: 'ENOENT' });
+    assert.deepEqual(current.execution, { occurred: true, completionRecorded: false, exitCode: null });
+    assert.doesNotMatch(result.stdout, /private-missing-directory/u);
+    const invalid = cli([], JSON.stringify({ ...call, hook_event_name: 'private-invalid-event\nforged line' }));
+    assert.equal(invalid.status, 0);
+    assert.match(invalid.stderr, /event=unknown stage=event reason=validation_unavailable/u);
+    assert.doesNotMatch(invalid.stdout + invalid.stderr, /private-invalid-event|forged line/u);
+    assert.equal((codexHookDiagnostics(f.db, id) as any).events.length, 2);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
+test('receipt commit failures leave no completion and preserve SQLite error routing', async () => {
+  const f = await boundHookFixture();
+  try {
+    for (const [errcode, errorCode] of [[8 | (3 << 8), 'SQLITE_READONLY'], [13, 'SQLITE_FULL']] as const) {
+      const call = f.event(errorCode);
+      handleCodexHook(f.db, { ...call, hook_event_name: 'PreToolUse' });
+      const error = Object.assign(new Error('private-sqlite-message'), { code: 'ERR_SQLITE_ERROR', errcode });
+      let commits = 0;
+      const faulty = new Proxy(f.db, { get(target, key) {
+        if (key === 'exec') return (sql: string) => {
+          if (sql === 'COMMIT' && ++commits === 1) throw error;
+          return target.exec(sql);
+        };
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      const result = handleCodexHook(faulty, { ...call, hook_event_name: 'PostToolUse', tool_response: { exit_code: 0 } });
+      assert.match(acceptCodexToolHook(JSON.stringify(result), 'PostToolUse').systemMessage!, /database_error.*do not rerun/u);
+      assert.equal(commits, 2); // One failed receipt commit and one diagnostic commit.
+      const diagnostic = lastHookDiagnostic(f.db);
+      assert.equal(diagnostic.decision, 'adapter_error');
+      assert.equal(diagnostic.reason, 'database_error');
+      assert.deepEqual(diagnostic.failure, { stage: 'receipt_save', errorClass: 'sqlite', errorCode });
+      assert.deepEqual(diagnostic.execution, { occurred: true, completionRecorded: false, exitCode: 0 });
+      assert.doesNotMatch(JSON.stringify(diagnostic), /private-sqlite-message/u);
+    }
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM task_execution_evidence').get()!.n, 0);
+  } finally { f.db.close(); rmSync(f.base, { recursive: true, force: true }); }
+});
+
 test('observation write failure does not replace a completed hook result', async () => {
   const f = await boundHookFixture();
   const call = f.event('observation-failure');

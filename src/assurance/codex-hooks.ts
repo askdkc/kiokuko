@@ -19,6 +19,11 @@ import { repositoryStateDigest } from './snapshot.js';
 import { parseAssurance } from './contracts.js';
 import { readCodexCommandReceipt } from './codex-command-receipt.js';
 import { readDesktopCheckpoint } from './codex-desktop-turn.js';
+import { describeHookFailure, type HookFailure } from './hook-failure.js';
+import { cancelCaptureReservation, captureCandidateNotification, recordCaptureReservation } from '../memory/capture-reservations.js';
+import { existsSync } from 'node:fs';
+
+export { codexHookFailureCode } from './hook-failure.js';
 
 export const CODEX_HOOK_LIMITATION = 'Hooks cover supported client paths only. They do not isolate execution, control an already running process or retract an emitted response. Configuration is not proof of active runtime enforcement.';
 const bounded = z.string().min(1).max(500);
@@ -110,10 +115,17 @@ function checkoutFreeHook(input: z.infer<typeof hookSchema>): object {
   if (!operation) return { systemMessage: 'No Git checkout is available for optional Kiokuko preparation. Unrelated authorized coding may continue; no project memory binding or verified record is inferred.' };
   return deny('Project operations require an existing Git checkout. Ordinary conversation can use global memory and bundled Skill reads.', 'repository_required', true);
 }
+interface HookObserver {
+  stage(stage: HookFailure['stage']): void;
+  request(requestId: string): void;
+  exit(source: string, exitCode: number): void;
+}
 /** stdin must come from the installed client hook. Session IDs supplied to model-facing APIs grant no authority. */
-function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requestId: string) => void, onExitSource: (source: string, exitCode: number) => void): object {
-  const input = parseCodexHookInput(raw);
+function handleCodexHookEvent(db: SqliteDatabase, input: z.infer<typeof hookSchema>, observe: HookObserver,
+  onReservationCreated?: (info: { eventId: string; repositoryRoot: string }) => void): object {
+  observe.stage('event_handle');
   if (input.hook_event_name === 'SessionStart') return context('SessionStart', MEMORY_RECOMMENDATION_INSTRUCTIONS);
+  observe.stage('binding_resolve');
   const cwd = realpathSync(input.cwd);
   let root: string;
   try {
@@ -131,7 +143,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
   }
   const identity = canonicalContentHash({ session: input.session_id, turn: input.turn_id, agent: input.agent_id ?? 'main', root });
   const requestId = `codex-${identity}`;
-  onBinding(requestId);
+  observe.request(requestId);
   const now = new Date().toISOString();
   const memoryOnlyConditions = new Set(['preparation_required', 'request_not_observed', 'intake_pending',
     'preparation_binding_missing', 'memory_stale', 'memory_review_pending', 'state_changed', 'task_record_terminal']);
@@ -161,6 +173,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
     return deny(reason, code);
   };
   let request = db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest = ?').get<HookRequest>(identity);
+  observe.stage('event_handle');
   if (input.hook_event_name === 'UserPromptSubmit' || input.hook_event_name === 'SubagentStart') {
     if (request?.stop_notified) return stopTurn(input.hook_event_name);
     withImmediateTransaction(db, () => {
@@ -198,25 +211,51 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
         if (run && (run.status === 'active' || run.status === 'intake')) store.updateRunStatusInTransaction(run.runId, 'interrupted', now);
       }
     });
+    // User interruption cancels the pending candidate reservation for this turn.
+    try { cancelCaptureReservation(db, { sessionId: input.session_id, turnId: input.turn_id, agentId: input.agent_id, now }); }
+    catch { /* Cancellation is best effort; the observation above is authoritative. */ }
     return {}; // Never request continuation after cancellation.
   }
   if (request.state === 'cancelled') return input.hook_event_name === 'PreToolUse' ? denyTurn('Request was interrupted', 'request_interrupted') : {};
   if (request.stop_notified) return input.hook_event_name === 'PreToolUse' ? deny('This turn already had a policy denial.') : stopTurn(input.hook_event_name);
   if (input.hook_event_name === 'Stop' || input.hook_event_name === 'SubagentStop') {
+    let desktopCheckpointCompleted = false;
     if (input.hook_event_name === 'Stop' && !input.agent_id
       && typeof input.transcript_path === 'string' && input.transcript_path.length <= 4096
       && path.isAbsolute(input.transcript_path)) {
       const binding = { sessionId: input.session_id, turnId: input.turn_id, transcriptPath: input.transcript_path };
       const replayRunId = readDesktopCheckpoint(binding, root);
+      const replayStatus = replayRunId ? new LedgerStore(db).readRun(replayRunId)?.status : undefined;
+      desktopCheckpointCompleted = replayStatus === 'completed';
       if (replayRunId && (!request.run_id || request.run_id === replayRunId)
-        && ['completed', 'failed'].includes(new LedgerStore(db).readRun(replayRunId)?.status ?? '')) {
+        && ['completed', 'failed'].includes(replayStatus ?? '')) {
         db.prepare(`INSERT INTO codex_desktop_replay_bindings
           (run_id, identity_digest, session_id, turn_id, transcript_path)
           VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`)
           .run(replayRunId, identity, binding.sessionId, binding.turnId, binding.transcriptPath);
       }
     }
-    if (!request.run_id) return {}; // Ordinary conversation never required a run.
+    if (!request.run_id) {
+      // Ordinary conversation never required a run, but its completion still
+      // reserves candidate consideration. Model-run completions are skipped:
+      // that flow already performs its own memory processing.
+      if (input.hook_event_name === 'Stop' && !input.agent_id && !desktopCheckpointCompleted) {
+        try {
+          const reservation = recordCaptureReservation(db, {
+            sessionId: input.session_id, turnId: input.turn_id, agentId: input.agent_id, repositoryRoot: root,
+            ...(typeof input.transcript_path === 'string' && input.transcript_path.length <= 4096
+              && path.isAbsolute(input.transcript_path) ? { transcriptPath: input.transcript_path } : {}),
+            runsDirectoryPresent: existsSync(path.join(root, '.agenticreplay', 'runs')), now,
+          });
+          if (reservation.created) onReservationCreated?.({ eventId: reservation.eventId, repositoryRoot: root });
+        } catch { /* Reservation failure never blocks the completed turn. */ }
+      }
+      try {
+        const notification = captureCandidateNotification(db, root, now);
+        if (notification) return { systemMessage: notification };
+      } catch { /* Notification is best effort. */ }
+      return {};
+    }
     const run = new LedgerStore(db).readRun(request.run_id);
     // Terminal completion was already gated transactionally by the domain service.
     if (run && ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status)) return {};
@@ -351,15 +390,17 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
     && request.run_id && record(input.tool_response).isError !== true
     && new LedgerStore(db).readRun(request.run_id)?.status === 'active') return memoryStepContext(db, request.run_id, root);
   if (operation || !request.run_id) return {};
+  observe.stage('completion_prepare');
   const response = responseData(input.tool_response);
   // Unknown or unfinished client result shapes must never become passing evidence.
   const directExit = observedExitCode(input.tool_response);
   const receipt = directExit === null && typeof input.tool_response === 'string' ? readCodexCommandReceipt(input, root) : null;
   const exitCode = directExit ?? receipt?.exitCode ?? null;
-  if (exitCode !== null) onExitSource(receipt ? 'host_command_receipt' : 'structured_response', exitCode);
+  if (exitCode !== null) observe.exit(receipt ? 'host_command_receipt' : 'structured_response', exitCode);
   // Each completion reads its own call and the current assurance revision under
   // the writer lock. A different call may have advanced that revision already.
-  return withImmediateTransaction(db, () => {
+  const complete = () => {
+    observe.stage('completion_binding');
     const current = db.prepare('SELECT * FROM codex_hook_requests WHERE identity_digest = ?').get<HookRequest>(identity);
     if (current?.stop_notified) return stopTurn('PostToolUse');
     const admitted = db.prepare('SELECT * FROM codex_hook_tools WHERE identity_digest = ? AND call_id = ?').get<HookCall>(identity, input.tool_use_id!);
@@ -388,6 +429,7 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
     if (!run || run.status !== 'active') throw new KiokukoError('CONFLICT', 'Tool completion belongs to a terminal run');
     const state = assuranceState(db, current.run_id!);
     if (!state || state.repository_root !== root) throw new KiokukoError('CONFLICT', 'Tool completion repository changed');
+    observe.stage('receipt_save');
     if (input.tool_name === 'write_stdin' && receipt) {
       db.prepare('INSERT INTO codex_hook_processes VALUES(?,?,?) ON CONFLICT DO NOTHING')
         .run(identity,receipt.processId,call.call_id);
@@ -416,8 +458,10 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
       return context('PostToolUse', `Execution evidence: ${call.evidence_id}`);
     }
     let digest: string;
+    observe.stage('completion_prepare');
     try { digest = repositoryStateDigest(root); }
     catch { throw new KiokukoError('SERVICE_UNAVAILABLE', 'Repository state digest unavailable'); }
+    observe.stage('receipt_save');
     if (digest !== call.state_digest) {
       if (!call.post_state_digest) {
         db.prepare('UPDATE task_assurance SET observed_changes=1, observed_state_digest=?, revision=revision+1 WHERE run_id=? AND observed_state_digest IS NOT ?').run(digest,current.run_id,digest);
@@ -450,56 +494,63 @@ function handleCodexHookEvent(db: SqliteDatabase, raw: unknown, onBinding: (requ
     db.prepare('UPDATE codex_hook_tools SET completion_state=? WHERE identity_digest=? AND call_id=?').run('completed',identity,call.call_id);
     db.prepare("INSERT INTO task_execution_observations(run_id,structured_exit_calls,last_exit_metadata) VALUES(?,1,'available') ON CONFLICT(run_id) DO UPDATE SET structured_exit_calls=structured_exit_calls+1,last_exit_metadata='available'").run(current.run_id);
     return context('PostToolUse', `Execution evidence: ${evidenceId}; outcome: ${outcome}.${outcome === 'passed' && (taskAssuranceReport(db, current.run_id!).missingVerification.length || taskAssuranceReport(db, current.run_id!).verification.checks.some(check => check.status !== 'passed')) ? ' Link it to the unresolved verification requirement.' : ''}`);
+  };
+  observe.stage('receipt_save');
+  return withImmediateTransaction(db, () => {
+    const result = complete();
+    observe.stage('receipt_save'); // COMMIT can fail after the completion body returns.
+    return result;
   });
 }
 
-/** Record protocol shape and decision only, never arguments or tool output. */
-export function handleCodexHook(db: SqliteDatabase, raw: unknown): object {
-  const input = parseCodexHookInput(raw);
+function hookObservationShape(input: z.infer<typeof hookSchema>) {
   const response = record(input.tool_response);
   const args = record(input.tool_input);
   const hostFields = Object.fromEntries(['exit_code','exitCode','tool_execution','tool_result','tool_response_metadata','execution_metadata','transcript_path']
     .map(key => [key, typeof input[key]]));
-  const shape = { request: null as string | null, hostFields, execution: { occurred: input.hook_event_name === 'PostToolUse', completionRecorded: false, exitCode: observedExitCode(input.tool_response) }, hasArguments: !!args.arguments, hasParameters: !!args.parameters, hasRequestId: !!args.requestId, hasSoulRead: !!args.soulRead, type: typeof input.tool_response, structured: !!response.structuredContent,
-    content: Array.isArray(response.content), exitCode: typeof response.exit_code, exitMetadata: observedExitCode(input.tool_response) === null ? 'unavailable' : 'structured', exitSource:'unavailable', exitAdapter: CODEX_EXECUTION_ADAPTER.id, contractVersion: INTEGRATION_CONTRACT.version, contractId: INTEGRATION_CONTRACT.id, hookPackageVersion: PACKAGE_VERSION, status: typeof response.status };
-  const save = (decision: string, reason?: string, recovery?: Record<string, unknown>) => withImmediateTransaction(db, () => {
-    const diagnostic = { ...shape, reason, recoverable: recovery?.recoverable, nextAction: recovery?.nextAction, call: codexHookCorrelationId(input) };
+  return { hostFields, hasArguments: !!args.arguments, hasParameters: !!args.parameters, hasRequestId: !!args.requestId, hasSoulRead: !!args.soulRead, type: typeof input.tool_response, structured: !!response.structuredContent,
+    content: Array.isArray(response.content), exitCode: typeof response.exit_code, status: typeof response.status };
+}
+
+/** Record bounded protocol metadata and decisions, never arguments or tool output. */
+export function handleCodexHook(db: SqliteDatabase, raw: unknown, hooks?: { onReservationCreated?: (info: { eventId: string; repositoryRoot: string }) => void }): object {
+  // A validated event envelope is required to associate a database observation.
+  const input = parseCodexHookInput(raw);
+  const call = codexHookCorrelationId(input);
+  let stage: HookFailure['stage'] = 'event_parse';
+  let request: string | null = null;
+  let shape: ReturnType<typeof hookObservationShape> | undefined;
+  let exitSource = 'unavailable';
+  const execution = { occurred: input.hook_event_name === 'PostToolUse', completionRecorded: false, exitCode: null as number | null };
+  const save = (decision: string, reason?: string, recovery?: Record<string, unknown>, failure?: HookFailure) => withImmediateTransaction(db, () => {
+    const diagnostic = { ...shape, request, execution, exitSource, exitMetadata: execution.exitCode === null ? 'unavailable' : 'structured',
+      exitAdapter: CODEX_EXECUTION_ADAPTER.id, contractVersion: INTEGRATION_CONTRACT.version, contractId: INTEGRATION_CONTRACT.id,
+      hookPackageVersion: PACKAGE_VERSION, reason, recoverable: recovery?.recoverable, nextAction: recovery?.nextAction, call, failure };
     db.prepare('INSERT INTO codex_hook_observations VALUES (?, ?, ?, ?, ?, ?)')
       .run(randomUUID(), input.hook_event_name, input.tool_name ?? null, JSON.stringify(diagnostic), decision, new Date().toISOString());
     db.prepare('DELETE FROM codex_hook_observations WHERE rowid NOT IN (SELECT rowid FROM codex_hook_observations ORDER BY rowid DESC LIMIT 1000)').run();
   });
   try {
-    const result = handleCodexHookEvent(db, input, requestId => { shape.request = requestId; }, (source, exitCode) => {shape.exitSource=source;shape.exitMetadata='structured';shape.execution.exitCode=exitCode;});
-    shape.execution.completionRecorded = input.hook_event_name === 'PostToolUse';
+    shape = hookObservationShape(input);
+    execution.exitCode = observedExitCode(input.tool_response);
+    const result = handleCodexHookEvent(db, input, {
+      stage: value => { stage = value; },
+      request: value => { request = value; },
+      exit: (source, code) => { exitSource = source; execution.exitCode = code; },
+    }, hooks?.onReservationCreated);
+    execution.completionRecorded = input.hook_event_name === 'PostToolUse';
     const specific = record(record(result).hookSpecificOutput);
     const decision = denialMetadata.get(result);
     try { save(specific.permissionDecision === 'deny' ? 'denied' : 'handled', decision?.reason, decision); }
     catch { process.stderr.write('Kiokuko hook observation unavailable: observation_write_failed.\n'); }
     return result;
   } catch (error) {
-    try { save(error instanceof KiokukoError ? error.code : 'adapter_error', codexHookFailureCode(error)); }
+    const { decision, reason: code, failure } = describeHookFailure(error, stage);
+    try { save(decision, code, undefined, failure); }
     catch { /* Preserve the primary failure. */ }
-    const code = codexHookFailureCode(error);
     if (['completion_without_admission','state_digest_unavailable','database_busy','database_error'].includes(code)) {
       return { systemMessage: `Kiokuko bookkeeping failed (${code}): event=${input.hook_event_name} stage=${input.hook_event_name === 'PostToolUse' ? 'post_completion' : 'pre_admission'} reason=${code} id=${codexHookCorrelationId(input)}. The record remains unavailable; unrelated authorized work may continue.${input.hook_event_name === 'PostToolUse' ? ' Tool already executed; do not rerun automatically.' : ''}${code === 'completion_without_admission' ? ' No matching PreToolUse admission record was found for this tool call. Task preparation is separate from per-tool admission.' : ''} Do not claim verified completion.` };
     }
     throw error; // Identity, binding, input and unknown failures stay rejected.
   }
-}
-export function codexHookFailureCode(error: unknown): string {
-  if (error instanceof KiokukoError) {
-    if (error.code === 'CONFLICT') {
-      if (error.message === 'Tool completion has no matching start') return 'completion_without_admission';
-      if (error.message === 'Tool completion input changed') return 'completion_input_mismatch';
-      if (error.message === 'Tool completion binding changed') return 'completion_binding_changed';
-      return 'state_conflict';
-    }
-    if (error.code === 'BACKPRESSURE') return 'database_busy';
-    if (error.code === 'SERVICE_UNAVAILABLE' && error.message === 'Repository state digest unavailable') return 'state_digest_unavailable';
-    if (error.code === 'VALIDATION_ERROR' || error.code === 'INTEGRITY_ERROR') return 'validation_unavailable';
-    return 'kiokuko_error';
-  }
-  if (error instanceof Error && 'code' in error && error.code === 'ERR_INVALID_STATE' && /database is not open/iu.test(error.message)) return 'database_error';
-  if (error instanceof Error && 'code' in error && typeof error.code === 'string' && error.code.startsWith('ERR_SQLITE')) return 'database_error';
-  return 'adapter_error';
 }

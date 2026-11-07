@@ -126,6 +126,15 @@ means completion lacks a recorded start; `completion_input_mismatch` means the
 input differs from the admitted call. Both reject passing evidence. An already
 executed tool must not be automatically rerun to repair a missing observation.
 
+New failure observations include a `failure` object with the hook's processing
+stage, a bounded error class, and an allowlisted error code. These fields describe
+the hook failure, and `unknown` indicates a value the hook could not classify.
+Older observations can omit `failure`. A `PostToolUse` event marks
+`execution.occurred`. `execution.completionRecorded` describes whether the hook
+handler returned normally, and the exit code is reported separately when known.
+An observation can only be retained when the event has a validated envelope and
+the diagnostic database is writable.
+
 Setup guarantees safe, repeatable configuration merging and makes the Kiokuko MCP
 tools available in each configured client scope after that client reloads its
 configuration and makes the bundled standard skills discoverable after a client
