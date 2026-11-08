@@ -14,7 +14,7 @@ export interface DesktopReplayBinding extends DesktopTurnIdentity {
 
 const desktopOriginator = (value: unknown): boolean => value === 'codex_work_desktop' || value === 'Codex Desktop';
 
-function readDesktopRollout(binding: DesktopReplayBinding, root: string, lifecycleOnly = false) {
+function readDesktopRollout(binding: DesktopReplayBinding, root: string, mode: 'header' | 'lifecycle' | 'review' | 'checkpoint') {
   let fd: number | undefined;
   try {
     const sessions = realpathSync(path.join(process.env.CODEX_HOME ?? path.join(homedir(), '.codex'), 'sessions'));
@@ -31,7 +31,8 @@ function readDesktopRollout(binding: DesktopReplayBinding, root: string, lifecyc
     if (header?.type !== 'session_meta' || session?.id !== binding.sessionId || typeof session.cwd !== 'string'
       || realpathSync(session.cwd) !== root) return null;
     if (!desktopOriginator(session.originator)) return null;
-    if (lifecycleOnly) return { session, entries: readLifecycleEntries(fd, stat.size, binding.turnId) };
+    if (mode === 'header') return { session, entries: [] };
+    if (mode !== 'checkpoint') return { session, entries: readTurnEntries(fd, stat.size, binding.turnId, mode === 'review') };
     const offset = Math.max(0, stat.size - 8 * 1024 * 1024);
     const tail = Buffer.alloc(stat.size - offset);
     if (readSync(fd, tail, 0, tail.length, offset) !== tail.length || tail[tail.length - 1] !== 10) return null;
@@ -48,7 +49,7 @@ function readDesktopRollout(binding: DesktopReplayBinding, root: string, lifecyc
 }
 
 export function readDesktopCheckpoint(binding: DesktopReplayBinding, root: string): string | undefined {
-  const rollout = readDesktopRollout(binding, root);
+  const rollout = readDesktopRollout(binding, root, 'checkpoint');
   if (!rollout) return;
   const prepared = new Set<string>();
   let started = false;
@@ -89,10 +90,14 @@ export function readDesktopCheckpoint(binding: DesktopReplayBinding, root: strin
 }
 
 /** Returns only verified host data from the rollout named by the installed hook. */
+export function hasDesktopTranscript(binding: DesktopReplayBinding, root: string): boolean {
+  return readDesktopRollout(binding, root, 'header') !== null;
+}
+
 export function readCompletedDesktopTurn(
   binding: DesktopReplayBinding, root: string,
 ): (CompletedDesktopTurn & { userTextDigests: string[] }) | null {
-  const rollout = readDesktopRollout(binding, root);
+  const rollout = readDesktopRollout(binding, root, 'review');
   if (!rollout) return null;
   const { session, entries } = rollout;
   const turn = completedDesktopTurn(session, entries, binding);
@@ -133,13 +138,14 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-/** Scan from the beginning with bounded memory, retaining only this turn's lifecycle. */
-function readLifecycleEntries(fd: number, size: number, turnId: string): unknown[] {
+/** Scan with bounded memory, retaining only this turn's lifecycle and optional user messages. */
+function readTurnEntries(fd: number, size: number, turnId: string, includeUserMessages: boolean): unknown[] {
   if (size > 512 * 1024 * 1024) throw new Error('transcript_read_bound');
   const entries: unknown[] = [];
   const buffer = Buffer.alloc(64 * 1024);
   let parts: Buffer[] = [];
   let length = 0;
+  let retainedBytes = 0;
   for (let offset = 0; offset < size;) {
     const count = readSync(fd, buffer, 0, Math.min(buffer.length, size - offset), offset);
     if (!count) throw new Error('transcript_changed');
@@ -152,9 +158,11 @@ function readLifecycleEntries(fd: number, size: number, turnId: string): unknown
       const line = Buffer.concat([...parts, segment], length);
       const row = object(JSON.parse(line.toString('utf8')));
       const payload = object(row?.payload);
-      if (payload?.turn_id === turnId && (row?.type === 'turn_context'
-        || (row?.type === 'event_msg' && ['task_started', 'task_complete', 'turn_aborted'].includes(String(payload.type))))) {
-        if (entries.length >= 4096) throw new Error('lifecycle_entry_bound');
+      if (payload?.turn_id === turnId && (row?.type === 'turn_context' || (row?.type === 'event_msg' &&
+        (['task_started', 'task_complete', 'turn_aborted'].includes(String(payload.type))
+          || (includeUserMessages && payload.type === 'item_completed' && object(payload.item)?.type === 'UserMessage'))))) {
+        retainedBytes += length;
+        if (entries.length >= 4096 || retainedBytes > 8 * 1024 * 1024) throw new Error('lifecycle_entry_bound');
         entries.push(row);
       }
       parts = []; length = 0; from = newline + 1;
@@ -168,7 +176,7 @@ function readLifecycleEntries(fd: number, size: number, turnId: string): unknown
 
 /** Recording completion is independent of memory checkpoints and proposal extraction. */
 export function readDesktopTurnOutcome(binding: DesktopReplayBinding, root: string): 'completed' | 'interrupted' | null {
-  const rollout = readDesktopRollout(binding, root, true);
+  const rollout = readDesktopRollout(binding, root, 'lifecycle');
   if (!rollout) return null;
   let started = false;
   let workspace = false;

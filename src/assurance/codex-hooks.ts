@@ -20,8 +20,7 @@ import { parseAssurance } from './contracts.js';
 import { readCodexCommandReceipt } from './codex-command-receipt.js';
 import { readDesktopCheckpoint } from './codex-desktop-turn.js';
 import { describeHookFailure, type HookFailure } from './hook-failure.js';
-import { cancelCaptureReservation, captureCandidateNotification, recordCaptureReservation } from '../memory/capture-reservations.js';
-import { existsSync } from 'node:fs';
+import { cancelCaptureReservation, nextCaptureCandidate, recordCaptureReservation } from '../memory/capture-reservations.js';
 
 export { codexHookFailureCode } from './hook-failure.js';
 
@@ -95,7 +94,7 @@ function memoryStepContext(db: SqliteDatabase, runId: string, _root: string) {
   const nextAction = memoryReviewNextAction(taskAssuranceReport(db, runId, false));
   return context('PostToolUse', `Optional memory record nextAction=${nextAction}. task_memory_status, task_memory_review and task_memory_refresh reconcile that record; task_inspect provides bounded evidence. Unrelated ordinary tools may proceed under existing authorization; passing verification must be reported from actual evidence separately.`);
 }
-const preparationTools = new Set(['memory_index_submit', 'memory_index_review', 'task_inspect', 'task_prepare', 'task_prepare_recover', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'task_verification_define', 'task_verification_record', 'memory_checkpoint', 'memory_capture', 'memory_recall', 'handoff_save', 'handoff_load', 'handoff_discard', 'curator_check']);
+const preparationTools = new Set(['memory_index_submit', 'memory_index_review', 'task_inspect', 'task_prepare', 'task_prepare_recover', 'task_answer', 'task_memory_review', 'task_memory_status', 'task_memory_refresh', 'task_execution_evidence', 'task_verification_define', 'task_verification_record', 'memory_checkpoint', 'memory_capture', 'memory_review_pending', 'memory_recall', 'handoff_save', 'handoff_load', 'handoff_discard', 'curator_check']);
 // Exact, observed non-execution tools. Never infer safety from names or shell text.
 const conversationTools = new Set(['request_user_input', 'request_user_input_async', 'clockcurr_time']);
 function kiokukoTool(name: string): string | null {
@@ -181,7 +180,12 @@ function handleCodexHookEvent(db: SqliteDatabase, input: z.infer<typeof hookSche
         .run(identity, root, requestId, input.hook_event_name, now);
     });
     if (db.prepare('SELECT stop_notified FROM codex_hook_requests WHERE identity_digest=?').get<HookRequest>(identity)?.stop_notified) return stopTurn(input.hook_event_name);
-    return context(input.hook_event_name, `${ADAPTIVE_EFFORT_INSTRUCTIONS} ${MEMORY_RECOMMENDATION_INSTRUCTIONS} Kiokuko request ${requestId}. ${BOOKKEEPING_POLICY} ${MEMORY_AVAILABILITY_INSTRUCTIONS} For optional legacy task records, task_inspect operation skill reads kiokuko-soul and memory-reasoning. Use task_inspect for bundled natural-japanese-output; do not read Skills through shell commands to bypass record capability checks. For that optional record, call task_prepare with this requestId, cwd ${root} and soulRead=true. ${CODEX_HOOK_LIMITATION}`);
+    const candidateId = input.hook_event_name === 'UserPromptSubmit' && !input.agent_id && process.env.KIOKUKO_INTERACTION_MEMORY !== 'off'
+      ? nextCaptureCandidate(db, root, input.session_id, input.turn_id) : undefined;
+    const review = candidateId
+      ? ` A verified memory candidate from this chat is pending. When this turn permits optional memory review, call memory_review_pending once before the final reply with ${JSON.stringify({ cwd: root, candidateId, requestId, turnId: input.turn_id })}. The app asks the user whether to save. No preparation is needed.`
+      : '';
+    return context(input.hook_event_name, `${ADAPTIVE_EFFORT_INSTRUCTIONS} ${MEMORY_RECOMMENDATION_INSTRUCTIONS} Kiokuko request ${requestId}. ${BOOKKEEPING_POLICY} ${MEMORY_AVAILABILITY_INSTRUCTIONS} For optional legacy task records, task_inspect operation skill reads kiokuko-soul and memory-reasoning. Use task_inspect for bundled natural-japanese-output; do not read Skills through shell commands to bypass record capability checks. For that optional record, call task_prepare with this requestId, cwd ${root} and soulRead=true. ${CODEX_HOOK_LIMITATION}${review}`);
   }
   if (!request) {
     if (input.hook_event_name === 'Interrupt' || input.hook_event_name === 'SubagentStop') return {};
@@ -239,21 +243,17 @@ function handleCodexHookEvent(db: SqliteDatabase, input: z.infer<typeof hookSche
       // Ordinary conversation never required a run, but its completion still
       // reserves candidate consideration. Model-run completions are skipped:
       // that flow already performs its own memory processing.
-      if (input.hook_event_name === 'Stop' && !input.agent_id && !desktopCheckpointCompleted) {
+      if (input.hook_event_name === 'Stop' && !input.agent_id && !desktopCheckpointCompleted && process.env.KIOKUKO_INTERACTION_MEMORY !== 'off') {
         try {
           const reservation = recordCaptureReservation(db, {
             sessionId: input.session_id, turnId: input.turn_id, agentId: input.agent_id, repositoryRoot: root,
             ...(typeof input.transcript_path === 'string' && input.transcript_path.length <= 4096
               && path.isAbsolute(input.transcript_path) ? { transcriptPath: input.transcript_path } : {}),
-            runsDirectoryPresent: existsSync(path.join(root, '.agenticreplay', 'runs')), now,
+            now,
           });
-          if (reservation.created) onReservationCreated?.({ eventId: reservation.eventId, repositoryRoot: root });
+          if (reservation.created && typeof input.transcript_path === 'string' && path.isAbsolute(input.transcript_path)) onReservationCreated?.({ eventId: reservation.eventId, repositoryRoot: root });
         } catch { /* Reservation failure never blocks the completed turn. */ }
       }
-      try {
-        const notification = captureCandidateNotification(db, root, now);
-        if (notification) return { systemMessage: notification };
-      } catch { /* Notification is best effort. */ }
       return {};
     }
     const run = new LedgerStore(db).readRun(request.run_id);
@@ -271,6 +271,13 @@ function handleCodexHookEvent(db: SqliteDatabase, input: z.infer<typeof hookSche
   if (input.hook_event_name === 'PreToolUse') {
     // Native host owns delegation authority. Missing memory identity does not deny ordinary delegation.
     if (['spawn_agent', 'Agent'].includes(input.tool_name)) return {};
+    if (operation === 'memory_review_pending') {
+      if (input.agent_id || args.requestId !== requestId || args.turnId !== input.turn_id
+        || typeof args.cwd !== 'string' || realpathSync(args.cwd) !== root) {
+        return deny('Use the current chat and checkout to review this candidate.', 'repository_binding_mismatch', true);
+      }
+      return {};
+    }
     if (operation === 'task_prepare_recover') {
       const receipt = db.prepare('SELECT successor_run_id FROM task_preparation_recoveries WHERE predecessor_run_id=?')
         .get<{ successor_run_id: string }>(String(args.runId));

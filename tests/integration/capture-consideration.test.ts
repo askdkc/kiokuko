@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openConnection } from '../../src/db/connection.js';
@@ -11,9 +11,14 @@ import { handleCodexHook } from '../../src/assurance/codex-hooks.js';
 import { considerPendingCaptureReservations } from '../../src/memory/capture-consideration.js';
 import { reviewPendingCaptureCandidate } from '../../src/memory/capture-pending-review.js';
 import { memoryContext } from '../../src/memory/observations.js';
+import { extractReplayProposal } from '../../src/memory/replay-extract.js';
 import { proposalDigest } from '../../src/memory/replay-review.js';
 import { prepareAgentTask } from '../../src/akinator/agent-task.js';
 import { LedgerStore } from '../../src/ledger/store.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { createKiokukoMcpServer } from '../../src/mcp/server.js';
 
 interface Fixture { base: string; root: string; databasePath: string; db: ReturnType<typeof openConnection>; cleanup(): void; }
 function fixture(options: { runs?: boolean } = {}): Fixture {
@@ -23,29 +28,76 @@ function fixture(options: { runs?: boolean } = {}): Fixture {
   const db = openConnection(databasePath);
   migrateDatabase(db);
   if (options.runs !== false) mkdirSync(path.join(base, '.agenticreplay', 'runs'), { recursive: true });
-  return { base, root: base, databasePath, db, cleanup() { try { db.close(); } catch { /* already closed */ } rmSync(base, { recursive: true, force: true }); } };
+  const env = { CODEX_HOME: process.env.CODEX_HOME, AGENTICREPLAY_CODEX_REVIEW_SOCKET: process.env.AGENTICREPLAY_CODEX_REVIEW_SOCKET };
+  process.env.CODEX_HOME = path.join(base, 'codex');
+  process.env.AGENTICREPLAY_CODEX_REVIEW_SOCKET = path.join(base, 'no-recorder.sock');
+  return { base, root: base, databasePath, db, cleanup() {
+    try { db.close(); } catch { /* already closed */ }
+    for (const [name, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(base, { recursive: true, force: true });
+  } };
 }
 const line = (seq: number, type: string, attrs: Record<string, unknown>, payload?: unknown, causes?: number[]) => ({
   seq, ts: '2026-11-07T00:00:00Z', mono_us: seq, turn: 1, type, actor: 'tool', attrs, ...(payload === undefined ? {} : { payload }), ...(causes === undefined ? {} : { causes }),
 });
-function writeTrace(root: string, runId: string, events: unknown[], options: { corrupt?: boolean } = {}): void {
-  const directory = path.join(root, '.agenticreplay', 'runs', runId);
+const desktopDirectoryName = (runId: string) => `20261107000000-codex-desktop-api-codex-turn-${runId.slice(4)}`;
+function writeTrace(root: string, runId: string, events: unknown[], options: { desktop?: boolean } = {}): void {
+  const name = options.desktop ? desktopDirectoryName(runId) : runId;
+  const directory = path.join(root, '.agenticreplay', 'runs', name);
   mkdirSync(directory, { recursive: true });
-  let bytes = events.map(line => JSON.stringify(line)).join('\n') + '\n';
-  if (options.corrupt) bytes += '{}\n';
+  const bytes = events.map(line => JSON.stringify(line)).join('\n') + '\n';
   writeFileSync(path.join(directory, 'events.jsonl'), bytes);
   writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({
     schema_version: '0.4.0', run_id: runId, cwd: root,
+    ...(options.desktop ? { adapter: { id: 'codex-desktop-api' }, capture: { status: 'complete' } } : {}),
     integrity: { events_sha256: createHash('sha256').update(bytes).digest('hex') },
   }));
 }
-const recordedTrace = (root: string, runId = 'run_abcdef') => writeTrace(root, runId, [
-  line(1, 'user.message', {}, { text: '毎回 npm test を先に走らせてから報告して。' }),
-  line(2, 'shell.call', { name: 'shell', tool_use_id: 'call-1' }, { arguments: { command: 'npm test' } }),
-  line(3, 'shell.result', { exit_code: 0, tool_use_id: 'call-1' }, { stdout: 'all tests passed' }, [2]),
-]);
+const requestText = '毎回 npm test を先に走らせてから報告して。';
+const transcriptPath = (root: string, sessionId = 'session-a') => path.join(root, 'codex', 'sessions', `rollout-fixture-${sessionId}.jsonl`);
+function writeTranscript(root: string, turnId = 'turn-1', completed = true) {
+  const file = transcriptPath(root);
+  mkdirSync(path.dirname(file), { recursive: true });
+  const event = (type: string) => ({ type: 'event_msg', payload: { type, turn_id: turnId, root_turn_id: turnId,
+    started_at: 1, completed_at: 2 } });
+  const records = [
+    { type: 'session_meta', payload: { id: 'session-a', cwd: root, originator: 'codex_work_desktop' } },
+    event('task_started'),
+    { type: 'turn_context', payload: { turn_id: turnId, cwd: root } },
+    ...(completed ? [event('task_complete')] : []),
+  ];
+  writeFileSync(file, records.map(record => JSON.stringify(record) + '\n').join(''));
+}
+const recordedTrace = (root: string, runId = 'run_abcdef', options: { sessionId?: string; turnId?: string; empty?: boolean; blobs?: unknown[] } = {}) => {
+  const sessionId = options.sessionId ?? 'session-a';
+  const turnId = options.turnId ?? 'turn-1';
+  const requestId = 'wire-request';
+  const output = options.empty ? [] : [
+    { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'npm test passed.' }] },
+  ];
+  writeTrace(root, runId, [
+    line(0, 'run.start', { source: 'codex-desktop-api', sessionId, turnId }),
+    line(1, 'model.request', { request_id: requestId }, { input: options.empty ? [] : [
+      { role: 'user', metadata: { turn_id: turnId }, content: [{ type: 'input_text', text: requestText }] },
+    ] }),
+    line(2, 'net.request', { request_id: requestId, headers: {
+      'x-codex-turn-metadata': JSON.stringify({ thread_id: sessionId, turn_id: turnId }),
+    } }),
+    line(3, 'net.response', { request_id: requestId, response_complete: true, capture_incomplete: false }, undefined, [2]),
+    line(4, 'model.response', { request_id: requestId }, 'data: ' + JSON.stringify({
+      type: 'response.completed', response: { status: 'completed', output },
+    }) + '\n\n'),
+    ...(options.blobs ?? []).map((blob, index) => line(index + 5, 'user.message', {}, blob)),
+    line((options.blobs?.length ?? 0) + 5, 'run.end', {}),
+  ], { desktop: true });
+  writeTranscript(root);
+};
 const hookInput = (root: string, hook_event_name: string, turn_id = 'turn-1', extra: Record<string, unknown> = {}) =>
-  ({ hook_event_name, session_id: 'session-a', turn_id, cwd: root, ...extra });
+  ({ hook_event_name, session_id: 'session-a', turn_id, cwd: root,
+    ...(turn_id === 'turn-1' && process.env.CODEX_HOME ? { transcript_path: transcriptPath(root) } : {}), ...extra });
 type Db = Fixture['db'];
 const reservations = (db: Db) => db
   .prepare('SELECT event_id, state, repository_root, session_id, turn_id, attempts FROM memory_capture_reservations')
@@ -82,7 +134,7 @@ test('a turn without recorded evidence is classified evidence-insufficient, neve
   const f = fixture({ runs: false });
   try {
     handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit'));
-    handleCodexHook(f.db, hookInput(f.root, 'Stop'));
+    handleCodexHook(f.db, hookInput(f.root, 'Stop', 'turn-1', { transcript_path: undefined }));
     const rows = reservations(f.db);
     assert.equal(rows.length, 1);
     assert.equal(rows[0]!.state, 'evidence_insufficient');
@@ -128,6 +180,7 @@ test('consideration stores a bounded pending candidate without saving any memory
 test('an unusable trace is evidence-insufficient with a bounded warning, not a silent skip', async () => {
   const f = fixture();
   try {
+    writeTranscript(f.root);
     // The manifest seals the valid bytes; appended corruption breaks integrity.
     const directory = path.join(f.root, '.agenticreplay', 'runs', 'run_abcdef');
     mkdirSync(directory, { recursive: true });
@@ -147,20 +200,19 @@ test('an unusable trace is evidence-insufficient with a bounded warning, not a s
   } finally { f.cleanup(); }
 });
 
-test('Stop notifies exactly once per pending candidate and never for empty results', async () => {
+test('the next turn offers the native review only in the originating chat', async () => {
   const f = fixture();
   try {
     recordedTrace(f.root);
     handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit'));
     handleCodexHook(f.db, hookInput(f.root, 'Stop'));
     await considerPendingCaptureReservations(f.db, f.root);
-    handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit', 'turn-2'));
-    const notified = handleCodexHook(f.db, hookInput(f.root, 'Stop', 'turn-2')) as Record<string, unknown>;
-    assert.match(String(notified.systemMessage), /memory candidates|memory-review/u);
-    assert.doesNotMatch(String(notified.systemMessage), /npm test を先に/u); // Candidate bodies never enter hook output.
-    // The same candidates are never announced twice.
-    handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit', 'turn-3'));
-    assert.deepEqual(handleCodexHook(f.db, hookInput(f.root, 'Stop', 'turn-3')), {});
+    const notified = JSON.stringify(handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit', 'turn-2')));
+    assert.match(notified, /memory_review_pending once/u);
+    assert.doesNotMatch(notified, /npm test を先に/u);
+    const other = JSON.stringify(handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit', 'turn-2', { session_id: 'other-chat' })));
+    assert.doesNotMatch(other, /memory_review_pending once/u);
+    assert.deepEqual(handleCodexHook(f.db, hookInput(f.root, 'Stop', 'turn-2')), {});
     assert.equal(candidateRows(f.db).filter(candidate => candidate.state === 'pending_review').length, 1);
   } finally { f.cleanup(); }
 });
@@ -318,4 +370,117 @@ test('reservation creation is reported once to the command layer for spawning co
     handleCodexHook(f.db, hookInput(f.root, 'Stop'), { onReservationCreated: info => reported.push(info) });
     assert.equal(reported.length, 1);
   } finally { f.cleanup(); }
+});
+
+test('historical and foreign-session traces cannot produce a current-turn candidate', async () => {
+  const f = fixture();
+  try {
+    recordedTrace(f.root, 'run_abcdef', { turnId: 'old-turn' });
+    recordedTrace(f.root, 'run_aaaaaa', { sessionId: 'other-chat' });
+    handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit'));
+    handleCodexHook(f.db, hookInput(f.root, 'Stop'));
+    const receipt = await considerPendingCaptureReservations(f.db, f.root);
+    assert.equal(receipt.created, 0);
+    assert.equal(candidateRows(f.db).length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('an intact replay exceeding the aggregate blob budget is reported as a size limit', async () => {
+  const f = fixture();
+  try {
+    const bytes = JSON.stringify({ data: 'x'.repeat(2 * 1024 * 1024 - 32) });
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const runId = 'run_abcdef';
+    writeTrace(f.root, runId, Array.from({ length: 17 }, (_, index) =>
+      line(index + 1, 'user.message', {}, { $blob: 'sha256:' + hash, bytes: Buffer.byteLength(bytes) })));
+    const traceDirectory = path.join(f.root, '.agenticreplay', 'runs', runId);
+    const blobs = path.join(traceDirectory, 'blobs', hash.slice(0, 2));
+    mkdirSync(blobs, { recursive: true });
+    writeFileSync(path.join(blobs, hash), bytes);
+    await assert.rejects(extractReplayProposal({ cwd: f.root, traceDirectory,
+      taskId: 'task', sessionId: 'session', workspace: 'project:test' }), /replay_blob_budget_exceeded/u);
+  } finally { f.cleanup(); }
+});
+
+test('consideration waits for the current turn to finish and looks past a capped and an empty trace', async () => {
+  const f = fixture({ runs: false });
+  try {
+    writeTranscript(f.root, 'turn-1', false);
+    handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit'));
+    handleCodexHook(f.db, hookInput(f.root, 'Stop'));
+    const pending = considerPendingCaptureReservations(f.db, f.root);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(candidateRows(f.db).length, 0);
+    assert.equal(reservations(f.db)[0]!.state, 'processing');
+    const bytes = JSON.stringify({ data: 'x'.repeat(2 * 1024 * 1024 - 32) });
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const blob = { $blob: 'sha256:' + hash, bytes: Buffer.byteLength(bytes) };
+    recordedTrace(f.root, 'run_abc001');
+    recordedTrace(f.root, 'run_abc002', { empty: true });
+    recordedTrace(f.root, 'run_abc003', { blobs: Array.from({ length: 17 }, () => blob) });
+    const runs = path.join(f.root, '.agenticreplay', 'runs');
+    const blobs = path.join(runs, desktopDirectoryName('run_abc003'), 'blobs', hash.slice(0, 2));
+    mkdirSync(blobs, { recursive: true });
+    writeFileSync(path.join(blobs, hash), bytes);
+    for (const index of [1, 2, 3]) utimesSync(path.join(runs, desktopDirectoryName('run_abc00' + index)), index, index);
+    const receipt = await pending;
+    assert.equal(receipt.created, 1);
+    assert.deepEqual(receipt.warnings, ['replay_blob_budget_exceeded']);
+    assert.match(String(candidateRows(f.db)[0]!.evidence_key), /^run_abc001:/u);
+  } finally { f.cleanup(); }
+});
+
+test('the native form can save a same-chat candidate, and cancellation leaves it pending', async () => {
+  const f = fixture();
+  const server = createKiokukoMcpServer({ databasePath: f.databasePath });
+  const client = new Client({ name: 'desktop-fixture', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+  try {
+    recordedTrace(f.root);
+    handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit'));
+    handleCodexHook(f.db, hookInput(f.root, 'Stop'));
+    assert.equal((await considerPendingCaptureReservations(f.db, f.root)).created, 1);
+    const prompt = handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit', 'turn-2')) as { hookSpecificOutput: { additionalContext: string } };
+    const args = JSON.parse(/with (\{[^\n]+?\})\. The app asks/u.exec(prompt.hookSpecificOutput.additionalContext)![1]!) as Record<string, unknown>;
+    const name = 'memory_review_pending';
+    const preHook = handleCodexHook(f.db, hookInput(f.root, 'PreToolUse', 'turn-2', {
+      tool_name: 'mcp__kiokuko__memory_review_pending', tool_use_id: 'native-review', tool_input: args,
+    }));
+    assert.deepEqual(preHook, {});
+    const messages: string[] = [];
+    client.setRequestHandler(ElicitRequestSchema, async request => {
+      assert.ok('requestedSchema' in request.params);
+      messages.push(request.params.message);
+      return messages.length === 1 ? { action: 'cancel' } : { action: 'accept', content: { choice: 'save' } };
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const unbound = await client.callTool({ name, arguments: { ...args, turnId: 'foreign-turn' } });
+    assert.equal((unbound.structuredContent as { status?: string } | undefined)?.status, 'unavailable');
+    const injection = await client.callTool({ name, arguments: { ...args, choice: 'save' } });
+    assert.equal(injection.isError, true);
+    assert.equal(messages.length, 0);
+    const cancelled = await client.callTool({ name, arguments: args });
+    assert.equal((cancelled.structuredContent as { status?: string } | undefined)?.status, 'unavailable');
+    assert.equal(candidateRows(f.db)[0]!.state, 'pending_review');
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 0);
+    const saved = await client.callTool({ name, arguments: args });
+    assert.equal((saved.structuredContent as { status?: string } | undefined)?.status, 'saved');
+    const row = candidateRows(f.db)[0]!;
+    const proposal = JSON.parse(String(row.proposal_json));
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0], messages[1]);
+    assert.ok(messages[1]!.includes(proposal.request.text));
+    for (const finding of proposal.findings) assert.ok(messages[1]!.includes(finding.text));
+    assert.equal(row.state, 'saved');
+    const context = await memoryContext(f.db, { cwd: f.root, query: 'npm test' });
+    assert.equal(context.entries.length, 1);
+    const repeated = await client.callTool({ name, arguments: args });
+    assert.equal((repeated.structuredContent as { status?: string } | undefined)?.status, 'saved');
+    assert.equal(messages.length, 2);
+  } finally {
+    await client.close();
+    await server.close();
+    f.cleanup();
+  }
 });

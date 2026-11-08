@@ -76,6 +76,7 @@ test('MCP preserves task contracts while model memory writes require exact nativ
       'memory_observe',
       'memory_recall',
       'memory_review_completed',
+      'memory_review_pending',
       'task_answer',
       'task_code_version',
       'task_execution_evidence',

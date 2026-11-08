@@ -509,3 +509,11 @@ test('OpenCode setup rejects invalid MCP container and requested state without r
     (error: unknown) => error instanceof KiokukoError && error.code === 'VALIDATION_ERROR',
   );
 });
+
+test('Codex setup upgrades the review timeout while preserving a configured value', () => {
+  const old = renderCodexMcpConfig().content.replace(/^tool_timeout_sec = .*\n/mu, '');
+  const updated = renderCodexMcpConfig(old).content;
+  assert.match(updated, /^tool_timeout_sec = 330$/mu);
+  const custom = updated.replace('tool_timeout_sec = 330', 'tool_timeout_sec = 600');
+  assert.equal(renderCodexMcpConfig(custom).content, custom);
+});

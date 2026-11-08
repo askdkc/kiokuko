@@ -60,6 +60,14 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
     if (events.length >= 10000) throw new Error('replay_event_bound');
     const raw = object(JSON.parse(line));
     if (!compatibleReplayEvent(raw) || Number(raw.seq) <= sequence) throw new Error('replay_event_invalid');
+    if (events.length === 0 && input.desktopTurnId !== undefined) {
+      const attrs = object(raw.attrs);
+      if (object(manifest.adapter).id !== 'codex-desktop-api' || object(manifest.capture).status !== 'complete'
+        || integrity.events_sha256 !== digest || raw.seq !== 0 || raw.type !== 'run.start' || attrs.source !== 'codex-desktop-api'
+        || attrs.sessionId !== input.sessionId || attrs.turnId !== input.desktopTurnId) {
+        throw new Error('replay_desktop_turn_mismatch');
+      }
+    }
     sequence = Number(raw.seq);
     let payload = raw.payload;
     const envelope = object(payload);
@@ -69,15 +77,14 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
       if (!match || !Number.isSafeInteger(envelope.bytes) || Number(envelope.bytes) < 0) throw new Error('replay_blob_invalid');
       const data = await bounded(path.join(directory, 'blobs', match[1]!.slice(0, 2), match[1]!), directory, 2 * 1024 * 1024);
       blobBytes += data.length;
-      if (blobBytes > 32 * 1024 * 1024 || data.length !== envelope.bytes || hash(data) !== match[1]) throw new Error('replay_blob_integrity');
+      if (data.length !== envelope.bytes || hash(data) !== match[1]) throw new Error('replay_blob_integrity');
+      if (blobBytes > 32 * 1024 * 1024) throw new Error('replay_blob_budget_exceeded');
       payloadHash = match[1]!; payload = JSON.parse(data.toString('utf8'));
     }
     if (raw.type === 'model.request' && typeof payload === 'string') payload = JSON.parse(payload);
     events.push({ raw, payload: object(payload), ...(raw.type === 'model.response' && typeof payload === 'string' ? { responseText: payload } : {}), ref: `${manifest.run_id}:${sequence}`, payloadHash });
   }
   if (input.desktopTurnId !== undefined) {
-    const start = events[0]?.raw;
-    const attrs = object(start?.attrs);
     const requests = new Map<unknown, unknown>();
     for (const { raw } of events.filter(event => event.raw.type === 'net.request')) {
       const request = object(raw.attrs);
@@ -95,11 +102,7 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
         && Array.isArray(raw.causes) && requests.has(response.request_id)
         && raw.causes.includes(requests.get(response.request_id)) ? [response.request_id] : [];
     }));
-    if (object(manifest.adapter).id !== 'codex-desktop-api' || object(manifest.capture).status !== 'complete'
-      || integrity.events_sha256 !== digest
-      || start?.seq !== 0 || start.type !== 'run.start' || attrs.source !== 'codex-desktop-api'
-      || attrs.sessionId !== input.sessionId || attrs.turnId !== input.desktopTurnId
-      || events.at(-1)?.raw.type !== 'run.end'
+    if (events.at(-1)?.raw.type !== 'run.end'
       || !requests.size || responses.length !== requests.size || coveredResponses.size !== requests.size
       || !models.length || models.some(({ raw }) => !requests.has(object(raw.attrs).request_id))) {
       throw new Error('replay_desktop_turn_mismatch');

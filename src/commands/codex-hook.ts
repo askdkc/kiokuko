@@ -28,14 +28,15 @@ async function openHookDatabase(databasePath: string) {
 }
 /** A hook process never prints raw input, transcripts, shell output or exception payloads. */
 function spawnConsideration(info: { eventId: string; repositoryRoot: string }, databasePath: string): void {
-  // Reservation is durable; a failed spawn leaves it for the next hook event
-  // or an explicit "kiokuko codex-hook --consider-candidates" run.
+  // A failed spawn leaves the reservation for later consideration or
+  // an explicit "kiokuko codex-hook --consider-candidates" run.
   try {
     const entry = process.argv[1];
     if (!entry) return;
     const child = spawn(process.execPath, [...process.execArgv.filter(argument => !argument.startsWith('--test')), entry,
       'codex-hook', '--consider-candidates', '--database', databasePath, '--root', info.repositoryRoot],
       { detached: true, stdio: 'ignore' });
+    child.on('error', () => { /* The durable reservation remains pending. */ });
     child.unref();
   } catch { /* The reservation stays pending; consideration is retried later. */ }
 }

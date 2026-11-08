@@ -21,6 +21,12 @@ test('Codex project discovery accepts only bounded profile roots and canonicaliz
     await writeFile(state, JSON.stringify(value));
     assert.deepEqual(await codexProjectWorktrees(config), [project]);
     assert.deepEqual(JSON.parse(await readFile(state, 'utf8')), value);
+    const modern = path.join(root, 'modern');
+    execFileSync('git', ['init', '-q', modern]);
+    await writeFile(state, JSON.stringify({ ...value, 'local-projects': {
+      modern: { id: 'modern', name: 'Modern', rootPaths: [modern, project] },
+    } }));
+    assert.deepEqual(await codexProjectWorktrees(config), [project, modern]);
     for (const roots of [['relative'], [project, null], Array(257).fill(project)]) {
       await writeFile(state, JSON.stringify({ 'electron-saved-workspace-roots': roots }));
       await assert.rejects(codexProjectWorktrees(config), /bounded list/u);

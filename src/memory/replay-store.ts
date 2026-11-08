@@ -22,13 +22,14 @@ export function createApprovedReplayMemoryStore(db: SqliteDatabase, workspace: s
   return {
     // Reconciliation never writes or generates another approval identity.
     reconcile,
-    save(proposal: ReplayMemoryProposal, approvalKey: string): void {
+    save(proposal: ReplayMemoryProposal, approvalKey: string, bindApproval?: () => void): void {
       const owned = structuredClone(proposal), digest = proposalDigest(owned);
       const contentHash=proposalDigest({...owned,proposalId:"",revision:0});
       if (owned.source.workspace !== workspace || owned.schemaVersion !== 1 || owned.revision < 1
         || !/^[a-f0-9]{64}$/u.test(approvalKey) || findSecretInValue(owned)
         || Buffer.byteLength(JSON.stringify(owned)) > 256 * 1024) throw new Error('invalid_approved_memory');
       try { withImmediateTransaction(db, () => {
+        bindApproval?.();
         // Tables and candidate contents are created only after approval. Rollback covers indexing too.
         db.exec(`CREATE TABLE IF NOT EXISTS replay_memories(approval_key TEXT PRIMARY KEY, workspace TEXT NOT NULL, task_id TEXT NOT NULL, session_id TEXT NOT NULL, proposal_id TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, proposal_json TEXT NOT NULL, created_at TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS replay_memory_terms(approval_key TEXT NOT NULL REFERENCES replay_memories(approval_key), term TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(approval_key,term,kind));

@@ -8,6 +8,14 @@ import { KiokukoError } from '../errors.js';
 import { openConnection } from '../db/connection.js';
 import { detectGitWorktree } from '../repository/detect-root.js';
 
+function projectRoots(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 256 || value.some(root =>
+    typeof root !== 'string' || !path.isAbsolute(root) || root.includes('\0') || root.length > 4096)) {
+    throw new KiokukoError('VALIDATION_ERROR', 'Codex project roots must be a bounded list of absolute paths');
+  }
+  return value as string[];
+}
+
 /** Only the projects explicitly added to this Codex profile authorize recording. */
 export async function codexProjectWorktrees(configPath: string): Promise<string[]> {
   let file;
@@ -21,13 +29,23 @@ export async function codexProjectWorktrees(configPath: string): Promise<string[
     }
     value = JSON.parse(await file.readFile('utf8'));
   } finally { await file.close(); }
-  const roots: unknown = value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)['electron-saved-workspace-roots'] : undefined;
-  if (roots === undefined) return [];
-  if (!Array.isArray(roots) || roots.length > 256 || roots.some(root => typeof root !== 'string' || !path.isAbsolute(root) || root.includes('\0') || root.length > 4096)) {
-    throw new KiokukoError('VALIDATION_ERROR', 'Codex project roots must be a bounded list of absolute paths');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const state = value as Record<string, unknown>;
+  const roots = projectRoots(state['electron-saved-workspace-roots'] === undefined ? [] : state['electron-saved-workspace-roots']);
+  const projects = state['local-projects'];
+  if (projects !== undefined) {
+    if (!projects || typeof projects !== 'object' || Array.isArray(projects) || Object.keys(projects).length > 256) {
+      throw new KiokukoError('VALIDATION_ERROR', 'Codex local projects must be a bounded object');
+    }
+    for (const project of Object.values(projects)) {
+      if (!project || typeof project !== 'object' || Array.isArray(project)) {
+        throw new KiokukoError('VALIDATION_ERROR', 'Invalid Codex local project');
+      }
+      roots.push(...projectRoots(project.rootPaths));
+      if (roots.length > 256) throw new KiokukoError('VALIDATION_ERROR', 'Too many Codex project roots');
+    }
   }
-  const worktrees = [...new Set((roots as string[]).map(root => detectGitWorktree(root)).filter((root): root is string => root !== undefined))];
+  const worktrees = [...new Set([...new Set(roots)].map(root => detectGitWorktree(root)).filter((root): root is string => root !== undefined))];
   if (worktrees.length > 64) throw new KiokukoError('VALIDATION_ERROR', 'Codex recording supports at most 64 Git worktrees');
   return worktrees;
 }

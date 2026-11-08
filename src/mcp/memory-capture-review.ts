@@ -58,6 +58,18 @@ export function memoryProposalDigest(proposal: unknown): string {
   return createHash('sha256').update(canonicalJson(proposal)).digest('hex');
 }
 
+export function elicitMemorySave(server: McpServer, message: string, signal: AbortSignal) {
+  return server.server.elicitInput({
+    mode: 'form',
+    message,
+    requestedSchema: {
+      type: 'object',
+      properties: { choice: { type: 'string', title: 'Save these memories?', enum: ['save', 'decline'] } },
+      required: ['choice'],
+    },
+  }, { signal, timeout: 300_000 });
+}
+
 /**
  * Turns a model-organized proposal into a native human yes/no decision.
  * Tool arguments never contain approval, and the exact displayed proposal is
@@ -139,15 +151,7 @@ export function createMcpMemoryCaptureReview(server: McpServer) {
         if (previouslyApproved === undefined) {
           input.validateBeforePrompt?.();
           let result;
-          try { result = await server.server.elicitInput({
-            mode: 'form',
-            message,
-            requestedSchema: {
-              type: 'object',
-              properties: { choice: { type: 'string', title: 'Save these memories?', enum: ['save', 'decline'] } },
-              required: ['choice'],
-            },
-          }, { signal, timeout: 300_000 });
+          try { result = await elicitMemorySave(server, message, signal);
           } catch (error) {
             if (signal.aborted) return unavailable(digest, cancellation());
             const diagnostic = reviewDiagnostic(error);

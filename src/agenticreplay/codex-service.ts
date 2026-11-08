@@ -6,8 +6,8 @@ import { z } from 'zod/v4';
 import { codexProjectWorktrees, refreshCodexProject } from '../setup/codex-projects.js';
 import { detectGitWorktree } from '../repository/detect-root.js';
 
-const runningService = z.object({
-  status: z.literal('running'),
+const configuredService = z.object({
+  status: z.enum(['running', 'stopped']),
   socketPath: z.string().refine(path.isAbsolute),
   worktrees: z.array(z.string().refine(path.isAbsolute)).max(64),
 });
@@ -55,16 +55,16 @@ async function runService(
 }
 
 export async function registerCodexDock(cwd: string, configPath: string, env?: NodeJS.ProcessEnv): Promise<void> {
-  const result = runningService.safeParse(await runService(cwd, ['register', '--config', configPath], 45_000, undefined, env));
-  if (!result.success || !result.data.worktrees.includes(cwd)) {
+  const result = configuredService.safeParse(await runService(cwd, ['register', '--config', configPath], 45_000, undefined, env));
+  if (!result.success || result.data.status !== 'running' || !result.data.worktrees.includes(cwd)) {
     throw new Error('AgenticReplay did not confirm an active recorder for this Git worktree. Check codex-service status.');
   }
 }
 
 export async function discoverCodexDockSocket(cwd: string, signal: AbortSignal): Promise<string | undefined> {
   try {
-    const result = runningService.safeParse(await runService(cwd, ['status'], 4000, signal));
-    return result.success && result.data.worktrees.includes(cwd) ? result.data.socketPath : undefined;
+    const result = configuredService.safeParse(await runService(cwd, ['status'], 4000, signal));
+    return result.success && result.data.status === 'running' && result.data.worktrees.includes(cwd) ? result.data.socketPath : undefined;
   } catch {
     return undefined;
   }
@@ -74,8 +74,8 @@ export async function discoverCodexDockSocket(cwd: string, signal: AbortSignal):
 export async function syncCodexDockProject(cwd: string, configPath: string, databasePath: string): Promise<void> {
   const root = detectGitWorktree(cwd);
   if (!root || !(await codexProjectWorktrees(configPath)).includes(root)) return;
-  const result = runningService.safeParse(await runService(root, ['status'], 4000));
-  if (!result.success) return; // Explicit disable must remain disabled.
+  const result = configuredService.safeParse(await runService(root, ['status'], 4000));
+  if (!result.success) return; // Explicit disable or a changed endpoint requires operator action.
   await refreshCodexProject(root, databasePath);
-  if (!result.data.worktrees.includes(root)) await registerCodexDock(root, configPath);
+  if (result.data.status === 'stopped' || !result.data.worktrees.includes(root)) await registerCodexDock(root, configPath);
 }

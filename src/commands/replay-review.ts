@@ -11,7 +11,8 @@ import { extractReplayProposal } from '../memory/replay-extract.js';
 import { reviewCompletedReplay } from '../memory/replay-review.js';
 import { reviewPendingCaptureCandidate } from '../memory/capture-pending-review.js';
 import { createApprovedReplayMemoryStore } from '../memory/replay-store.js';
-import { nativeReplayReviewMessage } from '../mcp/replay-review.js';
+import { TURN_BOUND_CAPTURE_CANDIDATE } from '../memory/capture-reservations.js';
+import { pendingCaptureReviewMessage } from '../memory/capture-proposal.js';
 import type { ReplayMemoryProposal } from '../memory/replay-review.js';
 
 /** Standalone manual maintenance CLI, not a model-facing approval path.
@@ -91,8 +92,8 @@ async function reviewPendingCaptureCandidates(input: { cwd: string; databasePath
   const listed = openConnection(input.databasePath, { readOnly: true });
   let candidateIds: string[] = [];
   try {
-    candidateIds = listed.prepare(`SELECT candidate_id FROM memory_capture_candidates
-      WHERE workspace = ? AND state = 'pending_review' ORDER BY created_at LIMIT 5`).all<{ candidate_id: string }>(workspace).map(row => row.candidate_id);
+    candidateIds = listed.prepare(`SELECT c.candidate_id FROM memory_capture_candidates c JOIN memory_capture_reservations r ON r.event_id = c.event_id
+      WHERE c.workspace = ? AND c.state = 'pending_review' AND ${TURN_BOUND_CAPTURE_CANDIDATE} ORDER BY c.created_at LIMIT 5`).all<{ candidate_id: string }>(workspace).map(row => row.candidate_id);
   } finally { listed.close(); }
   if (!candidateIds.length) {
     process.stdout.write('No pending memory candidates for this repository.\n');
@@ -108,16 +109,9 @@ async function reviewPendingCaptureCandidates(input: { cwd: string; databasePath
       const receipt = await reviewPendingCaptureCandidate(db, {
         candidateId, workspace, signal: input.signal,
         present: proposal => {
-          const message = nativeReplayReviewMessage(proposal);
-          const lines = [
-            `--- 候補 (revision ${proposal.revision}) ---`,
-            ...(message ? [message] : [`記録された内容 (要約不能のため要点のみ): ${proposal.findings.map(finding => finding.text).join(' / ').slice(0, 800)}`]),
-            ...proposal.source.traces.map(trace => `保存先: ${proposal.source.workspace} / 証拠: ${trace.runId}${trace.complete ? '' : ` (不完全: ${trace.gaps.join('; ')})`}`),
-            '根拠は記録された実行結果であり、タスク全体の効果は未検証です。',
-          ];
-          const text = lines.join('\n');
-          if (text.length <= 4000) process.stdout.write(text + '\n');
-          return message ?? (text.length <= 4000 ? text : undefined);
+          const message = pendingCaptureReviewMessage(proposal);
+          process.stdout.write(message + '\n');
+          return message;
         },
         ask: async question => {
           if (question.message === undefined) return { questionId: question.id, choice: 'decline' };

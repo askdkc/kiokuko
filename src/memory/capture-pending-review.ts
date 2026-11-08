@@ -4,6 +4,7 @@ import { recordEntryInTransaction } from './entries.js';
 import { createApprovedReplayMemoryStore } from './replay-store.js';
 import { proposalDigest, type ReplayMemoryProposal } from './replay-review.js';
 import { findSecretInValue } from './secrets.js';
+import { TURN_BOUND_CAPTURE_CANDIDATE } from './capture-reservations.js';
 
 export interface PendingReviewAnswer { choice: 'approve' | 'decline' | 'revise'; comment?: string; }
 export interface PendingReviewQuestion { id: string; revision: number; digest: string; message: string | undefined; }
@@ -32,13 +33,9 @@ function captureApprovalKey(row: Pick<CandidateRow, 'workspace' | 'candidate_id'
 
 function loadCandidate(db: SqliteDatabase, candidateId: string, workspace: string): CandidateRow | undefined {
   return db.prepare(`SELECT c.candidate_id, c.event_id, c.workspace, c.session_id, c.turn_id, c.revision, c.digest, c.proposal_json, c.state
-    FROM memory_capture_candidates c WHERE c.candidate_id = ? AND c.workspace = ?`)
+    FROM memory_capture_candidates c JOIN memory_capture_reservations r ON r.event_id = c.event_id
+    WHERE c.candidate_id = ? AND c.workspace = ? AND ${TURN_BOUND_CAPTURE_CANDIDATE}`)
     .get<CandidateRow>(candidateId, workspace);
-}
-
-function reservationCancelled(db: SqliteDatabase, eventId: string): boolean {
-  const state = db.prepare('SELECT state FROM memory_capture_reservations WHERE event_id = ?').get<{ state: string }>(eventId);
-  return state === undefined || state.state === 'cancelled';
 }
 
 /** Corrections become a new displayed version; recorded evidence stays in place. */
@@ -58,7 +55,10 @@ export async function reviewPendingCaptureCandidate(db: SqliteDatabase, input: {
   present: (proposal: ReplayMemoryProposal) => string | undefined;
   ask: (question: PendingReviewQuestion) => Promise<PendingReviewAnswer>;
   signal?: AbortSignal;
+  canReview?: () => boolean;
 }): Promise<PendingReviewReceipt> {
+  const available = () => !input.signal?.aborted && (input.canReview?.() ?? true);
+  if (!available()) return { status: 'unavailable', workMayContinue: true };
   let row = loadCandidate(db, input.candidateId, input.workspace);
   if (!row) return { status: 'not_found', workMayContinue: true };
   if (row.state === 'declined') return { status: 'declined', workMayContinue: true };
@@ -66,16 +66,18 @@ export async function reviewPendingCaptureCandidate(db: SqliteDatabase, input: {
   let proposal = JSON.parse(row.proposal_json) as ReplayMemoryProposal;
   if (proposal.source.workspace !== row.workspace) return { status: 'unavailable', workMayContinue: true };
   for (;;) {
-    if (input.signal?.aborted) return { status: 'unavailable', workMayContinue: true };
+    if (!available()) return { status: 'unavailable', workMayContinue: true };
     const digest = proposalDigest(proposal);
     if (digest !== row.digest || proposal.revision !== row.revision) return { status: 'unavailable', workMayContinue: true };
     const question: PendingReviewQuestion = { id: randomUUID(), revision: proposal.revision, digest, message: input.present(proposal) };
+    if (question.message === undefined) return { status: 'unavailable', workMayContinue: true };
     const answer = await input.ask(question);
-    if (input.signal?.aborted) return { status: 'unavailable', workMayContinue: true };
+    if (!available()) return { status: 'unavailable', workMayContinue: true };
     if (answer.choice === 'decline') {
-      db.prepare(`UPDATE memory_capture_candidates SET state = 'declined', updated_at = ?
-        WHERE candidate_id = ? AND state = 'pending_review'`).run(new Date().toISOString(), input.candidateId);
-      return { status: 'declined', workMayContinue: true };
+      const updated = db.prepare(`UPDATE memory_capture_candidates SET state = 'declined', updated_at = ?
+        WHERE candidate_id = ? AND state = 'pending_review' AND revision = ? AND digest = ? RETURNING candidate_id`)
+        .get(new Date().toISOString(), input.candidateId, row.revision, row.digest);
+      return { status: updated ? 'declined' : 'unavailable', workMayContinue: true };
     }
     if (answer.choice === 'revise' || answer.comment?.trim()) {
       const comment = answer.comment?.trim() ?? '';
@@ -87,9 +89,10 @@ export async function reviewPendingCaptureCandidate(db: SqliteDatabase, input: {
       const revisedDigest = proposalDigest(proposal);
       const bytes = JSON.stringify(proposal);
       if (bytes.length > 256 * 1024 || findSecretInValue(proposal)) return { status: 'unavailable', workMayContinue: true };
-      db.prepare(`UPDATE memory_capture_candidates SET revision = ?, digest = ?, proposal_json = ?, updated_at = ?
-        WHERE candidate_id = ? AND state = 'pending_review' AND revision = ? AND digest = ?`)
-        .run(proposal.revision, revisedDigest, bytes, new Date().toISOString(), input.candidateId, row.revision, row.digest);
+      const updated = db.prepare(`UPDATE memory_capture_candidates SET revision = ?, digest = ?, proposal_json = ?, updated_at = ?
+        WHERE candidate_id = ? AND state = 'pending_review' AND revision = ? AND digest = ? RETURNING candidate_id`)
+        .get(proposal.revision, revisedDigest, bytes, new Date().toISOString(), input.candidateId, row.revision, row.digest);
+      if (!updated) return { status: 'unavailable', workMayContinue: true };
       const reloaded = loadCandidate(db, input.candidateId, input.workspace);
       if (!reloaded || reloaded.state !== 'pending_review') return { status: 'unavailable', workMayContinue: true };
       row = reloaded;
@@ -99,17 +102,9 @@ export async function reviewPendingCaptureCandidate(db: SqliteDatabase, input: {
       return { status: 'declined', workMayContinue: true };
     }
     const approvalKey = captureApprovalKey(row);
-    if (input.signal?.aborted) return { status: 'unavailable', workMayContinue: true };
-    // Save-time revalidation: the stored candidate must still be pending with
-    // the exact displayed revision and an uncancelled reservation.
-    const validated = loadCandidate(db, input.candidateId, input.workspace);
-    if (!validated || validated.state !== 'pending_review' || validated.revision !== proposal.revision
-      || validated.digest !== digest || reservationCancelled(db, validated.event_id)) {
-      return { status: 'unavailable', workMayContinue: true };
-    }
     try {
-      createApprovedReplayMemoryStore(db, validated.workspace, approved => recordEntryInTransaction(db, {
-        workspace: validated.workspace,
+      createApprovedReplayMemoryStore(db, input.workspace, approved => recordEntryInTransaction(db, {
+        workspace: input.workspace,
         kind: 'reference',
         title: `Approved experience: ${approved.request.text.slice(0, 100) || approved.source.taskId}`,
         body: JSON.stringify(approved),
@@ -123,9 +118,14 @@ export async function reviewPendingCaptureCandidate(db: SqliteDatabase, input: {
         confidence: 0.4,
         createdBy: 'kiokuko-capture-review',
         actor: 'user',
-      })).save(structuredClone(proposal), approvalKey);
-      db.prepare(`UPDATE memory_capture_candidates SET state = 'saved', updated_at = ?
-        WHERE candidate_id = ? AND state = 'pending_review'`).run(new Date().toISOString(), input.candidateId);
+      })).save(proposal, approvalKey, () => {
+        const current = loadCandidate(db, input.candidateId, input.workspace);
+        if (!available() || current?.state !== 'pending_review' || current.revision !== proposal.revision || current.digest !== digest) {
+          throw new Error('capture_review_binding_changed');
+        }
+        db.prepare(`UPDATE memory_capture_candidates SET state = 'saved', updated_at = ? WHERE candidate_id = ?`)
+          .run(new Date().toISOString(), input.candidateId);
+      });
       return { status: 'saved', workMayContinue: true, approvalKey };
     } catch {
       // Nothing was marked saved; a later exact re-approval reconciles by key.

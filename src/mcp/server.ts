@@ -9,6 +9,7 @@ import { createMcpReplayReview } from './replay-review.js';
 import { desktopReplayBinding, prepareDesktopReview } from './codex-desktop-review.js';
 import { discoverCodexDockSocket } from '../agenticreplay/codex-service.js';
 import { createMcpMemoryCaptureReview, memoryProposalDigest } from './memory-capture-review.js';
+import { createMcpPendingCaptureReview } from './pending-capture-review.js';
 import { isBookkeepingFailure, BOOKKEEPING_POLICY } from '../assurance/bookkeeping-policy.js';
 import { observationSchema, memoryContextSchema, memoryImproveSchema } from '../memory/observation-contract.js';
 import { observeMemory, memoryContext, improveMemory } from '../memory/observations.js';
@@ -523,6 +524,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   });
   const replayReview=createMcpReplayReview(server, operation=>withDatabase(dependencies,operation));
   const captureReview=createMcpMemoryCaptureReview(server);
+  const pendingCaptureReview = createMcpPendingCaptureReview(server, operation => withDatabase(dependencies, operation));
   const finishedReviews=new Set<string>();
   const desktopReviews = new AbortController();
   const discoverDockSocket = dependencies.discoverCodexDockSocket ?? discoverCodexDockSocket;
@@ -570,7 +572,7 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
   enablePublicToolInputErrors(server);
 
   const closeNormally = server.server.onclose;
-  server.server.onclose = () => { desktopReviews.abort(); captureReview.close(); replayReview.close(); closeNormally?.(); };
+  server.server.onclose = () => { desktopReviews.abort(); captureReview.close(); pendingCaptureReview.close(); replayReview.close(); closeNormally?.(); };
 
   for (const [name, schema, handler] of [
     ['memory_observe', observationSchema, observeMemory],
@@ -774,6 +776,22 @@ export function createKiokukoMcpServer(dependencies: McpServerDependencies = {})
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input, extra) => withMcpToolDeadline('memory_recall', deadlinePolicy, extra.signal, (signal) =>
     withPublicToolError(() => withDatabase(dependencies, (database, runtime) => recallInteractionMemory(database, input, runtime, signal).then(toolResult)))));
+
+  server.registerTool('memory_review_pending', {
+    title: 'Review a pending Codex memory',
+    description: 'Open the native save or decline form for a verified candidate from an earlier turn of this Codex chat. Use the exact arguments supplied by the current UserPromptSubmit hook. This needs no task run or memory preparation. Tool arguments cannot approve or change the candidate.',
+    inputSchema: z.object({
+      cwd: absoluteCwdSchema,
+      candidateId: z.uuid(),
+      requestId: z.string().regex(/^codex-[a-f0-9]{64}$/u),
+      turnId: z.string().min(1).max(500),
+    }).strict(),
+  }, async (input, extra) => {
+    const captureEnabled = dependencies.interactionMemoryEnabled ?? process.env.KIOKUKO_INTERACTION_MEMORY !== 'off';
+    return toolResult(captureEnabled
+      ? await pendingCaptureReview.review(input, extra.signal)
+      : { status: 'unavailable', reason: 'capture_disabled', workMayContinue: true });
+  });
 
   server.registerTool('memory_capture', {
     title: 'Review and save organized memories',

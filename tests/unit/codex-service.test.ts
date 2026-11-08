@@ -58,7 +58,7 @@ test('installed recorder lookup validates status, worktree, bin identity and can
     const database = path.join(root, 'memory.sqlite3');
     await initializeDatabase({ databasePath: database });
     const state = path.join(root, '.codex-global-state.json');
-    await writeFile(state, JSON.stringify({ 'electron-saved-workspace-roots': [project] }));
+    await writeFile(state, JSON.stringify({ 'local-projects': { p: { rootPaths: [project] } } }));
     await writeFile(bin, `
       import { existsSync } from 'node:fs';
       const args = process.argv.slice(2);
@@ -66,7 +66,7 @@ test('installed recorder lookup validates status, worktree, bin identity and can
         if (process.cwd() !== ${JSON.stringify(project)} || args[3] !== ${JSON.stringify(config)}
           || !existsSync(${JSON.stringify(path.join(project, '.kiokuko.json'))})) process.exit(1);
         console.log(${JSON.stringify(JSON.stringify({ ...active, worktrees: [root, project] }))});
-      } else console.log(${JSON.stringify(JSON.stringify(active))});
+      } else console.log(${JSON.stringify(JSON.stringify({ ...active, status: 'stopped', worktrees: [root, project] }))});
     `);
     await service.syncCodexDockProject(project, config, database);
     await access(path.join(project, '.kiokuko.json'));

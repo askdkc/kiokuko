@@ -19,6 +19,8 @@ export const GLOBAL_INSTRUCTIONS_BEGIN = '<!-- BEGIN KIOKUKO GLOBAL MEMORY -->';
 export const GLOBAL_INSTRUCTIONS_END = '<!-- END KIOKUKO GLOBAL MEMORY -->';
 export const CODEX_MCP_BEGIN = '# BEGIN KIOKUKO MCP';
 export const CODEX_MCP_END = '# END KIOKUKO MCP';
+// Leave the native form's five-minute response window and time for the save.
+const CODEX_TOOL_TIMEOUT = 'tool_timeout_sec = 330';
 const CODEX_RECORDER_ENV = 'env_vars = ["AGENTICREPLAY_CODEX_REVIEW_SOCKET"]';
 
 export function renderGlobalInstructions(existing = '', host?: string): DelimitedBlockResult {
@@ -251,7 +253,7 @@ function removeUnmanagedCodexMcpIdentity(existing: string): string {
 }
 
 export interface CodexMcpLaunch { command: string; args: string[]; }
-interface CanonicalCodexBlock extends CodexMcpLaunch { skillDiscoveryMode: SkillDiscoveryMode; toolSettings: string[]; }
+interface CanonicalCodexBlock extends CodexMcpLaunch { skillDiscoveryMode: SkillDiscoveryMode; toolTimeout: string; toolSettings: string[]; }
 const absoluteLaunchPath = (value: string) => path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
 
 function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undefined {
@@ -291,7 +293,10 @@ function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undef
   // Codex can append per-tool approval settings inside the managed markers.
   // Preserve those settings, but never treat extra launch fields or foreign
   // tables as owned content that setup may overwrite.
-  const toolSettings = lines.slice(lines[8] === CODEX_RECORDER_ENV ? 9 : 8, -1);
+  let next = lines[8] === CODEX_RECORDER_ENV ? 9 : 8;
+  const toolTimeout = /^tool_timeout_sec = [1-9][0-9]*(?:\.[0-9]+)?$/u.test(lines[next] ?? '')
+    ? lines[next++]! : CODEX_TOOL_TIMEOUT;
+  const toolSettings = lines.slice(next, -1);
   const toolPath = ['mcp_servers', 'kiokuko', 'tools'];
   const extraDefinitions = parseStrictTomlDefinitions(
     ['[mcp_servers.kiokuko]', ...toolSettings].join('\n'),
@@ -332,7 +337,7 @@ function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undef
   ))) {
     codexConflict();
   }
-  return { command, args: args as string[], skillDiscoveryMode: modeMatch[1] as SkillDiscoveryMode, toolSettings };
+  return { command, args: args as string[], skillDiscoveryMode: modeMatch[1] as SkillDiscoveryMode, toolTimeout, toolSettings };
 }
 
 /** Remove only the marked MCP table, including blocks from older setup versions. */
@@ -413,6 +418,7 @@ export function renderCodexMcpConfig(
     'required = true',
     `env = { ${SKILL_DISCOVERY_ENV} = ${JSON.stringify(effectiveSkillDiscoveryMode)} }`,
     CODEX_RECORDER_ENV,
+    current?.toolTimeout ?? CODEX_TOOL_TIMEOUT,
     ...(current?.toolSettings ?? []),
     CODEX_MCP_END,
   ].join('\n');
