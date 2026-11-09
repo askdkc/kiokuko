@@ -14,13 +14,25 @@ export interface DesktopReplayBinding extends DesktopTurnIdentity {
 
 const desktopOriginator = (value: unknown): boolean => value === 'codex_work_desktop' || value === 'Codex Desktop';
 
+/** Codex Desktop appends a second host session ID when a chat is resumed. */
+function desktopRolloutFilename(filename: string, sessionId: string): boolean {
+  if (!/^[\w-]{1,128}$/u.test(sessionId) || !filename.startsWith('rollout-') || !filename.endsWith('.jsonl')) return false;
+  const stem = filename.slice(0, -'.jsonl'.length);
+  const sessionSuffix = `-${sessionId}`;
+  if (stem.endsWith(sessionSuffix)) return true;
+  const resumedMarker = `${sessionSuffix}_`;
+  const markerAt = stem.lastIndexOf(resumedMarker);
+  return markerAt >= 'rollout-'.length
+    && /^[\w-]{1,128}$/u.test(stem.slice(markerAt + resumedMarker.length));
+}
+
 function readDesktopRollout(binding: DesktopReplayBinding, root: string, mode: 'header' | 'lifecycle' | 'review' | 'checkpoint') {
   let fd: number | undefined;
   try {
     const sessions = realpathSync(path.join(process.env.CODEX_HOME ?? path.join(homedir(), '.codex'), 'sessions'));
     const file = realpathSync(binding.transcriptPath);
     if (!file.startsWith(sessions + path.sep) || lstatSync(binding.transcriptPath).isSymbolicLink()
-      || !path.basename(file).startsWith('rollout-') || !path.basename(file).endsWith(`-${binding.sessionId}.jsonl`)) return null;
+      || !desktopRolloutFilename(path.basename(file), binding.sessionId)) return null;
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = fstatSync(fd);
     if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o022) !== 0) return null;

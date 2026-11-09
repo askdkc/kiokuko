@@ -6,10 +6,16 @@ import { mkdtemp, mkdir, realpath, writeFile, appendFile, rm } from 'node:fs/pro
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 
-for (const outcome of ['completed', 'interrupted'] as const) test(`ordinary ${outcome} hook finalizes recording without a memory run or usable DB`, async () => {
+const lifecycleCases = [
+  { outcome: 'completed', resumed: false },
+  { outcome: 'completed', resumed: true },
+  { outcome: 'interrupted', resumed: false },
+] as const;
+
+for (const { outcome, resumed } of lifecycleCases) test(`ordinary ${outcome} hook finalizes recording${resumed ? ' from a resumed Desktop transcript' : ''} without a memory run or usable DB`, async () => {
   const root=await realpath(await mkdtemp('/tmp/kk-finish-'));
   const home=path.join(root,'codex'); await mkdir(path.join(home,'sessions'),{recursive:true});
-  const transcript=path.join(home,'sessions','rollout-fixture-chat.jsonl');
+  const transcript=path.join(home,'sessions',`rollout-fixture-chat${resumed ? '_resume-turn' : ''}.jsonl`);
   const rows=[{type:'session_meta',payload:{id:'chat',cwd:root,originator:'Codex Desktop'}},
     {type:'event_msg',payload:{type:'task_started',turn_id:'turn',root_turn_id:'turn',started_at:10}},
     {type:'turn_context',payload:{turn_id:'turn',cwd:root}}];
@@ -29,6 +35,7 @@ for (const outcome of ['completed', 'interrupted'] as const) test(`ordinary ${ou
     await appendFile(transcript,JSON.stringify({type:'event_msg',payload:{type:outcome==='completed'?'task_complete':'turn_aborted',turn_id:'turn',root_turn_id:'turn',completed_at:11}})+'\n');
     const deadline=Date.now()+6000;while(!received.length&&Date.now()<deadline)await delay(50);
     assert.deepEqual(received[0],{action:'finish',outcome,cwd:root,sessionId:'chat',turnId:'turn'});
+    await delay(100);assert.equal(received.length,1,'one terminal hook must send one completion handoff');
   } finally { await new Promise<void>(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true}); }
 });
 
