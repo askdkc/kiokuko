@@ -26,7 +26,7 @@ function desktopRolloutFilename(filename: string, sessionId: string): boolean {
     && /^[\w-]{1,128}$/u.test(stem.slice(markerAt + resumedMarker.length));
 }
 
-function readDesktopRollout(binding: DesktopReplayBinding, root: string, mode: 'header' | 'lifecycle' | 'review' | 'checkpoint') {
+function readDesktopRollout(binding: DesktopReplayBinding, root: string, mode: 'header' | 'lifecycle' | 'subagent-lifecycle' | 'review' | 'checkpoint') {
   let fd: number | undefined;
   try {
     const sessions = realpathSync(path.join(process.env.CODEX_HOME ?? path.join(homedir(), '.codex'), 'sessions'));
@@ -44,7 +44,16 @@ function readDesktopRollout(binding: DesktopReplayBinding, root: string, mode: '
       || realpathSync(session.cwd) !== root) return null;
     if (!desktopOriginator(session.originator)) return null;
     if (mode === 'header') return { session, entries: [] };
-    if (mode !== 'checkpoint') return { session, entries: readTurnEntries(fd, stat.size, binding.turnId, mode === 'review') };
+    let minimumOrdinal: number | undefined;
+    // Codex rollout ordinals identify the copied parent prefix even when a child
+    // has a referenced history_base; line numbers are not equivalent to ordinals.
+    if (mode === 'subagent-lifecycle' && (session.history_mode === 'paginated'
+      || session.forked_from_id != null || session.subagent_history_start_ordinal !== undefined)) {
+      const boundary = session.subagent_history_start_ordinal;
+      if (typeof boundary !== 'number' || !Number.isSafeInteger(boundary) || boundary < 0) return null;
+      minimumOrdinal = boundary;
+    }
+    if (mode !== 'checkpoint') return { session, entries: readTurnEntries(fd, stat.size, binding.turnId, mode === 'review', minimumOrdinal) };
     const offset = Math.max(0, stat.size - 8 * 1024 * 1024);
     const tail = Buffer.alloc(stat.size - offset);
     if (readSync(fd, tail, 0, tail.length, offset) !== tail.length || tail[tail.length - 1] !== 10) return null;
@@ -151,7 +160,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Scan with bounded memory, retaining only this turn's lifecycle and optional user messages. */
-function readTurnEntries(fd: number, size: number, turnId: string, includeUserMessages: boolean): unknown[] {
+function readTurnEntries(fd: number, size: number, turnId: string, includeUserMessages: boolean, minimumOrdinal?: number): unknown[] {
   if (size > 512 * 1024 * 1024) throw new Error('transcript_read_bound');
   const entries: unknown[] = [];
   const buffer = Buffer.alloc(64 * 1024);
@@ -173,9 +182,13 @@ function readTurnEntries(fd: number, size: number, turnId: string, includeUserMe
       if (payload?.turn_id === turnId && (row?.type === 'turn_context' || (row?.type === 'event_msg' &&
         (['task_started', 'task_complete', 'turn_aborted'].includes(String(payload.type))
           || (includeUserMessages && payload.type === 'item_completed' && object(payload.item)?.type === 'UserMessage'))))) {
-        retainedBytes += length;
-        if (entries.length >= 4096 || retainedBytes > 8 * 1024 * 1024) throw new Error('lifecycle_entry_bound');
-        entries.push(row);
+        if (minimumOrdinal !== undefined && (typeof row.ordinal !== 'number'
+          || !Number.isSafeInteger(row.ordinal) || row.ordinal < 0)) throw new Error('lifecycle_ordinal_missing');
+        if (minimumOrdinal === undefined || (row.ordinal as number) >= minimumOrdinal) {
+          retainedBytes += length;
+          if (entries.length >= 4096 || retainedBytes > 8 * 1024 * 1024) throw new Error('lifecycle_entry_bound');
+          entries.push(row);
+        }
       }
       parts = []; length = 0; from = newline + 1;
     }
@@ -214,6 +227,52 @@ export function readDesktopTurnOutcome(binding: DesktopReplayBinding, root: stri
   if (!started || !workspace) return null;
   if (interrupted) return 'interrupted';
   return completedDesktopTurn(rollout.session, rollout.entries, binding) ? 'completed' : null;
+}
+
+/** Child hook session_id belongs to the root session; agent_id is verified against host metadata.
+ * Host ordinals exclude inherited parent history before selecting the hook's exact child turn.
+ * This separate contract must not relax root-turn completion or memory review validation.
+ */
+export function readDesktopSubagentTurnOutcome(
+  binding: DesktopReplayBinding & { parentSessionId: string }, root: string,
+): 'completed' | 'interrupted' | null {
+  const rollout = readDesktopRollout(binding, root, 'subagent-lifecycle');
+  if (!rollout) return null;
+  const { session, entries } = rollout;
+  const spawn = object(object(object(session.source)?.subagent)?.thread_spawn);
+  if (session.session_id !== binding.parentSessionId || session.id === binding.parentSessionId
+    || typeof spawn?.parent_thread_id !== 'string' || !/^[\w-]{1,128}$/u.test(spawn.parent_thread_id)
+    || spawn.parent_thread_id === session.id || session.parent_thread_id !== spawn.parent_thread_id) return null;
+  let startedAt: number | undefined;
+  let rootTurnId: string | undefined;
+  let workspace = false;
+  let outcome: 'completed' | 'interrupted' | null = null;
+  for (const entry of entries) {
+    const row = object(entry);
+    const event = object(row?.payload);
+    if (event?.turn_id !== binding.turnId) continue;
+    if (outcome) return null; // Duplicate/conflicting terminal evidence or a restarted turn is ambiguous.
+    if (row?.type === 'event_msg' && event.type === 'task_started') {
+      if (startedAt !== undefined || typeof event.root_turn_id !== 'string'
+        || !/^[\w-]{1,128}$/u.test(event.root_turn_id)
+        || typeof event.started_at !== 'number' || !Number.isSafeInteger(event.started_at)) return null;
+      startedAt = event.started_at;
+      rootTurnId = event.root_turn_id;
+    } else if (row?.type === 'turn_context') {
+      if (startedAt === undefined) return null;
+      try {
+        if (typeof event.cwd !== 'string' || realpathSync(event.cwd) !== root) return null;
+      } catch { return null; }
+      workspace = true;
+    } else if (row?.type === 'event_msg' && ['task_complete', 'turn_aborted'].includes(String(event.type))) {
+      if (startedAt === undefined || !workspace || event.root_turn_id !== rootTurnId
+        || (event.started_at !== undefined && event.started_at !== startedAt)) return null;
+      if (event.type === 'task_complete' && (typeof event.completed_at !== 'number'
+        || !Number.isSafeInteger(event.completed_at) || event.completed_at < startedAt)) return null;
+      outcome = event.type === 'task_complete' ? 'completed' : 'interrupted';
+    }
+  }
+  return outcome;
 }
 
 /** A Stop hook can continue the turn. Only the host's terminal event establishes completion. */

@@ -4,17 +4,25 @@ import { createConnection } from 'node:net';
 import path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import type { parseCodexHookInput } from '../assurance/codex-hooks.js';
-import { readDesktopTurnOutcome } from '../assurance/codex-desktop-turn.js';
+import { readDesktopSubagentTurnOutcome, readDesktopTurnOutcome } from '../assurance/codex-desktop-turn.js';
 import { discoverCodexDockSocket } from './codex-service.js';
 
 type HookInput = ReturnType<typeof parseCodexHookInput>;
 function recordingBinding(input: HookInput) {
-  if (!['Stop', 'Interrupt'].includes(input.hook_event_name) || input.agent_id
-    || typeof input.transcript_path !== 'string' || input.transcript_path.length > 4096
-    || !path.isAbsolute(input.transcript_path)
+  const subagent = input.hook_event_name === 'SubagentStop';
+  const transcriptPath = subagent ? input.agent_transcript_path : input.transcript_path;
+  if ((!subagent && (!['Stop', 'Interrupt'].includes(input.hook_event_name) || input.agent_id))
+    || typeof transcriptPath !== 'string' || transcriptPath.length > 4096
+    || !path.isAbsolute(transcriptPath)
     || typeof input.turn_id !== 'string'
     || !/^[\w-]{1,128}$/u.test(input.session_id) || !/^[\w-]{1,128}$/u.test(input.turn_id)) return;
-  return { sessionId: input.session_id, turnId: input.turn_id, transcriptPath: input.transcript_path };
+  if (subagent) {
+    if (typeof input.agent_id !== 'string' || !/^[\w-]{1,128}$/u.test(input.agent_id)
+      || input.agent_id === input.session_id) return;
+    // This is only a candidate: the child rollout must prove both thread and session ownership.
+    return { sessionId: input.agent_id, turnId: input.turn_id, transcriptPath, parentSessionId: input.session_id };
+  }
+  return { sessionId: input.session_id, turnId: input.turn_id, transcriptPath };
 }
 
 /** The host writes task_complete after Stop returns, so the hook cannot await it. */
@@ -27,7 +35,8 @@ export function spawnRecordingCompletion(input: HookInput, database: string): vo
   child.on('error', () => {});
   child.stdin.on('error', () => {});
   child.stdin.end(JSON.stringify({ hook_event_name: input.hook_event_name, cwd: input.cwd,
-    session_id: input.session_id, turn_id: input.turn_id, transcript_path: input.transcript_path }));
+    session_id: input.session_id, turn_id: input.turn_id, transcript_path: input.transcript_path,
+    agent_id: input.agent_id, agent_transcript_path: input.agent_transcript_path }));
   child.unref();
 }
 
@@ -70,7 +79,8 @@ export async function finishCodexRecording(input: HookInput): Promise<void> {
       const info = await lstat(binding.transcriptPath);
       const version = `${info.ino}:${info.size}:${info.mtimeMs}`;
       if (version !== lastVersion) {
-        outcome = readDesktopTurnOutcome(binding, root);
+        outcome = binding.parentSessionId === undefined ? readDesktopTurnOutcome(binding, root)
+          : readDesktopSubagentTurnOutcome({ ...binding, parentSessionId: binding.parentSessionId }, root);
         lastVersion = version;
       }
       if (outcome) {
