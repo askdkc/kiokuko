@@ -572,7 +572,11 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
     args: ['mcp', '--profile', 'chatgpt-memory', '--access', 'read'], env: environment, stderr: 'pipe' });
   try {
     await client.connect(transport);
-    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_correction_check', 'memory_policy', 'memory_recall']);
+    assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), ['memory_correction_check', 'memory_policy', 'memory_recall', 'memory_review_pending']);
+    const pending = await client.callTool({ name: 'memory_review_pending', arguments: {} });
+    assert.notEqual(pending.isError, true);
+    assert.deepEqual(pending.structuredContent, { status: 'unavailable', reason: 'chatgpt_adapter_unsupported',
+      workMayContinue: true, alternative: 'memory_capture' });
     const policy = (await client.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
     assert.equal(policy.policyVersion, 'chatgpt-memory/6');
     assert.match(policy.instructions, /In every session/);
@@ -597,7 +601,12 @@ async function verifyInstalledChatgptProfile(cliPath, fixtureRoot) {
   try {
     await writer.connect(new StdioClientTransport({ command: cliPath,
       args: ['mcp', '--profile', 'chatgpt-memory', '--access', 'read-write'], env: environment, stderr: 'pipe' }));
-    assert.deepEqual((await writer.listTools()).tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_correction_check', 'memory_policy', 'memory_recall']);
+    assert.deepEqual((await writer.listTools()).tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_correction_check', 'memory_policy', 'memory_recall', 'memory_review_pending']);
+    const pending = await writer.callTool({ name: 'memory_review_pending', arguments: {} });
+    assert.notEqual(pending.isError, true);
+    assert.deepEqual(pending.structuredContent, { status: 'unavailable', reason: 'chatgpt_adapter_unsupported',
+      workMayContinue: true, alternative: 'memory_capture' });
+    assert.equal((await writer.callTool({ name: 'memory_review_pending', arguments: { choice: 'save' } })).isError, true);
     const p = (await writer.callTool({ name: 'memory_policy', arguments: {} })).structuredContent;
     assert.equal(p.access, 'read-write');
     const policy = { version: p.policyVersion, digest: p.policyDigest, read: true };
