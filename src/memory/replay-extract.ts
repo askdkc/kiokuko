@@ -5,8 +5,20 @@ import { findSecret, findSecretInValue } from './secrets.js';
 import { compatibleReplayEvent, declaredReplaySchema } from './replay-contract.js';
 import type { ReplayMemoryProposal } from './replay-review.js';
 import { extractCodexWireExperience, type ReplaySourceEvent } from './replay-codex-wire.js';
+import { validateUserTurnReceipt, verifyReceiptRecording, type ExpectedUserTurn } from '../agenticreplay/turn-receipt.js';
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+
+/** Shared receipt entry point is deliberately separate from Codex transcript
+ * verification. No ChatGPT wire format has been provided by AgenticReplay yet.
+ * A valid receipt alone must never fall through to generic/Codex extraction. */
+export async function extractTurnReceiptProposal(input: {
+  cwd: string; receipt: unknown; expected: ExpectedUserTurn;
+}): Promise<ReplayMemoryProposal> {
+  const receipt = validateUserTurnReceipt(input.receipt, input.expected);
+  await verifyReceiptRecording(input.cwd, receipt);
+  throw new Error(receipt.source === 'chatgpt-host' ? 'chatgpt_adapter_unsupported' : 'codex_transcript_required');
+}
 function codexRequestMatches(headers: unknown, sessionId: string, turnId: string): boolean {
   const fields = object(headers);
   const value = fields['x-codex-turn-metadata'];
@@ -35,7 +47,7 @@ async function bounded(file: string, root: string, max: number): Promise<Buffer>
   return bytes;
 }
 /** Read only explicit user messages and public call/result fields, never reasoning or system prompts. */
-export async function extractReplayProposal(input: { cwd: string; traceDirectory: string; taskId: string; sessionId: string; workspace: string; desktopTurnId?: string; desktopUserTextDigests?: string[] }): Promise<ReplayMemoryProposal> {
+export async function extractReplayProposal(input: { cwd: string; traceDirectory: string; taskId: string; sessionId: string; workspace: string; desktopTurnId?: string; desktopUserTextDigests?: string[]; expectedEventsSha256?: string }): Promise<ReplayMemoryProposal> {
   const root = await realpath(input.cwd), directory = await realpath(input.traceDirectory);
   const runs = await realpath(path.join(root, '.agenticreplay', 'runs'));
   if (!runs.startsWith(root + path.sep) || !directory.startsWith(runs + path.sep)) throw new Error('replay_scope_mismatch');
@@ -49,6 +61,7 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
   }
   if (candidates.length !== 1) throw new Error('replay_event_file_ambiguous_or_missing');
   const bytes = candidates[0]!, digest = hash(bytes), integrity = object(manifest.integrity);
+  if (input.expectedEventsSha256 !== undefined && digest !== input.expectedEventsSha256) throw new Error('replay_integrity_mismatch');
   if (integrity.events_sha256 !== undefined && integrity.events_sha256 !== digest) throw new Error('replay_integrity_mismatch');
   const gaps: string[] = input.desktopTurnId === undefined
     ? ['whole selected replay run; task/session labels supplied by the reviewer, not verified by the trace', ...(integrity.events_sha256 ? [] : ['unsealed trace; completeness is unknown'])]

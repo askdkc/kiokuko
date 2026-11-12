@@ -253,7 +253,7 @@ function removeUnmanagedCodexMcpIdentity(existing: string): string {
 }
 
 export interface CodexMcpLaunch { command: string; args: string[]; }
-interface CanonicalCodexBlock extends CodexMcpLaunch { skillDiscoveryMode: SkillDiscoveryMode; toolTimeout: string; toolSettings: string[]; }
+interface CanonicalCodexBlock extends CodexMcpLaunch { enabled: boolean; skillDiscoveryMode: SkillDiscoveryMode; toolTimeout: string; toolSettings: string[]; }
 const absoluteLaunchPath = (value: string) => path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
 
 function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undefined {
@@ -285,8 +285,8 @@ function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undef
     || lines[0] !== CODEX_MCP_BEGIN
     || lines[1] !== '# Managed by `kiokuko setup`.'
     || lines[2] !== '[mcp_servers.kiokuko]'
-    || lines[5] !== 'enabled = true'
-    || lines[6] !== 'required = true'
+    || !/^enabled = (?:true|false)$/u.test(lines[5] ?? '')
+    || !/^required = (?:true|false)$/u.test(lines[6] ?? '')
     || lines.at(-1) !== CODEX_MCP_END
   ) codexConflict();
 
@@ -337,7 +337,7 @@ function parseCanonicalCodexBlock(existing: string): CanonicalCodexBlock | undef
   ))) {
     codexConflict();
   }
-  return { command, args: args as string[], skillDiscoveryMode: modeMatch[1] as SkillDiscoveryMode, toolTimeout, toolSettings };
+  return { command, args: args as string[], enabled: lines[5] === 'enabled = true', skillDiscoveryMode: modeMatch[1] as SkillDiscoveryMode, toolTimeout, toolSettings };
 }
 
 /** Remove only the marked MCP table, including blocks from older setup versions. */
@@ -414,8 +414,9 @@ export function renderCodexMcpConfig(
     '[mcp_servers.kiokuko]',
     `command = ${JSON.stringify(launch.command)}`,
     `args = ${JSON.stringify(launch.args)}`,
-    'enabled = true',
-    'required = true',
+    `enabled = ${current?.enabled ?? true}`,
+    // Memory availability must never gate Codex thread creation or resume.
+    'required = false',
     `env = { ${SKILL_DISCOVERY_ENV} = ${JSON.stringify(effectiveSkillDiscoveryMode)} }`,
     CODEX_RECORDER_ENV,
     current?.toolTimeout ?? CODEX_TOOL_TIMEOUT,

@@ -91,6 +91,8 @@ function isKiokukoHook(value: Record<string, unknown>, client: 'codex' | 'claude
 
 /** Remove retired setup hook handlers without removing neighbouring handlers. */
 export function removeLegacyHooks(source: string, client: 'codex' | 'claude'): string | undefined {
+  // An empty hooks file has no owned handlers; retain it just like setup does.
+  if (/^[\t\r\n ]*$/u.test(source)) return source;
   const root = jsonObject(source, false);
   if (root.hooks === undefined) return source;
   if (!object(root.hooks)) throw new KiokukoError('VALIDATION_ERROR', 'Invalid client hook map');

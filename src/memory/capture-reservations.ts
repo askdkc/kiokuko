@@ -48,6 +48,7 @@ export const TURN_BOUND_CAPTURE_CANDIDATE = `r.state = 'useful_candidates'
 export function nextCaptureCandidate(db: SqliteDatabase, repositoryRoot: string, sessionId: string, currentTurnId: string): string | undefined {
   return db.prepare(`SELECT c.candidate_id AS candidateId FROM memory_capture_candidates c
     JOIN memory_capture_reservations r ON r.event_id = c.event_id
-    WHERE r.repository_root = ? AND c.session_id = ? AND c.turn_id != ? AND c.state = 'pending_review' AND ${TURN_BOUND_CAPTURE_CANDIDATE}
+    WHERE r.repository_root = ? AND c.session_id = ? AND c.turn_id != ? AND c.state = 'pending_review'
+      AND c.presented_at IS NULL AND ${TURN_BOUND_CAPTURE_CANDIDATE}
     ORDER BY c.created_at, c.candidate_id LIMIT 1`).get<{ candidateId: string }>(repositoryRoot, sessionId, currentTurnId)?.candidateId;
 }

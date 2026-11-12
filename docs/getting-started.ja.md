@@ -30,11 +30,15 @@ Codexでは次のmanaged blockを所有します。
 command = "kiokuko"
 args = ["mcp"]
 enabled = true
-required = true
+required = false
 ```
 
-`required`の欠落、値、順序、重複key、余分なfieldの変更や
-`required = false`はuser-managed conflictとして無断上書きしません。対話実行では置換確認を行い、JSON・非対話・dry-runでは
+Kiokukoは任意の機能です。MCPの起動に失敗しても、ChatGPT/Codexの会話作成・再開は止めません。
+setupは旧managed blockの`required = true`を`required = false`へ移行し、
+起動コマンド、ツールの承認設定、明示的な`enabled = false`を保持します。
+
+discoveryの環境変数も同じblockで管理します。`required`の欠落、その他の値、順序、重複key、余分なfieldの変更は
+user-managed conflictとして無断上書きしません。対話実行では置換確認を行い、JSON・非対話・dry-runでは
 `CONFLICT`を返して変更しません。他の対応clientも同じ規則です。
 
 起動中のclientは設定後に再起動してください。

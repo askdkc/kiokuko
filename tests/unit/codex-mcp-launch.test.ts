@@ -33,7 +33,7 @@ test('new default pins Node and compiled CLI, and reruns preserve both paths', (
   const created = renderCodexMcpConfig('', undefined, 'off', options);
   assert.ok(created.content.includes(`command = ${JSON.stringify(process.execPath)}`));
   assert.ok(created.content.includes('args = ["/fixture/kiokuko/dist/bin/kiokuko.js","mcp"]'));
-  assert.match(created.content, /^required = true$/mu);
+  assert.match(created.content, /^required = false$/mu);
   const moved = { defaultRuntime: () => ({ node: '/new/node', script: '/new/kiokuko/dist/bin/kiokuko.js' }) };
   assert.equal(renderCodexMcpConfig(created.content, undefined, undefined, moved).content, created.content);
   const explicit = renderCodexMcpConfig(created.content, '/custom/kiokuko');
@@ -84,8 +84,30 @@ test('only canonical pinned arguments are accepted as managed launchers', () => 
     canonical.replace('["/fixture/kiokuko/dist/bin/kiokuko.js","mcp"]', '["/fixture/kiokuko/dist/bin/kiokuko.js","serve"]'),
     canonical.replace('/fixture/kiokuko/dist/bin/kiokuko.js', '/unrelated/script.js'),
     canonical.replace('["/fixture/kiokuko/dist/bin/kiokuko.js","mcp"]', '["/fixture/kiokuko/dist/bin/kiokuko.js","mcp","--custom"]'),
-    canonical.replace('required = true', 'required = false'),
+    canonical.replace('required = false', 'required = "false"'),
   ]) assert.throws(() => renderCodexMcpConfig(changed), error => error instanceof Error && 'code' in error && error.code === 'CONFLICT');
+});
+
+test('upgrades legacy required MCP without changing the launcher or tool approvals', () => {
+  const current = renderCodexMcpConfig('model = "keep"\n', '/custom/kiokuko', 'community').content;
+  const approvals = '\n[mcp_servers.kiokuko.tools.memory_recall]\napproval_mode = "prompt"\n';
+  const legacy = current.replace('required = false', 'required = true')
+    .replace('# END KIOKUKO MCP', `${approvals}# END KIOKUKO MCP`);
+  const updated = renderCodexMcpConfig(legacy);
+  assert.match(updated.content, /^required = false$/mu);
+  assert.equal(updated.content, legacy.replace('required = true', 'required = false'));
+  assert.equal(updated.action, 'updated');
+  assert.equal(renderCodexMcpConfig(updated.content).action, 'unchanged');
+});
+
+test('setup preserves an explicitly disabled managed MCP while making it optional', () => {
+  const current = renderCodexMcpConfig('', '/custom/kiokuko').content.replace('enabled = true', 'enabled = false');
+  for (const existing of [current, current.replace('required = false', 'required = true')]) {
+    const updated = renderCodexMcpConfig(existing);
+    assert.match(updated.content, /^enabled = false$/mu);
+    assert.match(updated.content, /^required = false$/mu);
+    assert.equal(renderCodexMcpConfig(updated.content).action, 'unchanged');
+  }
 });
 
 test('upgrades an existing Codex MCP launcher to inherit only the recorder socket', () => {

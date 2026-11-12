@@ -14,6 +14,8 @@ import { createApprovedReplayMemoryStore } from '../memory/replay-store.js';
 import { TURN_BOUND_CAPTURE_CANDIDATE } from '../memory/capture-reservations.js';
 import { pendingCaptureReviewMessage } from '../memory/capture-proposal.js';
 import type { ReplayMemoryProposal } from '../memory/replay-review.js';
+import { captureDiagnostics } from '../memory/capture-diagnostics.js';
+import { realpath } from 'node:fs/promises';
 
 /** Standalone manual maintenance CLI, not a model-facing approval path.
  * isTTY checks interactivity, not authenticated human origin; model-controlled PTYs cannot establish consent.
@@ -24,8 +26,18 @@ export function registerReplayReviewCommand(cli: Command): void {
     .option('--task <id>', 'Task ID recorded for the reviewed trace (manual replay review)')
     .option('--session <id>', 'Session ID recorded for the reviewed trace (manual replay review)')
     .option('--pending', 'Review pending automatic capture candidates for this repository')
+    .option('--status', 'Read capture/receipt/review diagnostics without opening a confirmation UI')
     .option('--cwd <directory>', 'Repository root', process.cwd()).option('--database <path>')
-    .action(async (options: {trace?:string; task?:string; session?:string; pending?:boolean; cwd:string; database?:string}) => {
+    .action(async (options: {trace?:string; task?:string; session?:string; pending?:boolean; status?:boolean; cwd:string; database?:string}) => {
+      if (options.status) {
+        let db;
+        try {
+          db = openConnection(options.database ?? getGlobalDatabasePath(), { readOnly: true });
+          process.stdout.write(JSON.stringify(captureDiagnostics(db, await realpath(options.cwd), options.session)) + '\n');
+        } catch { process.stdout.write(JSON.stringify({ workMayContinue: true, reason: 'capture_diagnostics_unavailable' }) + '\n'); }
+        finally { db?.close(); }
+        return;
+      }
       if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Manual memory review requires an interactive terminal; terminal access does not authenticate human approval');
       const terminal = createInterface({ input: process.stdin, output: process.stdout });
       const abort = new AbortController();

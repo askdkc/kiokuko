@@ -5,7 +5,9 @@ import type { SqliteDatabase } from '../db/adapter.js';
 import { withImmediateTransaction } from '../db/transaction.js';
 import { hasDesktopTranscript } from '../assurance/codex-desktop-turn.js';
 import { discoverCodexDockSocket } from '../agenticreplay/codex-service.js';
-import { waitForCompletedDesktopTurn, waitForSealedDesktopTrace } from '../agenticreplay/codex-replay.js';
+import { readRecorderTurnReceipt, waitForCompletedDesktopTurn, waitForSealedDesktopTrace } from '../agenticreplay/codex-replay.js';
+import { verifyReceiptRecording } from '../agenticreplay/turn-receipt.js';
+import { retainTurnReceipt } from './turn-receipt-inbox.js';
 import { resolveProjectWorkspace } from './workspaces.js';
 import { extractReplayProposal } from './replay-extract.js';
 import { compactCaptureProposal } from './capture-proposal.js';
@@ -53,7 +55,7 @@ async function newestTraceDirectories(root: string): Promise<string[]> {
 }
 
 async function findProposal(
-  root: string, workspace: string, reservation: PendingReservation, active: () => boolean,
+  db: SqliteDatabase, root: string, workspace: string, reservation: PendingReservation, active: () => boolean,
 ): Promise<{ proposal?: ReplayMemoryProposal; empty?: boolean; warning?: string }> {
   const { session_id: sessionId, turn_id: turnId, transcript_path: transcriptPath } = reservation;
   if (!transcriptPath || !hasDesktopTranscript({ sessionId, turnId, transcriptPath }, root)) {
@@ -79,9 +81,40 @@ async function findProposal(
   // sealed trace can also be recovered after a recorder restart.
   const sealed = socket && active()
     ? await waitForSealedDesktopTrace(root, socket, binding, signal).catch(() => null) : null;
+  // Older recorders have no shared receipt API. Their independently verified
+  // Codex path remains supported; a contradictory finalized receipt is rejected.
+  let receiptWarning: string | undefined;
+  let receiptDigest: string | undefined;
+  if (sealed && socket && active()) {
+    let receipt;
+    try { receipt = await readRecorderTurnReceipt(socket, root, { sessionId, turnId }, signal); }
+    catch (error) {
+      if (error instanceof Error && ['receipt_schema_invalid', 'receipt_reply_invalid', 'receipt_reply_bound', 'receipt_transport_untrusted'].includes(error.message)) {
+        return { warning: error.message };
+      }
+      receiptWarning = 'receipt_unavailable';
+    }
+    if (receipt) {
+      try {
+        const reason = retainTurnReceipt(db, root, receipt, { source: 'codex-runtime', sessionId, turnId, branchId: null });
+        if (receipt.scope === 'background' || receipt.scope === 'subagent') return { warning: 'receipt_user_scope_unproven' };
+        if (reason === 'receipt_identity_mismatch') return { warning: reason };
+        if (receipt.outcome !== 'completed' || receipt.capture !== 'complete') return { warning: 'receipt_completion_missing' };
+        if (await verifyReceiptRecording(root, receipt) !== await realpath(sealed)) return { warning: 'receipt_identity_mismatch' };
+        receiptDigest = receipt.recording.eventsSha256;
+        // Legacy Codex transcript verification below remains mandatory even if
+        // the common identity is insufficient (current recorder scope=unknown).
+        if (reason !== 'receipt_verified_identity') receiptWarning = reason;
+      } catch (error) {
+        return { warning: error instanceof Error && /^receipt_[a-z_]+$/u.test(error.message)
+          ? error.message : 'receipt_recording_unavailable' };
+      }
+    } else receiptWarning ??= 'receipt_capability_unavailable';
+  }
   const extract = (traceDirectory: string) => extractReplayProposal({ cwd: root, traceDirectory,
     taskId: `turn:${turnId}`.slice(0, 128), sessionId, workspace,
-    desktopTurnId: turnId, desktopUserTextDigests: userTextDigests });
+    desktopTurnId: turnId, desktopUserTextDigests: userTextDigests,
+    ...(receiptDigest ? { expectedEventsSha256: receiptDigest } : {}) });
   let warning: string | undefined;
   let empty = false;
   const tryTrace = async (directory: string): Promise<ReplayMemoryProposal | undefined> => {
@@ -99,7 +132,7 @@ async function findProposal(
   };
   if (sealed && active()) {
     const proposal = await tryTrace(sealed);
-    if (proposal) return { proposal };
+    if (proposal) return { proposal, ...(receiptWarning ? { warning: receiptWarning } : {}) };
   }
   const traces = await newestTraceDirectories(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return [];
@@ -109,7 +142,8 @@ async function findProposal(
     if (!active()) break;
     if (directory === sealed) continue;
     const proposal = await tryTrace(directory);
-    if (proposal) return { proposal, ...(warning ? { warning } : {}) };
+    const diagnostic = warning ?? receiptWarning;
+    if (proposal) return { proposal, ...(diagnostic ? { warning: diagnostic } : {}) };
   }
   return { empty, warning: warning ?? (empty ? 'replay_desktop_memory_empty' : 'replay_source_unavailable') };
 }
@@ -129,7 +163,7 @@ async function considerOne(
     .run(state, reason, new Date().toISOString(), reservation.event_id, claimedAt);
   try {
     const project = await resolveProjectWorkspace(db, root);
-    const result = project ? await findProposal(root, project.workspace, reservation, active)
+    const result = project ? await findProposal(db, root, project.workspace, reservation, active)
       : { warning: 'workspace_unavailable' };
     const { proposal, warning, empty } = result;
     if (!proposal || !project) {
@@ -151,7 +185,7 @@ async function considerOne(
         ON CONFLICT(workspace, evidence_key) DO NOTHING RETURNING candidate_id`)
         .get(randomUUID(), reservation.event_id, project.workspace, reservation.session_id, reservation.turn_id,
           `${source.runId}:${source.eventsSha256}`, proposal.revision, proposalDigest(proposal), bytes, now, now);
-      finish('useful_candidates');
+      finish('useful_candidates', warning ?? null);
       return candidate !== undefined;
     });
     return { created, ...(warning ? { warning } : {}) };

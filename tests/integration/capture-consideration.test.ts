@@ -464,7 +464,15 @@ test('the native form can save a same-chat candidate, and cancellation leaves it
     assert.equal((cancelled.structuredContent as { status?: string } | undefined)?.status, 'unavailable');
     assert.equal(candidateRows(f.db)[0]!.state, 'pending_review');
     assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM entries').get<{ n: number }>()!.n, 0);
-    const saved = await client.callTool({ name, arguments: args });
+    const duplicate = await client.callTool({ name, arguments: args });
+    assert.equal((duplicate.structuredContent as { reason?: string }).reason, 'review_already_presented');
+    assert.equal(messages.length, 1);
+    const nextPrompt = handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit', 'turn-3')) as { hookSpecificOutput: { additionalContext: string } };
+    assert.ok(!nextPrompt.hookSpecificOutput.additionalContext.includes('call memory_review_pending'));
+    // A deliberate later review is permitted; automatic retry of the same
+    // request, including after a process restart, must not reopen the form.
+    const laterArgs = { ...args, turnId: 'turn-3', requestId: /Kiokuko request (codex-[a-f0-9]+)/u.exec(nextPrompt.hookSpecificOutput.additionalContext)![1]! };
+    const saved = await client.callTool({ name, arguments: laterArgs });
     assert.equal((saved.structuredContent as { status?: string } | undefined)?.status, 'saved');
     const row = candidateRows(f.db)[0]!;
     const proposal = JSON.parse(String(row.proposal_json));
@@ -483,4 +491,83 @@ test('the native form can save a same-chat candidate, and cancellation leaves it
     await server.close();
     f.cleanup();
   }
+});
+
+test('durable presentation lease prevents concurrent questions across DB connections and restart retries do not save twice', async () => {
+  const f = fixture();
+  try {
+    recordedTrace(f.root);
+    handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit'));
+    handleCodexHook(f.db, hookInput(f.root, 'Stop'));
+    await considerPendingCaptureReservations(f.db, f.root);
+    const row = candidateRows(f.db)[0]!;
+    const input = { candidateId: String(row.candidate_id), workspace: JSON.parse(String(row.proposal_json)).source.workspace, present: () => 'exact candidate' };
+    let answer!: (answer: { choice: 'approve' }) => void;
+    const first = reviewPendingCaptureCandidate(f.db, { ...input, ask: () => new Promise(resolve => { answer = resolve; }) });
+    const other = openConnection(f.databasePath);
+    try {
+      const second = await reviewPendingCaptureCandidate(other, { ...input, ask: async () => { throw new Error('duplicate question'); } });
+      assert.equal(second.reason, 'review_in_progress');
+      assert.ok(candidateRows(f.db)[0]!.presented_at);
+      answer({ choice: 'approve' });
+      assert.equal((await first).status, 'saved');
+      assert.equal((await reviewPendingCaptureCandidate(other, { ...input, ask: async () => { throw new Error('repeated question'); } })).status, 'saved');
+      assert.equal(other.prepare('SELECT COUNT(*) AS n FROM entries').get()!.n, 1);
+    } finally { other.close(); }
+  } finally { f.cleanup(); }
+});
+
+test('UI error, missing presentation, abort with late Save, and closed DB never approve or block ordinary file work', async () => {
+  const f = fixture();
+  try {
+    recordedTrace(f.root);
+    handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit'));
+    handleCodexHook(f.db, hookInput(f.root, 'Stop'));
+    await considerPendingCaptureReservations(f.db, f.root);
+    const row = candidateRows(f.db)[0]!;
+    const input = { candidateId: String(row.candidate_id), workspace: JSON.parse(String(row.proposal_json)).source.workspace, present: () => 'exact candidate' };
+    assert.equal((await reviewPendingCaptureCandidate(f.db, { ...input, ask: async () => { throw new Error('UI offline'); } })).status, 'unavailable');
+    assert.equal((await reviewPendingCaptureCandidate(f.db, { ...input, present: () => undefined, ask: async () => { throw new Error('must not ask'); } })).status, 'unavailable');
+    const controller = new AbortController();
+    let lateSave!: (answer: { choice: 'approve' }) => void;
+    const pending = reviewPendingCaptureCandidate(f.db, { ...input, signal: controller.signal, ask: () => new Promise(resolve => { lateSave = resolve; }) });
+    controller.abort();
+    assert.equal((await pending).status, 'unavailable');
+    lateSave({ choice: 'approve' });
+    await Promise.resolve();
+    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM entries').get()!.n, 0);
+    writeFileSync(path.join(f.root, 'ordinary-work.txt'), 'file editing continues');
+    f.db.close();
+    assert.equal((await reviewPendingCaptureCandidate(f.db, { ...input, ask: async () => ({ choice: 'approve' }) })).status, 'unavailable');
+  } finally { f.cleanup(); }
+});
+
+test('presentation history survives restart, suppresses automatic re-offers, and status reads do not open a UI', async () => {
+  const f = fixture();
+  try {
+    recordedTrace(f.root);
+    handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit'));
+    handleCodexHook(f.db, hookInput(f.root, 'Stop'));
+    await considerPendingCaptureReservations(f.db, f.root);
+    const row = candidateRows(f.db)[0]!;
+    const input = { candidateId: String(row.candidate_id), workspace: JSON.parse(String(row.proposal_json)).source.workspace,
+      requestId: 'host-request', present: () => 'exact candidate', ask: async () => { throw new Error('lost UI reply'); } };
+    assert.equal((await reviewPendingCaptureCandidate(f.db, input)).status, 'unavailable');
+    const other = openConnection(f.databasePath);
+    try {
+      const repeated = await reviewPendingCaptureCandidate(other, { ...input, ask: async () => { assert.fail('must not repeat presentation'); } });
+      assert.equal(repeated.reason, 'review_already_presented');
+      assert.equal(other.prepare('SELECT COUNT(*) AS n FROM entries').get()!.n, 0);
+    } finally { other.close(); }
+    const prompt = handleCodexHook(f.db, hookInput(f.root, 'UserPromptSubmit', 'turn-later')) as { hookSpecificOutput: { additionalContext: string } };
+    assert.ok(!prompt.hookSpecificOutput.additionalContext.includes('call memory_review_pending'));
+    const status = spawnSync(process.execPath, ['--import', 'tsx', 'src/bin/kiokuko.ts', 'memory-review', '--status',
+      '--cwd', f.root, '--database', f.databasePath, '--session', 'session-a'], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(status.status, 0, status.stderr);
+    const diagnostic = JSON.parse(status.stdout);
+    assert.equal(diagnostic.chatgpt, 'adapter_unsupported');
+    assert.equal(diagnostic.reservations[0].review, 'pending_review');
+    assert.ok(diagnostic.reservations[0].presented_at);
+    assert.ok(!status.stdout.includes(requestText));
+  } finally { f.cleanup(); }
 });

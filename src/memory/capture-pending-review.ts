@@ -5,6 +5,7 @@ import { createApprovedReplayMemoryStore } from './replay-store.js';
 import { proposalDigest, type ReplayMemoryProposal } from './replay-review.js';
 import { findSecretInValue } from './secrets.js';
 import { TURN_BOUND_CAPTURE_CANDIDATE } from './capture-reservations.js';
+import { withImmediateTransaction } from '../db/transaction.js';
 
 export interface PendingReviewAnswer { choice: 'approve' | 'decline' | 'revise'; comment?: string; }
 export interface PendingReviewQuestion { id: string; revision: number; digest: string; message: string | undefined; }
@@ -12,6 +13,7 @@ export interface PendingReviewReceipt {
   status: 'saved' | 'declined' | 'unavailable' | 'not_found';
   workMayContinue: true;
   approvalKey?: string;
+  reason?: string;
 }
 
 interface CandidateRow extends Record<string, unknown> {
@@ -49,14 +51,76 @@ function revisedProposal(proposal: ReplayMemoryProposal, comment: string): Repla
  * revision is the only value passed to the approved store; tool arguments,
  * model output and lifecycle events never approve anything.
  */
-export async function reviewPendingCaptureCandidate(db: SqliteDatabase, input: {
+interface PendingReviewInput {
   candidateId: string;
   workspace: string;
   present: (proposal: ReplayMemoryProposal) => string | undefined;
   ask: (question: PendingReviewQuestion) => Promise<PendingReviewAnswer>;
   signal?: AbortSignal;
   canReview?: () => boolean;
-}): Promise<PendingReviewReceipt> {
+  requestId?: string;
+}
+
+/** Persistent presentation lease prevents concurrent clients/processes from
+ * opening the same question. A crashed presenter can be retried after expiry.
+ * UI exactly-once delivery cannot be promised without host acknowledgement. */
+export async function reviewPendingCaptureCandidate(db: SqliteDatabase, input: PendingReviewInput): Promise<PendingReviewReceipt> {
+  const token = randomUUID();
+  const now = new Date().toISOString();
+  const deadline = AbortSignal.timeout(120_000);
+  const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
+  let claimed = false;
+  try {
+    if (signal.aborted || !(input.canReview?.() ?? true)) return { status: 'unavailable', workMayContinue: true };
+    const row = loadCandidate(db, input.candidateId, input.workspace);
+    if (!row) return { status: 'not_found', workMayContinue: true };
+    if (row.state === 'saved') return { status: 'saved', workMayContinue: true, approvalKey: captureApprovalKey(row) };
+    if (row.state === 'declined') return { status: 'declined', workMayContinue: true };
+    if (input.requestId && db.prepare(`SELECT 1 FROM memory_capture_presentations
+      WHERE candidate_id = ? AND request_id = ?`).get(input.candidateId, input.requestId)) {
+      return { status: 'unavailable', reason: 'review_already_presented', workMayContinue: true };
+    }
+    claimed = !!db.prepare(`UPDATE memory_capture_candidates SET review_token = ?, review_until = ?, review_reason = 'presenting'
+      WHERE candidate_id = ? AND state = 'pending_review' AND (review_token IS NULL OR review_until < ?) RETURNING candidate_id`)
+      .get(token, new Date(Date.now() + 125_000).toISOString(), input.candidateId, now);
+    if (!claimed) return { status: 'unavailable', reason: 'review_in_progress', workMayContinue: true };
+    const owned = () => !signal.aborted && (input.canReview?.() ?? true) && !!db.prepare(`SELECT 1 FROM memory_capture_candidates
+      WHERE candidate_id = ? AND review_token = ? AND review_until > ?`).get(input.candidateId, token, new Date().toISOString());
+    let presented = false;
+    const result = await reviewCandidate(db, { ...input, signal, canReview: owned,
+      ask: async question => {
+        withImmediateTransaction(db, () => {
+          if (!owned()) throw new Error('review_ownership_lost');
+          if (!presented && input.requestId) db.prepare(`INSERT INTO memory_capture_presentations
+            (candidate_id, request_id, presented_at) VALUES (?, ?, ?)`).run(input.candidateId, input.requestId, new Date().toISOString());
+          db.prepare('UPDATE memory_capture_candidates SET presented_at = ? WHERE candidate_id = ? AND review_token = ?')
+            .run(new Date().toISOString(), input.candidateId, token);
+        });
+        presented = true;
+        let abort: () => void = () => {};
+        try {
+          return await Promise.race([input.ask(question), new Promise<never>((_, reject) => {
+            abort = () => reject(new Error('review_cancelled_or_timeout'));
+            signal.addEventListener('abort', abort, { once: true });
+            if (signal.aborted) abort();
+          })]);
+        } finally { signal.removeEventListener('abort', abort); }
+      },
+    });
+    db.prepare('UPDATE memory_capture_candidates SET review_reason = ? WHERE candidate_id = ? AND review_token = ?')
+      .run(result.status, input.candidateId, token);
+    return result;
+  } catch {
+    try { db.prepare('UPDATE memory_capture_candidates SET review_reason = ? WHERE candidate_id = ? AND review_token = ?')
+      .run('review_unavailable', input.candidateId, token); } catch { /* Optional diagnostics. */ }
+    return { status: 'unavailable', reason: 'review_unavailable', workMayContinue: true };
+  } finally {
+    if (claimed) try { db.prepare('UPDATE memory_capture_candidates SET review_token = NULL, review_until = NULL WHERE candidate_id = ? AND review_token = ?')
+      .run(input.candidateId, token); } catch { /* A durable lease expires without blocking work. */ }
+  }
+}
+
+async function reviewCandidate(db: SqliteDatabase, input: PendingReviewInput): Promise<PendingReviewReceipt> {
   const available = () => !input.signal?.aborted && (input.canReview?.() ?? true);
   if (!available()) return { status: 'unavailable', workMayContinue: true };
   let row = loadCandidate(db, input.candidateId, input.workspace);

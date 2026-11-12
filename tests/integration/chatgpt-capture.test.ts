@@ -55,7 +55,7 @@ test('opt-in capture publishes a strict write contract and saves global candidat
   const { db, makeOwner } = await fixture(t);
   const a = await connect(t, makeOwner());
   const tools = (await a.client.listTools()).tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_correction_check', 'memory_policy', 'memory_recall']);
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['memory_capture', 'memory_correction_check', 'memory_policy', 'memory_recall', 'memory_review_pending']);
   const tool = tools.find(tool => tool.name === 'memory_capture')!;
   assert.deepEqual(tool.annotations, { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
   assert.equal(tool.inputSchema.additionalProperties, false);
@@ -219,4 +219,14 @@ test('capture bounds waiting writes and drains accepted retries without duplicat
   const results = await Promise.all(accepted);
   for (const result of results) assert.deepEqual(result, results[0]);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get<{n:number}>()!.n, 1);
+});
+
+test('ChatGPT pending fallback states adapter unsupported and rejects fabricated completion or Save arguments', async t => {
+  const { db, makeOwner } = await fixture(t);
+  const a = await connect(t, makeOwner());
+  const result = await a.client.callTool({ name: 'memory_review_pending', arguments: {} });
+  assert.deepEqual(result.structuredContent, { status: 'unavailable', reason: 'chatgpt_adapter_unsupported', workMayContinue: true, alternative: 'memory_capture' });
+  const forged = await a.client.callTool({ name: 'memory_review_pending', arguments: { completed: true, source: 'codex-runtime', choice: 'save' } });
+  assert.equal(forged.isError, true);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM entries').get()!.n, 0);
 });

@@ -9,7 +9,7 @@ import { renderCodexMcpConfig } from '../../src/setup/render.js';
 
 test('Codex setup writes and preserves the external Skill discovery mode', () => {
   const official = renderCodexMcpConfig('', 'kiokuko');
-  assert.match(official.content, /^required = true$/mu);
+  assert.match(official.content, /^required = false$/mu);
   assert.match(official.content, /env = \{ KIOKUKO_SKILL_DISCOVERY = "official" \}/u);
 
   const community = renderCodexMcpConfig(official.content, 'kiokuko', 'community');
@@ -48,7 +48,7 @@ test('README entry points and English/Japanese docs carry the setup and trust co
     'command = "kiokuko"',
     'args = ["mcp"]',
     'enabled = true',
-    'required = true',
+    'required = false',
   ].join('\n');
   assert.ok(renderCodexMcpConfig('').content.includes(requiredCore));
 
@@ -160,10 +160,10 @@ test('Codex setup rejects non-canonical marked blocks instead of migrating them'
   const variants = [
     canonical.replace('env = { KIOKUKO_SKILL_DISCOVERY = "official" }\n', ''),
     canonical.replace('args = ["mcp"]', 'args = ["serve"]'),
-    canonical.replace('enabled = true', 'enabled = false'),
-    canonical.replace('required = true', 'required = false'),
-    canonical.replace('enabled = true\nrequired = true', 'required = true\nenabled = true'),
-    canonical.replace('required = true', 'required = true\nrequired = true'),
+    canonical.replace('enabled = true', 'enabled = "false"'),
+    canonical.replace('required = false', 'required = "false"'),
+    canonical.replace('enabled = true\nrequired = false', 'required = false\nenabled = true'),
+    canonical.replace('required = false', 'required = false\nrequired = false'),
     canonical.replace('command = "kiokuko"', 'command = ""'),
     canonical.replace('env = { KIOKUKO_SKILL_DISCOVERY = "official" }', 'env = { KIOKUKO_SKILL_DISCOVERY = "official", PATH = "/custom" }'),
     canonical.replace('enabled = true', 'enabled = true\ncustom = true'),

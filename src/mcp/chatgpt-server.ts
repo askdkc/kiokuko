@@ -16,6 +16,7 @@ import { ChatgptRuntimeOwner, type ChatgptAccess } from './chatgpt-runtime.js';
 import { runStdioServer } from './stdio-runner.js';
 import { MEMORY_AVAILABILITY_INSTRUCTIONS } from '../assurance/memory-availability.js';
 import { createMcpMemoryCaptureReview, memoryProposalDigest } from './memory-capture-review.js';
+import { z } from 'zod';
 
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
@@ -32,6 +33,13 @@ export function createChatgptMemoryServer(owner: ChatgptRuntimeOwner, options:{c
   const internal = server as unknown as { createToolError?: (message: string) => unknown };
   if (typeof internal.createToolError !== 'function') throw new Error('MCP error hook is unavailable');
   internal.createToolError = (message) => chatgptToolError(message.includes('Input validation error:') ? 'VALIDATION_ERROR' : 'TOOL_ERROR');
+  server.registerTool('memory_review_pending', {
+    description: 'Report automatic ChatGPT capture availability. No verified ChatGPT host adapter is installed; use memory_capture for explicit native Save/Decline review. This fallback never treats supplied IDs or text as completion evidence.',
+    inputSchema: z.object({}).strict(),
+    outputSchema: z.object({ status: z.literal('unavailable'), reason: z.literal('chatgpt_adapter_unsupported'),
+      workMayContinue: z.literal(true), alternative: z.literal('memory_capture') }).strict(), annotations,
+  }, async () => chatgptToolResult({ status: 'unavailable', reason: 'chatgpt_adapter_unsupported',
+    workMayContinue: true, alternative: 'memory_capture' }));
   server.registerTool('memory_policy', {
     description: 'Read the bundled conversation memory policy and its exact version/digest. Advertises only operator-selected project IDs and display names.',
     inputSchema: chatgptPolicyInputSchema, outputSchema: chatgptPolicyOutputSchema, annotations,

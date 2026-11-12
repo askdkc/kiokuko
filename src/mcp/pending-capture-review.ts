@@ -23,7 +23,8 @@ export function createMcpPendingCaptureReview(
   return {
     close: () => shutdown.abort(),
     async review(input: PendingReviewInput, signal: AbortSignal): Promise<PendingReviewReceipt> {
-      if (!server.server.getClientCapabilities()?.elicitation?.form || active.has(input.candidateId)) return unavailable;
+      if (!server.server.getClientCapabilities()?.elicitation?.form) return { ...unavailable, reason: 'ui_unsupported' };
+      if (active.has(input.candidateId)) return { ...unavailable, reason: 'review_in_progress' };
       const combined = AbortSignal.any([signal, shutdown.signal]);
       active.add(input.candidateId);
       try {
@@ -41,7 +42,7 @@ export function createMcpPendingCaptureReview(
               AND last_event NOT IN ('Stop', 'Interrupt', 'SubagentStop')`)
             .get(identity, input.requestId, project.repositoryRoot);
           return reviewPendingCaptureCandidate(db, {
-            candidateId: input.candidateId, workspace: project.workspace, signal: combined, canReview,
+            candidateId: input.candidateId, workspace: project.workspace, signal: combined, canReview, requestId: input.requestId,
             present: proposal => {
               const message = pendingCaptureReviewMessage(proposal);
               return fitsNativeReview(message) ? message : undefined;

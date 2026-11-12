@@ -31,11 +31,16 @@ For Codex, setup owns one exact managed block:
 command = "kiokuko"
 args = ["mcp"]
 enabled = true
-required = true
+required = false
 ```
 
-The discovery environment line is managed with that block. Missing `required`, changed values,
-ordering, duplicate keys, extra fields, or an explicit `required = false` are
+Kiokuko is optional: a failed MCP startup must not prevent ChatGPT/Codex from
+creating or resuming conversations. Setup migrates older managed `required = true`
+blocks to `required = false`, preserving the launcher, tool approvals, and an
+explicit `enabled = false`.
+
+The discovery environment line is managed with that block. Missing `required`, other changed values,
+ordering, duplicate keys, or extra fields are
 user-managed conflicts and are never silently overwritten. Interactive setup asks
 whether to replace a conflicting identity; JSON, non-interactive, and dry-run calls
 return `CONFLICT` without mutation. The same rule applies to other supported clients.

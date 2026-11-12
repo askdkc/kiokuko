@@ -141,6 +141,28 @@ test('CLI explicit client selection preserves unchecked config, including invali
   assert.deepEqual(await snapshot(f.root), Object.fromEntries(Object.entries(before).filter(([name]) => !name.startsWith('home/.hermes/'))));
 });
 
+test('uninstall --all accepts empty Codex hooks and preserves the empty user file', async t => {
+  const f = await fixture(t);
+  await setupGlobalClients({ ...f.options, clients: [...SETUP_CLIENTS], standardSkills: false });
+  const hooks = await f.put('home/.codex/hooks.json', '');
+  const io = terminal();
+  await buildCli({ setupEnvironment: f.options, uninstallOutput: io.output })
+    .parseAsync(['node', 'kiokuko', 'uninstall', '--all', '--json']);
+  assert.equal(JSON.parse(io.text()).data.scope, 'all');
+  assert.equal(await readFile(hooks, 'utf8'), '');
+  await assert.rejects(access(path.join(f.home, '.codex/config.toml')), { code: 'ENOENT' });
+  await uninstallKiokuko(f.options);
+});
+
+test('legacy hook cleanup treats whitespace-only files as empty without accepting malformed JSON', () => {
+  for (const client of ['codex', 'claude'] as const) {
+    for (const source of ['', ' \t\r\n']) assert.equal(removeLegacyHooks(source, client), source);
+    for (const source of ['{', '{"hooks":{},"hooks":{}}', '\uFEFF{}']) {
+      assert.throws(() => removeLegacyHooks(source, client), { code: 'VALIDATION_ERROR' });
+    }
+  }
+});
+
 test('noninteractive uninstall requires explicit scope and invalid options cannot delete files', async t => {
   const f = await fixture(t);
   await setupGlobalClients({ ...f.options, clients: ['codex'], standardSkills: false });
