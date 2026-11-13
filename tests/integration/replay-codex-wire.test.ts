@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { extractReplayProposal } from '../../src/memory/replay-extract.js';
@@ -63,6 +64,20 @@ test('sealed desktop API blobs yield current-turn calls, results and public fina
  assert.deepEqual(p.findings[0]?.evidenceRefs, ['run_abcdef:6']);
  assert.ok(p.keywords.includes('cedar-result-marker'));
  assert.doesNotMatch(JSON.stringify(p), /PRIVATE-|HISTORICAL-/);
+});
+
+test('gzip Codex response wrappers preserve public turn extraction and identity rejection', async t => {
+ const f = fixture(t), expected = await extractReplayProposal(f.input);
+ for (const event of f.events) {
+  const envelope = event.payload as { $blob?: string } | undefined;
+  if (!envelope?.$blob) continue;
+  const digest = envelope.$blob.slice(7);
+  const file = path.join(f.input.traceDirectory, 'blobs', digest.slice(0, 2), digest);
+  writeFileSync(file + '.gz', gzipSync(readFileSync(file))); rmSync(file);
+ }
+ assert.deepEqual(await extractReplayProposal(f.input), expected);
+ await assert.rejects(extractReplayProposal({ ...f.input, sessionId: 'foreign' }), /replay_desktop_turn_mismatch/);
+ await assert.rejects(extractReplayProposal({ ...f.input, desktopTurnId: 'foreign' }), /replay_desktop_turn_mismatch/);
 });
 
 test('repeated historical echoes do not duplicate a current-turn tool result', async t => {

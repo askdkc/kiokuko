@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readReplayBlob } from './replay-blob.js';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { findSecret, findSecretInValue } from './secrets.js';
@@ -88,10 +89,8 @@ export async function extractReplayProposal(input: { cwd: string; traceDirectory
     if ('$blob' in envelope) {
       const match = typeof envelope.$blob === 'string' && /^sha256:([a-f0-9]{64})$/u.exec(envelope.$blob);
       if (!match || !Number.isSafeInteger(envelope.bytes) || Number(envelope.bytes) < 0) throw new Error('replay_blob_invalid');
-      const data = await bounded(path.join(directory, 'blobs', match[1]!.slice(0, 2), match[1]!), directory, 2 * 1024 * 1024);
+      const data = await readReplayBlob(directory, match[1]!, Number(envelope.bytes), 32 * 1024 * 1024 - blobBytes);
       blobBytes += data.length;
-      if (data.length !== envelope.bytes || hash(data) !== match[1]) throw new Error('replay_blob_integrity');
-      if (blobBytes > 32 * 1024 * 1024) throw new Error('replay_blob_budget_exceeded');
       payloadHash = match[1]!; payload = JSON.parse(data.toString('utf8'));
     }
     if (raw.type === 'model.request' && typeof payload === 'string') payload = JSON.parse(payload);
