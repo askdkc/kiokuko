@@ -66,7 +66,10 @@ async function missingCapabilities(check) {
       const dependency=await import('./agenticreplay-dependency.mjs');
       const recorder=dependency.managedAgenticReplay(root);
       expectedVersion=recorder.version;
-    }catch{missing.push(capability);continue;}
+    }catch(error){
+      process.stderr.write(`Verification prerequisite ${capability}: ${error.message}\n`);
+      missing.push(capability);continue;
+    }
     const result=await command([location,'--version'],baseEnv,`capability-${check.id}-${capability}`);
     if(result.exitCode!==0||expectedVersion&&result.stdout.trim()!==expectedVersion||declaration?.versionPattern&&!new RegExp(declaration.versionPattern).test(result.stdout.trim())){missing.push(capability);continue;}
     if(declaration){baseEnv[declaration.environment]=realpathSync(location);if(capability==='agenticreplay-managed')baseEnv.AGENTICREPLAY_BIN=realpathSync(location);}

@@ -15,7 +15,10 @@ export function managedAgenticReplay(root = repositoryRoot) {
   const lock = readJson(path.join(root, 'package-lock.json'));
   const lockSpec = lock.packages?.['']?.dependencies?.agenticreplay;
   const lockedVersion = lock.packages?.['node_modules/agenticreplay']?.version;
-  if (lockSpec !== 'latest' || !semver.valid(lockedVersion)) {
+  // npm tooling can serialize the unpinned root request as "*" while
+  // package.json retains "latest". The resolved and installed versions below
+  // still have to match exactly; this is not a recorder compatibility gate.
+  if (!['latest', '*'].includes(lockSpec) || !semver.valid(lockedVersion)) {
     throw new Error('AgenticReplay lockfile does not resolve the latest dependency');
   }
   const installed = readJson(path.join(root, 'node_modules/agenticreplay/package.json'));

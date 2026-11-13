@@ -23,12 +23,17 @@ function fixture(t, { spec = 'latest', lockSpec = spec, locked = '0.1.12', insta
 
 test('latest is a runtime dependency and verification accepts different lockfile resolutions', t => {
   for (const locked of ['0.1.12', '1.0.0']) {
-    assert.equal(managedAgenticReplay(fixture(t, { locked })).version, locked);
+    for (const lockSpec of ['latest', '*']) {
+      assert.equal(managedAgenticReplay(fixture(t, { locked, lockSpec })).version, locked);
+    }
   }
 });
 
 test('an invalid resolution, stale lock, missing executable, or mismatched installation fails', t => {
-  for (const options of [{ locked: 'invalid' }, { lockSpec: '0.1.12' }, { installed: '0.1.13' }, { binary: false }]) {
+  for (const options of [{ locked: 'invalid' }, { lockSpec: '*', locked: 'invalid' },
+    { lockSpec: '0.1.12' }, { lockSpec: '^0.1.12' }, { lockSpec: 'next' },
+    { installed: '0.1.13' }, { lockSpec: '*', installed: '0.1.13' },
+    { binary: false }, { lockSpec: '*', binary: false }]) {
     assert.throws(() => managedAgenticReplay(fixture(t, options)));
   }
 });

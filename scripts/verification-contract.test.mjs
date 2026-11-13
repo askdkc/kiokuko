@@ -55,6 +55,34 @@ test('the real entry reports missing required native capability as prerequisite-
  const root=fixture([{...check,requires:['required-native-that-is-absent'],result:'command'}]);const {child,report}=execute(root);
  assert.equal(child.status,1);assert.equal(report.checks[0].status,'prerequisite-missing');assert.equal(report.completionReady,false);
 });
+test('managed recorder preflight accepts a wildcard lock request and diagnoses a mismatched installation',()=>{
+ const root=fixture([{...check,id:'record-probe',argv:['node','probe.mjs'],requires:['agenticreplay-managed'],result:'command'}]);
+ cpSync(new URL('./agenticreplay-dependency.mjs',import.meta.url),path.join(root,'scripts/agenticreplay-dependency.mjs'));
+ const require=createRequire(import.meta.url);
+ cpSync(path.dirname(require.resolve('semver/package.json')),path.join(root,'node_modules/semver'),{recursive:true});
+ const installed=path.join(root,'node_modules/agenticreplay');mkdirSync(installed,{recursive:true});
+ const binDir=path.join(root,'node_modules/.bin');mkdirSync(binDir,{recursive:true});
+ const binary=path.join(binDir,process.platform==='win32'?'agenticreplay.cmd':'agenticreplay');
+ const version='7.8.9';
+ writeFileSync(binary,process.platform==='win32'?`@echo ${version}\r\n`:`#!/usr/bin/env node\nconsole.log('${version}');\n`,{mode:0o700});
+ writeFileSync(path.join(root,'package.json'),JSON.stringify({private:true,type:'module',dependencies:{agenticreplay:'latest'}}));
+ writeFileSync(path.join(root,'package-lock.json'),JSON.stringify({packages:{'':{dependencies:{agenticreplay:'*'}},'node_modules/agenticreplay':{version}}}));
+ writeFileSync(path.join(installed,'package.json'),JSON.stringify({name:'agenticreplay',version}));
+ const definition=JSON.parse(readFileSync(path.join(root,'scripts/verification.json')));
+ definition.capabilities={'agenticreplay-managed':{environment:'AGENTICREPLAY_BIN',binary}};
+ writeFileSync(path.join(root,'scripts/verification.json'),JSON.stringify(definition));
+ writeFileSync(path.join(root,'probe.mjs'),"console.log('recording check reached');\n");
+ const accepted=execute(root,{AGENTICREPLAY_BIN:binary});
+ assert.equal(accepted.child.status,0,accepted.child.stdout+'\n'+accepted.child.stderr);
+ assert.equal(accepted.report.checks[0].status,'passed');
+ assert.match(accepted.child.stdout,/recording check reached/u);
+ writeFileSync(path.join(installed,'package.json'),JSON.stringify({name:'agenticreplay',version:'7.8.10'}));
+ const rejected=execute(root,{AGENTICREPLAY_BIN:binary});
+ assert.equal(rejected.child.status,1);
+ assert.equal(rejected.report.checks[0].status,'prerequisite-missing');
+ assert.match(rejected.child.stderr,/Installed AgenticReplay does not match the lockfile/u);
+ assert.doesNotMatch(rejected.child.stdout,/recording check reached/u);
+});
 test('a newer tunnel client reaches the behavioral check, which rejects a missing operation',()=>{
  const item={...check,id:'tunnel-probe',argv:['node','probe.mjs'],result:'command',requires:['tunnel-client']};
  const root=fixture([item]);const binary=path.join(root,'tunnel-client');
