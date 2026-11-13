@@ -319,7 +319,7 @@ export async function readRegularFile(
   try {
     handle = await open(filePath, flags);
   } catch (error) {
-    if (isMissingFile(error)) throw changedAfterPlanning();
+    if (isMissingFile(error)) throw changedAfterPlanning(filePath);
     if (isSymlinkFailure(error)) throw new KiokukoError('SECURITY_REJECTION', 'Refusing to follow a symbolic link');
     throw error;
   }
@@ -331,7 +331,7 @@ export async function readRegularFile(
     const info = await handle.stat();
     if (!info.isFile()) throw new KiokukoError('VALIDATION_ERROR', `Expected a regular file: ${filePath}`);
     const identity = identityFromStat(info);
-    if (!sameIdentity(identity, plannedIdentity)) throw changedAfterPlanning();
+    if (!sameIdentity(identity, plannedIdentity)) throw changedAfterPlanning(filePath);
     const content = decodeUtf8(await handle.readFile(), filePath);
     operationResult = { value: { content, mode: info.mode & 0o777, identity } };
   } catch (error) {
