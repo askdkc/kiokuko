@@ -20,7 +20,9 @@ import { globalizeCuratorCandidate } from '../../src/memory/curator.js';
 import { buildStructuredScope } from '../../src/memory/structured-memory.js';
 import { promoteEntry } from '../../src/memory/lifecycle.js';
 import { rebuildHybridSearch } from '../../src/memory/rebuild-search.js';
+import { searchEntries } from '../../src/memory/retrieval.js';
 import { checkpointScopedMemory } from '../../src/memory/scoped-memory.js';
+import { resolveProjectWorkspace } from '../../src/memory/workspaces.js';
 
 const capabilities = [{ kind: 'skill', name: 'kiokuko-soul' }, { kind: 'skill', name: 'memory-reasoning' }];
 const grammar = { kind: 'preference', title: 'Japanese grammar explanations', body: 'For Japanese grammar explanations, give examples before terminology.',
@@ -145,6 +147,40 @@ test('correction supersedes a verified memory atomically and stale revisions rol
   await assert.rejects(capture('stale', [general, correction]), { code: 'CONFLICT' });
   assert.equal(db.prepare('SELECT COUNT(*) n FROM entries').get<{ n: number }>()!.n, before);
   assert.deepEqual((await capture('correct', [correction])).items.map((item) => item.entryId), [saved.entryId]);
+});
+
+test('project capture corrects a memory outside the 20-result search limit', async (t) => {
+  const { root, db, capture } = await fixture(t);
+  execFileSync('git', ['init', '-q', root]);
+  const project = await resolveProjectWorkspace(db, root);
+  assert.ok(project);
+
+  const lesson = { kind: 'lesson', scope: 'project', title: 'Cache policy', basis: 'observed_result' };
+  const old = (await capture('old-cache-policy', [{
+    ...lesson, body: 'Use the legacy cache format for this repository.',
+  }], { cwd: root })).items[0]!;
+  for (let index = 1; index <= 20; index++) {
+    await capture(`cache-namespace-${index}`, [{
+      ...lesson, title: 'Current cache policy', body: `Current cache namespace number ${index}`,
+    }], { cwd: root });
+  }
+
+  const search = { workspace: project.workspace, cwd: root, query: 'current cache' };
+  const limited = searchEntries(db, { ...search, limit: 20 });
+  assert.equal(limited.items.length, 20);
+  assert.ok(limited.items.every((item) => item.id !== old.entryId));
+  assert.ok(searchEntries(db, { ...search, limit: 21 }).items.some((item) => item.id === old.entryId));
+
+  const body = 'Use the current cache format for this repository.';
+  const saved = (await capture('correct-cache-policy', [{
+    ...lesson, body, basis: 'user_correction',
+    replaces: { entryId: old.entryId, expectedRevision: old.revision },
+  }], { cwd: root })).items[0]!;
+  assert.equal(saved.outcome, 'corrected');
+  const previous = readEntry(db, { workspace: project.workspace, entryId: old.entryId });
+  assert.equal(previous.status, 'superseded');
+  assert.equal(previous.supersededBy, saved.entryId);
+  assert.equal(readEntry(db, { workspace: project.workspace, entryId: saved.entryId }).body, body);
 });
 
 test('a first project correction needs no stored ID and reaches the next task only in that project', async (t) => {
